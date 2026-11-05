@@ -527,13 +527,13 @@ describe("runAdmittedModelCall", () => {
 
     await callOptions(
       state,
-      { maxOutputTokens: 200 },
+      { maxOutputTokens: 200, contextWindowTokens: 100_000 },
       async () => response(),
     );
 
     expect(countTokens).toHaveBeenCalledOnce();
     expect(state.acquire).toHaveBeenCalledWith(
-      expect.objectContaining({ maxInputTokens: 23 }),
+      expect.objectContaining({ maxInputTokens: 100_000 }),
       undefined,
     );
   });
@@ -569,6 +569,26 @@ describe("runAdmittedModelCall", () => {
     ).resolves.toBeDefined();
 
     expect(invoke).toHaveBeenCalledOnce();
+  });
+
+  test("uses the projected delegate envelope for native tools and hard-cost admission", async () => {
+    const state = harness({ maxCostUsd: 1 });
+    Object.assign(state.provider, {
+      config: { model: "grok-4.5", webSearch: true, remoteMcp: {
+        enabled: true, servers: [{ serverLabel: "remote", serverUrl: "https://mcp.example" }],
+      } },
+      projectRequestForAccounting: (messages: unknown, options: LLMChatOptions) => ({
+        messages, options: { ...options, tools: [], toolChoice: "none", toolRouting: { allowedToolNames: [] } },
+      }),
+    });
+    const invoke = vi.fn(async () => response());
+    await expect(callOptions(state, {
+      maxOutputTokens: 200, contextWindowTokens: 100_000,
+      toolRouting: { allowedToolNames: ["web_search", "mcp"] },
+    }, invoke)).resolves.toBeDefined();
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(state.acquire.mock.calls[0]?.[0].maxInputTokens).toBeLessThan(100_000);
+    expect(state.acquire.mock.calls[0]?.[0].denialReason).toBeUndefined();
   });
 
   test("accounts for only the allowlisted provider-native tools", async () => {

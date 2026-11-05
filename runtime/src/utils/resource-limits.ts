@@ -334,15 +334,16 @@ export function formatResourceLimitsLine(limits: ResourceLimits): string | null 
   const host: string[] = [];
   if (limits.cpuLimit !== undefined) {
     parts.push(formatCpus(limits.cpuLimit));
-    host.push(`nproc shows ${limits.hostCpus}`);
+    host.push("nproc");
   }
   if (limits.memoryLimitBytes !== undefined) {
     parts.push(`${formatBytes(limits.memoryLimitBytes)} memory`);
-    host.push(`free shows ${formatBytes(limits.hostMemoryBytes)}`);
+    host.push("free");
   }
   if (parts.length === 0) return null;
-  return `Resource limits (cgroup): ${parts.join(", ")}; ${host.join(" and ")}. ` +
-    "Size thread counts, parallel jobs and builds to these limits.";
+  // This note recurs on every model call. State usable quotas without
+  // repeating host totals or adding general tool-scheduling instructions.
+  return `Resource limits (cgroup): ${parts.join(", ")}; ${host.join("/")} can show host totals.`;
 }
 
 let cachedLimitsLine: { readonly line: string | null } | undefined;

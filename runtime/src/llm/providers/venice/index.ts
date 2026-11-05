@@ -1,6 +1,6 @@
 import { endpointMetadataForTransport } from "../../endpoint-metadata-cache.js";
 import { veniceFetch } from "./transport.js";
-import { LLMProviderError } from "../../errors.js";
+import { LLMCapabilityError } from "../../errors.js";
 import { OpenAIProvider } from "../openai/adapter.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
 import type { LLMChatOptions, LLMMessage, StreamProgressCallback } from "../../types.js";
@@ -50,17 +50,17 @@ export class VeniceProvider extends OpenAIProvider {
     // Selection accepts any Venice ID (its catalog is this live list), so a
     // mistyped one stops here, before any request.
     if (discovered && !discovered.some(entry => entry.model === model)) {
-      throw new LLMProviderError("venice", `${model} is not an online Venice text model that supports function calling.`);
+      throw new LLMCapabilityError("venice", "request_features", `${model} is not an online Venice text model that supports function calling.`);
     }
   }
 
   /**
    * Admission reserves before the request: read Venice's list first, so the
-   * reservation uses this model's published price. An unlisted model is
-   * refused by chat() and chatStream(), not here.
+   * reservation uses this model's published price. Reject an unlisted model
+   * from that same discovery before generation is admitted.
    */
   override async getExecutionProfile(options?: LLMChatOptions) {
-    await this.#refresh();
+    await this.#discover(options?.model?.trim() || this.#model);
     return super.getExecutionProfile(options);
   }
 

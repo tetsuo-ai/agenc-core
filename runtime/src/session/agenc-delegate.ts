@@ -19,6 +19,8 @@ import { createInertMcpManager } from "../mcp-client/inert-manager.js";
 import { childSessionAuthority } from "./session-authority.js";
 import type { LLMChatOptions, LLMMessage, LLMProvider } from "../llm/types.js";
 import { STREAM_IDLE_ABORT_REASON } from "../llm/stream-watchdog.js";
+import { LLMCapabilityError } from "../llm/errors.js";
+import { isRecord } from "../utils/record.js";
 import {
   createProvider,
   preserveProviderFactoryState,
@@ -491,12 +493,25 @@ function createDelegateProvider(
   sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined,
   finalOutputJsonSchema?: unknown,
 ): DelegateProviderLease {
-  const structuredOutput =
+  if (finalOutputJsonSchema !== undefined && !isRecord(finalOutputJsonSchema)) {
+    throw new LLMCapabilityError(parentProvider.name, "structured_output",
+      "The review output schema must be a JSON object");
+  }
+  const structuredOutput: LLMChatOptions["structuredOutput"] =
     finalOutputJsonSchema !== undefined
-      ? ({
-          schema: finalOutputJsonSchema,
-        } as LLMChatOptions["structuredOutput"])
+      ? { schema: { type: "json_schema", name: "review_output", schema: finalOutputJsonSchema } }
       : undefined;
+  const reviewerOptions = (options: LLMChatOptions = {}): LLMChatOptions => ({
+    ...options,
+    model: reviewerModel,
+    tools: [],
+    toolRouting: { allowedToolNames: [] },
+    // The empty catalog and allowlist suppress external tools. A provider may
+    // implement the requested schema with its own internal output tool.
+    toolChoice: structuredOutput !== undefined ? "auto" : "none",
+    parallelToolCalls: false,
+    ...(structuredOutput !== undefined ? { structuredOutput } : {}),
+  });
   let provider = parentProvider;
   if (parentProvider.forkForSession !== undefined) {
     if (sandboxExecutionBroker === undefined) {
@@ -528,28 +543,15 @@ function createDelegateProvider(
   }
   const delegatedProvider: LLMProvider = {
     name: provider.name,
+    ...(provider.tokenCountCapability !== undefined
+      ? { tokenCountCapability: provider.tokenCountCapability }
+      : {}),
     healthCheck: (...args: Parameters<LLMProvider["healthCheck"]>) =>
       provider.healthCheck(...args),
     chat: (messages, options) =>
-      provider.chat(messages, {
-        ...options,
-        model: reviewerModel,
-        tools: [],
-        toolRouting: { allowedToolNames: [] },
-        toolChoice: "none",
-        parallelToolCalls: false,
-        ...(structuredOutput !== undefined ? { structuredOutput } : {}),
-      } as LLMChatOptions),
+      provider.chat(messages, reviewerOptions(options)),
     chatStream: async (messages, onChunk, options) => {
-      const mergedOptions = {
-        ...options,
-        model: reviewerModel,
-        tools: [],
-        toolRouting: { allowedToolNames: [] },
-        toolChoice: "none",
-        parallelToolCalls: false,
-        ...(structuredOutput !== undefined ? { structuredOutput } : {}),
-      } as LLMChatOptions;
+      const mergedOptions = reviewerOptions(options);
       if (provider.chatStream.length < 3) {
         const response = await provider.chat(messages, mergedOptions);
         if (response.content.length > 0) {
@@ -559,13 +561,17 @@ function createDelegateProvider(
       }
       return provider.chatStream(messages, onChunk, mergedOptions);
     },
+    ...(provider.validateRequest !== undefined
+      ? { validateRequest: (messages, options) => provider.validateRequest!(messages, reviewerOptions(options)) }
+      : {}),
+    projectRequestForAccounting: (messages, options) => {
+      const mergedOptions = reviewerOptions(options);
+      return provider.projectRequestForAccounting?.(messages, mergedOptions) ?? { messages, options: mergedOptions };
+    },
     ...(provider.getExecutionProfile !== undefined
       ? {
           getExecutionProfile: (options) =>
-            provider.getExecutionProfile!({
-              ...options,
-              model: reviewerModel,
-            }),
+            provider.getExecutionProfile!(reviewerOptions(options)),
         }
       : {}),
     ...(provider.retrieveStoredResponse !== undefined

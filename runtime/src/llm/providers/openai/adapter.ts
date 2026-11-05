@@ -25,6 +25,7 @@ import type {
 } from "../../types.js";
 import { validateToolCallDetailed } from "../../types.js";
 import {
+  LLMCapabilityError,
   LLMAuthenticationError,
   LLMContextWindowExceededError,
   LLMInvalidResponseError,
@@ -70,7 +71,7 @@ import {
   type ChatCompletionsCapabilityHints,
 } from "../../wire/capability-gating.js";
 import { sharedPrefixTailEnabled } from "../../wire/shared-prefix-tail.js";
-import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
+import { createProviderToolNameWireLookup, decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { parseProviderJson } from "../../wire/parse-json.js";
 import {
   coerceUsage,
@@ -1098,6 +1099,49 @@ export class OpenAIProvider implements LLMProvider {
     }
     await sleepMs(getRetryDelay(decision.consecutiveFailures), signal);
     return true;
+  }
+
+  validateRequest(messages: readonly LLMMessage[], options: LLMChatOptions): void {
+    const model = options.model?.trim() || this.config.model;
+    const tools = options.tools ?? this.config.tools ?? [];
+    const responsesApi = this.usesResponsesApi(model, tools, options);
+    assertProviderStructuredOutputCompatibility({
+      providerName: this.name,
+      model,
+      structuredOutput: options.structuredOutput,
+      toolsRequested: tools.length > 0,
+      api: responsesApi ? "responses" : "chat_completions",
+    });
+    const toolChoicePolicy = responsesApi
+      ? this.responsesContractOptions(model).toolChoicePolicy
+      : this.chatCapabilityHints(model).toolChoicePolicy;
+    // Validate only the catalog the wire will advertise, without projecting
+    // the conversation a second time for ordinary text requests.
+    if (!(toolChoicePolicy === "auto_only" && options.toolChoice === "none")) {
+      createProviderToolNameWireLookup(tools.map((tool) => tool.function.name));
+    }
+    if (responsesApi) return;
+    const hints = this.chatCapabilityHints(model);
+    const exceedsToolLimit = hints.maxToolDefinitions !== undefined && tools.length > hints.maxToolDefinitions;
+    const hasUnsupportedImage = hints.acceptsDirectImageInput === false && messages.some((message) =>
+      message.role !== "tool" && Array.isArray(message.content) &&
+      message.content.some((part) => part.type === "image_url"));
+    // The matrix also has local image, payload-size, and tool-count gates.
+    // Reuse their exact wire projection only on those affected requests;
+    // ordinary text calls do not need another prompt serialization.
+    if (!hints.imageInputContract && !exceedsToolLimit && !hasUnsupportedImage) return;
+    try {
+      buildChatCompletionsRequest({ model, messages, tools, options,
+        maxTokens: this.resolveRequestMaxTokens(options),
+        maxTokenField: this.resolveChatCompletionsMaxTokenField(model),
+        providerCapabilityHints: hints,
+        sharedPrefixTail: sessionSharedPrefixTail() });
+    } catch (error) {
+      if (error instanceof TypeError || error instanceof RangeError) {
+        throw new LLMCapabilityError(this.name, "request_features", error.message);
+      }
+      throw error;
+    }
   }
 
   async chat(

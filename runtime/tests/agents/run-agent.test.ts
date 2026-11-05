@@ -704,6 +704,24 @@ afterEach(() => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("wrapProviderForAgentSummary", () => {
+  it("preserves local capability validation and accounting projection", async () => {
+    const provider = makeProvider([]);
+    const validateRequest = vi.fn();
+    const projectRequestForAccounting = vi.fn((messages, options) => ({ messages, options }));
+    const tokenCountCapability = { capabilityVersion: "test", adapterRevision: "test",
+      countTokens: vi.fn() };
+    Object.assign(provider, { validateRequest, projectRequestForAccounting, tokenCountCapability });
+    const wrapped = wrapProviderForAgentSummary(provider, () => {});
+    const messages: LLMMessage[] = [{ role: "user", content: "child" }];
+    const options: LLMChatOptions = { tools: [], maxOutputTokens: 64 };
+    expect(wrapped.validateRequest).toBeTypeOf("function");
+    await wrapped.validateRequest!(messages, options);
+    expect(validateRequest).toHaveBeenCalledWith(messages, options);
+    expect(wrapped.projectRequestForAccounting?.(messages, options)).toEqual({ messages, options });
+    expect(projectRequestForAccounting).toHaveBeenCalledWith(messages, options);
+    expect(wrapped.tokenCountCapability).toBe(tokenCountCapability);
+  });
+
   it("preserves canonical Gemini and Anthropic factory state", () => {
     const providers = [
       createProvider("gemini", {

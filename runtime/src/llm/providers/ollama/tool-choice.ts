@@ -11,7 +11,7 @@
  */
 
 import type { LLMTool, LLMToolCall, LLMToolChoice } from "../../types.js";
-import { LLMInvalidResponseError, LLMProviderError } from "../../errors.js";
+import { LLMCapabilityError, LLMInvalidResponseError } from "../../errors.js";
 import {
   createOllamaToolNameProjection,
   type OllamaToolNameProjection,
@@ -59,7 +59,7 @@ function ollamaToolChoiceKind(
     return "function";
   }
 
-  throw new LLMProviderError("ollama", "unsupported toolChoice");
+  throw new LLMCapabilityError("ollama", "request_features", "unsupported toolChoice");
 }
 
 function emptyAdvertisedNames(): OllamaToolNameProjection {
@@ -74,15 +74,17 @@ function advertisedSubset(
     (tool) => tool.function.name === canonicalName,
   );
   if (index < 0) {
-    throw new LLMProviderError(
+    throw new LLMCapabilityError(
       "ollama",
+      "request_features",
       `toolChoice references unavailable tool: ${canonicalName}`,
     );
   }
   const canonical = names.canonicalTools[index];
   if (canonical === undefined) {
-    throw new LLMProviderError(
+    throw new LLMCapabilityError(
       "ollama",
+      "request_features",
       `toolChoice references unavailable tool: ${canonicalName}`,
     );
   }
@@ -128,12 +130,13 @@ export function resolveOllamaToolChoice(
         ? undefined
         : namedFunctionChoiceName(toolChoice);
       if (functionName === undefined) {
-        throw new LLMProviderError("ollama", "unsupported toolChoice");
+        throw new LLMCapabilityError("ollama", "request_features", "unsupported toolChoice");
       }
       const canonicalName = functionName.trim();
       if (canonicalName.length === 0) {
-        throw new LLMProviderError(
+        throw new LLMCapabilityError(
           "ollama",
+          "request_features",
           "toolChoice references unavailable tool: (empty name)",
         );
       }

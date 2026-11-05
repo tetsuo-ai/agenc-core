@@ -2,10 +2,13 @@ import { Buffer } from "node:buffer";
 
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
+import { LLMCapabilityError } from "../llm/errors.js";
+import { resolveProviderStructuredOutputMode } from "../llm/structured-output.js";
 import type {
   LLMMessage,
   LLMResponse,
   LLMStructuredOutputSchema,
+  LLMProvider,
 } from "../llm/types.js";
 import type { Session } from "../session/session.js";
 import {
@@ -48,6 +51,36 @@ const SELECTOR_TIMEOUT = Symbol("memory-selector-timeout");
 const MEMORY_SELECTOR_CONTEXT_WINDOW_TOKENS =
   MAX_MEMORY_SELECTOR_INPUT_TOKENS + MAX_MEMORY_SELECTOR_OUTPUT_TOKENS;
 
+// The attachment producer can recreate selectors each round. Retain only the
+// deterministic result, scoped to the session, provider instance and model so
+// a provider/model switch gets a fresh capability check.
+const incompatibleSelectors = new WeakMap<Session, WeakMap<LLMProvider, Set<string>>>();
+const UNSUPPORTED_SELECTOR = Object.freeze({
+  kind: "unavailable" as const,
+  diagnostic: "local_provider_capability_rejection" as const,
+});
+
+function rememberIncompatibleSelector(
+  session: Session, provider: LLMProvider, model: string,
+): AdmittedMemorySelectorResult {
+  let providers = incompatibleSelectors.get(session);
+  if (providers === undefined) {
+    providers = new WeakMap();
+    incompatibleSelectors.set(session, providers);
+  }
+  let models = providers.get(provider);
+  if (models === undefined) { models = new Set(); providers.set(provider, models); }
+  models.add(model);
+  session.emit?.({
+    id: session.nextInternalSubId(),
+    msg: { type: "warning", payload: {
+      cause: "local_provider_capability_rejection",
+      message: "Memory selector structured output is unavailable for this provider and model. Using deterministic lexical recall for this session.",
+    } },
+  });
+  return UNSUPPORTED_SELECTOR;
+}
+
 export function createAdmittedMemorySelector(
   session: Session,
 ): AdmittedMemorySelector {
@@ -68,6 +101,9 @@ async function selectWithAdmission(
   const model =
     providerOptions.model?.trim() || session.modelInfo.slug.trim() || "unknown";
   const providerName = provider.name?.trim() || "unknown";
+  if (incompatibleSelectors.get(session)?.get(provider)?.has(model)) {
+    return UNSUPPORTED_SELECTOR;
+  }
   const controller = new AbortController();
   const timeoutReason = new DOMException(
     "Memory selector deadline crossed",
@@ -83,6 +119,7 @@ async function selectWithAdmission(
     contextWindowTokens: MEMORY_SELECTOR_CONTEXT_WINDOW_TOKENS,
     maxOutputTokens: MAX_MEMORY_SELECTOR_OUTPUT_TOKENS,
     tools: [],
+    toolRouting: { allowedToolNames: [] },
     parallelToolCalls: false,
     structuredOutput: {
       enabled: true,
@@ -90,20 +127,33 @@ async function selectWithAdmission(
     },
   } as const;
 
-  const call = runAdmittedModelCall({
-    session,
-    provider,
-    messages,
-    options,
-    stepId: `memory-selector:${session.nextInternalSubId()}`,
-    sessionId: session.conversationId,
-    parentScopeId: "memory-selector",
-    model,
-    providerName,
-    signal: controller.signal,
-    invoke: (admittedOptions) => provider.chat(messages, admittedOptions),
-  });
   const boundary = selectorBoundary(signal, controller, timeoutReason);
+  // The one visible deadline covers both capability validation and the model
+  // request. A validator may ignore abort, but its late result cannot admit work.
+  const call = (async () => {
+    throwIfMemoryRecallAborted(controller.signal);
+    if (provider.validateRequest !== undefined) {
+      await provider.validateRequest(messages, { ...options, model });
+    } else if (!(["responses", "chat_completions", "messages"] as const).some(
+      (api) => resolveProviderStructuredOutputMode({ provider: providerName, model, api }) !== "unsupported",
+    )) {
+      throw new LLMCapabilityError(providerName, "structured_output", "Memory selector structured output is unavailable");
+    }
+    throwIfMemoryRecallAborted(controller.signal);
+    return runAdmittedModelCall({
+      session,
+      provider,
+      messages,
+      options,
+      stepId: `memory-selector:${session.nextInternalSubId()}`,
+      sessionId: session.conversationId,
+      parentScopeId: "memory-selector",
+      model,
+      providerName,
+      signal: controller.signal,
+      invoke: (admittedOptions) => provider.chat(messages, admittedOptions),
+    });
+  })();
 
   try {
     const response = await Promise.race([call, boundary.promise]);
@@ -128,6 +178,10 @@ async function selectWithAdmission(
     if (signal.aborted) {
       void call.catch(() => undefined);
       throw signal.reason ?? error;
+    }
+    if (controller.signal.reason === timeoutReason) return { kind: "timeout" };
+    if (error instanceof LLMCapabilityError) {
+      return rememberIncompatibleSelector(session, provider, model);
     }
     return { kind: "unavailable" };
   }
@@ -155,6 +209,7 @@ function selectorBoundary(
       reject(reason);
     };
     signal.addEventListener("abort", abortListener, { once: true });
+    if (signal.aborted) abortListener();
   });
   return {
     promise,

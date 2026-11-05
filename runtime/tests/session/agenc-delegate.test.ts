@@ -93,6 +93,8 @@ import { isApprovalSessionOwnedBy, observeChildApprovalSessions } from "../agent
 import { isWorkflowApprovalSession } from "../permissions/approval-failure.js";
 import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
 import * as childRunJournal from "./child-run-journal.js";
+import { AnthropicProvider } from "../llm/providers/anthropic/adapter.js";
+import { ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME } from "../llm/structured-output.js";
 
 const TEST_REVIEW_CHILD_SESSION_ID =
   "review-70258a22d095bbaef7e15b5457a92c30c382f5bd2e4af2c54fcbf2e2e4da8a2d";
@@ -1360,6 +1362,78 @@ describe("runAgenCReviewOneShot happy-path review", () => {
     expect(observedOptions?.tools).toEqual([]);
     expect(observedOptions?.toolRouting?.allowedToolNames).toEqual([]);
     expect(observedOptions?.toolChoice).toBe("none");
+  });
+
+  it("uses the same complete reviewer request for preflight, accounting, and dispatch", async () => {
+    const schema = { type: "object", properties: { outcome: { type: "string" } }, required: ["outcome"] };
+    let dispatchedOptions: LLMChatOptions | undefined;
+    const validateRequest = vi.fn();
+    const projectRequestForAccounting = vi.fn((messages, options) => ({ messages, options }));
+    const getExecutionProfile = vi.fn(async () => ({ provider: "scripted-provider", model: "reviewer-5",
+      usageReporting: "authoritative" as const, supportsMaxOutputTokens: true }));
+    const tokenCountCapability = { capabilityVersion: "test", adapterRevision: "test", countTokens: vi.fn() };
+    const parentProvider = Object.assign(mkScriptedProvider({ content: "ok",
+      onChat: (_messages, options) => { dispatchedOptions = options; },
+    }), { validateRequest, projectRequestForAccounting, getExecutionProfile, tokenCountCapability });
+    const session = mkSession(parentProvider);
+    const req = { ...mkOneShotRequest(session), finalOutputJsonSchema: schema };
+    const thread = await spawnAgenCDelegateThread(session, req, "reviewer-5", mkModelInfo("reviewer-5"), new AbortController());
+    try {
+      const provider = thread.childSession.services.provider;
+      const input: LLMMessage[] = [{ role: "user", content: "review" }];
+      const options: LLMChatOptions = { model: "wrong-parent", maxOutputTokens: 64,
+        tools: [{ type: "function", function: { name: "unavailable", description: "unavailable", parameters: {} } }] };
+      expect(provider.validateRequest).toBeTypeOf("function");
+      await provider.getExecutionProfile?.(options);
+      await provider.validateRequest!(input, options);
+      const projected = provider.projectRequestForAccounting?.(input, options);
+      await provider.chat(input, options);
+      expect(dispatchedOptions).toMatchObject({ model: "reviewer-5", tools: [],
+        toolRouting: { allowedToolNames: [] }, toolChoice: "auto", parallelToolCalls: false,
+        structuredOutput: { schema: { type: "json_schema", name: "review_output", schema } } });
+      expect(validateRequest).toHaveBeenCalledWith(input, dispatchedOptions);
+      expect(projectRequestForAccounting).toHaveBeenCalledWith(input, dispatchedOptions);
+      expect(getExecutionProfile).toHaveBeenCalledWith(dispatchedOptions);
+      expect(projected?.options).toEqual(dispatchedOptions);
+      expect(provider.tokenCountCapability).toBe(tokenCountCapability);
+    } finally {
+      await thread.shutdown("test complete");
+      await session.shutdown();
+    }
+  });
+
+  it("allows the Anthropic reviewer schema tool while suppressing external tools with thinking", async () => {
+    const model = "claude-sonnet-4-5";
+    const schema = { type: "object", properties: { outcome: { type: "string" } }, required: ["outcome"] };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      id: "msg_reviewer", type: "message", role: "assistant", model,
+      content: [{ type: "tool_use", id: "schema-1", name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME, input: { outcome: "ok" } }],
+      stop_reason: "tool_use", usage: { input_tokens: 4, output_tokens: 2 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const externalTool = { type: "function" as const, function: { name: "must_not_run", description: "External tool", parameters: { type: "object" } } };
+    const native = new AnthropicProvider({ apiKey: "test-only", model: "test-model", tools: [externalTool], fetchImpl });
+    const parentProvider = Object.assign(native, { forkForSession: () => native });
+    const parentBroker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: "/tmp" });
+    const session = mkSession(parentProvider, { sandboxExecutionBroker: parentBroker });
+    const request = { ...mkOneShotRequest(session), finalOutputJsonSchema: schema };
+    const thread = await spawnAgenCDelegateThread(session, request, model, mkModelInfo(model), new AbortController());
+    try {
+      const provider = thread.childSession.services.provider;
+      const messages: LLMMessage[] = [{ role: "user", content: "Review the change." }];
+      const options: LLMChatOptions = { reasoningEffort: "medium", maxOutputTokens: 4096, tools: [externalTool], toolChoice: "none" };
+      await provider.validateRequest!(messages, options);
+      const response = await provider.chat(messages, options);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+      expect(body.tools.map((tool: { name: string }) => tool.name)).toEqual([ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME]);
+      expect(body.thinking).toMatchObject({ type: "enabled" });
+      // Anthropic defaults an omitted choice to auto when thinking is on.
+      expect(body.tool_choice ?? { type: "auto" }).toEqual({ type: "auto" });
+      expect(response.structuredOutput?.parsed).toEqual({ outcome: "ok" });
+    } finally {
+      await thread.shutdown("test complete");
+      await session.shutdown();
+    }
   });
 
   it("preserves factory extras while adding the child sandbox broker", async () => {

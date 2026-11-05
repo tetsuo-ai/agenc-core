@@ -6,7 +6,10 @@ vi.mock("../../src/budget/admitted-model-call.js", () => ({
   runAdmittedModelCall,
 }));
 
+import { GrokProvider } from "../../src/llm/providers/grok/adapter.js";
+import type { Session } from "../../src/session/session.js";
 import { createAdmittedMemorySelector } from "../../src/memory/admitted-selector.js";
+import { LLMCapabilityError } from "../../src/llm/errors.js";
 import {
   MAX_MEMORY_SELECTOR_MS,
   type MemorySelectorRequest,
@@ -32,10 +35,10 @@ function session(): never {
   let subId = 0;
   return {
     conversationId: "conversation",
-    modelInfo: { slug: "test-model", contextWindow: 100_000 },
+    modelInfo: { slug: "grok-4.5", contextWindow: 100_000 },
     services: {
       provider: {
-        name: "test-provider",
+        name: "grok",
         chat: vi.fn(),
       },
     },
@@ -76,6 +79,26 @@ afterEach(() => {
 });
 
 describe("C3a admitted memory selector", () => {
+  it("remembers a deterministic capability rejection discovered during admission", async () => {
+    runAdmittedModelCall.mockRejectedValue(new LLMCapabilityError("grok", "request_features", "local feature rejection"));
+    const currentSession = session();
+    for (let round = 0; round < 2; round++) {
+      await expect(createAdmittedMemorySelector(currentSession).select(REQUEST, new AbortController().signal))
+        .resolves.toMatchObject({ kind: "unavailable", diagnostic: "local_provider_capability_rejection" });
+    }
+    expect(runAdmittedModelCall).toHaveBeenCalledOnce();
+  });
+  it("suppresses configured native tools before schema selection and admission", async () => {
+    const current = session() as unknown as Session;
+    Object.assign(current.services, { provider: new GrokProvider({
+      apiKey: "fixture", model: "grok-4.5", webSearch: true,
+    }) });
+    runAdmittedModelCall.mockResolvedValueOnce(response({ selected_candidate_ids: ["candidate-1"] }));
+    await expect(createAdmittedMemorySelector(current).select(REQUEST, new AbortController().signal))
+      .resolves.toEqual({ kind: "selected", candidateIds: ["candidate-1"] });
+    expect(runAdmittedModelCall.mock.calls[0]?.[0].options.toolRouting).toEqual({ allowedToolNames: [] });
+  });
+
   it("routes the structured request through the admitted call with frozen bounds", async () => {
     runAdmittedModelCall.mockResolvedValueOnce(
       response({ selected_candidate_ids: ["candidate-1"] }),
@@ -97,6 +120,76 @@ describe("C3a admitted memory selector", () => {
       structuredOutput: { enabled: true },
     });
     expect(options.options.systemPrompt).toContain("untrusted user data");
+  });
+
+  it("bounds asynchronous capability validation by the selector deadline", async () => {
+    vi.useFakeTimers();
+    const validation = deferred<void>();
+    const validateRequest = vi.fn(() => validation.promise);
+    const current = session() as unknown as Session;
+    Object.assign(current.services.provider, { validateRequest });
+    const settled = vi.fn();
+    const selection = createAdmittedMemorySelector(current).select(REQUEST, new AbortController().signal);
+    void selection.then(settled, settled);
+    try {
+      await vi.advanceTimersByTimeAsync(MAX_MEMORY_SELECTOR_MS);
+      expect(settled).toHaveBeenCalledWith({ kind: "timeout" });
+      expect(runAdmittedModelCall).not.toHaveBeenCalled();
+      const options = vi.mocked(current.services.provider.validateRequest)!.mock.calls[0]![1];
+      expect(options.signal?.aborted).toBe(true);
+      expect(options.signal?.reason).toMatchObject({ name: "TimeoutError" });
+    } finally {
+      validation.resolve();
+      await selection;
+    }
+    await Promise.resolve();
+    expect(runAdmittedModelCall).not.toHaveBeenCalled();
+  });
+
+  it("cancels asynchronous validation immediately and never admits its late result", async () => {
+    vi.useFakeTimers();
+    const validation = deferred<void>();
+    const current = session() as unknown as Session;
+    Object.assign(current.services.provider, { validateRequest: vi.fn(() => validation.promise) });
+    const controller = new AbortController();
+    const reason = new Error("caller cancelled validation");
+    const settled = vi.fn();
+    const selection = createAdmittedMemorySelector(current).select(REQUEST, controller.signal);
+    void selection.then(settled, settled);
+    controller.abort(reason);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toHaveBeenCalledWith(reason);
+      const options = vi.mocked(current.services.provider.validateRequest)!.mock.calls[0]![1];
+      expect(options.signal?.reason).toBe(reason);
+      expect(runAdmittedModelCall).not.toHaveBeenCalled();
+    } finally {
+      validation.resolve();
+      await expect(selection).rejects.toBe(reason);
+    }
+    expect(runAdmittedModelCall).not.toHaveBeenCalled();
+  });
+
+  it("shares one deadline between validation and the admitted request", async () => {
+    vi.useFakeTimers();
+    const validation = deferred<void>();
+    const model = deferred<never>();
+    const current = session() as unknown as Session;
+    Object.assign(current.services.provider, { validateRequest: vi.fn(() => validation.promise) });
+    runAdmittedModelCall.mockReturnValueOnce(model.promise);
+    const settled = vi.fn();
+    const selection = createAdmittedMemorySelector(current).select(REQUEST, new AbortController().signal);
+    void selection.then(settled, settled);
+    await vi.advanceTimersByTimeAsync(MAX_MEMORY_SELECTOR_MS / 2);
+    validation.resolve();
+    await vi.advanceTimersByTimeAsync(MAX_MEMORY_SELECTOR_MS / 2);
+    try {
+      expect(settled).toHaveBeenCalledWith({ kind: "timeout" });
+      expect(runAdmittedModelCall).toHaveBeenCalledOnce();
+    } finally {
+      model.resolve(response({ selected_candidate_ids: [] }));
+      await selection;
+    }
   });
 
   it("returns lexical-fallback status at the visible deadline while the admitted call settles later", async () => {

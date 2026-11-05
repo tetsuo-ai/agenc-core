@@ -38,7 +38,7 @@ import {
 } from "../../../sandbox/execution-broker.js";
 import { registerSandboxExecutionLifecycleParticipant } from "../../../sandbox/execution-lifecycle.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
-import { LLMProviderError } from "../../errors.js";
+import { LLMCapabilityError, LLMProviderError } from "../../errors.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -114,6 +114,21 @@ function snapshotGrokAcpEnvironment(
   return Object.freeze(environment);
 }
 
+function assertAcpMessageCompatibility(messages: readonly LLMMessage[]): void {
+  validateAgentInvocationMessageSequence(messages);
+  if (
+    messages.some(
+      (message) => message.runtimeOnly?.agentInvocation !== undefined,
+    )
+  ) {
+    throw new LLMCapabilityError(
+      "grok",
+      "request_features",
+      "ACP transport cannot preserve authenticated agent invocation authorities",
+    );
+  }
+}
+
 /**
  * Flatten the conversation to a single text prompt. Composer sessions are
  * created fresh per call, so the transcript travels in the prompt body;
@@ -123,17 +138,7 @@ export function flattenMessagesForAcp(
   messages: readonly LLMMessage[],
   systemPrompt?: string,
 ): string {
-  validateAgentInvocationMessageSequence(messages);
-  if (
-    messages.some(
-      (message) => message.runtimeOnly?.agentInvocation !== undefined,
-    )
-  ) {
-    throw new LLMProviderError(
-      "grok",
-      "ACP transport cannot preserve authenticated agent invocation authorities",
-    );
-  }
+  assertAcpMessageCompatibility(messages);
   const sections: string[] = [];
   if (systemPrompt?.trim()) {
     sections.push(systemPrompt.trim());
@@ -198,6 +203,14 @@ export class GrokAcpProvider implements LLMProvider {
         },
       );
     }
+  }
+
+  validateRequest(messages: readonly LLMMessage[], options: LLMChatOptions): void {
+    if (options.structuredOutput?.enabled !== false && options.structuredOutput?.schema) {
+      throw new LLMCapabilityError(this.name, "structured_output",
+        "Grok ACP does not implement structured output requests");
+    }
+    assertAcpMessageCompatibility(messages);
   }
 
   async chat(
@@ -280,6 +293,7 @@ export class GrokAcpProvider implements LLMProvider {
   ): Promise<LLMResponse> {
     const model = options?.model?.trim() || this.config.model;
     try {
+      this.validateRequest(messages, options ?? {});
       // Validate and reject unsupported authority-preserving invocations before
       // starting an ACP subprocess or session. Flattening three user-role
       // channels into one prompt would erase the authenticated authority split.
