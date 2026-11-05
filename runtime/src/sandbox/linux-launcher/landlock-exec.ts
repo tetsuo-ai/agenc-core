@@ -114,6 +114,22 @@ function existingWritableAncestor(root: string, subpath: string): string | null 
   return null;
 }
 
+/**
+ * A watched target spelled under its writable root's physical path. The
+ * created-path monitor walks to a target without following any link, so a
+ * workspace reached through a link is resolved here, once, before the
+ * command starts; a link below the root still fails the command.
+ */
+function physicalTarget(root: string, target: string): string {
+  let physicalRoot: string;
+  try {
+    physicalRoot = fs.realpathSync.native(root);
+  } catch {
+    return path.resolve(target);
+  }
+  return path.join(physicalRoot, path.relative(path.resolve(root), path.resolve(target)));
+}
+
 function underNeverGranted(target: string): boolean {
   return [...NEVER_GRANTED_ROOTS].some(
     (root) => target === root || target.startsWith(`${root}/`),
@@ -215,7 +231,7 @@ export function planLandlockConfinement(input: LandlockPlanInput): LandlockPlan 
             `writable directory, which an allow-list cannot express: ${writableAncestor}`,
         };
       }
-      protectedCreateTargets.push(subpath);
+      protectedCreateTargets.push(physicalTarget(root.root, subpath));
     }
     for (const name of root.protectedMetadataNames ?? []) {
       const target = path.join(root.root, name);
@@ -227,7 +243,7 @@ export function planLandlockConfinement(input: LandlockPlanInput): LandlockPlan 
             `an allow-list cannot express: ${target}`,
         };
       }
-      protectedCreateTargets.push(target);
+      protectedCreateTargets.push(physicalTarget(root.root, target));
     }
   }
 

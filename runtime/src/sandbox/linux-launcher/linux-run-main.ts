@@ -345,23 +345,23 @@ async function runUnderLandlockFallback(input: {
       }),
       ...input.options.command,
     ];
-    const child = spawn(launcherPath, args, {
-      cwd: input.hostCommandCwd,
-      env: input.env,
-      stdio: input.options.browserCdpOverStdio
-        ? ["ignore", "ignore", "inherit", 0, 1]
-        : program === null
-          ? "inherit"
-          : ["inherit", "inherit", "inherit", program.fd],
-    });
     // Same post-hoc guarantee as the bubblewrap path: creating a protected
     // metadata target during the run fails the run even when the command
-    // itself exits 0.
+    // itself exits 0. Watch from before the command starts.
     const protectedMonitor = startProtectedCreateMonitor([
       ...plan.protectedCreateTargets,
     ]);
     let protectedCreateViolation = false;
     try {
+      const child = spawn(launcherPath, args, {
+        cwd: input.hostCommandCwd,
+        env: input.env,
+        stdio: input.options.browserCdpOverStdio
+          ? ["ignore", "ignore", "inherit", 0, 1]
+          : program === null
+            ? "inherit"
+            : ["inherit", "inherit", "inherit", program.fd],
+      });
       const exitCode = await waitForChildWithSignalRelay(child);
       protectedCreateViolation = protectedMonitor.stop();
       return protectedCreateExitCode(exitCode, protectedCreateViolation);
