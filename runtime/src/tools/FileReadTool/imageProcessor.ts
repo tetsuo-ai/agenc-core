@@ -18,6 +18,10 @@ export type SharpInstance = {
   webp(options?: { quality?: number }): SharpInstance
   /** Uncompressed pixel output; sharp decodes every pixel to produce it. */
   raw?(): SharpInstance
+  /** Pixel statistics; `isOpaque` is false when any alpha value is below the maximum. */
+  stats?(): Promise<{ isOpaque: boolean }>
+  /** Drops the alpha channel. */
+  removeAlpha?(): SharpInstance
   toBuffer(): Promise<Buffer>
 }
 

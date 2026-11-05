@@ -135,3 +135,45 @@ it("preserves display orientation when normalizing an in-limit photo", async () 
   expect(encoded).toBeTruthy();
   expect((await sharp(Buffer.from(encoded!, "base64")).metadata()).orientation).toBe(6);
 });
+
+/** A 960x600 gradient with fine noise and the given alpha per pixel. */
+async function rgbaPng(alpha: (x: number) => number): Promise<Buffer> {
+  const sharp = (await import("sharp")).default;
+  const width = 960;
+  const height = 600;
+  const pixels = Buffer.alloc(width * height * 4);
+  let seed = 17;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const offset = (y * width + x) * 4;
+      for (let channel = 0; channel < 3; channel++) {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        pixels[offset + channel] = (x / 8 + channel * 40 + (seed >>> 28)) & 255;
+      }
+      pixels[offset + 3] = alpha(x);
+    }
+  }
+  return sharp(pixels, { raw: { width, height, channels: 4 } }).png().toBuffer();
+}
+
+async function readEmittedImage(file: string): Promise<{ mediaType: string; bytes: Buffer }> {
+  const result = await createFileReadTool({ allowedPaths: [root] }).execute({ file_path: file });
+  const url = (result as { contentItems?: Array<{ type: string; image_url?: string }> }).contentItems
+    ?.find((item) => item.type === "input_image")?.image_url;
+  expect(url).toBeTruthy();
+  return { mediaType: url!.slice("data:".length, url!.indexOf(";")), bytes: Buffer.from(url!.slice(url!.indexOf(",") + 1), "base64") };
+}
+
+it("normalizes an opaque image that carries an alpha channel, as native macOS screenshots do", async () => {
+  const sharp = (await import("sharp")).default;
+  const original = await rgbaPng(() => 255);
+  expect(original.length).toBeGreaterThan(64 * 1024);
+  expect((await sharp(original).metadata()).hasAlpha).toBe(true);
+  const file = join(root, "macos-screenshot.png");
+  await writeFile(file, original);
+  const emitted = await readEmittedImage(file);
+  expect(emitted.mediaType).toBe("image/jpeg");
+  expect(emitted.bytes.length).toBeLessThan(original.length / 4);
+  const metadata = await sharp(emitted.bytes).metadata();
+  expect([metadata.width, metadata.height, metadata.hasAlpha]).toEqual([960, 600, false]);
+});
