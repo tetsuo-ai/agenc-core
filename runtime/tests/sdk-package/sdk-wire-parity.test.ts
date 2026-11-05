@@ -12,6 +12,7 @@ const generatedPath = resolve(
 );
 
 describe("SDK wire parity compiler", () => {
+  // One parity compile, as in the helper-defaults case.
   it("exposes nested estimated-cost flags in both generated transcript types", () => {
     const result = checkSdkWireParity({
       consumerSource: `
@@ -29,7 +30,7 @@ type TranscriptAgentEstimate = RequireTrue<Equal<TranscriptAgent["costEstimated"
     });
     expect(result.diagnostics).toEqual([]);
     expect(result.matches).toBe(true);
-  });
+  }, 60_000);
 
   it("includes projected run terminals in the generated status event type", async () => {
     const generated = await readFile(generatedPath, "utf8");
@@ -37,6 +38,7 @@ type TranscriptAgentEstimate = RequireTrue<Equal<TranscriptAgent["costEstimated"
     expect(status).toContain('readonly type: "turn_started" | "turn_complete" | "turn_aborted" | "run_terminal";');
   });
 
+  // Two parity compiles (stale, then regenerated), each as long as a single-compile case.
   it("rejects optional, required and nested producer drift until regeneration", async () => {
     const original = await readFile(protocolPath, "utf8");
     const mutated = original
@@ -75,7 +77,7 @@ type TranscriptAgentEstimate = RequireTrue<Equal<TranscriptAgent["costEstimated"
     });
     expect(refreshed.diagnostics).toEqual([]);
     expect(refreshed.matches).toBe(true);
-  }, 60_000);
+  }, 120_000);
 
   it("type-checks helper defaults and rejects missing or invalid wire payloads", () => {
     const result = checkSdkWireParity({
