@@ -172,3 +172,38 @@ test("a text-only model gets no unseen-image notice for an image it could never 
   expect(JSON.stringify(requests[1])).not.toContain("Compaction removed");
 });
 
+
+test("compaction after an eviction names only the image no request showed", async () => {
+  // Six 1022-byte screens fit a 6500-byte budget. The seventh request
+  // evicts the four oldest, which the model had already seen. A natural
+  // compaction at the next request must not call them unseen; it must name
+  // the eighth screen, which it removes before any request showed it.
+  vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "6500");
+  const screen = (index: number): LLMContentPart[] => [
+    { type: "text", text: `screen ${index}` },
+    { type: "image_url", image_url: { url: `data:image/png;base64,${String(index).padStart(4, "0")}${"B".repeat(996)}` } },
+  ];
+  const requests: LLMMessage[][] = [];
+  const provider = mkProvider({ content: "seen" }, { onChatStream: messages => requests.push(messages) });
+  const harness = createCompactionTransactionHarness([]);
+  const { session } = mkSession({ provider, modelInfo: { contextWindow: 1_048_576 } });
+  Object.assign(session.config, { taskTokenBudget: 0 });
+  const ctx = mkCtx({ modelProviderId: "deepseek", modelInfo: session.modelInfo });
+  attachCompactionSession(session, harness);
+  setAutoCompactImplForTests(async () => ({ wasCompacted: true, compactionResult: {
+    message: "Screens summarized.", replacementHistory: [{ role: "user", content: "Screens summarized." }],
+  } }));
+  try {
+    for (let index = 1; index <= 7; index++) await drain(runTurn(session, ctx, screen(index)));
+    expect(requests).toHaveLength(7);
+    expect(JSON.stringify(requests[6]).split(OMITTED_IMAGE_TEXT)).toHaveLength(5);
+    Object.assign(ctx.modelInfo, { autoCompactTokenLimit: 1_000 });
+    installPreparedCompactionPressure(provider, request => JSON.stringify(request.messages).includes("Natural pressure") ? 18_130 : 100);
+    await drain(runTurn(session, ctx, [{ type: "text", text: "Natural pressure. ".repeat(400) }, ...screen(8)]));
+    expect(requests).toHaveLength(8);
+    const afterCompact = JSON.stringify(requests[7]);
+    expect(afterCompact).not.toContain("screen 8");
+    expect(afterCompact).toContain("Compaction removed 1 new image before you could inspect it. Missing image sources: the newly attached image.");
+    expect(afterCompact.match(/Compaction removed/g)).toHaveLength(1);
+  } finally { session.mountRolloutStore(null); harness.close(); }
+});
