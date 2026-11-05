@@ -1046,12 +1046,15 @@ export class GrokProvider implements LLMProvider {
   }
 
   /**
-   * Refresh the OAuth bearer before the wire attempt when the stored grant
-   * is inside its expiry window. singleWireAttempt turns cannot rely on the
-   * in-band 401 retry (they are forbidden by the admission lease), so this
-   * is the only recovery point on that path. No-ops in bearer-key mode, and
-   * never throws: a failed pre-flight leaves the current bearer in place so
-   * the wire error reports itself instead of a local refresh crash.
+   * Bring the OAuth bearer up to date before the wire attempt: refresh it
+   * when the stored grant is inside its expiry window, and adopt the stored
+   * grant when it is no longer the bearer this instance holds (a /grok-login
+   * or a sibling process's rotation after this provider was built).
+   * singleWireAttempt turns cannot rely on the in-band 401/403 retry (they
+   * are forbidden by the admission lease), so this is the only recovery
+   * point on that path. No-ops in bearer-key mode, and never throws: a
+   * failed pre-flight leaves the current bearer in place so the wire error
+   * reports itself instead of a local refresh crash.
    */
   private oauthCallbacksInstalled = false;
   private async refreshOAuthBearerIfExpiring(): Promise<void> {
@@ -1062,10 +1065,17 @@ export class GrokProvider implements LLMProvider {
         await import("../../../utils/xaiOauthCredentials.js");
       const blob = readXaiOauthCredentials(this.config.credentialHome);
       if (blob === undefined || blob.quarantinedAt !== undefined) return;
-      if (!xaiOauthTokenIsExpiring(blob)) return;
+      // Observed 2026-11-04: a session opened on an expired sign-in kept
+      // sending that bearer after /grok-login stored a fresh grant, because
+      // the fresh grant was not expiring; every turn failed with HTTP 403
+      // until the session restarted. The refresh callback adopts a stored
+      // grant that differs from the bearer it is handed, with no token
+      // exchange.
+      const storedGrantReplaced = blob.accessToken !== this.config.apiKey;
+      if (!storedGrantReplaced && !xaiOauthTokenIsExpiring(blob)) return;
       await this.authRefreshCallbacks.refreshBearer({
         attempt: 0,
-        previousError: Object.assign(new Error("oauth_bearer_expiring"), {
+        previousError: Object.assign(new Error("oauth_bearer_preflight"), {
           status: 401 as const,
         }),
       });
