@@ -4,6 +4,7 @@ import type { LLMContentPart, LLMMessage } from "../../src/llm/types.js";
 import { runTurn } from "../../src/session/run-turn.js";
 import {
   CONTEXT_IMAGE_BUDGET_ENV,
+  EVICTED_IMAGE_TEXT,
   OMITTED_IMAGE_TEXT,
   OVERSIZED_IMAGE_TEXT,
 } from "../../src/session/query-image-budget.js";
@@ -171,7 +172,7 @@ describe("context image budget for providers that cache an unchanged prefix", ()
 
     const projected = seen[0]!.filter((message) => message.role === "user" && Array.isArray(message.content));
     const projectedParts = projected.map((message) => message.content as LLMContentPart[]);
-    expect(projectedParts[0]).toContainEqual({ type: "text", text: OMITTED_IMAGE_TEXT });
+    expect(projectedParts[0]).toContainEqual({ type: "text", text: EVICTED_IMAGE_TEXT });
     expect(projectedParts[0]?.some((part) => part.type === "image_url")).toBe(false);
     if (fits) {
       expect(projectedParts[1]).toEqual(current);
