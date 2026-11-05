@@ -1,5 +1,5 @@
 // Local pairing state only. No connector, relay, credential read or network import.
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { readDaemonRuntimeInfo, resolveAgenCDaemonRuntimeInfoPath } from "../app-server/daemon-runtime-info.js";
@@ -43,6 +43,42 @@ export function stopLegacyRemote(context: RemoteCliRuntimeContext): void {
   writeFileSync(join(remoteDir(context), "stopped"), randomUUID(), { mode: 0o600 });
   activeLegacyBridges.get(context.home.path)?.();
   rmSync(pairPath(context), { force: true });
+}
+
+export interface LegacyRemoteRevocation {
+  /** No pairing is left: every connector, old or new, stops without one. */
+  readonly revoked: boolean;
+  /** What failed on the way, in order: marker, in-process bridge, pairing. */
+  readonly errors: readonly unknown[];
+}
+
+/**
+ * Revoke a phone pairing for good. Each step is tried even when an earlier
+ * one fails: the stop marker, a bridge running in this process, and
+ * pair.json. Connectors stop when the marker changes or pair.json is gone,
+ * but only a removed pair.json keeps a later connector from reusing the
+ * pairing, so the revocation holds only when pair.json no longer exists.
+ */
+export function revokeLegacyRemote(context: RemoteCliRuntimeContext): LegacyRemoteRevocation {
+  const errors: unknown[] = [];
+  try {
+    mkdirSync(remoteDir(context), { recursive: true, mode: 0o700 });
+    writeFileSync(join(remoteDir(context), "stopped"), randomUUID(), { mode: 0o600 });
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    activeLegacyBridges.get(context.home.path)?.();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    rmSync(pairPath(context), { force: true });
+  } catch (error) {
+    errors.push(error);
+  }
+  // The same test the connectors make before they keep running.
+  return { revoked: !existsSync(pairPath(context)), errors };
 }
 export function cookiePath(context: RemoteCliRuntimeContext): string {
   return join(context.home.path, "daemon.cookie");

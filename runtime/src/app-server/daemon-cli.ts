@@ -275,7 +275,7 @@ import {
 
 import { startHeapWatchdog } from "../services/heapWatchdog/heapWatchdog.js";
 import { scheduleDaemonCompileCacheFlush } from "../bin/compile-cache.js";
-import { stopLegacyRemote } from "../bin/remote-state.js";
+import { pairPath, revokeLegacyRemote } from "../bin/remote-state.js";
 import {
   acquireAgenCDaemonLifecycleLock,
   type AgenCDaemonCliHost,
@@ -881,6 +881,13 @@ async function runAgenCDaemonForegroundLocked(
     const startupRestoreFailureCompleted = new Promise<unknown>((resolve) => {
       resolveStartupRestoreFailure = resolve;
     });
+    // A reload turned remote control off and a phone pairing it could not
+    // revoke is left. The daemon stops rather than keep serving a pairing
+    // the owner's configuration no longer allows.
+    let resolveRemoteRevocationFailure!: (error: Error) => void;
+    const remoteRevocationFailureCompleted = new Promise<Error>((resolve) => {
+      resolveRemoteRevocationFailure = resolve;
+    });
     let runner = options.runner;
     const approvalBroker: LiveApprovalBroker = new LiveApprovalBroker({
       canAnswerCrossProviderConsent: crossProviderConsentAvailability({
@@ -1327,6 +1334,7 @@ async function runAgenCDaemonForegroundLocked(
               io,
             );
           let adopted = false;
+          let revocationFailure: Error | undefined;
           try {
             await options.beforeDaemonReloadAdoption?.();
             // Preparation may bind a replacement MCP listener. Shutdown fences
@@ -1357,6 +1365,9 @@ async function runAgenCDaemonForegroundLocked(
               closeRemoteControlBridgeConnections?.();
             }
             activeConfig = next.config;
+            // In the same step as adopting the setting, before any later
+            // await can hand a request to a pairing it no longer allows.
+            revocationFailure = revokeLegacyRemotePairing();
             activeMcpServer = preparedMcpChange.adopt();
             adopted = true;
           } finally {
@@ -1364,10 +1375,15 @@ async function runAgenCDaemonForegroundLocked(
               await preparedMcpChange.reject();
             }
           }
+          if (revocationFailure !== undefined) {
+            io.stderr.write(`agenc: ${revocationFailure.message}; stopping the daemon\n`);
+            shuttingDown = true;
+            resolveRemoteRevocationFailure(revocationFailure);
+          }
           if (preparedMcpChange.closePreviousAfterAdoption) {
             await closeReplacedDaemonMcpServer(previousMcpServer, io);
           }
-          revokeLegacyRemotePairing();
+          if (revocationFailure !== undefined) throw revocationFailure;
           // Open sessions keep the config they started with, except the
           // cross-provider subagent settings: a provider the user turned off
           // must stop taking spawns now, not after a restart. A session that
@@ -1440,15 +1456,26 @@ async function runAgenCDaemonForegroundLocked(
     // only the daemon cookie, never the bridge flag the dispatcher gates on.
     // They stop when the stop marker changes or pair.json is gone, so revoke
     // the pairing whenever the owner has not turned remote control on.
-    const revokeLegacyRemotePairing = (): void => {
-      if (activeConfig.remote_control?.enabled === true) return;
-      try {
-        stopLegacyRemote(remoteContext);
-      } catch (error) {
-        io.stderr.write(`agenc: could not revoke the phone remote pairing: ${formatCleanupError(error)}\n`);
+    // Each revocation step is tried; a step that failed is reported. When
+    // the pairing is still there afterwards the revocation did not hold: the
+    // daemon does not start, and a reload stops it (fail closed).
+    const revokeLegacyRemotePairing = (): Error | undefined => {
+      if (activeConfig.remote_control?.enabled === true) return undefined;
+      const revocation = revokeLegacyRemote(remoteContext);
+      for (const error of revocation.errors) {
+        io.stderr.write(`agenc: phone remote revocation step failed: ${formatCleanupError(error)}\n`);
       }
+      if (revocation.revoked) return undefined;
+      return new Error(
+        "remote control is off but the phone remote pairing could not be revoked; " +
+          `remove ${pairPath(remoteContext)} or fix the permissions of its folder`,
+      );
     };
-    revokeLegacyRemotePairing();
+    const startupRevocationFailure = revokeLegacyRemotePairing();
+    if (startupRevocationFailure !== undefined) {
+      io.stderr.write(`agenc: ${startupRevocationFailure.message}; the daemon did not start\n`);
+      return 1;
+    }
     const assertRemoteControlSession = async (sessionId: string): Promise<void> => {
       const session = await sessionManager.getSession(sessionId);
       if (!session) throw new RemoteError("REMOTE_SESSION_UNAVAILABLE");
@@ -2035,6 +2062,10 @@ async function runAgenCDaemonForegroundLocked(
           kind: "startup_restore_failure" as const,
           error,
         })),
+        remoteRevocationFailureCompleted.then((error) => ({
+          kind: "remote_revocation_failure" as const,
+          error,
+        })),
         rpcShutdownCompleted.then(() => ({
           kind: "rpc_shutdown" as const,
         })),
@@ -2051,7 +2082,8 @@ async function runAgenCDaemonForegroundLocked(
         exitCode = termination.event.exitCode;
       } else if (
         termination.kind === "peer_credential_failure" ||
-        termination.kind === "startup_restore_failure"
+        termination.kind === "startup_restore_failure" ||
+        termination.kind === "remote_revocation_failure"
       ) {
         cleanupContext = { reason: "daemon_shutdown" };
         exitCode = 1;

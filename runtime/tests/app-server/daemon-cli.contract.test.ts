@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   fstatSync,
   mkdirSync,
@@ -4404,6 +4405,119 @@ token_cap = 123
       await expect(running).resolves.toBe(0);
     } finally {
       if (!stopped) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it("does not start while remote control is off and a phone pairing cannot be revoked", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    const remote = captureRemoteCliRuntimeContext({ AGENC_HOME: agencHome });
+    writePairFile(remote, {
+      pairingId: "legacy-pairing",
+      hostSecret: "legacy-secret",
+      machineName: "fixture",
+      relayUrl: "wss://relay.invalid",
+      backendUrl: "https://backend.invalid",
+      createdAt: "2026-11-01T00:00:00.000Z",
+    });
+    // In a read-only folder neither the stop marker nor pair.json can change.
+    chmodSync(join(agencHome, "remote"), 0o500);
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    let settled = false;
+    try {
+      const started = await waitForPid(pidPath, DAEMON_MILESTONE_BUDGET_MS, {
+        running,
+        stderrText: io.stderrText,
+      }).then(() => true, () => false);
+      expect(started, io.stderrText()).toBe(false);
+      await expect(running).resolves.toBe(1);
+      settled = true;
+      expect(io.stderrText()).toContain("the phone remote pairing could not be revoked");
+      expect(existsSync(pairPath(remote))).toBe(true);
+    } finally {
+      chmodSync(join(agencHome, "remote"), 0o700);
+      if (!settled) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it("stops when a reload turns remote control off and a phone pairing cannot be revoked", async () => {
+    const agencHome = await tempAgencHome();
+    await writeFile(
+      join(agencHome, "config.toml"),
+      "config_version = 2\n\n[remote_control]\nenabled = true\n",
+    );
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    const remote = captureRemoteCliRuntimeContext({ AGENC_HOME: agencHome });
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    let legacy: WebSocket | undefined;
+    let settled = false;
+    try {
+      await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
+      const webSocketUrl = await waitForDaemonWebSocketUrl(
+        io,
+        LOADED_DAEMON_MILESTONE_BUDGET_MS,
+        { running, stderrText: io.stderrText },
+      );
+      // A connector started before remote_control.enabled existed: the
+      // daemon cookie and no bridge flag, so the owner gate never applies.
+      const authCookie = (await readFile(cookiePath, "utf8")).trim();
+      legacy = new WebSocket(webSocketUrl);
+      await once(legacy, "open");
+      legacy.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: "legacy",
+        method: "initialize",
+        params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION }, authCookie, capabilities: {} },
+      }));
+      await expect(readWebSocketMessage(legacy)).resolves.toMatchObject({
+        id: "legacy",
+        result: { type: "initialized" },
+      });
+      writePairFile(remote, {
+        pairingId: "legacy-pairing",
+        hostSecret: "legacy-secret",
+        machineName: "fixture",
+        relayUrl: "wss://relay.invalid",
+        backendUrl: "https://backend.invalid",
+        createdAt: "2026-11-01T00:00:00.000Z",
+      });
+      chmodSync(join(agencHome, "remote"), 0o500);
+      await writeFile(join(agencHome, "config.toml"), "config_version = 2\n");
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.not.toBe(0);
+      await expect(running).resolves.toBe(1);
+      settled = true;
+      expect(io.stderrText()).toContain("the phone remote pairing could not be revoked");
+      await Promise.race([waitForWebSocketClose(legacy), delay(2_000)]);
+      expect(legacy.readyState).toBe(WebSocket.CLOSED);
+    } finally {
+      chmodSync(join(agencHome, "remote"), 0o700);
+      legacy?.terminate();
+      if (!settled) {
         signalProcess.emit("SIGTERM");
         await running.catch(() => {});
       }
