@@ -886,6 +886,33 @@ describe("model-facing tools", () => {
     expect(loaded?.function.description).toContain("inspect_csv_agent_job");
   });
 
+  it("finds spawn_agent first when a model searches for the Agent tool or a sub-agent", async () => {
+    // A Linux V5 session at 0.19.29 searched {"query":"Agent"}, got five other
+    // agent tools and gave up without spawning.
+    for (const lightMode of [false, true]) {
+      const registry = buildBootstrapToolRegistry({
+        workspaceRoot: process.cwd(),
+        agencHome: join(tmpdir(), "agenc-tools-test"),
+        mcpManager: fakeMcpManager() as never,
+        csvAgentJobsRepositories: UNUSED_CSV_AGENT_JOBS_REPOSITORIES,
+        getSession: () => null,
+        emitWarning: () => {},
+        toolRegistryOptions: { requireAdmission: false, lightMode },
+      });
+      expect(registry.toLLMTools().map((tool) => tool.function.name)).not.toContain("spawn_agent");
+      for (const query of ["Agent", "agent", "sub-agent", "subagent"]) {
+        const result = await registry.dispatch({
+          id: `search-${query}`,
+          name: "system.searchTools",
+          arguments: JSON.stringify({ query }),
+        });
+        const names = (JSON.parse(result.content) as { results: { name: string }[] }).results
+          .map((entry) => entry.name);
+        expect(names[0], `${lightMode ? "Light" : "standard"} ${query}: ${names.join(", ")}`).toBe("spawn_agent");
+      }
+    }
+  });
+
   it("exposes only max_concurrency for CSV worker limits", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
