@@ -968,6 +968,13 @@ describe("reproducible install and release contract", () => {
         runnerArch: "ARM64",
         imageProfiles: [
           {
+            imageVersion: "20261104.0514.1",
+            xcodeVersion: "16.4",
+            xcodeBuild: "16F6",
+            macosSdkVersion: "15.5",
+            clangVersion: "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+          },
+          {
             imageVersion: "20261028.0489.1",
             xcodeVersion: "16.4",
             xcodeBuild: "16F6",
@@ -1011,6 +1018,17 @@ describe("reproducible install and release contract", () => {
         imageOS: "win25-vs2026",
         runnerArch: "X64",
         imageProfiles: [
+          {
+            imageVersion: "20261103.298.1",
+            visualStudioVersion: "18.11.12328.437",
+            msvcToolsVersion: "14.51.36231",
+            msvcCompilerVersion: "19.51.36260",
+            msvcCompilerSha256:
+              "b0a1818ebae6da7f18230a84e76ce839212584ac4c2ab55b97a0d5268085da57",
+            msvcLinkerSha256:
+              "a8c42e25c91ca2453e1110540ac08f0fc12d7539454a11b9af8baeecb469837d",
+            windowsSdkVersion: "10.0.26100.0",
+          },
           {
             imageVersion: "20261030.294.1",
             visualStudioVersion: "18.11.12328.437",
