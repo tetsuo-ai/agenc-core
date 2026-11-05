@@ -75,6 +75,9 @@ async function makeLargePng(): Promise<Buffer> {
   }).png({ compressionLevel: 0 }).toBuffer();
 }
 
+// Opaque images are normalized to JPEG at ingestion, which shrinks noise far
+// below the inline budget. Transparency keeps this fixture a PNG of its
+// original size, so the budget below still has to drop images.
 async function makeMediumPng(): Promise<Buffer> {
   const sharpModule = await import("sharp");
   const sharp = (typeof sharpModule.default === "function"
@@ -82,8 +85,8 @@ async function makeMediumPng(): Promise<Buffer> {
     : sharpModule) as (typeof sharpModule)["default"];
   const width = 600;
   const height = 600;
-  return sharp(randomBytes(width * height * 3), {
-    raw: { width, height, channels: 3 },
+  return sharp(randomBytes(width * height * 4), {
+    raw: { width, height, channels: 4 },
   }).png({ compressionLevel: 0 }).toBuffer();
 }
 
@@ -266,6 +269,8 @@ describe("canonical MCP tool output normalization", () => {
     expect(images).toHaveLength(2);
     expect(images.reduce((sum, item) => sum + Buffer.byteLength(item.image_url, "utf8"), 0))
       .toBeLessThanOrEqual(4 * 1024 * 1024);
+    // The kept images are the unchanged PNG fixture, not a smaller re-encoding.
+    expect(images.map((item) => item.image_url)).toEqual([`data:image/png;base64,${data}`, `data:image/png;base64,${data}`]);
   });
 
   test("rejects a malformed declared image MIME type", async () => {
