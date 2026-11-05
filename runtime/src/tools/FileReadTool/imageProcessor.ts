@@ -3,13 +3,13 @@ import type { Buffer } from 'buffer'
 import { isInBundledMode } from '../../utils/bundledMode.js'
 
 export type SharpInstance = {
-  metadata(): Promise<{ width: number; height: number; pages?: number; format: string }>
+  metadata(): Promise<{ width: number; height: number; pages?: number; hasAlpha?: boolean; orientation?: number; format: string }>
   resize(
     width: number,
     height: number,
     options?: { fit?: string; withoutEnlargement?: boolean },
   ): SharpInstance
-  jpeg(options?: { quality?: number }): SharpInstance
+  jpeg(options?: { quality?: number; chromaSubsampling?: string }): SharpInstance
   png(options?: {
     compressionLevel?: number
     palette?: boolean
@@ -18,6 +18,10 @@ export type SharpInstance = {
   webp(options?: { quality?: number }): SharpInstance
   /** Uncompressed pixel output; sharp decodes every pixel to produce it. */
   raw?(): SharpInstance
+  /** Pixel statistics; `isOpaque` is false when any alpha value is below the maximum. */
+  stats?(): Promise<{ isOpaque: boolean }>
+  /** Drops the alpha channel. */
+  removeAlpha?(): SharpInstance
   toBuffer(): Promise<Buffer>
 }
 

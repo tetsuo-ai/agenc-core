@@ -1269,7 +1269,7 @@ function prepareAccountingRequest(
     const normalizedMessages = prepareMessagesForWire(
       snapshot.messages,
       snapshot.options,
-      (snapshot.options.tools?.length ?? 0) > 0 && snapshot.options.disableThinkingForRecovery !== true
+      (snapshot.options.tools?.length ?? 0) > 0
         ? { preserveReasoningOnlyFor: deepSeekReasoningOnlyReplayProvenance(snapshot.provider, snapshot.model) }
         : undefined,
     );

@@ -46,7 +46,7 @@ afterEach(async () => {
 });
 
 describe("C3b production memory recall wiring", () => {
-  it("runs full-corpus recall older than 200 through admission and a provider", async () => {
+  it.each(["grok", "deepseek"])("runs full-corpus recall older than 200 using %s", async (providerName) => {
     previousAgenCHome = process.env.AGENC_HOME;
     previousProjectRoot = getProjectRoot();
     temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3a-production-"));
@@ -167,7 +167,7 @@ describe("C3b production memory recall wiring", () => {
       },
     );
     const provider = {
-      name: "grok",
+      name: providerName,
       chat,
       getExecutionProfile: async () => ({
         usageReporting: "authoritative" as const,
@@ -178,7 +178,7 @@ describe("C3b production memory recall wiring", () => {
     const session = {
       conversationId: "session",
       modelInfo: {
-        slug: "grok-4.5",
+        slug: providerName === "deepseek" ? "deepseek-flash" : "grok-4.5",
         contextWindow: 131_072,
       },
       services: {
@@ -195,7 +195,7 @@ describe("C3b production memory recall wiring", () => {
     const attachments = await relevantMemoriesProducer(
       {
         sessionKey,
-        userInput: "uniquebrowserfailure",
+        userInput: "uniquebrowserfailure browser warning",
         loadedTools: [],
         messages: [],
         permissionContext: { mode: "default" } as never,
@@ -208,6 +208,16 @@ describe("C3b production memory recall wiring", () => {
       getAttachmentTrackingState(sessionKey),
     );
 
+    if (providerName === "deepseek") {
+      expect(acquire).not.toHaveBeenCalled();
+      expect(chat).not.toHaveBeenCalled();
+      expect(attachments).toHaveLength(1);
+      expect(attachments[0]).toMatchObject({
+        kind: "relevant_memories",
+        memories: expect.arrayContaining([expect.objectContaining({ path: memoryPath, selectionSource: "lexical" })]),
+      });
+      return;
+    }
     expect(acquire).toHaveBeenCalledTimes(1);
     expect(acquire.mock.calls[0]?.[0].stepId).toBe("memory-selector:0");
     expect(chat).toHaveBeenCalledTimes(1);

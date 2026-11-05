@@ -37,6 +37,7 @@ import {
   type TokenAccountingRequest,
 } from "../../token-accounting.js";
 import {
+  LLMCapabilityError,
   LLMInvalidResponseError,
   LLMProviderError,
   LLMStreamTruncatedError,
@@ -318,7 +319,7 @@ function parseToolArguments(toolCall: LLMToolCall): Record<string, unknown> {
   } catch {
     // Fall through to the provider-specific error below.
   }
-  throw new Error(
+  throw new LLMCapabilityError(BEDROCK_PROVIDER_ID, "request_features",
     `amazon-bedrock provider cannot replay malformed tool call arguments for ${toolCall.name}`,
   );
 }
@@ -365,7 +366,7 @@ function bedrockContentForMessage(message: LLMMessage): readonly BedrockContentB
     });
   }
   if (content.length === 0) {
-    throw new Error(
+    throw new LLMCapabilityError(BEDROCK_PROVIDER_ID, "request_features",
       `amazon-bedrock provider cannot serialize unsupported ${message.role} message content`,
     );
   }
@@ -425,7 +426,9 @@ function buildToolConfig(
     typeof toolChoice === "object" &&
     !tools.some((tool) => tool.function.name === toolChoice.name)
   ) {
-    throw new Error(
+    throw new LLMCapabilityError(
+      BEDROCK_PROVIDER_ID,
+      "request_features",
       `amazon-bedrock provider toolChoice references unavailable tool: ${toolChoice.name}`,
     );
   }
@@ -522,12 +525,20 @@ function claudeConverseContract(
   };
 }
 
+function assertBedrockStructuredOutput(options: LLMChatOptions | undefined): void {
+  if (options?.structuredOutput?.enabled !== false && options?.structuredOutput?.schema) {
+    throw new LLMCapabilityError(BEDROCK_PROVIDER_ID, "structured_output",
+      "The Amazon Bedrock adapter does not implement structured output requests");
+  }
+}
+
 function buildRequest(
   config: BedrockProviderConfig,
   model: string,
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
 ): BedrockRequest {
+  assertBedrockStructuredOutput(options);
   validateAgentInvocationMessageSequence(messages);
   const contract = claudeConverseContract(model, options, config.modelOverrides);
   const built = buildMessages(messages);
@@ -1141,6 +1152,13 @@ export class BedrockProvider implements LLMProvider {
       countTokens: (request: TokenAccountingRequest, signal: AbortSignal) =>
         this.countRequestTokens(request, signal),
     });
+  }
+
+  validateRequest(messages: readonly LLMMessage[], options: LLMChatOptions): void {
+    const model = firstNonEmpty(options.model, this.config.model) ?? "";
+    // The pure Converse projection owns replay and content checks as well as
+    // tool/schema validation. It does not count tokens or resolve credentials.
+    buildRequest(this.config, model, messages, options);
   }
 
   private async countRequestTokens(

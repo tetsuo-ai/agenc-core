@@ -6,6 +6,12 @@
  * first turn seeds tracking state without emitting (announcing the
  * always-empty initial set would be noise).
  *
+ * Additions come from the tools the request carries only because they were
+ * discovered. A tool is announced as removed only when the request no longer
+ * carries it at all: on native DeepSeek Light a provider or model switch,
+ * plan mode or the web search picker can present a discovered tool in the
+ * stable catalog, and it stays callable there.
+ *
  * Instead of reconstructing the prior announced set by scanning message
  * history for prior
  * `deferred_tools_delta` attachments, AgenC stores the prior set
@@ -67,16 +73,21 @@ export const deferredToolsDeltaProducer: AttachmentProducer = async (
     return [];
   }
 
+  const carried = new Set(opts.loadedTools.map((tool) => tool.function.name));
   const added = [...currentSet]
     .filter((name) => !prior.has(name))
     .sort((a, b) => a.localeCompare(b));
   const removed = [...prior]
-    .filter((name) => !currentSet.has(name))
+    .filter((name) => !carried.has(name))
     .sort((a, b) => a.localeCompare(b));
 
   if (added.length === 0 && removed.length === 0) return [];
 
-  trackingState.lastDeferredToolsSet = currentSet;
+  // An announced tool that the request still carries stays announced, so a
+  // later return to discovery-only presentation does not announce it again.
+  const next = new Set(currentSet);
+  for (const name of prior) if (carried.has(name)) next.add(name);
+  trackingState.lastDeferredToolsSet = next;
 
   return [
     {

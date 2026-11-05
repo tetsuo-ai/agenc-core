@@ -121,3 +121,66 @@ describe("context image budget in the turn loop", () => {
     expect(durableImages).toHaveLength(2);
   });
 });
+
+describe("context image budget for providers that cache an unchanged prefix", () => {
+  test("the budget is full, then the next screenshot reaches the model, with one rewrite per batch", async () => {
+    // Six 1022-byte screenshots fit a 6500-byte budget. The seventh still
+    // reaches the model: the oldest four leave in one batch, down to half the
+    // budget, and the eleventh starts the next batch.
+    vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "6500");
+    const seen: LLMMessage[][] = [];
+    const provider = mkProvider({ content: "seen" }, { onChatStream: (messages) => seen.push(messages) });
+    const { session, events } = mkSession({ provider, modelInfo: { contextWindow: 1_048_576 } });
+    Object.assign(session.config, { taskTokenBudget: 0 });
+    const ctx = mkCtx({ modelProviderId: "deepseek", modelInfo: session.modelInfo });
+    for (let turn = 0; turn < 12; turn += 1) {
+      await drain(runTurn(session, ctx, shot(`screen ${turn}`, 1000).content as LLMContentPart[]));
+    }
+
+    expect(seen).toHaveLength(12);
+    const imagesSent = seen.map((messages) => messages.flatMap((message) =>
+      Array.isArray(message.content) ? message.content.filter((part) => part.type === "image_url") : []).length);
+    expect(imagesSent).toEqual([1, 2, 3, 4, 5, 6, 3, 4, 5, 6, 3, 4]);
+    // The screenshot of each turn is the one the model sees last.
+    for (const [turn, messages] of seen.entries()) {
+      const current = messages.findLast((message) => JSON.stringify(message.content).includes(`screen ${turn}`));
+      expect((current?.content as LLMContentPart[]).some((part) => part.type === "image_url")).toBe(true);
+    }
+    const repeated = seen.slice(1).map((messages, index) =>
+      JSON.stringify(messages.slice(0, seen[index]!.length)) === JSON.stringify(seen[index]));
+    expect(repeated).toEqual([true, true, true, true, true, false, true, true, true, false, true]);
+    const warnings = events.filter((event) => event.msg.type === "warning"
+      && (event.msg.payload as { cause?: string }).cause === "context_images_omitted");
+    expect(warnings.length).toBeGreaterThan(0);
+    for (const warning of warnings) {
+      expect((warning.msg.payload as { message: string }).message).toContain("kept, the current turn's images first");
+    }
+  });
+
+  test.each([
+    { bytes: 4000, fits: true },
+    { bytes: 7000, fits: false },
+  ])("never substitutes an old screen for the current $bytes-byte attachment", async ({ bytes, fits }) => {
+    vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "6000");
+    const seen: LLMMessage[][] = [];
+    const provider = mkProvider({ content: "checked" }, { onChatStream: (messages) => seen.push(messages) });
+    const old = shot("old screen", 3000);
+    const current = shot("current screen", bytes).content as LLMContentPart[];
+    const { session, state } = mkSession({ provider, history: [old, { role: "assistant", content: "That is the old screen." }] });
+    await drain(runTurn(session, mkCtx({ modelProviderId: "deepseek" }), current));
+
+    const projected = seen[0]!.filter((message) => message.role === "user" && Array.isArray(message.content));
+    const projectedParts = projected.map((message) => message.content as LLMContentPart[]);
+    expect(projectedParts[0]).toContainEqual({ type: "text", text: OMITTED_IMAGE_TEXT });
+    expect(projectedParts[0]?.some((part) => part.type === "image_url")).toBe(false);
+    if (fits) {
+      expect(projectedParts[1]).toEqual(current);
+    } else {
+      expect(projectedParts[1]).toContainEqual({ type: "text", text: OVERSIZED_IMAGE_TEXT });
+      expect(projectedParts[1]?.some((part) => part.type === "image_url")).toBe(false);
+    }
+    const durableImages = state.history.flatMap((message) => Array.isArray(message.content)
+      ? message.content.filter((part) => part.type === "image_url") : []);
+    expect(durableImages).toHaveLength(2);
+  });
+});

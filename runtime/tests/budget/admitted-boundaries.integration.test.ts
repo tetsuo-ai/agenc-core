@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
+import { DeepSeekProvider } from "../../src/llm/providers/deepseek/index.js";
 import { runAdmittedToolCall } from "../../src/budget/admitted-tool-call.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import type { ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
@@ -304,6 +305,30 @@ describe("admitted execution boundaries with the durable kernel", () => {
       actualCostUsd: expect.any(Number),
     });
     expect(kernel.activeCount).toBe(0);
+  });
+
+  it("durably records a DeepSeek capability rejection without HTTP, dispatch or a reservation", async () => {
+    const client = admission();
+    const fetchImpl = vi.fn<typeof fetch>(async () => { throw new Error("unexpected HTTP"); });
+    const deepseek = new DeepSeekProvider({ apiKey: "test-only", model: "deepseek-flash", fetchImpl });
+    const messages = [{ role: "user" as const, content: "select memories" }];
+    await expect(runAdmittedModelCall({
+      session: sessionFor(client), provider: deepseek, messages,
+      options: { maxOutputTokens: 1024, tools: [], structuredOutput: { enabled: true,
+        schema: { type: "json_schema", name: "memory", strict: true, schema: { type: "object" } },
+      } }, stepId: "memory-selector:local", model: "deepseek-flash", providerName: "deepseek",
+      invoke: options => deepseek.chat(messages, options),
+    })).rejects.toThrow(/structured outputs/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const events = kernel.listJournal({ cwd, runId: client.scope.runId });
+    expect(events.map(event => event.event)).toEqual(["denied"]);
+    expect(events.at(-1)).toMatchObject({ reason: "local_provider_capability_rejection" });
+    expect(kernel.activeCount).toBe(0);
+    expect(kernel.queuedCount).toBe(0);
+    const db = openStateDatabases({ agencHome, cwd });
+    try {
+      expect(db.prepareState("SELECT COUNT(*) AS count FROM execution_admission_reservations").get()).toEqual({ count: 0 });
+    } finally { db.close(); }
   });
 
   it("holds a failed provider attempt and still admits a later turn", async () => {

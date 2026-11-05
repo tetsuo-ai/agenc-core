@@ -114,9 +114,12 @@ import {
 } from "../phases/continuation-nudge.js";
 import {
   CONTEXT_IMAGE_BUDGET_ENV,
-  boundContextImageBytes,
+  boundContextImagesForProvider,
+  rememberPreparedContextImages,
+  rememberSentContextImages,
   resolveContextImageBudgetBytes,
 } from "./query-image-budget.js";
+import { preservesQueryPrefix } from "./query-prefix-providers.js";
 import {
   imageRoute,
   pruneRejectedImages,
@@ -861,9 +864,12 @@ function projectSamplingImages(
   const imageBudgetBytes = resolveContextImageBudgetBytes(
     session.services.userShell?.childEnvironment ?? process.env,
   );
-  const boundedImages = boundContextImageBytes(
-    state.messagesForQuery,
+  const imageProvider = ctx.modelProviderId ?? session.services.provider.name;
+  const offeredImages = state.messagesForQuery;
+  const boundedImages = boundContextImagesForProvider(
+    offeredImages,
     imageBudgetBytes,
+    imageProvider,
   );
   if (boundedImages.omitted > 0) {
     state.messagesForQuery = boundedImages.messages;
@@ -880,7 +886,8 @@ function projectSamplingImages(
               `${boundedImages.omitted} inline image(s) left out of the request: ` +
               `${Math.round(boundedImages.totalBytes / 1024)} KB of images exceeded the ` +
               `${Math.round(imageBudgetBytes / 1024)} KB budget (${CONTEXT_IMAGE_BUDGET_ENV}); ` +
-              `${Math.round(boundedImages.retainedBytes / 1024)} KB of the newest kept`,
+              `${Math.round(boundedImages.retainedBytes / 1024)} KB ` +
+              (preservesQueryPrefix(imageProvider) ? "kept, the current turn's images first" : "of the newest kept"),
           },
         },
       });
@@ -890,10 +897,14 @@ function projectSamplingImages(
   // A tool-result image whose bytes are not a complete image is refused by
   // every provider, and because tool results are replayed, by every request
   // after it. After the budget, so only images still on the wire are decoded.
+  const boundedForQuery = state.messagesForQuery;
   const withheldUndecodable = withholdUndecodableToolImages(
     state.messagesForQuery,
   );
   state.messagesForQuery = withheldUndecodable.messages;
+  // Evidence for a later compaction notice: which images this request would
+  // show the model or name in a budget notice.
+  rememberPreparedContextImages(session, offeredImages, boundedForQuery, state.messagesForQuery);
   reportWithheldImages(session, state, {
     unsupported: withheldForModel.unsupported,
     rejected: withheldForModel.rejected,
@@ -1013,6 +1024,7 @@ async function prepareSamplingRequestBoundary(
     userInput,
     loadedTools: builtTools(session, ctx),
     discoveredToolNames:
+      session.services.registry.getLoadedDeferredToolNames?.() ??
       session.services.registry.getDiscoveredToolNames?.() ?? new Set(),
     messages: state.messagesForQuery,
     permissionContext,
@@ -1332,6 +1344,7 @@ async function runSamplingRequest(
     }
     if (admitted !== true) prepared = { ...prepared, request: admitted };
   }
+  rememberSentContextImages(session, prepared.request.input);
   const samplingContext = prepared.samplingContext;
   const previousSample = state.reasoningCapPolicy?.sample;
   const samplingModel = skillInvocationRequestModel(session, samplingContext) ??
@@ -1726,10 +1739,10 @@ async function preparedRequestContextPressure(
       ? { providerExecutionHandle: profile.providerExecutionHandle }
       : {}),
   }, window);
-  const providerNativeTools = providerNativeToolsForAccounting(
-    provider, providerName, model, factoryOptions.extra ?? {}, accountingOptions,
-  );
   const accountingProjection = projectProviderAccountingRequest(provider, request.input, accountingOptions);
+  const providerNativeTools = accountingProjection.providerNativeTools ?? providerNativeToolsForAccounting(
+    provider, providerName, model, factoryOptions.extra ?? {}, accountingProjection.options,
+  );
   const safetyBufferTokens = Math.max(0, Math.floor(profile?.contextSafetyBufferTokens ?? 0));
   const inputTokenLimit = Math.max(0, window - Math.min(maxOutputTokens, MIN_ADMISSIBLE_OUTPUT_TOKENS) -
     safetyBufferTokens);
@@ -2584,9 +2597,9 @@ async function assertSeedUserPromptFits(
   const imagePolicy = modelImagePolicy(session, ctx, state,
     session.services.configStore?.current() ?? ctx.config as AgenCConfig);
   const visible = withholdImagesForModel(seedMessages, imagePolicy, rejectedImagesFor(session, imagePolicy.route));
-  const bounded = boundContextImageBytes(visible.messages, resolveContextImageBudgetBytes(
+  const bounded = boundContextImagesForProvider(visible.messages, resolveContextImageBudgetBytes(
     session.services.userShell?.childEnvironment ?? process.env,
-  ));
+  ), ctx.modelProviderId ?? session.services.provider.name);
   state.messagesForQuery = withholdUndecodableToolImages(bounded.messages).messages;
   const request = buildSamplingRequestContract(state, session, ctx);
   const model = skillInvocationRequestModel(session, ctx) ??
@@ -2791,15 +2804,18 @@ async function* runTurnKernelInner(
       }
       return prepared.kind === "request" ? prepared : null;
     }, {
-      callProvider: (messages, options, samplingContext) => runAdmittedModelCall({
-        session, provider: session.services.provider, messages, options,
-        stepId: admittedModelStepId(ctx, state, "primary"),
-        sessionId: session.conversationId,
-        model: skillInvocationRequestModel(session, samplingContext) ??
-          session.config?.model ?? samplingContext.config.model,
-        providerName: session.services.provider.name, signal,
-        invoke: admittedOptions => session.services.provider.chatStream(messages, () => {}, admittedOptions),
-      }),
+      callProvider: (messages, options, samplingContext) => {
+        rememberSentContextImages(session, messages);
+        return runAdmittedModelCall({
+          session, provider: session.services.provider, messages, options,
+          stepId: admittedModelStepId(ctx, state, "primary"),
+          sessionId: session.conversationId,
+          model: skillInvocationRequestModel(session, samplingContext) ??
+            session.config?.model ?? samplingContext.config.model,
+          providerName: session.services.provider.name, signal,
+          invoke: admittedOptions => session.services.provider.chatStream(messages, () => {}, admittedOptions),
+        });
+      },
       requiresResponse: response => {
         return response.toolCalls.length === 0 || hasConfiguredToolHooks(session);
       },
@@ -3683,8 +3699,10 @@ async function* runTurnKernelInner(
           session.permissionModeRegistry.current().mode,
         ).messages;
         projectSamplingImages(state, ctx, session, session.services.configStore!.current());
+        const wrapupRequest = buildSamplingRequestContract(state, session, ctx);
+        rememberSentContextImages(session, wrapupRequest.input);
         const wrapped = await stepLimitWrapup({ session, ctx,
-          request: buildSamplingRequestContract(state, session, ctx), signal,
+          request: wrapupRequest, signal,
           fallback: stepTrail.fallback(lastContent) });
         const cancelled = await finishCancelledIfAborted();
         if (cancelled !== null) {

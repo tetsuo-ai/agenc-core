@@ -128,15 +128,21 @@ export const LIGHT_GLM_BATCHED_STEPS =
  * questions about AgenC are answered without tools; the undo paths arrive with a message that asks
  * about them (prompts/attachments/product-help.ts).
  */
-export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false, deepseekModel = false, deepseekWorkRules = false): string {
+export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false, deepseekModel = false, deepseekWorkRules = false, writesWithApplyPatch = false): string {
   // Interactive sessions without the task limits get the working rules above; the others and every DeepSeek model
   // keep the 0.19.26 prompt, interactive DeepSeek with one more sentence on probes (LIGHT_DEEPSEEK_PROBES).
   const interactiveRules = !nonInteractive && !statesTaskLimits && !deepseekModel;
+  const readAndSearch = writesWithApplyPatch
+    ? "Read the file before editing: FileRead, cat, sed -n or head. Search only for missing context."
+    : LIGHT_READ_AND_SEARCH;
   const reading = interactiveRules
     ? ` ${LIGHT_READ_FIRST} ${LIGHT_LOOKUPS}`
-    : ` ${LIGHT_READ_AND_SEARCH}` + (deepseekWorkRules && !nonInteractive ? ` ${LIGHT_DEEPSEEK_PROBES}` : "");
+    : ` ${readAndSearch}` + (deepseekWorkRules && !nonInteractive ? ` ${LIGHT_DEEPSEEK_PROBES}` : "");
   const editing = !editsWithApplyPatch
     ? ""
+    : writesWithApplyPatch
+      ? " Use Write for new files and full rewrites; apply_patch for partial changes, all hunks of one change together." +
+        (statesTaskLimits ? " Include known source, tests and requested documentation together." : "")
     : interactiveRules
       ? ` ${LIGHT_PATCH_SIZE}`
       : " Edit and create files with apply_patch; put all hunks of one change in one patch." +
@@ -144,8 +150,13 @@ export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = 
   const finishing = nonInteractive
     ? lightUnattendedFinish(glmBatchedSteps, !statesTaskLimits || limitedComputesFromData)
     : statesTaskLimits ? lightLimitedFinish(glmBatchedSteps, limitedComputesFromData) : lightFinish(glmBatchedSteps, interactiveRules);
+  // Name FileRead explicitly for native Flash's independent views; keep the
+  // read/search wording shorter to fit its existing prefix budget.
+  const batching = writesWithApplyPatch
+    ? "Read all needed files and screenshots in the same response, with multiple FileRead calls. Group independent checks likewise;"
+    : "Put independent tool calls in one response;";
   return [
-    "You are AgenC. Follow user scope; answer without tools when no workspace facts are needed, including greetings and questions about AgenC. Use workspace-relative paths and listed tools. Put independent tool calls in one response; omit default arguments." + reading + editing + " Do not weaken tests or requirements, conceal failures or claim unverified work. Leave files the user asks to preserve unchanged. If existing tests must be preserved, add new cases in separate files. Write secure code; protect secrets.",
+    "You are AgenC. Follow user scope; answer without tools when no workspace facts are needed, including greetings and questions about AgenC. Use workspace-relative paths and listed tools. " + batching + " omit default arguments." + reading + editing + " Do not weaken tests or requirements, conceal failures or claim unverified work. Leave files the user asks to preserve unchanged. If existing tests must be preserved, add new cases in separate files. Write secure code; protect secrets.",
     ...(glmBatchedSteps ? [LIGHT_GLM_BATCHED_STEPS] : []),
     ...(customStyle ? [] : [finishing]),
     ...(nonInteractive && customStyle ? [LIGHT_ACCEPTANCE_REVIEW] : []),

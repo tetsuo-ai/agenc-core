@@ -238,6 +238,29 @@ export function seekPreparedSequence(
   return null;
 }
 
+/**
+ * Start indices of the first `limit` exact occurrences of `pattern`, from the
+ * top of the file. Unordered patch planning needs exactly one.
+ */
+export function seekExactSequenceMatches(
+  corpus: PreparedSeekCorpus,
+  pattern: readonly string[],
+  limit: number,
+  control: SeekSequenceControl = {},
+): readonly number[] {
+  if (pattern.length === 0 || pattern.length > corpus.exact.length) return [];
+  const budget = control.budget ?? new ApplyPatchMatchWorkBudget();
+  const matches: number[] = [];
+  let start = 0;
+  while (matches.length < limit) {
+    const found = findKmp(corpus.exact, pattern, start, budget, control);
+    if (found === null) break;
+    matches.push(found);
+    start = found + 1;
+  }
+  return matches;
+}
+
 export function seekSequence(
   lines: readonly string[],
   pattern: readonly string[],

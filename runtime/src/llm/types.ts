@@ -1110,6 +1110,14 @@ export interface LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse>;
   healthCheck(): Promise<boolean>;
+  /** Validate local request capabilities without authentication or network I/O.
+   * Admission calls this with the pinned execution handle before counting or
+   * reserving work. Use the same feature gates as chat and chatStream.
+   */
+  validateRequest?(
+    messages: readonly LLMMessage[],
+    options: LLMChatOptions,
+  ): void | Promise<void>;
   /** Report and, when supported, pin the profile for these request options. */
   getExecutionProfile?(
     options?: LLMChatOptions,
@@ -1122,7 +1130,12 @@ export interface LLMProvider {
   projectRequestForAccounting?(
     messages: readonly LLMMessage[],
     options: LLMChatOptions,
-  ): { readonly messages: readonly LLMMessage[]; readonly options: LLMChatOptions };
+  ): {
+    readonly messages: readonly LLMMessage[];
+    readonly options: LLMChatOptions;
+    /** Actual attached native tools; an empty array means none are sent. */
+    readonly providerNativeTools?: readonly Readonly<Record<string, unknown>>[];
+  };
   /** Optional startup hook for providers with session/socket prewarm support. */
   prewarmStartup?(
     params: LLMProviderStartupPrewarmParams,

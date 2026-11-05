@@ -623,6 +623,15 @@ export function wrapProviderForAgentSummary(
 ): LLMProvider {
   const wrapped: LLMProvider = {
     name: provider.name,
+    ...(provider.tokenCountCapability !== undefined
+      ? { tokenCountCapability: provider.tokenCountCapability }
+      : {}),
+    ...(provider.validateRequest !== undefined
+      ? { validateRequest: (messages, options) => provider.validateRequest!(messages, options) }
+      : {}),
+    ...(provider.projectRequestForAccounting !== undefined
+      ? { projectRequestForAccounting: (messages, options) => provider.projectRequestForAccounting!(messages, options) }
+      : {}),
     chat: (messages, options) => provider.chat(messages, options),
     healthCheck: () => provider.healthCheck(),
     chatStream(messages, onChunk, options) {

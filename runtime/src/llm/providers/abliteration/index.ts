@@ -1,5 +1,5 @@
 import { endpointMetadataForTransport } from "../../endpoint-metadata-cache.js";
-import { LLMProviderError } from "../../errors.js";
+import { LLMCapabilityError } from "../../errors.js";
 import { ModelMetadataResolver } from "../../model-metadata.js";
 import { OpenAIProvider } from "../openai/adapter.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
@@ -49,16 +49,17 @@ export class AbliterationProvider extends OpenAIProvider {
   async #assertListed(model: string): Promise<void> {
     const listed = await this.#listed();
     if (listed !== undefined && !listed.includes(model)) {
-      throw new LLMProviderError(
+      throw new LLMCapabilityError(
         "abliteration",
+        "request_features",
         `${model} is not available to this abliteration.ai API key. Its model list marks it locked or not ready, or does not list it.`,
       );
     }
   }
 
-  /** Admission reserves before the request: read the list first, so it prices this model at its listed rate. */
+  /** Read and validate the list before admission, using this model's listed rate. */
   override async getExecutionProfile(options?: LLMChatOptions) {
-    await this.#listed();
+    await this.#assertListed(options?.model?.trim() || this.#model);
     return super.getExecutionProfile(options);
   }
 

@@ -633,10 +633,12 @@ export function buildChatCompletionsRequest(
         ]
       : []),
   ].filter((value): value is string => value !== undefined).join("\n");
+  // A recovery toggle changes the next generation, not the historical
+  // reasoning. Dropping and then restoring it rewrites the cached prefix.
   const preparedMessages = prepareMessagesForWire(
     input.messages,
     input.options,
-    input.tools.length > 0 && input.options?.disableThinkingForRecovery !== true &&
+    input.tools.length > 0 &&
       input.providerCapabilityHints?.replaysReasoningContent === true &&
       input.providerCapabilityHints.preservesReasoningOnlyMessages === true
       ? { preserveReasoningOnlyFor: input.providerCapabilityHints.reasoningContentProvenance }
@@ -1298,7 +1300,7 @@ export function parseChatCompletionsResponse(
   let metrics: LLMResponse["requestMetrics"];
   const requestMetrics = (): NonNullable<LLMResponse["requestMetrics"]> => metrics ??= withEndpointMarkers(
     withSerializedMetrics(collectRequestMetrics(prepareMessagesForWire(metricsRequest.messages, metricsRequest.options,
-      metricsRequest.tools.length > 0 && metricsRequest.options?.disableThinkingForRecovery !== true &&
+      metricsRequest.tools.length > 0 &&
         metricsRequest.providerCapabilityHints?.preservesReasoningOnlyMessages === true &&
         metricsRequest.providerCapabilityHints.replaysReasoningContent === true
         ? { preserveReasoningOnlyFor: metricsRequest.providerCapabilityHints.reasoningContentProvenance }

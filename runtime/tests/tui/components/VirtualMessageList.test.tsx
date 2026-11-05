@@ -444,7 +444,8 @@ describe('VirtualMessageList', () => {
     try {
       jumpRef.current?.setAnchor()
       jumpRef.current?.setSearchQuery('needle')
-      await sleep()
+      // The seek effect scans after the re-render that the jump schedules.
+      await vi.waitFor(() => expect(scanElement).toHaveBeenCalled(), { timeout: 5_000 })
 
       expect(scrollHandle.scrollTo).toHaveBeenCalledWith(7)
       expect(scanElement).toHaveBeenCalled()
@@ -459,12 +460,15 @@ describe('VirtualMessageList', () => {
       expect(onSearchMatchesChange).toHaveBeenLastCalledWith(4, 3)
 
       jumpRef.current?.nextMatch()
-      await sleep()
-      expect(setPositions).toHaveBeenLastCalledWith({
-        currentIdx: 0,
-        positions: [{ col: 1, row: 1 }],
-        rowOffset: 3,
-      })
+      await vi.waitFor(
+        () =>
+          expect(setPositions).toHaveBeenLastCalledWith({
+            currentIdx: 0,
+            positions: [{ col: 1, row: 1 }],
+            rowOffset: 3,
+          }),
+        { timeout: 5_000 },
+      )
 
       jumpRef.current?.disarmSearch()
       expect(setPositions).toHaveBeenLastCalledWith(null)
@@ -550,7 +554,10 @@ describe('VirtualMessageList', () => {
     })
 
     try {
-      await sleep()
+      await vi.waitFor(
+        () => expect(stickyPrompts.at(-1)).toMatchObject({ text: 'sticky prompt' }),
+        { timeout: 5_000 },
+      )
       const prompt = stickyPrompts.at(-1)
       expect(prompt).toMatchObject({ text: 'sticky prompt' })
 
@@ -560,10 +567,13 @@ describe('VirtualMessageList', () => {
 
       virtualScroll.elements.set(0, fakeElement(2))
       scrollHandle.emit()
-      await sleep()
-      expect(scrollHandle.scrollToElement).toHaveBeenCalledWith(
-        virtualScroll.elements.get(0),
-        1,
+      await vi.waitFor(
+        () =>
+          expect(scrollHandle.scrollToElement).toHaveBeenCalledWith(
+            virtualScroll.elements.get(0),
+            1,
+          ),
+        { timeout: 5_000 },
       )
     } finally {
       await rendered.dispose()

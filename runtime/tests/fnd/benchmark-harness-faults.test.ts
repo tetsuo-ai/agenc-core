@@ -90,6 +90,9 @@ const NPM_CLI_BOUNDARY_PROBE_TIMEOUT_MS = 15_000;
 // The Windows-native lane runs this fixture alongside process and ACL probes;
 // keep setup bounded while allowing for hosted process-startup contention.
 const FIXTURE_GIT_TIMEOUT_MS = process.platform === "win32" ? 15_000 : 5_000;
+// Each provenance case builds a Git fixture, runs a module probe process and verifies several captures:
+// 7 to 16 s alone in a 2-CPU container and more than twice that under the full suite's four workers.
+const PROVENANCE_CASE_TIMEOUT_MS = 60_000;
 const MODULE_TRACKER_PATH = join(
   RUNTIME_ROOT,
   "benchmarks/fnd/module-closure.mjs",
@@ -1637,7 +1640,7 @@ describe("FND benchmark harness fault contracts", () => {
     } finally {
       rmSync(fixture.repositoryRoot, { force: true, recursive: true });
     }
-  });
+  }, PROVENANCE_CASE_TIMEOUT_MS);
 
   test("rejects dirty, ordinary untracked, and ignored production dependencies", () => {
     const fixture = createProvenanceFixture();
@@ -1676,7 +1679,7 @@ describe("FND benchmark harness fault contracts", () => {
     } finally {
       rmSync(fixture.repositoryRoot, { force: true, recursive: true });
     }
-  });
+  }, PROVENANCE_CASE_TIMEOUT_MS);
 
   test("checks the loaded closure but ignores unrelated committed production changes", () => {
     const fixture = createProvenanceFixture();
@@ -1724,7 +1727,7 @@ describe("FND benchmark harness fault contracts", () => {
     } finally {
       rmSync(fixture.repositoryRoot, { force: true, recursive: true });
     }
-  });
+  }, PROVENANCE_CASE_TIMEOUT_MS);
 
   test("cannot hide production changes behind Git metadata overrides", () => {
     const fixture = createProvenanceFixture();
@@ -1807,7 +1810,7 @@ describe("FND benchmark harness fault contracts", () => {
         recursive: true,
       });
     }
-  });
+  }, PROVENANCE_CASE_TIMEOUT_MS);
 
   test("ties a checked source revision to a real ancestor and its blobs", () => {
     const fixture = createProvenanceFixture();
@@ -1870,7 +1873,7 @@ describe("FND benchmark harness fault contracts", () => {
     } finally {
       rmSync(fixture.repositoryRoot, { force: true, recursive: true });
     }
-  });
+  }, PROVENANCE_CASE_TIMEOUT_MS);
 
   test("refuses a dirty worktree and a topic-branch source revision", () => {
     const fixture = createProvenanceFixture();
@@ -1917,7 +1920,7 @@ describe("FND benchmark harness fault contracts", () => {
     } finally {
       rmSync(fixture.repositoryRoot, { force: true, recursive: true });
     }
-  });
+  }, PROVENANCE_CASE_TIMEOUT_MS);
 
   test("resolves the default branch from origin/main without local main", () => {
     const fixture = createProvenanceFixture();
@@ -2053,7 +2056,7 @@ describe("FND benchmark harness fault contracts", () => {
       rmSync(fixture.repositoryRoot, { force: true, recursive: true });
       rmSync(cloneParent, { force: true, recursive: true });
     }
-  });
+  }, PROVENANCE_CASE_TIMEOUT_MS);
 });
 
 function createCleanRunnerEnvironment(): NodeJS.ProcessEnv {

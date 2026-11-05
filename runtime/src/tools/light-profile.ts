@@ -28,20 +28,26 @@ export const LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES: ReadonlySet<string> = new Set
   "exec_command",
 ]);
 
+/** Native Flash can use the guarded whole-file writer without a discovery round. */
+export function lightUsesDeepSeekWrite(providerName: string | undefined, model?: string): boolean {
+  return providerName === "deepseek" && model?.trim().toLowerCase() === "deepseek-flash";
+}
+
 /**
  * Light sessions on a GPT-family model start with apply_patch instead of Edit
  * and Write: OpenAI's own API, or a gateway serving the same model by its id
  * (OpenRouter `openai/gpt-6-luna`, Venice `openai-gpt-6-luna`). Native DeepSeek
  * Flash also uses the multi-file editor so one change can update source, tests
  * and documentation together. Other DeepSeek models/routes retain batch Edit
- * until measured; Edit and Write remain discoverable on every route.
+ * until measured. Native Flash also exposes Write for new files and substantial
+ * rewrites; other apply_patch routes retain their measured initial tool list.
  */
 export function lightEditsWithApplyPatch(
   providerName: string | undefined,
   model?: string,
 ): boolean {
   return modelFamilyFor(providerName, model) === "openai" ||
-    (providerName === "deepseek" && model?.trim().toLowerCase() === "deepseek-flash");
+    lightUsesDeepSeekWrite(providerName, model);
 }
 
 /**

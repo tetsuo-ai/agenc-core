@@ -2244,6 +2244,18 @@ export class GrokProvider implements LLMProvider {
   }
 
 
+  validateRequest(messages: readonly LLMMessage[], options: LLMChatOptions): void {
+    if (options.structuredOutput?.enabled === false || !options.structuredOutput?.schema) {
+      // Tool conversion can reject ambiguous names even without a schema.
+      // Reuse selection so multi-agent omission and native routing stay exact.
+      this.resolveResponseTools(options.toolRouting?.allowedToolNames, options.toolChoice, options.tools);
+      return;
+    }
+    // This owns vision routing and the attached native/client tool selection.
+    // Do not consult or change the continuation chain during local preflight.
+    this.buildRequestPlan(messages, options, { disableIncremental: true });
+  }
+
   async getExecutionProfile() {
     return (
       await resolveContextWindowProfile({
@@ -2267,6 +2279,17 @@ export class GrokProvider implements LLMProvider {
           ? this.config.maxTokens
           : undefined,
     };
+  }
+
+  projectRequestForAccounting(messages: readonly LLMMessage[], options: LLMChatOptions) {
+    const plan = this.buildRequestPlan(messages, options, { disableIncremental: true });
+    const attachedTools = new Set(Array.isArray(plan.params.tools) ? plan.params.tools : []);
+    // The configured catalog and vision routing decide what is actually sent,
+    // even when a request overrides the model. Preserve that exact selection.
+    const providerNativeTools = this.providerNativeTools
+      .filter(({ payload }) => attachedTools.has(payload))
+      .map(({ name, toolType, payload }) => ({ name, toolType, payload }));
+    return { messages, options, providerNativeTools };
   }
 
   private buildRequestPlan(
@@ -2689,7 +2712,6 @@ export class GrokProvider implements LLMProvider {
     }
 
     if (allowedToolNames.length === 0) {
-      console.warn("[GrokProvider] Tool allowlist resolved to empty set: all tools suppressed for this call");
       return {
         tools: [],
         chars: 0,
@@ -2763,9 +2785,8 @@ export class GrokProvider implements LLMProvider {
       // executor can decide to abort, retry without tools, or surface a
       // clear error to the operator. The previous behavior shipped under
       // `fallback_full_catalog_no_matches` is removed.
-      console.warn(
-        `[GrokProvider] Tool allowlist resolved to ${requestedToolNames.length} names but zero matched the provider catalog: suppressing all tools for this call (requested: ${requestedToolNames.join(", ")})`,
-      );
+      // Keep projection pure, including pre-admission validation. The caller
+      // receives the structured resolution code without logging supplied names.
       return {
         tools: [],
         chars: 0,

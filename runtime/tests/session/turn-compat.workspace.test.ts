@@ -402,6 +402,33 @@ describe('turn compatibility catalog boundary', () => {
     await parent.shutdown()
   })
 
+  it('preserves local capability validation and accounting projection in stateless providers', async () => {
+    const cwd = tempRoot('compat-capability')
+    const validateRequest = vi.fn()
+    const projectRequestForAccounting = vi.fn((messages, options) => ({ messages, options }))
+    const provider = { ...testProvider('structural-test', async () => {}), validateRequest, projectRequestForAccounting }
+    const parent = mkRuntimeSession({ cwd, provider }).session
+    const turn = await createTurnCompatSession(parent, {
+      messages: [], systemPrompt: asSystemPrompt(['system']), userContext: {}, systemContext: {},
+      canUseTool: async () => ({ behavior: 'allow' }),
+      toolUseContext: foregroundToolContext(cwd, [], undefined), querySource: 'repl_main_thread',
+    })
+    try {
+      const childProvider = turn.session.services.provider
+      const messages = [{ role: 'user' as const, content: 'child' }]
+      const options = { tools: [], maxOutputTokens: 64 }
+      expect(childProvider.validateRequest).toBeTypeOf('function')
+      await childProvider.validateRequest!(messages, options)
+      expect(validateRequest).toHaveBeenCalledWith(messages, options)
+      expect(childProvider.projectRequestForAccounting?.(messages, options)).toEqual({ messages, options })
+      expect(projectRequestForAccounting).toHaveBeenCalledWith(messages, options)
+    } finally {
+      await turn.session.shutdown()
+      await turn.disposeOwnedProvider()
+      await parent.shutdown()
+    }
+  })
+
   it('inherits the live permission context instead of inventing bypass authority', async () => {
     const cwd = tempRoot('permission-inheritance')
     const parent = foregroundParent(cwd)

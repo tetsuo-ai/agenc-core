@@ -17,7 +17,7 @@ import {
 } from "../../llm/token-accounting.js";
 import {
   DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES,
-  boundContextImageBytes,
+  boundContextImagesForProvider,
   resolveContextImageBudgetBytes,
 } from "../../session/query-image-budget.js";
 import {
@@ -1765,9 +1765,10 @@ function createShrinkCounter(params: {
       model: params.model,
       ...(calibrationScope ? { calibrationScope } : {}),
       ...(endpointIdentity !== undefined ? { endpointIdentity } : {}),
-      messages: boundContextImageBytes(
+      messages: boundContextImagesForProvider(
         messages.map(toLlmMessage),
         params.imageBudgetBytes,
+        params.providerName,
       ).messages,
       options: baseOptions,
       contextWindowTokens: contextWindow,

@@ -172,7 +172,46 @@ interface CompressedImageResult {
  * Extracted from FileReadTool's readImage function
  * Resizes image buffer to meet size and dimension constraints
  */
+/** Normalize once at ingestion; historical requests reuse these exact bytes.
+ * Keep the inspection resolution and real transparency, and avoid repeatedly
+ * sending photographic PNG payloads when a high-quality JPEG is much smaller.
+ */
 export async function maybeResizeAndDownsampleImageBuffer(
+  imageBuffer: Buffer,
+  originalSize: number,
+  ext: string,
+): Promise<ResizeResult> {
+  const resized = await resizeAndValidateImageBuffer(imageBuffer, originalSize, ext)
+  if (resized.buffer.length <= 64 * 1024) return resized
+  const sharp = await getImageProcessor()
+  try {
+    const metadata = await sharp(resized.buffer).metadata()
+    // Preserve animation and EXIF display orientation. Small line-art PNGs
+    // already passed above; 4:4:4 avoids color fringing on small screenshot text.
+    if ((metadata.pages ?? 1) > 1 ||
+        (metadata.orientation !== undefined && metadata.orientation !== 1)) return resized
+    let image = sharp(resized.buffer)
+    if (metadata.hasAlpha !== false) {
+      // An alpha channel is not transparency: native macOS screenshots carry
+      // one with every pixel opaque. Keep an image lossless when any pixel's
+      // alpha is below the maximum, or when the decoder cannot tell.
+      if (typeof image.stats !== 'function' || typeof image.removeAlpha !== 'function') return resized
+      if ((await image.stats()).isOpaque !== true) return resized
+      image = sharp(resized.buffer)
+      if (typeof image.removeAlpha !== 'function') return resized
+      image = image.removeAlpha()
+    }
+    const jpeg = await image.jpeg({ quality: 85, chromaSubsampling: '4:4:4' }).toBuffer()
+    return jpeg.length < resized.buffer.length
+      ? { ...resized, buffer: jpeg, mediaType: 'jpeg' }
+      : resized
+  } catch {
+    // The original has already been fully decoded and bounded.
+    return resized
+  }
+}
+
+async function resizeAndValidateImageBuffer(
   imageBuffer: Buffer,
   originalSize: number,
   ext: string,

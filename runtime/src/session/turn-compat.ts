@@ -140,6 +140,12 @@ function createStatelessProviderSessionView(
     chatStream: (messages, onChunk, options) =>
       provider.chatStream(messages, onChunk, options),
     healthCheck: () => provider.healthCheck(),
+    ...(provider.validateRequest !== undefined
+      ? { validateRequest: (messages, options) => provider.validateRequest!(messages, options) }
+      : {}),
+    ...(provider.projectRequestForAccounting !== undefined
+      ? { projectRequestForAccounting: (messages, options) => provider.projectRequestForAccounting!(messages, options) }
+      : {}),
     ...(provider.getExecutionProfile !== undefined
       ? {
           getExecutionProfile: (options) =>

@@ -43,6 +43,7 @@ import { AdmissionDeniedError } from "./admission-client.js";
 import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
 import {
   isLLMPreGenerationRejection,
+  LLMCapabilityError,
   LLMContextWindowExceededError,
   LLMManagedAdmissionError,
 } from "../llm/errors.js";
@@ -127,7 +128,11 @@ export function projectProviderAccountingRequest(
   provider: LLMProvider,
   messages: readonly LLMMessage[],
   options: LLMChatOptions,
-): { readonly messages: readonly LLMMessage[]; readonly options: LLMChatOptions } {
+): {
+  readonly messages: readonly LLMMessage[];
+  readonly options: LLMChatOptions;
+  readonly providerNativeTools?: readonly Readonly<Record<string, unknown>>[];
+} {
   return provider.projectRequestForAccounting?.(messages, options) ?? { messages, options };
 }
 
@@ -317,7 +322,7 @@ function maximumTokenCostUsd(
   entry: Readonly<ModelCostEntry> | null,
   inputTokens: number,
   outputTokens: number,
-  options: LLMChatOptions,
+  serverTools: readonly string[],
 ): number | null {
   if (entry === null) return null;
   const worstInputRate = Math.max(
@@ -333,7 +338,6 @@ function maximumTokenCostUsd(
   const tokenCost =
     (inputTokens / 1_000) * worstInputRate +
     (outputTokens / 1_000) * worstOutputRate;
-  const serverTools = paidServerToolNames(options);
   if (
     serverTools.some((name) => name !== "web_search" && name !== "x_search")
   ) {
@@ -362,11 +366,11 @@ function usageCostUsd(
   model: string,
   provider: string,
   usage: LLMResponse["usage"],
-  options: LLMChatOptions,
+  serverTools: readonly string[],
 ): { costUsd: number; costEstimated?: boolean } | null {
   const entry = pricedEntry(model, provider);
   if (
-    paidServerToolNames(options).some(
+    serverTools.some(
       (name) => name !== "web_search" && name !== "x_search",
     )
   ) {
@@ -421,21 +425,21 @@ function usageCostUsd(
 }
 
 
-function hasUnboundedPaidServerTool(options: LLMChatOptions): boolean {
-  return paidServerToolNames(options).length > 0;
-}
-
-function paidServerToolNames(options: LLMChatOptions): readonly string[] {
+function paidServerToolNames(
+  options: LLMChatOptions,
+  nativeTools: readonly Readonly<Record<string, unknown>>[],
+  actualCatalogKnown = false,
+): readonly string[] {
   const paidNames = new Set([
-    "web_search",
-    "x_search",
-    "code_interpreter",
-    "file_search",
-    "mcp",
+    "web_search", "x_search", "code_interpreter", "file_search", "mcp",
   ]);
-  return (options.toolRouting?.allowedToolNames ?? []).filter((name) =>
-    paidNames.has(name),
-  );
+  // Native definitions include defaults selected without an allowlist and
+  // normalize named MCP servers to their billable tool type. Keep explicit
+  // routing guards for providers whose native catalogs are not projected here.
+  return [...new Set([
+    ...(actualCatalogKnown ? [] : options.toolRouting?.allowedToolNames ?? []),
+    ...nativeTools.map((tool) => tool.toolType),
+  ].filter((name): name is string => typeof name === "string" && paidNames.has(name)))];
 }
 
 function cancellationAfterDispatch(signal: AbortSignal): Error | undefined {
@@ -568,6 +572,38 @@ export async function runAdmittedModelCall(
     requestedProvider,
   );
 
+  const recordLocalRejection = async (error: unknown, localValidation = false): Promise<void> => {
+    if (!(error instanceof LLMCapabilityError) && !localValidation) return;
+    const capability = error instanceof LLMCapabilityError ? error.capability : "request_features";
+    // Never persist request text, arbitrary adapter messages or credentials in
+    // this diagnostic. The capability is a closed, local classification.
+    params.session.emit?.({
+      id: `${params.stepId}:capability`,
+      msg: { type: "warning", payload: {
+        cause: "local_provider_capability_rejection",
+        message: `Local provider capability rejection (${capability}); no model request was dispatched.`,
+      } },
+    });
+    if (client === undefined) return;
+    try {
+      const rejectedLease = await client.acquire({
+        stepId: params.stepId, kind: "model_turn",
+        ...(params.sessionId !== undefined ? { sessionId: params.sessionId } : {}),
+        ...(params.parentRunId !== undefined ? { parentRunId: params.parentRunId } : {}),
+        ...(params.parentScopeId !== undefined ? { parentScopeId: params.parentScopeId } : {}),
+        model: requestedModel, provider: requestedProvider,
+        maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0,
+        denialReason: "local_provider_capability_rejection",
+      }, params.signal);
+      // Embedders must honor denialReason. Remain fail-closed even if an old
+      // client incorrectly grants this explicitly rejected request.
+      try { client.void(rejectedLease.reservation.reservationId, "local_provider_capability_rejection"); }
+      finally { client.acknowledgeCompletion(rejectedLease.reservation.reservationId); }
+    } catch (denial) {
+      if (!(denial instanceof AdmissionDeniedError)) throw denial;
+    }
+  };
+
   const stagedFallbackEvent =
     params.fallback === undefined
       ? undefined
@@ -602,6 +638,7 @@ export async function runAdmittedModelCall(
         // recovery authority. Preserve the profile error as the primary cause.
       }
     }
+    await recordLocalRejection(error);
     throw error;
   }
   const routedProvider = profile?.provider?.trim();
@@ -694,14 +731,28 @@ export async function runAdmittedModelCall(
     },
     contextWindowTokens,
   );
-  const providerNativeTools = providerNativeToolsForAccounting(
+  let accountingProjection: ReturnType<typeof projectProviderAccountingRequest>;
+  try {
+    await params.provider.validateRequest?.(params.messages, accountingOptions);
+    accountingProjection = projectProviderAccountingRequest(params.provider, params.messages, accountingOptions);
+  } catch (error) {
+    // Validation and pure accounting projection prove no model dispatch,
+    // including a local builder's TypeError. Never infer this around invoke().
+    await recordLocalRejection(error, true);
+    throw error;
+  }
+  const providerNativeTools = accountingProjection.providerNativeTools ?? providerNativeToolsForAccounting(
     params.provider,
     effectiveProvider,
     effectiveModel,
     providerFactoryOptions.extra ?? {},
-    accountingOptions,
+    accountingProjection.options,
   );
-  const accountingProjection = projectProviderAccountingRequest(params.provider, params.messages, accountingOptions);
+  const paidServerTools = paidServerToolNames(
+    accountingProjection.options,
+    providerNativeTools,
+    accountingProjection.providerNativeTools !== undefined,
+  );
   const tokenCountCapability = params.provider.tokenCountCapability;
   const accountingRequest = createTokenAccountingRequest({
     provider: effectiveProvider,
@@ -717,9 +768,9 @@ export async function runAdmittedModelCall(
     configurationRevision: oneShotFastModeActive() && tokenCountCapability === undefined
       ? UNCACHED_CONFIGURATION_REVISION
       : createTokenAccountingConfigurationRevision({
-      systemPrompt: accountingOptions.systemPrompt ?? "",
-      tools: accountingOptions.tools ?? [],
-      temperature: accountingOptions.temperature ?? null,
+      systemPrompt: accountingProjection.options.systemPrompt ?? "",
+      tools: accountingProjection.options.tools ?? [],
+      temperature: accountingProjection.options.temperature ?? null,
       providerNativeTools,
       contextWindowTokens,
       maxOutputTokens,
@@ -785,25 +836,25 @@ export async function runAdmittedModelCall(
   // estimate. This only widens the reservation; the authoritative reported
   // usage is still what gets charged at reconciliation.
   const maxInputTokens =
-    hasUnboundedPaidServerTool(accountingOptions) &&
+    paidServerTools.length > 0 &&
     contextWindowTokens > countedInputTokens
       ? contextWindowTokens
       : countedInputTokens;
   const unboundedPaidServerTool =
-    hasHardCostCap && hasUnboundedPaidServerTool(accountingOptions);
+    hasHardCostCap && paidServerTools.length > 0;
   const reservedRates = reservationRates(
     effectiveModel,
     pricingProvider,
     maxInputTokens,
     admittedMaxOutputTokens,
-    accountingOptions,
+    accountingProjection.options,
     providerFactoryOptions,
   );
   const maximumCost = maximumTokenCostUsd(
     reservedRates,
     maxInputTokens,
     admittedMaxOutputTokens,
-    accountingOptions,
+    paidServerTools,
   );
   const denialReason =
     accountingFailureReason ??
@@ -1009,7 +1060,7 @@ export async function runAdmittedModelCall(
       // A managed call is billed in AgenC credits, never at what the upstream
       // provider charged the gateway.
       requestedProvider === "agenc" ? withoutProviderCharge(usage) : usage,
-      params.options,
+      paidServerTools,
     );
     if (actualPrice === null) {
       if (hasHardCostCap) {

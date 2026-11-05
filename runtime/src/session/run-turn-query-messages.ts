@@ -36,6 +36,7 @@ import {
   type AgenCToolUseContext,
 } from "./agenc-tool-use-context.js";
 import { cloneLLMMessage, finitePositive } from "./run-turn-messages.js";
+import { freezesToolResultsUntilCompaction } from "./query-prefix-providers.js";
 
 const PREPARED_TERMINAL = Symbol("agenc_prepared_terminal");
 
@@ -69,6 +70,7 @@ async function prepareAgenCTurnContext(
       toolUseContext,
       querySource,
       contentReplacementState: state.contentReplacementState,
+      preservePrefix: freezesToolResultsUntilCompaction(ctx.modelProviderId ?? session.services.provider.name),
     });
     state.messagesForQuery = prepared.messages;
     state.snipTokensFreed = prepared.snipTokensFreed;
@@ -105,12 +107,24 @@ async function prepareAgenCQueryMessages(params: {
   readonly toolUseContext: { readonly options: Pick<AgenCToolUseContext["options"], "contextWindowTokens"> };
   readonly querySource: string;
   readonly contentReplacementState?: ContentReplacementState;
+  readonly preservePrefix?: boolean;
 }): Promise<{
   readonly messages: LLMMessage[];
   readonly snipTokensFreed: number;
   readonly committed: boolean;
 }> {
   try {
+    if (params.preservePrefix) {
+      // Freeze each result's first-send budget decision. Context reduction
+      // belongs to the admitted durable compaction gate, which measures the
+      // complete prepared request including fresh tool output. Replacing an
+      // older result here invalidates the provider's whole cached suffix.
+      const budgeted = await applyToolResultBudget(params.messages, params.contentReplacementState, {
+        limitChars: resolveToolResultBudgetChars(params.toolUseContext.options.contextWindowTokens),
+        persist: persistOversizedToolResult,
+      });
+      return { messages: projectUncompactedLlmMessages(budgeted.messages), snipTokensFreed: 0, committed: false };
+    }
     if (oneShotFastModeActive() && hasOnlySmallTextToolResults(params.messages)) {
       // The aggregate budget must still freeze new IDs and reapply prior
       // replacements. It supports the flat message shape directly.

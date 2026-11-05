@@ -72,6 +72,7 @@ export type AdmittedMemorySelectorResult =
     }
   | {
       readonly kind: "unavailable" | "timeout" | "malformed";
+      readonly diagnostic?: "local_provider_capability_rejection";
     };
 
 export interface AdmittedMemorySelector {

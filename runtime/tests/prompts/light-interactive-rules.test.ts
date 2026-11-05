@@ -70,7 +70,7 @@ describe("interactive Light working rules", () => {
     ["deepseek", "deepseek-flash"],
     ["openrouter", "deepseek/deepseek-v4.1-flash-1017"],
     ["ollama-cloud", "deepseek-v4.1-flash:1017"],
-  ])("DeepSeek through %s (%s) keeps the 0.19.26 head, with the task limits on or off", async (provider, model) => {
+  ])("DeepSeek through %s (%s) keeps its finish rules, with the task limits on or off", async (provider, model) => {
     const limited = await head(provider, model);
     const unlimited = await head(provider, model, { env: { AGENC_LIGHT_TASK_LIMITS: "0" } });
     for (const prompt of [limited, unlimited]) {
@@ -78,12 +78,17 @@ describe("interactive Light working rules", () => {
       expect(prompt).not.toContain(LIGHT_PATCH_SIZE);
       expect(prompt).not.toContain("without rework");
       expect(prompt).not.toContain("with the simplest code");
-      expect(prompt).toContain("Read a known file before editing it: FileRead, or cat, sed -n or head of that file.");
+      expect(prompt).toContain(provider === "deepseek" && model === "deepseek-flash"
+        ? "Read the file before editing: FileRead, cat, sed -n or head."
+        : "Read a known file before editing it: FileRead, or cat, sed -n or head of that file.");
     }
     expect(limited).toContain(LIGHT_LIMITED_FINISH);
     expect(unlimited).toContain(LIGHT_DEEPSEEK_FINISH);
     expect(unlimited).toContain("Repeat for new edits, failures or unresolved concerns");
-    if (model === "deepseek-flash") expect(count(limited, ONE_PATCH) + count(limited, SAME_PATCH)).toBe(2);
+    if (model === "deepseek-flash") {
+      expect(limited).toContain("all hunks of one change together");
+      expect(limited).toContain("Include known source, tests and requested documentation together.");
+    }
   });
 
   test("a custom output style keeps the head rules and replaces only the finish paragraph", async () => {
@@ -100,8 +105,14 @@ describe("interactive Light working rules", () => {
     const prompt = await head(provider, model, { nonInteractive: true });
     expect(prompt).not.toContain(LIGHT_LOOKUPS);
     expect(prompt).not.toContain(LIGHT_PATCH_SIZE);
-    expect(count(prompt, ONE_PATCH)).toBe(1);
-    expect(count(prompt, SAME_PATCH)).toBe(limits ? 1 : 0);
+    if (provider === "deepseek") {
+      expect(prompt).toContain("Use Write for new files and full rewrites");
+      expect(prompt).toContain("all hunks of one change together");
+      expect(prompt).toContain("Include known source, tests and requested documentation together.");
+    } else {
+      expect(count(prompt, ONE_PATCH)).toBe(1);
+      expect(count(prompt, SAME_PATCH)).toBe(limits ? 1 : 0);
+    }
     expect(prompt).not.toContain("do not rework");
   });
 

@@ -147,7 +147,8 @@ async function sleep(ms = 25): Promise<void> {
 
 async function waitFor(assertion: () => void): Promise<void> {
   let lastError: unknown;
-  for (let i = 0; i < 20; i++) {
+  // About 5 s: under the full suite's load a scheduled render can take longer than half a second.
+  for (let i = 0; i < 200; i++) {
     try {
       assertion();
       return;
@@ -279,9 +280,12 @@ describe("useHistorySearch", () => {
       harness.keybinding.get("history:search")?.handler();
       await waitFor(() => expect(rendered.isSearching()).toBe(true));
       rendered.result().setHistoryQuery("hello");
-      await waitFor(() =>
-        expect(rendered.callbacks.onInputChange).toHaveBeenLastCalledWith("!echo hello"),
-      );
+      // The search reports the input before React commits the match that
+      // result() and the keybinding handlers read; wait for both.
+      await waitFor(() => {
+        expect(rendered.callbacks.onInputChange).toHaveBeenLastCalledWith("!echo hello");
+        expect(rendered.result().historyMatch).toMatchObject({ display: "!echo hello" });
+      });
 
       expect(rendered.result().historyFailedMatch).toBe(false);
       expect(rendered.result().historyMatch).toMatchObject({
@@ -294,9 +298,10 @@ describe("useHistorySearch", () => {
       expect(rendered.callbacks.onCursorChange).toHaveBeenLastCalledWith(5);
 
       harness.keybindings.get("historySearch:next")?.handler();
-      await waitFor(() =>
-        expect(rendered.callbacks.onInputChange).toHaveBeenLastCalledWith("say hello again"),
-      );
+      await waitFor(() => {
+        expect(rendered.callbacks.onInputChange).toHaveBeenLastCalledWith("say hello again");
+        expect(rendered.result().historyMatch).toMatchObject({ display: "say hello again" });
+      });
       expect(rendered.result().historyMatch).toMatchObject({
         display: "say hello again",
       });
@@ -421,9 +426,11 @@ describe("useHistorySearch", () => {
       harness.keybinding.get("history:search")?.handler();
       await waitFor(() => expect(rendered.isSearching()).toBe(true));
       rendered.result().setHistoryQuery("accepted");
-      await waitFor(() =>
-        expect(rendered.callbacks.onInputChange).toHaveBeenLastCalledWith("!run accepted"),
-      );
+      // Accept reads the committed match, which React renders after the input change.
+      await waitFor(() => {
+        expect(rendered.callbacks.onInputChange).toHaveBeenLastCalledWith("!run accepted");
+        expect(rendered.result().historyMatch).toMatchObject({ display: "!run accepted" });
+      });
 
       harness.keybindings.get("historySearch:accept")?.handler();
       await waitFor(() => expect(rendered.isSearching()).toBe(false));

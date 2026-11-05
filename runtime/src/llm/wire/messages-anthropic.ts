@@ -5,6 +5,7 @@
  */
 
 import { resolveReasoningEffort } from "../reasoning-effort.js";
+import { LLMCapabilityError } from "../errors.js";
 import { withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
 import {
   anthropicFastModeRequested,
@@ -444,7 +445,9 @@ export function buildAnthropicMessagesRequest(
         tool.function.name === ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
     )
   ) {
-    throw new Error(
+    throw new LLMCapabilityError(
+      "anthropic",
+      "structured_output_with_tools",
       `tool name ${ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME} is reserved for structured output`,
     );
   }

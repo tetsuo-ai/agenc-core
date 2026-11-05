@@ -31,7 +31,7 @@ import type { LLMTool, LLMToolCall } from "./llm/types.js";
 import { lightPresentation, standardPresentation, withHardTimeoutWording } from "./tools/light-presentation.js";
 import { execHardTimeoutEnabled } from "./tools/system/exec-timeout-mode.js";
 import { WEB_SEARCH_INITIAL_TOOLS } from "./tools/web-search-mode.js";
-import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch, lightUsesBatchEdit, lightUsesGlmTuning } from "./tools/light-profile.js";
+import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch, lightUsesBatchEdit, lightUsesDeepSeekWrite, lightUsesGlmTuning } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
   Tool,
@@ -183,6 +183,14 @@ export interface ToolRegistry {
     toolCall: CodeModeNestedToolDispatch,
   ): Promise<ToolDispatchResult>;
   getDiscoveredToolNames?(): ReadonlySet<string>;
+  /**
+   * Discovered tools that the request carries only because they were
+   * discovered; the deferred-tools notice announces these. A tool the request
+   * already carries without discovery (native DeepSeek Light's stable core
+   * catalog) stays out even after a search, exec yield or escalation loads it.
+   * Callers without it fall back to getDiscoveredToolNames.
+   */
+  getLoadedDeferredToolNames?(): ReadonlySet<string>;
   discoverToolNames?(toolNames: readonly string[]): void;
   /**
    * Catalog tools a request does not carry until system.searchTools (or the
@@ -1144,6 +1152,15 @@ export function buildToolRegistry(
     }
     return { provider, model };
   }
+  /**
+   * DeepSeek renders the tool catalog before conversation history. Expanding
+   * exec's schema or adding its process companions invalidated 230K-token
+   * prompts in a long session. Publish these small core schemas once; actual
+   * tool availability and execution still follow the configured policy.
+   */
+  function stableDeepSeekCoreCatalog(): boolean {
+    return options.lightMode === true && sessionModelIdentity().provider?.trim().toLowerCase() === "deepseek";
+  }
   function usesBatchEdit(): boolean {
     if (options.lightMode !== true) return false;
     const identity = sessionModelIdentity();
@@ -1403,7 +1420,7 @@ export function buildToolRegistry(
     return available;
   }
 
-  function visibleSpecs(router?: ToolRouter): readonly ConfiguredToolSpec[] {
+  function visibleSpecs(router?: ToolRouter, includeDiscovered = true): readonly ConfiguredToolSpec[] {
     const specs = (router?.getSpecs() ?? allSpecs()).filter((spec) => spec.unavailable !== true);
     // A restrictive policy may remove discovery itself. Keep its remaining
     // capabilities callable instead of stranding them behind an absent tool.
@@ -1411,11 +1428,14 @@ export function buildToolRegistry(
       return specs;
     }
     const lightIdentity = options.lightMode === true ? sessionModelIdentity() : { provider: undefined, model: undefined };
+    const stableCore = stableDeepSeekCoreCatalog();
     return specs.filter(
       (spec) =>
         manualWebTool(spec.tool.name) || (options.lightMode === true
           ? (lightEditsWithApplyPatch(lightIdentity.provider, lightIdentity.model)
             ? LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES : LIGHT_INITIAL_TOOL_NAMES).has(spec.tool.name) ||
+            (spec.tool.name === "Write" && lightUsesDeepSeekWrite(lightIdentity.provider, lightIdentity.model)) ||
+            (stableCore && (spec.tool.name === "write_stdin" || spec.tool.name === "kill_process")) ||
             (spec.tool.name === "StructuredOutput" && options.outputSchema !== undefined) ||
             // The plan-mode reminder ends planning with AskUserQuestion or
             // ExitPlanMode, so a session in plan mode sees both, as in standard.
@@ -1424,7 +1444,7 @@ export function buildToolRegistry(
             // tools in front of the model with no search step; Light mode is
             // the small-model profile that most needs that.
             (deferMcpTools === false && spec.tool.metadata?.source === "mcp" && !isDeferredSpec(spec))
-          : !isDeferredSpec(spec)) || discoveredToolNames.has(spec.tool.name),
+          : !isDeferredSpec(spec)) || (includeDiscovered && discoveredToolNames.has(spec.tool.name)),
     );
   }
 
@@ -1523,17 +1543,20 @@ export function buildToolRegistry(
   let presentationMemo: { router: ToolRouter; discovered: readonly string[];
     provider: string | undefined; planMode: boolean; webSearch: boolean; hardTimeout: boolean; tools: LLMTool[] } | undefined;
   function buildPresentedTools(router: ToolRouter): LLMTool[] {
+      const identity = sessionModelIdentity();
       const visible = standardDeferral ? loadOrderedSpecs(visibleSpecs(router)) : visibleSpecs(router);
       const searchVisible = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME);
-      const leanExec = searchVisible && !discoveredToolNames.has("exec_command");
+      const stableCore = stableDeepSeekCoreCatalog();
+      const leanExec = !stableCore && searchVisible && !discoveredToolNames.has("exec_command");
       const leanGrep = searchVisible && !discoveredToolNames.has("Grep");
-      const leanSearch = !discoveredToolNames.has(SYSTEM_SEARCH_TOOLS_NAME);
-      const leanRead = searchVisible && !discoveredToolNames.has("FileRead");
+      const leanSearch = !stableCore && !discoveredToolNames.has(SYSTEM_SEARCH_TOOLS_NAME);
+      const leanRead = !stableCore && searchVisible && !discoveredToolNames.has("FileRead");
       const presentBuiltin = (spec: ConfiguredToolSpec): LLMTool => {
         const tool = toolToLLMTool(spec.tool);
         if (spec.tool.metadata?.source !== "builtin") return tool;
         if (options.lightMode === true) {
           return lightPresentation(tool, { leanExec, leanSearch, leanRead, lightSession: true,
+            writeWithApplyPatch: lightUsesDeepSeekWrite(identity.provider, identity.model),
             glmServerChecks: describesServerChecks() });
         }
         // Standard sessions with the default deferral send compact wording for
@@ -1587,6 +1610,15 @@ export function buildToolRegistry(
     },
     getDiscoveredToolNames(): ReadonlySet<string> {
       return discoveredToolNames;
+    },
+    getLoadedDeferredToolNames(): ReadonlySet<string> {
+      // Elsewhere a discovered initial tool changes form (a lean schema expands),
+      // so its discovery is still announced. The stable DeepSeek catalog presents
+      // its tools in full from the first request; loading one adds nothing new.
+      // Discovery itself is kept, so a later provider switch still carries them.
+      if (!stableDeepSeekCoreCatalog()) return discoveredToolNames;
+      const presented = new Set(visibleSpecs(buildRouter(), false).map((spec) => spec.tool.name));
+      return new Set([...discoveredToolNames].filter((name) => !presented.has(name)));
     },
     getDeferredToolNames(): ReadonlySet<string> {
       return new Set(allSpecs()
