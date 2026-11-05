@@ -54,3 +54,32 @@ test("switching native Flash to a GPT gateway removes its initial Write exposure
   });
   expect(registry.toLLMTools().find(tool => tool.function.name === "Write")).toBeUndefined();
 });
+
+// 0.19.29 rnd review NIT 5: the head named Write and apply_patch whatever the tool policy said, so a session with
+// disabled_tools = ["Write"] was told to use Write, which costs a failed call.
+test.each([
+  { provider: "deepseek", model: "deepseek-flash", disabled: ["Write"],
+    editing: " Edit and create files with apply_patch; put all hunks of one change in one patch.", absent: ["Use Write"] },
+  { provider: "deepseek", model: "deepseek-flash", disabled: ["apply_patch"],
+    editing: " Use Write for new files and full rewrites.", absent: ["apply_patch"] },
+  { provider: "deepseek", model: "deepseek-flash", disabled: ["Write", "apply_patch"], editing: undefined, absent: ["Use Write", "apply_patch"] },
+  { provider: "openai", model: "gpt-6-luna", disabled: ["apply_patch"], editing: undefined, absent: ["apply_patch"] },
+])("the $model head names only the editors that disabled_tools $disabled leaves", async ({ provider, model, disabled, editing, absent }) => {
+  const { session } = registryFor(provider, model);
+  const registry = buildToolRegistry({
+    workspaceRoot: "/tmp", lightMode: true, getSession: () => session, toolsConfig: { disabled_tools: disabled },
+  });
+  const presented = registry.toLLMTools().map(tool => tool.function.name);
+  for (const name of disabled) expect(presented).not.toContain(name);
+  const head = async (enabledToolNames?: ReadonlySet<string>) => (await assembleSystemPromptSnapshot({
+    profile: "light", ctx: mkCtx(), session, provider, promptIdentity: { provider, model },
+    ...(enabledToolNames !== undefined ? { enabledToolNames } : {}),
+  })).staticPrefix;
+  const prefix = await head(new Set(registry.tools.map(tool => tool.name)));
+  const workflow = prefix.split("\n\n")[0]!;
+  for (const name of absent) expect(workflow).not.toContain(name);
+  if (editing !== undefined) expect(workflow).toContain(editing);
+  // With every editor enabled the head is byte for byte the head without a tool list.
+  const full = registryFor(provider, model).registry;
+  expect(await head(new Set(full.tools.map(tool => tool.name)))).toBe(await head());
+});
