@@ -115,6 +115,7 @@ import {
 import {
   CONTEXT_IMAGE_BUDGET_ENV,
   boundContextImagesForProvider,
+  rememberPreparedContextImages,
   rememberSentContextImages,
   resolveContextImageBudgetBytes,
 } from "./query-image-budget.js";
@@ -864,8 +865,9 @@ function projectSamplingImages(
     session.services.userShell?.childEnvironment ?? process.env,
   );
   const imageProvider = ctx.modelProviderId ?? session.services.provider.name;
+  const offeredImages = state.messagesForQuery;
   const boundedImages = boundContextImagesForProvider(
-    state.messagesForQuery,
+    offeredImages,
     imageBudgetBytes,
     imageProvider,
   );
@@ -895,10 +897,14 @@ function projectSamplingImages(
   // A tool-result image whose bytes are not a complete image is refused by
   // every provider, and because tool results are replayed, by every request
   // after it. After the budget, so only images still on the wire are decoded.
+  const boundedForQuery = state.messagesForQuery;
   const withheldUndecodable = withholdUndecodableToolImages(
     state.messagesForQuery,
   );
   state.messagesForQuery = withheldUndecodable.messages;
+  // Evidence for a later compaction notice: which images this request would
+  // show the model or name in a budget notice.
+  rememberPreparedContextImages(session, offeredImages, boundedForQuery, state.messagesForQuery);
   reportWithheldImages(session, state, {
     unsupported: withheldForModel.unsupported,
     rejected: withheldForModel.rejected,
@@ -2798,15 +2804,18 @@ async function* runTurnKernelInner(
       }
       return prepared.kind === "request" ? prepared : null;
     }, {
-      callProvider: (messages, options, samplingContext) => runAdmittedModelCall({
-        session, provider: session.services.provider, messages, options,
-        stepId: admittedModelStepId(ctx, state, "primary"),
-        sessionId: session.conversationId,
-        model: skillInvocationRequestModel(session, samplingContext) ??
-          session.config?.model ?? samplingContext.config.model,
-        providerName: session.services.provider.name, signal,
-        invoke: admittedOptions => session.services.provider.chatStream(messages, () => {}, admittedOptions),
-      }),
+      callProvider: (messages, options, samplingContext) => {
+        rememberSentContextImages(session, messages);
+        return runAdmittedModelCall({
+          session, provider: session.services.provider, messages, options,
+          stepId: admittedModelStepId(ctx, state, "primary"),
+          sessionId: session.conversationId,
+          model: skillInvocationRequestModel(session, samplingContext) ??
+            session.config?.model ?? samplingContext.config.model,
+          providerName: session.services.provider.name, signal,
+          invoke: admittedOptions => session.services.provider.chatStream(messages, () => {}, admittedOptions),
+        });
+      },
       requiresResponse: response => {
         return response.toolCalls.length === 0 || hasConfiguredToolHooks(session);
       },
@@ -3690,8 +3699,10 @@ async function* runTurnKernelInner(
           session.permissionModeRegistry.current().mode,
         ).messages;
         projectSamplingImages(state, ctx, session, session.services.configStore!.current());
+        const wrapupRequest = buildSamplingRequestContract(state, session, ctx);
+        rememberSentContextImages(session, wrapupRequest.input);
         const wrapped = await stepLimitWrapup({ session, ctx,
-          request: buildSamplingRequestContract(state, session, ctx), signal,
+          request: wrapupRequest, signal,
           fallback: stepTrail.fallback(lastContent) });
         const cancelled = await finishCancelledIfAborted();
         if (cancelled !== null) {

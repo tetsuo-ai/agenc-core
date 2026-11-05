@@ -33,38 +33,83 @@
 
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { preservesQueryPrefix } from "./query-prefix-providers.js";
-import { withheldImagePlaceholder } from "./query-image-withheld.js";
+import { withheldImageOf, withheldImagePlaceholder } from "./query-image-withheld.js";
 
-// Only the previous admitted image set is retained, bounded by the wire
-// budget. A session key avoids mixing concurrent conversations or turns.
-const sentImages = new WeakMap<object, ReadonlySet<string>>();
+// What this process knows about the images of each session's current
+// context epoch, keyed by the session object so concurrent conversations
+// never mix: every image the last dispatched request carried (shown or
+// replaced by a placeholder), and the images the last prepared projection
+// would show the model or withheld only for this budget. A resumed session
+// or a restarted daemon starts with neither, so it never claims that an
+// image an earlier process sent was left unseen.
+const dispatchedImages = new WeakMap<object, ReadonlySet<string>>();
+const preparedImages = new WeakMap<object, ReadonlySet<string>>();
 
 function contextImageUrls(messages: readonly LLMMessage[]): Set<string> {
   return new Set(messages.flatMap(message => Array.isArray(message.content)
     ? message.content.flatMap(part => part.type === "image_url" ? [part.image_url.url] : []) : []));
 }
 
+/** Every image a request carries, including the ones behind a placeholder. */
+function carriedImageUrls(messages: readonly LLMMessage[]): Set<string> {
+  return new Set(messages.flatMap(message => Array.isArray(message.content)
+    ? message.content.flatMap(part => {
+      const image = part.type === "image_url" ? part : withheldImageOf(part);
+      return image?.type === "image_url" ? [image.image_url.url] : [];
+    }) : []));
+}
+
+/** The request about to be dispatched: everything it carries counts as presented. */
 export function rememberSentContextImages(session: object, messages: readonly LLMMessage[]): void {
-  sentImages.set(session, contextImageUrls(messages));
+  dispatchedImages.set(session, carriedImageUrls(messages));
+}
+
+/**
+ * The image projection of a prepared request: `offered` went into the image
+ * budget (images the model may receive), `bounded` came out of it, and
+ * `projected` is the final result after the undecodable-image check.
+ */
+export function rememberPreparedContextImages(
+  session: object,
+  offered: readonly LLMMessage[],
+  bounded: readonly LLMMessage[],
+  projected: readonly LLMMessage[],
+): void {
+  const shownAfterBudget = contextImageUrls(bounded);
+  const shown = contextImageUrls(projected);
+  // Model policy and refusals already removed their images from `offered`;
+  // drop the undecodable ones too. What remains the model would be shown,
+  // or would read a budget notice for.
+  preparedImages.set(session, new Set([...contextImageUrls(offered)].filter(url =>
+    !shownAfterBudget.has(url) || shown.has(url))));
 }
 
 export function resetSentContextImages(session: object): void {
-  sentImages.delete(session);
+  dispatchedImages.delete(session);
+  preparedImages.delete(session);
 }
 
-/** A durable replacement can omit a new image before the model sees it. */
+/**
+ * Sources of the images a durable replacement removes before the model was
+ * shown them or their budget notice: images this process prepared after its
+ * last dispatched request and then compacted away. Without a dispatched
+ * request in this process there is no such evidence, so nothing is named.
+ */
 export function unseenImageSourcesRemovedByCompaction(
   session: object,
-  prepared: readonly LLMMessage[],
+  history: readonly LLMMessage[],
   replacement: readonly LLMMessage[],
 ): string[] {
+  const dispatched = dispatchedImages.get(session);
+  const prepared = preparedImages.get(session);
+  if (dispatched === undefined || prepared === undefined) return [];
   const retained = contextImageUrls(replacement);
-  const missing = new Set([...contextImageUrls(prepared)].filter(url =>
-    !sentImages.get(session)?.has(url) && !retained.has(url),
+  const missing = new Set([...contextImageUrls(history)].filter(url =>
+    prepared.has(url) && !dispatched.has(url) && !retained.has(url),
   ));
-  const calls = new Map(prepared.flatMap(message => message.toolCalls ?? []).map(call => [call.id, call]));
+  const calls = new Map(history.flatMap(message => message.toolCalls ?? []).map(call => [call.id, call]));
   const sources: string[] = [];
-  for (const message of prepared) {
+  for (const message of history) {
     if (!Array.isArray(message.content)) continue;
     for (const part of message.content) {
       if (part.type !== "image_url" || !missing.delete(part.image_url.url)) continue;
