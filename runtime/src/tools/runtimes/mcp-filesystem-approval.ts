@@ -6,6 +6,21 @@ export interface McpFilesystemApprovalScope {
   readonly toolIdentity: string;
 }
 
+/**
+ * The permission named on a request for this attestation. Its session grant
+ * is keyed on the tool alone, so it answers every later call of the tool,
+ * whatever its arguments. The approval journal's `request_permissions` event
+ * lists it next to `tool.use`, and the daemon's `event.permission_request`
+ * passes that list on, so every client can say what a session grant covers.
+ */
+export const MCP_NO_FS_WRITES_PERMISSION = "mcp_no_fs_writes";
+
+/** Whether a projected permission list asks for this attestation. */
+export function permissionsMcpNoFsWrites(permissions: unknown): boolean {
+  return Array.isArray(permissions) &&
+    permissions.includes(MCP_NO_FS_WRITES_PERMISSION);
+}
+
 export function mcpFilesystemApprovalReason(scope: McpFilesystemApprovalScope): string {
   // The TUI's compact note may truncate this reason. Put the authority the
   // human is granting first, before potentially long server/tool names.

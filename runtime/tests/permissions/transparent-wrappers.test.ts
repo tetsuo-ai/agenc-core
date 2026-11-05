@@ -64,3 +64,26 @@ it.each([
 it.each(["env", "genv"])("%s split-string obeys the rm floor without trailing argv", wrapper => {
   expect(matchedDangerousShellCommandLabel(`${wrapper} -S 'rm -rf /'`)).not.toBeNull();
 });
+
+it.each([
+  "env -S 'sh -c' 'rm -rf /'", "env -S 'bash -c' 'rm -rf ~'", "env -S 'sh -c' 'git push --force origin main'",
+  "env -S 'sh -c' -e 'rm -rf /'", "env -S 'sh -c' -u 'rm -rf /' sh", "env -iS 'sh -c' 'rm -rf /'",
+  "env --split-string='sh -c' 'rm -rf /'", "env -S 'rm\\_-rf\\_/'", "env -S 'sh -c \"rm\\_-rf\\_/\"'",
+  "genv -S 'sh -c' 'rm -rf /'",
+])("split-string runs the words env splits it into, then its trailing argv: %s", command => {
+  expect(matchedDangerousShellCommandLabel(command)).not.toBeNull();
+});
+
+it.each([
+  "env -S '${SHELL} -c' 'rm -rf /'", "env -S 'sh\\c' -c 'rm -rf /'", "env -S 'sh\\q -c' 'rm -rf /'",
+  "env -S 'sh\n-c' 'rm -rf /'",
+])("split-string fails closed on what the split does not model: %s", command => {
+  expect(matchedDangerousShellCommandLabel(command)).toBe("env split-string dangerous command");
+});
+
+it.each([
+  "env -S 'node --version'", "env -S 'sh -c' 'echo hi'", "env -S 'printf\\_%s\\_x'",
+  "env -S 'git push origin main'", "env -S \"printf '%s' '$HOME'\"",
+])("split-string keeps safe commands safe: %s", command => {
+  expect(matchedDangerousShellCommandLabel(command)).toBeNull();
+});

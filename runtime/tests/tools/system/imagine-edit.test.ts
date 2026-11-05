@@ -5,7 +5,7 @@
  * refused before any request.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,6 +16,9 @@ import {
   recordVeniceMediaModels,
 } from "../../../src/tools/system/venice-media-models.js";
 import { createProvider } from "../../../src/llm/provider.js";
+import { hasPermissionsToUseToolInner, type ToolEvaluatorContext } from "../../../src/permissions/evaluator.js";
+import { applyPermissionUpdate } from "../../../src/permissions/permission-updates.js";
+import { createEmptyToolPermissionContext } from "../../../src/permissions/types.js";
 import type { Session } from "../../../src/session/session.js";
 import { VENICE_MEDIA_LIST } from "./media-test-helpers.js";
 
@@ -87,6 +90,30 @@ describe("ImagineEdit: Venice edits and upscales a workspace image", () => {
     expect((await tool.execute({ image: "notes.txt", prompt: "x" })).content).toContain("PNG, JPEG or WebP");
     expect((await tool.execute({ image: "in.png", prompt: "x", model: "acme-unlisted-edit" })).content).toContain("firered-image-edit");
     expect((await tool.execute({ image: "in.png" })).content).toContain("prompt is required");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("asks the read permission rules about the image before anything is sent", async () => {
+    seed();
+    const root = await workspace();
+    await mkdir(join(root, "private"));
+    await writeFile(join(root, "private", "id-scan.png"), PNG);
+    await writeFile(join(root, "in.png"), PNG);
+    await symlink(join(root, "private", "id-scan.png"), join(root, "scan-link.png"));
+    const fetchImpl = vi.fn();
+    const tool = createImagineEditTool({ workspaceRoot: root, env: ENV, fetchImpl: fetchImpl as unknown as typeof fetch, getSession: veniceSession() });
+    let permission = createEmptyToolPermissionContext();
+    const context = { session: {}, getAppState: () => ({ toolPermissionContext: permission, denialTracking: { consecutiveDenials: 0, totalDenials: 0 }, autoModeActive: false }) } as ToolEvaluatorContext;
+    const decide = (args: Record<string, unknown>) => hasPermissionsToUseToolInner(tool, args, context);
+    // Without a rule the call still waits for approval: it spends money and sends the image to Venice.
+    expect(await decide({ image: "private/id-scan.png", prompt: "x" })).toMatchObject({ behavior: "ask" });
+    permission = applyPermissionUpdate(permission, {
+      type: "addRules", destination: "session", behavior: "deny", rules: [{ toolName: "FileRead", ruleContent: `${root}/private/**` }],
+    });
+    expect(await decide({ image: "private/id-scan.png", prompt: "x" })).toMatchObject({ behavior: "deny" });
+    expect(await decide({ image: join(root, "private", "id-scan.png"), upscale: 2 })).toMatchObject({ behavior: "deny" });
+    expect(await decide({ image: "scan-link.png", prompt: "x" })).toMatchObject({ behavior: "deny" });
+    expect(await decide({ image: "in.png", prompt: "x" })).toMatchObject({ behavior: "ask" });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 

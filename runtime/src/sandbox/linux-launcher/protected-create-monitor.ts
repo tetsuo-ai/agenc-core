@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 
 /** How often a running command's protected-create targets are rechecked. */
 export const PROTECTED_CREATE_POLL_MS = 100;
@@ -21,13 +22,28 @@ export function startProtectedCreateMonitor(
 ): ProtectedCreateMonitor {
   if (targets.length === 0) return { stop() { return false; } };
   let violation = false;
+  // This runs on the host. Pin each target's physical parent now, and never
+  // remove through a parent the command has since replaced (e.g. a `.git`
+  // swapped for a link to another repository's metadata).
+  const pinned = targets.map((target) => ({ target, parent: physicalParent(target) }));
   const scan = () => {
-    for (const target of targets) {
-      if (fs.existsSync(target)) {
+    for (const { target, parent } of pinned) {
+      let current: string;
+      try {
+        current = fs.realpathSync.native(path.dirname(target));
+      } catch {
+        continue; // No parent directory: the target cannot exist.
+      }
+      if (current !== parent) {
+        violation = true;
+        continue;
+      }
+      const physicalTarget = path.join(parent, path.basename(target));
+      if (fs.existsSync(physicalTarget)) {
         violation = true;
       }
       try {
-        fs.rmSync(target, { recursive: true, force: true });
+        fs.rmSync(physicalTarget, { recursive: true, force: true });
       } catch {
         // Best-effort cleanup for protected metadata created during launch.
       }
@@ -44,6 +60,19 @@ export function startProtectedCreateMonitor(
       return violation;
     },
   };
+}
+
+/** The realpath of the target's deepest existing ancestor plus the missing rest. */
+function physicalParent(target: string): string {
+  const missing: string[] = [];
+  for (let ancestor = path.dirname(target); ; ancestor = path.dirname(ancestor)) {
+    try {
+      return path.join(fs.realpathSync.native(ancestor), ...missing);
+    } catch {
+      if (path.dirname(ancestor) === ancestor) return path.dirname(target);
+      missing.unshift(path.basename(ancestor));
+    }
+  }
 }
 
 /** A clean exit becomes a failure when the command created a protected path. */

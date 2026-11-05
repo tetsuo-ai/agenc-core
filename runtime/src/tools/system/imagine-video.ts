@@ -33,7 +33,7 @@
  * @module
  */
 
-import { writeFile, mkdir, readFile } from "node:fs/promises";
+import { writeFile, mkdir } from "node:fs/promises";
 import { join, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -47,6 +47,8 @@ import {
   resolveProviderApiKeyEnvironment,
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
+import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import type { PermissionResult } from "../../permissions/types.js";
 import type { Tool, ToolResult } from "../types.js";
 import { readInvokingSession } from "../runtimes/context.js";
 import {
@@ -59,6 +61,7 @@ import {
   withToolCallTransport,
 } from "./session-provider-authority.js";
 import { preEffectRefusal } from "../results.js";
+import { readWorkspaceImage } from "./imagine-edit.js";
 import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
 import {
@@ -664,31 +667,34 @@ async function readCappedBody(response: Response): Promise<Buffer> {
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total);
 }
 
+/** A reference read from disk: anything but an http(s) or data:image URL. */
+function isLocalImageRef(ref: string): boolean {
+  const lower = ref.toLowerCase();
+  return !(
+    lower.startsWith("http://") ||
+    lower.startsWith("https://") ||
+    lower.startsWith("data:image/")
+  );
+}
+
+/**
+ * A URL as given, or a local image as a data URL. A local image must be a
+ * PNG, JPEG or WebP file inside the workspace, like ImagineEdit's input.
+ */
 async function imageRefToUrl(
   value: string,
   workspaceRoot: string,
   signal?: AbortSignal,
-): Promise<string | undefined> {
+): Promise<string | { readonly error: string } | undefined> {
   const ref = value.trim();
   if (!ref) return undefined;
-  const lower = ref.toLowerCase();
-  if (
-    lower.startsWith("http://") ||
-    lower.startsWith("https://") ||
-    lower.startsWith("data:image/")
-  ) {
-    return ref;
-  }
+  if (!isLocalImageRef(ref)) return ref;
   const path = isAbsolute(ref) ? ref : join(workspaceRoot, ref);
   if (!existsSync(path)) return undefined;
-  const bytes = await readFile(path, { signal });
-  const ext = path.toLowerCase();
-  const mime = ext.endsWith(".png")
-    ? "image/png"
-    : ext.endsWith(".webp")
-      ? "image/webp"
-      : "image/jpeg";
-  return `data:${mime};base64,${bytes.toString("base64")}`;
+  signal?.throwIfAborted();
+  const image = await readWorkspaceImage(workspaceRoot, ref);
+  if ("error" in image) return image;
+  return `data:${image.type};base64,${image.bytes.toString("base64")}`;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -1884,6 +1890,31 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
       };
     },
     inputSchema: imagineVideoInputSchema(advertisedKind),
+    // Local image_url and reference_image_urls files are read and sent to
+    // the video provider: each read must pass the same deny, ask and
+    // protected-path rules as FileRead. Allowed reads still wait for this
+    // tool's own approval.
+    checkPermissions(input, context) {
+      const args = input as Record<string, unknown>;
+      const refs = [
+        args.image_url,
+        ...(Array.isArray(args.reference_image_urls) ? args.reference_image_urls : []),
+      ].map(stringValue).filter((ref): ref is string => ref !== undefined && isLocalImageRef(ref));
+      let ask: PermissionResult | undefined;
+      for (const ref of refs) {
+        const decision = checkToolPathPermission({
+          toolName: "ImagineVideo",
+          input: args,
+          path: ref,
+          cwd: opts.workspaceRoot,
+          context: context.getAppState().toolPermissionContext,
+          operationType: "read",
+        });
+        if (decision.behavior === "deny") return decision;
+        if (decision.behavior !== "allow") ask ??= decision;
+      }
+      return ask ?? { behavior: "passthrough", message: "ImagineVideo sends its local images to the video provider." };
+    },
     execute: async (args) => {
       const admittedSignal = abortSignalFromArgs(args);
       admittedSignal?.throwIfAborted();
@@ -1900,6 +1931,9 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
       const imageUrl = imageUrlRaw
         ? await imageRefToUrl(imageUrlRaw, opts.workspaceRoot, admittedSignal)
         : undefined;
+      if (typeof imageUrl === "object") {
+        return refusal({ error: `image_url: ${imageUrl.error}` });
+      }
 
       const refRaw = Array.isArray(args.reference_image_urls)
         ? args.reference_image_urls.filter(
@@ -1919,6 +1953,9 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
       const referenceImages: { url: string }[] = [];
       for (const r of refRaw) {
         const url = await imageRefToUrl(r, opts.workspaceRoot, admittedSignal);
+        if (typeof url === "object") {
+          return refusal({ error: `reference_image_urls: ${url.error}` });
+        }
         if (url) referenceImages.push({ url });
       }
 

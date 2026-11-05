@@ -1,5 +1,6 @@
 import type { JsonObject } from "../app-server/protocol/index.js";
 import { permissionsRunWithoutSandbox } from "../sandbox/escalation/approvals.js";
+import { permissionsMcpNoFsWrites } from "../tools/runtimes/mcp-filesystem-approval.js";
 import type { ApprovalCtx } from "../tools/orchestrator.js";
 import { isRecord } from "../utils/record.js";
 
@@ -56,6 +57,11 @@ export function buildDaemonApprovalCtx(
     // must say so even where its reason text does not fit.
     ...(permissionsRunWithoutSandbox(payload.permissions)
       ? { runsWithoutSandbox: true }
+      : {}),
+    // A session grant covers every later call of the tool, whatever its
+    // arguments; the card's session choice must not read as this call only.
+    ...(permissionsMcpNoFsWrites(payload.permissions)
+      ? { sessionGrantCoversAllCalls: true }
       : {}),
     ...(typeof payload.planContent === "string"
       ? { planContent: payload.planContent }

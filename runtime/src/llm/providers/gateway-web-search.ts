@@ -151,13 +151,13 @@ async function postJson(
       json = undefined;
     }
     if (!response.ok) {
-      const message = text(record(record(json)?.error)?.message) ?? text(record(json)?.error) ?? raw.slice(0, 160);
+      const message = text(record(record(json)?.error)?.message) ?? text(record(json)?.error) ?? raw;
       return { status: response.status, reason: `HTTP ${response.status}: ${message.replaceAll(apiKey, "[REDACTED]").slice(0, 160)}` };
     }
     return { status: response.status, json };
   } catch (error) {
     options.signal?.throwIfAborted();
-    return { status: 0, reason: error instanceof Error ? error.message.slice(0, 160) : "request failed" };
+    return { status: 0, reason: error instanceof Error ? error.message.replaceAll(apiKey, "[REDACTED]").slice(0, 160) : "request failed" };
   }
 }
 

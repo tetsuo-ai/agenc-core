@@ -29,6 +29,7 @@ import {
   type NetworkApprovalContext,
   type ParsedApprovalCommand,
 } from "../../sandbox/escalation/approvals.js";
+import { MCP_NO_FS_WRITES_PERMISSION } from "../../tools/runtimes/mcp-filesystem-approval.js";
 import type {
   ExecPolicyAmendment,
   NetworkPolicyAmendment,
@@ -54,6 +55,7 @@ import {
   reviewDecisionIsAllow,
   type ReviewDecision,
 } from "../review-decision.js";
+import { getPathsForPermissionCheck } from "../path-validation.js";
 import { getAskRuleForTool, getDenyRuleForTool } from "../rules.js";
 import { hookDispatcherApprovalSource } from "../tool-approval.js";
 import type {
@@ -259,12 +261,25 @@ export interface ApprovalCtx {
   readonly guardianReviewId?: string;
   readonly retryReason?: string;
   /**
+   * The permission layer asked because of a safety check: a protected path
+   * or an ambiguous path shape. A person answers each such call; a session
+   * grant neither answers nor records it.
+   */
+  readonly safetyCheck?: boolean;
+  /**
    * Approving runs the call without the OS sandbox: the separate question the
    * orchestrator asks after the sandbox refused a call. Clients show it as
    * that question, never as an ordinary tool approval, and a session grant
    * of it never answers for the sandboxed call (or the reverse).
    */
   readonly runsWithoutSandbox?: boolean;
+  /**
+   * A session grant answers every later call of this tool, whatever its
+   * arguments. Daemon clients read it from the request's `mcp_no_fs_writes`
+   * permission (the server side has `mcpFilesystemApproval`) and say so on
+   * the card. Display only: the approval cache never reads it.
+   */
+  readonly sessionGrantCoversAllCalls?: boolean;
   readonly cwd?: string;
   readonly command?: readonly string[];
   readonly parsedCommand?: ParsedApprovalCommand;
@@ -579,7 +594,10 @@ async function resolveApproval(
     // Automatic reviewers may only grant the current call. Session grants and
     // policy amendments require an authoritative human resolver, and a prior
     // automatic decision must never be replayed for a later call.
-    const approvalCache = shouldUseGuardian || (requiresUserInteraction && mcpFilesystemApproval === undefined)
+    const approvalCache =
+      shouldUseGuardian ||
+      (requiresUserInteraction && mcpFilesystemApproval === undefined) ||
+      opts.ctx.safetyCheck === true
       ? null
       : resolveApprovalCache(opts.ctx.invocation);
     const approvalKeys =
@@ -741,9 +759,11 @@ function beginDurableApprovalJournal(
           turnId: opts.ctx.turnId,
           permissions: opts.ctx.approvalKind === "cross_provider_spawn"
             ? ["cross_provider_spawn"]
-            : opts.ctx.runsWithoutSandbox === true
-              ? ["tool.use", RUN_WITHOUT_SANDBOX_PERMISSION]
-              : ["tool.use"],
+            : [
+                "tool.use",
+                ...(opts.ctx.runsWithoutSandbox === true ? [RUN_WITHOUT_SANDBOX_PERMISSION] : []),
+                ...(opts.ctx.mcpFilesystemApproval !== undefined ? [MCP_NO_FS_WRITES_PERMISSION] : []),
+              ],
           ...(opts.ctx.retryReason !== undefined
             ? { reason: opts.ctx.retryReason }
             : {}),
@@ -1440,12 +1460,17 @@ function buildApprovalCacheKeys(
     }
   }
   let scopedArgs = args;
+  let resolvedTargets: readonly string[] | undefined;
   if ((tool.name === "Write" || tool.name === "Edit") &&
       typeof args.file_path === "string" && args.file_path.length > 0) {
     // The card promises this tool on this file for the session. Replacement
     // text is the operation, not its permission scope. Retain other options,
     // cwd and execution policies so a grant cannot authorize another action.
-    scopedArgs = { ...args, file_path: resolvePath(cwd, args.file_path) };
+    // The file is the one the path reaches through its links when asked: a
+    // link re-pointed at another file (a git hook) asks again.
+    const filePath = resolvePath(cwd, args.file_path);
+    scopedArgs = { ...args, file_path: filePath };
+    resolvedTargets = getPathsForPermissionCheck(filePath);
     if (tool.name === "Write") delete scopedArgs.content;
     else {
       delete scopedArgs.old_string;
@@ -1460,6 +1485,7 @@ function buildApprovalCacheKeys(
       sandboxMode: invocation.turn.sandboxPolicy.value,
       approvalPolicy: invocation.turn.approvalPolicy.value,
       args: scopedArgs,
+      ...(resolvedTargets !== undefined ? { resolvedTargets } : {}),
     },
   ];
 }

@@ -68,7 +68,7 @@ async function renderedCard(request: PendingRequest): Promise<string> {
     stdout: stdout as unknown as NodeJS.WriteStream,
   });
   try {
-    root.render(<AgenCPermissionOverlay request={request} tools={[{ name: "Write" }]} />);
+    root.render(<AgenCPermissionOverlay request={request} tools={[{ name: request.ctx.toolName }]} />);
     await sleep();
     return lastFrame(output).replace(/[\s│]+/gu, "");
   } finally {
@@ -91,6 +91,18 @@ function writeRequest(permissions: readonly string[], reason: string): PendingRe
   return { id: "request-1", ctx, input, description: reason, resolve: () => {} };
 }
 
+/** A shell command card as the daemon TUI receives it. */
+function shellRequest(cmd: string): PendingRequest {
+  const input = { cmd };
+  const ctx = buildDaemonApprovalCtx(
+    { id: "session" },
+    { callId: "request-1", toolCallId: "call-1", turnId: "turn-1", permissions: ["tool.use"], input },
+    "exec_command",
+    new AbortController().signal,
+  );
+  return { id: "request-1", ctx, input, description: "Run a command", resolve: () => {} };
+}
+
 const compact = (text: string) => text.replace(/\s+/gu, "");
 
 describe("approval cards show home paths as ~/...", () => {
@@ -108,5 +120,20 @@ describe("approval cards show home paths as ~/...", () => {
     expect(frame).toContain("~/.agenc/projects/v2--workspace-");
     expect(frame).toContain("/memory/project-codename.md");
     expect(frame).toContain(compact(SHOWN.slice(0, 40)));
+  });
+});
+
+describe("approval cards show a shell command as given", () => {
+  // A shell does not expand ~ inside quotes or after =, so a shortened
+  // command would read as a different command acting on a literal ~.
+  test.each([
+    ["the home directory in single quotes", `rm -rf '${HOME}'`],
+    ["a home path in double quotes", `cat "${HOME}/.ssh/id_rsa"`],
+    ["the home directory after =", `tar czf /tmp/a.tgz --directory=${HOME} .ssh`],
+  ])("%s", async (_label, cmd) => {
+    expect(HOME.length).toBeGreaterThan(1);
+    const frame = await renderedCard(shellRequest(cmd));
+    expect(frame).toContain(compact(cmd));
+    expect(frame).not.toMatch(/['"=]~/u);
   });
 });

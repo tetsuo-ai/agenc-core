@@ -145,6 +145,8 @@ export function readWrapperOptions(
       if (read === undefined) return undefined;
       options.push(...read.options);
       index += read.words;
+      // env reads its options again from the words -S splits its string into, then the words after.
+      if (wrapper.kind === "env" && read.options.some(option => option.name === "S")) break;
     } else {
       break;
     }
@@ -317,12 +319,79 @@ export function wrapperCommandIndex(wrapper: CommandWrapper, read: WrapperOption
 }
 
 
-/** A wrapper that reparses text instead of executing the remaining argv. */
-export function wrapperCommandText(wrapper: CommandWrapper, read: WrapperOptions, args: readonly string[]): string | undefined {
+/** What GNU env's -S makes of a backslash and the character after it. */
+const ENV_SPLIT_STRING_ESCAPES: Readonly<Record<string, string>> = {
+  '"': '"', "#": "#", $: "$", "'": "'", "\\": "\\", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v",
+};
+
+/**
+ * The words GNU env's -S splits its string into. Undefined when the string
+ * uses what this does not model exactly: `${NAME}`, which takes a value from
+ * the environment, `\c`, unquoted whitespace other than space and tab, and
+ * escapes or quotes env rejects. Reading stops at a `#` comment, so the words
+ * may name a command env refuses to run.
+ */
+function splitEnvString(text: string): string[] | undefined {
+  const words: string[] = [];
+  // Undefined between words, so a quote starts an empty word and `#` only ends the string at a word's start.
+  let word: string | undefined;
+  let quote: "'" | '"' | undefined;
+  for (let at = 0; at < text.length; at += 1) {
+    const char = text[at]!;
+    if ((char === "'" && quote !== '"') || (char === '"' && quote !== "'")) {
+      quote = quote === undefined ? char : undefined;
+      word ??= "";
+      continue;
+    }
+    if (quote === undefined && (char === " " || char === "\t")) {
+      if (word !== undefined) words.push(word);
+      word = undefined;
+      continue;
+    }
+    // env releases differ on whether other whitespace splits words.
+    if (quote === undefined && "\n\v\f\r".includes(char)) return undefined;
+    if (char === "#" && word === undefined) break;
+    if (char === "$" && quote !== "'") return undefined;
+    if (char === "\\" && (quote !== "'" || text[at + 1] === "\\" || text[at + 1] === "'")) {
+      at += 1;
+      const next = text[at];
+      if (next === "_" && quote === undefined) {
+        if (word !== undefined) words.push(word);
+        word = undefined;
+        continue;
+      }
+      const escaped = next === "_" ? " " : next === undefined ? undefined : ENV_SPLIT_STRING_ESCAPES[next];
+      if (escaped === undefined) return undefined;
+      word = (word ?? "") + escaped;
+      continue;
+    }
+    word = (word ?? "") + char;
+  }
+  if (quote !== undefined) return undefined;
+  if (word !== undefined) words.push(word);
+  return words;
+}
+
+/** Words as shell text that reads back as the same words. */
+function shellWordsText(words: readonly string[]): string {
+  return words.map(word => /^[\w@%+=:,./-]+$/u.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`).join(" ");
+}
+
+/**
+ * A wrapper that reparses text instead of executing the remaining argv:
+ * watch runs its words joined by spaces as a shell command, and env runs
+ * the words -S splits its string into, followed by the words after it.
+ * Null when env's -S string uses what the split does not model, which
+ * callers treat as a command they cannot clear.
+ */
+export function wrapperCommandText(wrapper: CommandWrapper, read: WrapperOptions, args: readonly string[]): string | null | undefined {
   if (wrapper.kind === "watch" && !read.options.some(option => option.name === "x")) return args.slice(read.end).join(" ");
   if (wrapper.kind === "env") {
     const split = read.options.find(option => option.name === "S");
-    if (split?.value !== undefined) return ["env", split.value, ...args.slice(read.end)].join(" ");
+    if (split?.value !== undefined) {
+      const words = splitEnvString(split.value);
+      return words === undefined ? null : shellWordsText(["env", ...words, ...args.slice(read.end)]);
+    }
   }
   return undefined;
 }

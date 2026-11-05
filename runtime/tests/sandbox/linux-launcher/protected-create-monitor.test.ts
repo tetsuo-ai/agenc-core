@@ -66,6 +66,37 @@ describe("created-path monitor", () => {
     expect(monitor.stop()).toBe(true);
   });
 
+  it("never removes a target through a parent swapped for a symlink", () => {
+    // The sandbox moves the watched target's parent aside and links another
+    // repository's metadata in its place. The host-side monitor must not
+    // delete that repository's directory through the link.
+    const workspace = path.join(root, "workspace"), victim = path.join(root, "victim");
+    fs.mkdirSync(path.join(workspace, ".git"), { recursive: true });
+    fs.mkdirSync(path.join(victim, ".git", "modules", "sub"), { recursive: true });
+    fs.writeFileSync(path.join(victim, ".git", "modules", "sub", "HEAD"), "unpushed");
+    const target = path.join(workspace, ".git", "modules");
+    const monitor = startProtectedCreateMonitor([target]);
+    fs.renameSync(path.join(workspace, ".git"), path.join(workspace, ".git.old"));
+    fs.symlinkSync(path.join(victim, ".git"), path.join(workspace, ".git"), "dir");
+    // The swap itself fails the command, without deleting anything.
+    expect(monitor.stop()).toBe(true);
+    expect(fs.readFileSync(path.join(victim, ".git", "modules", "sub", "HEAD"), "utf8")).toBe("unpushed");
+  });
+
+  it("removes a target under a parent created during the run, not one linked in", () => {
+    const workspace = path.join(root, "workspace"), victim = path.join(root, "victim");
+    fs.mkdirSync(path.join(workspace, ".git"), { recursive: true });
+    fs.mkdirSync(path.join(victim, "info"), { recursive: true });
+    const created = path.join(workspace, ".git", "objects", "info");
+    const linked = path.join(workspace, ".git", "refs", "info");
+    const monitor = startProtectedCreateMonitor([created, linked]);
+    fs.mkdirSync(created, { recursive: true });
+    fs.symlinkSync(victim, path.join(workspace, ".git", "refs"), "dir");
+    expect(monitor.stop()).toBe(true);
+    expect(fs.existsSync(created)).toBe(false);
+    expect(fs.existsSync(path.join(victim, "info"))).toBe(true);
+  });
+
   it("fails only a clean exit", () => {
     expect(protectedCreateExitCode(0, true)).toBe(1);
     expect(protectedCreateExitCode(3, true)).toBe(3);

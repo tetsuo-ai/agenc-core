@@ -120,6 +120,39 @@ describe("ordinary approval keyboard ownership", () => {
     } finally { f.dispose(); }
   });
 
+  it.each(["\r", "1", "2"])("keeps %j typed right behind the focus Tab out of the decision", async (input) => {
+    const f = await fixture("default", false, "act");
+    try {
+      f.stdin.write("ually blue");
+      await tick();
+      f.stdin.write("\t");
+      await tick(80);
+      f.stdin.write(input);
+      await tick();
+      expect(f.decisions).toEqual([]);
+      expect(f.draft()).toBe(input === "\r" ? "actually blue" : `actually blue${input}`);
+      f.stdin.write("\t");
+      await tick(650);
+      f.stdin.write("1");
+      await tick();
+      expect(f.decisions).toEqual([{ kind: "approved" }]);
+    } finally { f.dispose(); }
+  });
+
+  it("needs a separate choice before Enter approves after the focus Tab", async () => {
+    const f = await fixture("default", false, "act");
+    try {
+      f.stdin.write("ually blue");
+      await tick();
+      f.stdin.write("\t");
+      await tick(650);
+      f.stdin.write("\r");
+      await tick();
+      expect(f.decisions).toEqual([]);
+      expect(f.draft()).toBe("actually blue");
+    } finally { f.dispose(); }
+  });
+
   it("Escape interrupts instead of denying only the visible request", async () => {
     const f = await fixture("default");
     try {

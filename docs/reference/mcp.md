@@ -188,7 +188,11 @@ In an interactive session, Core asks you to approve a tool with unknown write
 targets. Approve only after checking that the tool performs no filesystem
 writes. You can allow the current call, allow that tool for the session, or
 deny. A session grant covers the same installed tool with different scalar
-arguments; replacing the tool requires new consent. Explicit path arguments
+arguments; replacing the tool requires new consent. The card's session choice
+says so ("every <tool> call, any arguments"): the request carries
+`mcp_no_fs_writes` in its `permissions`, so every client can show what the
+grant covers (`runtime/src/tools/runtimes/mcp-filesystem-approval.ts`).
+Explicit path arguments
 still undergo filesystem checks. The filesystem and network sandbox stays in
 place, including the sandbox around local stdio server processes.
 

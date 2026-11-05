@@ -596,6 +596,7 @@ export class ToolRouter {
       const initialPreflight = preflightToolCall(spec.tool, executionArgs, invocation);
       if (initialPreflight !== null) return initialPreflight;
       let forcedApprovalReason: string | undefined;
+      let safetyCheckAsk = false;
       let permissionAlreadyAllowed = false;
       if (
         opts.canUseTool !== undefined &&
@@ -618,6 +619,7 @@ export class ToolRouter {
           executionArgs = permissionDecision.args;
           forcedApprovalReason =
             permissionDecision.message ?? "permission mode requested approval";
+          safetyCheckAsk = permissionDecision.decisionReason?.type === "safetyCheck";
         } else if (permissionDecision.kind === "allow") {
           executionArgs = permissionDecision.args;
           permissionAlreadyAllowed = true;
@@ -676,6 +678,7 @@ export class ToolRouter {
           ...(forcedApprovalReason !== undefined
             ? { retryReason: forcedApprovalReason }
             : {}),
+          ...(safetyCheckAsk ? { safetyCheck: true } : {}),
           ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         },
         ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
@@ -964,6 +967,7 @@ export class ToolRouter {
     const initialPreflight = preflightToolCall(spec.tool, executionArgs, invocation, opts);
     if (initialPreflight !== null) return initialPreflight;
     let forcedApprovalReason: string | undefined;
+    let safetyCheckAsk = false;
     let preHookPermissionDecision: MergedHookPermissionDecision | undefined;
     let hookPermissionResult: HookPermissionResult | undefined;
     let prePreventContinuation: { readonly stopReason?: string } | undefined;
@@ -1122,6 +1126,8 @@ export class ToolRouter {
           forcedApprovalReason =
             guardianPermissionDecision.message ??
             "permission mode requested approval";
+          safetyCheckAsk =
+            guardianPermissionDecision.decisionReason?.type === "safetyCheck";
           if (guardianPermissionDecision.source === "pre-tool-use-hook") {
             emitWarningEvent(
               opts.session.eventLog,
@@ -1183,6 +1189,7 @@ export class ToolRouter {
       ...(forcedApprovalReason !== undefined
         ? { retryReason: forcedApprovalReason }
         : {}),
+      ...(safetyCheckAsk ? { safetyCheck: true } : {}),
     };
 
     const toolAbortController = new AbortController();

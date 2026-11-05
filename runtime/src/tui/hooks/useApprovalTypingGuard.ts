@@ -42,9 +42,11 @@ export function useApprovalTypingGuard(typedConfirmation = false, composerDraft?
       if (key.tab && !key.shift && !paste && !textBurst) {
         draftFocusedRef.current = false;
         setDraftFocused(false);
-        typedSinceChoice.current = false;
-        lastTyping.current = Number.NEGATIVE_INFINITY;
-        setWaiting(false);
+        // The Tab may be a habitual completion inside the draft. Keys right
+        // behind it get the quiet period, and Enter still needs a choice.
+        if (!typedConfirmation) typedSinceChoice.current = true;
+        lastTyping.current = now;
+        setWaiting(true);
       } else preserve();
       return true;
     }

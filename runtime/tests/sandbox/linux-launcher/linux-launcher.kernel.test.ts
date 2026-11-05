@@ -451,6 +451,59 @@ test("protects custom Desktop authority records and their ancestor namespace wit
   }
 });
 
+test("keeps a narrowed .git and its objects directory from being moved aside and recreated", { timeout: 30_000 }, async () => {
+  expect(process.platform).toBe("linux");
+  const root = realpathSync(mkdtempSync(join("/var/tmp", "agenc-git-anchor-kernel-")));
+  const project = join(root, "project");
+  const temporary = join(root, "temp");
+  mkdirSync(project);
+  mkdirSync(temporary);
+  const git = (args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: project, encoding: "utf8" }).trim();
+  try {
+    git(["init", "-q"]);
+    writeFileSync(join(project, "tracked.txt"), "seed\n");
+    git(["add", "tracked.txt"]);
+    git(["-c", "user.name=AgenC Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "seed"]);
+    const head = git(["rev-parse", "HEAD"]);
+    const config = readFileSync(join(project, ".git", "config"), "utf8");
+    const environment = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, AGENC_HOME: join(root, "home") };
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: project, env: environment,
+      sessionTempRoot: temporary, agencLinuxSandboxExe: launcherEntry });
+    expect(broker.status().kind).toBe("ready");
+    const result = await broker.prepareSpawn("tool", {
+      program: process.execPath,
+      args: ["--input-type=module", "--eval", `
+        import fs from 'node:fs';
+        const head = process.argv[1];
+        const attempt = (fn) => { try { fn(); return 'ALLOWED'; } catch (error) { return error.code; } };
+        process.stdout.write(JSON.stringify({
+          configWrite: attempt(() => fs.appendFileSync('.git/config', '[core]\\n\\tfsmonitor = forged\\n')),
+          objectsMove: attempt(() => fs.renameSync('.git/objects', '.git/objects.old')),
+          gitMove: attempt(() => fs.renameSync('.git', '.git.old')),
+          refWrite: attempt(() => fs.writeFileSync('.git/refs/heads/agent', head + '\\n')),
+        }));
+      `, head],
+      cwd: project, env: environment,
+    }).run(async command => spawnSync(command.program, [...command.args], {
+      cwd: command.cwd, env: command.env, encoding: "utf8", timeout: 10_000,
+    }));
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    const evidence = JSON.parse(result.stdout);
+    for (const key of ["configWrite", "objectsMove", "gitMove"]) {
+      expect(evidence[key], JSON.stringify(evidence)).not.toBe("ALLOWED");
+    }
+    // Ordinary ref data in the narrowed .git stays writable.
+    expect(evidence.refWrite, JSON.stringify(evidence)).toBe("ALLOWED");
+    expect(existsSync(join(project, ".git.old"))).toBe(false);
+    expect(existsSync(join(project, ".git", "objects.old"))).toBe(false);
+    expect(readFileSync(join(project, ".git", "config"), "utf8")).toBe(config);
+    expect(git(["rev-parse", "agent"])).toBe(head);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test(
   "enforces the production Linux sandbox boundary with the real kernel",
   { timeout: 30_000 },

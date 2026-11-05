@@ -787,6 +787,7 @@ export class StreamingToolExecutor {
       const canUseTool = this.liveOptions?.canUseTool;
       const permissionContext = this.liveOptions?.permissionContext;
       let forcedApprovalReason: string | undefined;
+      let safetyCheckAsk = false;
       let preHookAllowed = false;
       const shouldArbitratePermission =
         hookPermissionResult !== undefined ||
@@ -828,6 +829,7 @@ export class StreamingToolExecutor {
             forcedApprovalReason =
               permissionDecision.message ??
               `approval required: ${tool.toolCall.name}`;
+            safetyCheckAsk = permissionDecision.decisionReason?.type === "safetyCheck";
           } else if (permissionDecision.kind === "allow") {
             preHookAllowed = true;
             await recordToolRuntimePolicyAudit(this.liveOptions, {
@@ -890,6 +892,7 @@ export class StreamingToolExecutor {
               ...(forcedApprovalReason !== undefined
                 ? { retryReason: forcedApprovalReason }
                 : {}),
+              ...(safetyCheckAsk ? { safetyCheck: true } : {}),
             },
             signal: this.abortSignal,
             approvalPolicy:
