@@ -153,8 +153,6 @@ test.each([
 });
 
 test.each([
-  ["deepseek", "deepseek-v4-pro"],
-  ["deepseek", "deepseek-flash"],
   ["openai", "gpt-6-luna"],
 ] as const)("Light request after exec yield adds only kill_process: %s %s", async (provider, model) => {
   const configStore = createTestConfigStore();
@@ -201,6 +199,47 @@ test.each([
     },
   };
   expect(JSON.stringify(withoutKill)).toBe(JSON.stringify({ ...baseline, options: baselineOptions }));
+});
+
+// Native DeepSeek Light publishes write_stdin and kill_process with its first
+// request (stable core catalog), so the exec yield changes no tool schema or
+// routing entry in either path. Only the discovery notice gains kill_process.
+test.each([
+  ["deepseek", "deepseek-v4-pro"],
+  ["deepseek", "deepseek-flash"],
+] as const)("DeepSeek Light request after exec yield keeps the published core catalog: %s %s", async (provider, model) => {
+  const configStore = createTestConfigStore();
+  const before = await captureRequests(provider, model, false, configStore, true);
+  const after = await captureRequests(provider, model, true, configStore, true);
+  expect(after[0]).toBe(before[0]);
+
+  const first = JSON.parse(before[0]!) as { messages: LLMMessage[]; options: LLMChatOptions };
+  const baseline = JSON.parse(before[1]!) as typeof first;
+  const current = JSON.parse(after[1]!) as typeof first;
+  const firstNames = first.options.tools!.map(tool => tool.function.name);
+  expect(firstNames).toContain("write_stdin");
+  expect(firstNames).toContain("kill_process");
+  expect(JSON.stringify(baseline.options.tools)).toBe(JSON.stringify(first.options.tools));
+  expect(JSON.stringify(current.options.tools)).toBe(JSON.stringify(first.options.tools));
+  expect(current.messages.some(message => message.role === "tool" &&
+    typeof message.content === "string" && message.content.includes("session_id=71"))).toBe(true);
+
+  const baselineNotice = baseline.messages.at(-1)!;
+  const currentNotice = current.messages.at(-1)!;
+  expect(baselineNotice.role).toBe("user");
+  const noticeLines = (baselineNotice.content as string).split("\n");
+  const pollingLine = noticeLines.findIndex(line => line.startsWith("write_stdin: "));
+  expect(pollingLine).toBeGreaterThan(0);
+  const killProcess = first.options.tools!.find(tool => tool.function.name === "kill_process")!;
+  noticeLines.splice(pollingLine, 0, `kill_process: ${killProcess.function.description}`);
+  expect(currentNotice).toEqual({ ...baselineNotice, content: noticeLines.join("\n") });
+
+  // All other options and history bytes, tools and routing included, stay identical.
+  const { accountedInputTokens: baselineTokens, ...baselineOptions } = baseline.options;
+  const { accountedInputTokens: currentTokens, ...currentOptions } = current.options;
+  expect(currentTokens).toBeGreaterThan(baselineTokens!);
+  expect(JSON.stringify({ ...current, messages: [...current.messages.slice(0, -1), baselineNotice], options: currentOptions }))
+    .toBe(JSON.stringify({ ...baseline, options: baselineOptions }));
 });
 
 // The Luna lane: the production OpenAI API provider and the Responses request

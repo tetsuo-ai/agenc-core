@@ -69,10 +69,14 @@ test("a successful recovery tool call restores configured effort for the next no
   const ctx = mkCtx({ reasoningEffort: "high" });
   await drain(runTurn(session, { ...ctx, config: { ...ctx.config, model: "deepseek-flash", model_provider: "deepseek", max_output_tokens: 8192 }, modelInfo: { ...ctx.modelInfo, maxOutputTokens: 8192, maxOutputTokensExplicit: true, supportedReasoningLevels: ["low", "high", "max"] } }, "Read fixture and finish."));
   expect([0, 1, 2].map(i => bodyAt(fetchImpl, i).thinking)).toEqual([{ type: "enabled" }, { type: "disabled" }, { type: "enabled" }]);
-  const assistants = (bodyAt(fetchImpl, 2).messages as Array<Record<string, unknown>>)
-    .filter(message => message.role === "assistant");
-  expect(assistants).toHaveLength(1);
-  expect(assistants[0]).toHaveProperty("reasoning_content", "");
+  // Native DeepSeek replay keeps the capped reasoning-only item and appends the
+  // recovery note, so each request extends the previous one (cached prefix).
+  const messagesAt = (i: number) => bodyAt(fetchImpl, i).messages as Array<Record<string, unknown>>;
+  for (const i of [1, 2]) expect(messagesAt(i).slice(0, messagesAt(i - 1).length)).toEqual(messagesAt(i - 1));
+  const assistants = messagesAt(2).filter(message => message.role === "assistant");
+  expect(assistants).toHaveLength(2);
+  expect(assistants[0]).toEqual({ role: "assistant", content: "", reasoning_content: "Think." });
+  expect(assistants[1]).toMatchObject({ reasoning_content: "", tool_calls: [{ id: "read1" }] });
   expect(execute).toHaveBeenCalledTimes(1);
   expect(fetchImpl).toHaveBeenCalledTimes(3);
   expect([0, 1, 2].map(i => bodyAt(fetchImpl, i).reasoning_effort)).toEqual(["high", "high", "high"]);

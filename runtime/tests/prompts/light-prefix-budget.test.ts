@@ -14,6 +14,12 @@
  * the task limits say the reading and search sentences shorter, add the working rules (version and git checks only
  * when needed, simplest code, no rework once the checks pass; GPT: few patches for a large change) and stay shorter
  * than 0.19.26's (OpenAI 3,563 to 3,539 characters). DeepSeek keeps the 0.19.26 head (3,995).
+ * 2026-11-05 (round 4 jobs cch and cch2, Fcch-8): native DeepSeek Light publishes the full exec_command, FileRead
+ * and system.searchTools schemas and the write_stdin and kill_process companions with its first request, because a
+ * later catalog change rewrites the cached prefix ahead of the whole history (owner MPV calls 28 and 33 cached
+ * 6,784/230,236 and 7,296/234,187 tokens). DeepSeek tools 2,347 to 6,569 characters, measured with its cache:
+ * discovery and yield transitions 4.77%/7.12% to 99.21%/98.49% (cch), image-heavy panel fresh input -55.1%
+ * against 0.19.28 (cch2). OpenAI is unchanged.
  */
 import { describe, expect, test } from "vitest";
 import type { Session } from "../../src/session/session.js";
@@ -54,7 +60,8 @@ async function lightPrefix(provider: "deepseek" | "openai") {
 describe("Light fixed prefix budget", () => {
   test.each([
     // DeepSeek head 4,050 -> 4,150 on purpose: job dsw's probe sentence (LIGHT_DEEPSEEK_PROBES), measured in its A/B.
-    ["deepseek", 4_150, 2_350, ["system.searchTools", "exec_command", "FileRead", "apply_patch"]],
+    // DeepSeek tools 2,350 -> 6,600 on purpose: the stable core catalog above (Fcch-8).
+    ["deepseek", 4_150, 6_600, ["system.searchTools", "exec_command", "write_stdin", "kill_process", "FileRead", "apply_patch"]],
     ["openai", 3_600, 2_350, ["system.searchTools", "exec_command", "FileRead", "apply_patch"]],
   ] as const)("%s: head and tool schemas stay within budget and byte-stable", async (provider, headBudget, toolsBudget, names) => {
     const first = await lightPrefix(provider);
