@@ -8,6 +8,28 @@ import {
   type AgenCDaemonCliHost,
 } from "../../src/app-server/daemon-control.js";
 
+// The real lifecycle lock, unchanged; the wrapper only counts the speculative
+// start's short-budget attempts that time out.
+const speculativeLockTimeouts = vi.hoisted(() => ({ count: 0 }));
+vi.mock("../../src/app-server/daemon-lifecycle-lock.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/app-server/daemon-lifecycle-lock.js")>();
+  return {
+    ...actual,
+    acquireAgenCDaemonLifecycleLock: async (
+      ...args: Parameters<typeof actual.acquireAgenCDaemonLifecycleLock>
+    ) => {
+      try {
+        return await actual.acquireAgenCDaemonLifecycleLock(...args);
+      } catch (error) {
+        if (args[2] !== undefined && (error as { code?: unknown }).code === "AGENC_LOCK_TIMEOUT") {
+          speculativeLockTimeouts.count += 1;
+        }
+        throw error;
+      }
+    },
+  };
+});
+
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) {
@@ -41,7 +63,17 @@ async function fixture() {
   // Populate the lock substrate before the deliberately short speculative
   // attempt. No owner or daemon metadata is created by this preparation.
   const release = await acquireAgenCDaemonLifecycleLock(host); await release();
-  const handle = await tryPrepareProvisionalDaemon(host);
+  // The speculative start gives up when its short lifecycle-lock attempt times
+  // out, and returns null before it spawns anything; under full-suite load that
+  // attempt can miss. Only that timeout is retried. Any other null start still
+  // fails here, and the handoff after a successful start is what these cases test.
+  speculativeLockTimeouts.count = 0;
+  let handle = await tryPrepareProvisionalDaemon(host);
+  for (let attempt = 1; handle === null && attempt < 20; attempt++) {
+    expect(speculativeLockTimeouts.count).toBe(attempt);
+    expect(host.spawnDetachedDaemon).not.toHaveBeenCalled();
+    handle = await tryPrepareProvisionalDaemon(host);
+  }
   expect(handle).not.toBeNull();
   return { host, handle: handle!, cancel, pidPath, alive: () => alive };
 }
