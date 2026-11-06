@@ -1,6 +1,7 @@
 /** Optional prompt projection state. Canonical conversation history stays separate. */
 import type { LLMProvider } from "../llm/types.js";
 import { getAttachmentTrackingState, type AttachmentTrackingState } from "./attachment-state.js";
+import { restoreShownContextImageDigests, shownContextImageDigests } from "./query-image-budget.js";
 import type { RolloutItem } from "./rollout-item.js";
 
 const setFields = ["nestedMemoryAttachmentTriggers", "dynamicSkillDirTriggers", "loadedNestedMemoryPaths",
@@ -22,9 +23,22 @@ export interface PromptCacheState {
    * Native DeepSeek Light's compact core catalog had switched to the full core
    * schemas (tool-registry.ts isCoreCatalogExpanded). A resumed, restarted or
    * forked conversation presents the full schemas again, the tool list it last
-   * sent, instead of switching a second time.
+   * sent, instead of switching a second time. The switch also has its own
+   * session_state line (coreCatalogSwitchItem); this field keeps rollouts that
+   * an older runtime reads, or wrote, working the same way.
    */
   readonly coreCatalog?: "expanded";
+  /**
+   * SHA-256 digests of the images a dispatched request carried itself
+   * (query-image-budget.ts shownContextImageDigests). A resumed, restarted or
+   * forked conversation gives an evicted image the same note as before.
+   */
+  readonly shownImageDigests?: readonly string[];
+}
+
+const IMAGE_DIGEST_RE = /^[0-9a-f]{64}$/u;
+function validImageDigests(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every(entry => typeof entry === "string" && IMAGE_DIGEST_RE.test(entry));
 }
 
 /** The registry surface that records and restores the core catalog switch. */
@@ -33,8 +47,40 @@ export interface CoreCatalogSwitch {
   expandCoreCatalog?(): void;
 }
 
+// Sessions whose rollout already holds their switch: written by this process,
+// or restored from the conversation.
+const savedCoreCatalogSwitches = new WeakSet<object>();
+
+/**
+ * The switch to the full core schemas as its own small session_state line,
+ * once per session, at the first event after it happens. The prompt cache
+ * state carries it too, but that is written only at turn end and dropped
+ * whole when it reaches the recovery line limit, so a process that died in
+ * the switching turn, or a large state, lost the switch, and the resumed
+ * session sent the compact catalog again (Fcat30-7, Fcat30-8). The line goes
+ * out with the next flush of the rollout, together with the tool result that
+ * caused the switch.
+ */
+export function coreCatalogSwitchItem(sessionKey: object, registry?: CoreCatalogSwitch): RolloutItem | undefined {
+  if (savedCoreCatalogSwitches.has(sessionKey) || registry?.isCoreCatalogExpanded?.() !== true) return undefined;
+  savedCoreCatalogSwitches.add(sessionKey);
+  return { type: "session_state", payload: { coreCatalog: "expanded" } };
+}
+
+/**
+ * Whether the conversation switched: its own line, or the field of any saved
+ * prompt cache state, since the switch happens once and never goes back. A
+ * later state saved without it (a turn end whose state was too large) does
+ * not undo it.
+ */
+function savedCoreCatalogSwitch(items: readonly RolloutItem[]): boolean {
+  return items.some(item => item?.type === "session_state" &&
+    (item.payload.coreCatalog === "expanded" || item.payload.promptCache?.coreCatalog === "expanded"));
+}
+
 export function capturePromptCacheState(sessionKey: object, provider: LLMProvider, registry?: CoreCatalogSwitch): PromptCacheState {
   const state = getAttachmentTrackingState(sessionKey);
+  const shownImageDigests = shownContextImageDigests(sessionKey);
   const attachments: PersistedAttachmentTrackingState = {
     ...state,
     nestedMemoryAttachmentTriggers: [...state.nestedMemoryAttachmentTriggers],
@@ -49,7 +95,8 @@ export function capturePromptCacheState(sessionKey: object, provider: LLMProvide
   return { version: 1, attachments, provider: provider.name,
     providerScope: provider.functionCallItemIdsScope,
     functionCallItemIds: provider.exportFunctionCallItemIds?.(),
-    ...(registry?.isCoreCatalogExpanded?.() === true ? { coreCatalog: "expanded" as const } : {}) };
+    ...(registry?.isCoreCatalogExpanded?.() === true ? { coreCatalog: "expanded" as const } : {}),
+    ...(shownImageDigests !== undefined ? { shownImageDigests } : {}) };
 }
 
 /** Validate optional cache metadata before restoring its mutable containers. */
@@ -99,11 +146,17 @@ export function restorePromptCacheState(
   items: readonly RolloutItem[],
   registry?: CoreCatalogSwitch,
 ): void {
+  if (savedCoreCatalogSwitch(items)) {
+    registry?.expandCoreCatalog?.();
+    savedCoreCatalogSwitches.add(sessionKey);
+  }
   for (let index = items.length - 1; index >= 0; index--) {
     const item = items[index];
     if (item?.type !== "session_state" || !Object.hasOwn(item.payload, "promptCache")) continue;
     const cache = item.payload.promptCache;
-    if (cache?.version === 1 && cache.coreCatalog === "expanded") registry?.expandCoreCatalog?.();
+    if (cache?.version === 1 && validImageDigests(cache.shownImageDigests)) {
+      restoreShownContextImageDigests(sessionKey, cache.shownImageDigests);
+    }
     if (cache?.version !== 1 || !validAttachments(cache.attachments)) return;
     const state = getAttachmentTrackingState(sessionKey);
     // Fresh copies are essential: a fork/resume must not mutate its source.
@@ -134,5 +187,6 @@ export function isPromptCacheState(value: unknown): value is PromptCacheState {
     (cache.functionCallItemIds === undefined || (Array.isArray(cache.functionCallItemIds) &&
       cache.functionCallItemIds.every(entry => Array.isArray(entry) && entry.length === 2 &&
         entry.every(part => typeof part === "string")))) &&
-    (cache.coreCatalog === undefined || cache.coreCatalog === "expanded") && validAttachments(cache.attachments);
+    (cache.coreCatalog === undefined || cache.coreCatalog === "expanded") &&
+    (cache.shownImageDigests === undefined || validImageDigests(cache.shownImageDigests)) && validAttachments(cache.attachments);
 }

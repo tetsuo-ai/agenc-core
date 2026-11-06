@@ -7,7 +7,7 @@ import {
 import React from "react";
 import type { LLMMessage, LLMProvider, LLMTool } from "../llm/types.js";
 import { createChildAbortController } from "../utils/abortController.js";
-import { cloneLlmContent as cloneContent } from "../llm/content-conversion.js";
+import { cloneLlmContent as cloneContent, restoreOmittedBinaryCarriers } from "../llm/content-conversion.js";
 import type {
   CompactCleanupDeps,
   CompactionResult,
@@ -725,7 +725,9 @@ async function runManualCompact(params: {
       );
   const applyProjection = async (): Promise<void> => {
     await params.session.state.with((sessionState) => {
-      sessionState.history = compacted.map(cloneLLMMessage);
+      // The kept tail keeps its screenshots in memory where the durable
+      // replacement could only store an omission note.
+      sessionState.history = restoreOmittedBinaryCarriers(compacted, sessionState.history).map(cloneLLMMessage);
     });
   };
   const cleanup = async (): Promise<void> => {

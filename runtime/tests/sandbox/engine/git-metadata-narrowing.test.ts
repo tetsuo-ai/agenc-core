@@ -204,6 +204,11 @@ describe("narrowed .git write policy (file-tool preflight)", () => {
     const bare = path.join(root, "bare", ".git");
     fs.mkdirSync(path.join(bare, "hooks"), { recursive: true });
     expect(canWrite(path.join(bare, "config"))).toBe(false);
+    // A nested .git that is a pointer (a gitfile or a symlink) is a descent
+    // redirect, not a real repository; the by-name gate refuses creating or
+    // rewriting it, so a command cannot drop a .git pointing elsewhere.
+    fs.mkdirSync(path.join(root, "ptr"), { recursive: true });
+    expect(canWrite(path.join(root, "ptr", ".git"))).toBe(false);
     expect(canWrite(path.join(bare, "hooks", "pre-commit"))).toBe(false);
     expect(canWrite(path.join(bare, "HEAD"))).toBe(false);
   });

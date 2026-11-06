@@ -68,20 +68,31 @@ export function startProtectedCreateMonitor(
   // start: the per-command walks are one in the plan and one in stop(). When
   // no baseline is supplied (e.g. a plan that did not compute it), fall back
   // to walking once here.
+  // The entry's own path with only its parent resolved (never the entry
+  // itself, which for a `.git` symlink would be its target): this is how the
+  // stop scan spells it, so a pre-existing pointer matches its baseline entry.
   const canonicalBaseline = (entry: string): string => {
     try {
-      return fs.realpathSync(entry);
+      return path.join(fs.realpathSync(path.dirname(entry)), path.basename(entry));
     } catch {
       return path.resolve(entry);
     }
   };
-  const baseline = new Set<string>();
+  // Baseline: each descent point present at command start, keyed by its own
+  // path, with its identity (type, dev:ino and pointer data). A plan-supplied
+  // entry is `<own path>\u0000<identity>`; an entry without an identity part
+  // is identified now.
+  const baseline = new Map<string, string>();
   if (nestedGitBaseline !== undefined) {
-    for (const nested of nestedGitBaseline) baseline.add(canonicalBaseline(nested));
+    for (const entry of nestedGitBaseline) {
+      const split = entry.indexOf("\u0000");
+      const own = canonicalBaseline(split === -1 ? entry : entry.slice(0, split));
+      baseline.set(own, split === -1 ? descentPointIdentity(own) : entry.slice(split + 1));
+    }
   } else {
     for (const root of scanRoots) {
       try {
-        for (const nested of nestedRealGitRepos(root)) baseline.add(nested);
+        for (const nested of nestedGitDescentPoints(root, scanRoots)) baseline.set(nested, descentPointIdentity(nested));
       } catch {
         violation = true;
       }
@@ -96,13 +107,15 @@ export function startProtectedCreateMonitor(
     for (const root of scanRoots) {
       let found: string[];
       try {
-        found = nestedRealGitRepos(root);
+        found = nestedGitDescentPoints(root, scanRoots);
       } catch {
         violation = true;
         continue;
       }
       for (const nested of found) {
-        if (baseline.has(nested)) continue;
+        // Unchanged since the start: left alone. New, or rewritten/replaced in
+        // place (same path, different identity): removed and the command fails.
+        if (baseline.get(nested) === descentPointIdentity(nested)) continue;
         const target = watchedTarget(nested);
         if (target === undefined) { violation = true; continue; }
         // Move the new repository's `.git` aside rather than delete it: the
@@ -215,7 +228,99 @@ function isRealGitRepository(gitDir: string): boolean {
  * module so the created-path monitor pulls in nothing but `node:fs`/`node:path`
  * and can run inside the standalone launchers that load it.
  */
-function nestedRealGitRepos(root: string): string[] {
+/**
+ * Identity of a nested `.git` descent point at one moment: its type, its
+ * dev:ino and, for a pointer, what it points at (a gitfile's first 4 KiB, a
+ * symlink's target). A real repository directory is identified by dev:ino
+ * only, since its contents change legitimately. The baseline records this at
+ * command start and the stop scan recomputes it, so a pointer rewritten in
+ * place, or a `.git` replaced by another, is caught even though its path did
+ * not change. Must match the plan's descentPointIdentity (bwrap) exactly.
+ */
+function descentPointIdentity(entry: string): string {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(entry);
+  } catch {
+    return "missing";
+  }
+  const kind = stat.isSymbolicLink() ? "link" : stat.isDirectory() ? "dir" : stat.isFile() ? "file" : "other";
+  let data = "";
+  try {
+    if (kind === "link") {
+      data = fs.readlinkSync(entry);
+    } else if (kind === "file") {
+      const fd = fs.openSync(entry, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      try {
+        const buffer = Buffer.alloc(4096);
+        const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        data = buffer.subarray(0, read).toString("hex");
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+  } catch {
+    data = "unreadable";
+  }
+  return `${kind}:${stat.dev}:${stat.ino}:${data}`;
+}
+
+/**
+ * Whether a nested `.git` pointer (a gitfile or a symlink) can carry planted
+ * code. Its target is read (the `gitdir:` line of a gitfile, or the link of a
+ * symlink), resolved against the pointer's own directory and then to a
+ * physical path, so an alternate spelling cannot pass as outside. A target
+ * inside a protected git surface of a writable root (`<root>/.git/worktrees/...`
+ * or `<root>/.git/modules/...`, which the sandbox keeps read-only) or outside
+ * every writable root is beyond what a confined command can write, so the
+ * pointer is benign: this is how a linked worktree (including AgenC's own
+ * `.agenc-worktrees/<slug>`) and a submodule record their `.git`, and a host
+ * process may add one while a command runs. Any other target is writable data
+ * a command could fill with a hook or config, so the pointer is a descent
+ * point. An unreadable, malformed or unresolvable pointer is a descent point
+ * (fail closed). Must match the monitor's / the policy's copy exactly.
+ */
+function nestedGitPointerIsDescentPoint(pointer: string, isLink: boolean, roots: readonly string[]): boolean {
+  let target: string;
+  try {
+    if (isLink) {
+      target = path.resolve(path.dirname(pointer), fs.readlinkSync(pointer));
+    } else {
+      const fd = fs.openSync(pointer, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      try {
+        const buffer = Buffer.alloc(4096);
+        const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        const line = buffer.subarray(0, read).toString("utf8").split(/\r?\n/u)[0] ?? "";
+        const match = /^gitdir:\s*(.+?)\s*$/u.exec(line);
+        if (match === null) return true;
+        target = path.resolve(path.dirname(pointer), match[1]!);
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+    target = fs.realpathSync(target);
+  } catch {
+    return true;
+  }
+  const within = (child: string, parent: string): boolean =>
+    child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : `${parent}${path.sep}`);
+  let insideAnyRoot = false;
+  for (const root of roots) {
+    let resolvedRoot: string;
+    try {
+      resolvedRoot = fs.realpathSync(root);
+    } catch {
+      resolvedRoot = path.resolve(root);
+    }
+    if (!within(target, resolvedRoot)) continue;
+    insideAnyRoot = true;
+    for (const surface of ["worktrees", "modules"]) {
+      if (within(target, path.join(resolvedRoot, ".git", surface))) return false;
+    }
+  }
+  return insideAnyRoot;
+}
+function nestedGitDescentPoints(root: string, roots: readonly string[] = [root]): string[] {
   const start = path.resolve(root);
   const topLevelGit = path.join(start, ".git");
   const found: string[] = [];
@@ -231,12 +336,21 @@ function nestedRealGitRepos(root: string): string[] {
     visited += 1;
     for (const entry of entries) {
       if (visited >= NESTED_GIT_SCAN_MAX_DIRS) return;
-      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
       const child = path.join(dir, entry.name);
       if (entry.name === ".git") {
-        if (child !== topLevelGit && isRealGitRepository(child)) found.push(child);
+        // A nested `.git` a later host-side git could descend through: a real
+        // repository directory, or a pointer (a gitfile or a symlink). Must
+        // mirror the policy's nestedGitFindings descentPoints exactly so the
+        // plan-provided baseline and this scan compare like for like.
+        if (child === topLevelGit) continue;
+        if (entry.isDirectory() && !entry.isSymbolicLink()) {
+          if (isRealGitRepository(child)) found.push(child);
+        } else if (entry.isFile() || entry.isSymbolicLink()) {
+          if (nestedGitPointerIsDescentPoint(child, entry.isSymbolicLink(), roots)) found.push(child);
+        }
         continue;
       }
+      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
       walk(child, depth + 1);
     }
   };

@@ -4,10 +4,13 @@ import type { LLMToolCall } from "../../src/llm/types.js";
 import type { Session } from "../../src/session/session.js";
 import type { TurnState } from "../../src/session/turn-state.js";
 import type { CompletedToolResultRecord } from "../../src/session/turn-state.js";
+import type { ToolDispatchResult } from "../../src/tool-registry.js";
+import { exitedSessionMessage } from "../../src/unified-exec/exited-sessions.js";
 import {
   appendRepeatToolAdvisory,
   blockRepeatedFailingCall,
   identicalFailureRun,
+  lastProgressIndex,
   observeRepeatToolCalls,
   REPEAT_TOOL_THRESHOLDS,
   REPEATED_FAILURE_BLOCK_THRESHOLD,
@@ -664,5 +667,312 @@ describe("blockRepeatedFailingCall", () => {
       completed(call(ab.name, ab.arguments, "e-2"), "String to replace not found", true),
     ]);
     expect(blockRepeatedFailingCall(state, session, ba)).not.toBeNull();
+  });
+
+  // tb4h music-harmony__w74KdQJ (released 0.19.30, 2026-11-06; trajectory in
+  // round4/jobs/tb4h): the model polled session 28 after its exit was
+  // returned, got "Unknown process id 28" three times and one refusal, then
+  // took 24 productive steps and had a checked answer. One more stale poll
+  // was refused again and the turn stopped with 38 minutes left, before the
+  // answer file was written.
+  describe("real progress between attempts", () => {
+    const POLL = { session_id: 28, chars: "", yield_time_ms: 1000, max_output_tokens: 100 };
+    const UNKNOWN = '{"error":"Unknown process id 28","code":"unknown_process"}';
+    type Step =
+      | { readonly step: number; readonly name: string; readonly args: Record<string, unknown>;
+          readonly isError: boolean; readonly content: string }
+      | { readonly step: number; readonly stalePoll: true };
+    /** A recorded exec_command: its first line and the hash of the full command keep it distinct. */
+    const exec = (step: number, firstLine: string, sha8: string): Step => ({
+      step, name: "exec_command", args: { cmd: `${firstLine} # step ${step}, sha256 ${sha8}` },
+      isError: false, content: "ok\n\n[exit 0]",
+    });
+    const writeFile = (step: number, file: string): Step => ({
+      step, name: "Write", args: { file_path: file, content: `step ${step}` },
+      isError: false, content: `File created successfully at: ${file}`,
+    });
+    const HEREDOC = "cd /tmp && python3 - <<'EOF'";
+    /** Steps 34 to 67 of the trajectory, in order. */
+    const RECORDED: readonly Step[] = [
+      { step: 34, name: "exec_command", args: {
+        cmd: "cd /tmp && timeout 180 python3 -m pip install --quiet music21 2>&1 | tail -3; python3 -c \"import music21; print('music21', music21.__version__)\"",
+        timeoutMs: 200000, yield_time_ms: 1000,
+      }, isError: false, content: "\n\n[exec yielded=true wall_time=1.0040s tokens=0 session_id=28]" },
+      { step: 35, name: "write_stdin", args: { session_id: 28, chars: "", yield_time_ms: 60000, max_output_tokens: 2000 },
+        isError: false, content: "\n[notice] A new release of pip is available: 24.0 -> 26.3\nmusic21 10.5.2\n\n\n[exit 0]" },
+      { step: 36, name: "write_stdin", args: POLL, isError: true, content: UNKNOWN },
+      { step: 37, name: "write_stdin", args: POLL, isError: true, content: UNKNOWN },
+      { step: 38, name: "write_stdin", args: POLL, isError: true, content: UNKNOWN },
+      writeFile(40, "/tmp/compose.py"),
+      exec(41, "cd /tmp && python3 compose.py 2>&1 | tail -60", "19290f2a"),
+      { step: 42, stalePoll: true },
+      writeFile(43, "/tmp/compose2.py"),
+      exec(44, HEREDOC, "6e8185b9"),
+      writeFile(45, "/tmp/compose2.py"),
+      exec(46, "cd /tmp && python3 compose2.py 2>&1 | tail -60", "7dedba6a"),
+      exec(47, HEREDOC, "55d53986"),
+      exec(48, HEREDOC, "8a316200"),
+      writeFile(49, "/tmp/final_compose.py"),
+      exec(50, "cd /tmp && python3 final_compose.py 2>&1 | tail -55", "2f3700c9"),
+      exec(51, HEREDOC, "b3563d02"),
+      exec(52, HEREDOC, "54c26832"),
+      exec(53, HEREDOC, "3fa208cf"),
+      exec(54, HEREDOC, "16abe17e"),
+      exec(55, HEREDOC, "1f284710"),
+      exec(56, "cd /tmp && grep -n \"inf\" final_compose3.py | head -30", "364d989f"),
+      exec(57, "cd /tmp && sed -n '85,130p' final_compose3.py", "3c7d73bb"),
+      exec(58, HEREDOC, "ba1bf615"),
+      exec(59, HEREDOC, "58280eca"),
+      exec(60, HEREDOC, "e6ce74bb"),
+      exec(61, HEREDOC, "381dbb69"),
+      exec(62, HEREDOC, "dd08f621"),
+      exec(63, HEREDOC, "2543471a"),
+      exec(64, HEREDOC, "3e9cfa3a"),
+      exec(65, HEREDOC, "bdf6da3b"),
+      exec(66, HEREDOC, "e40ad903"),
+      { step: 67, stalePoll: true },
+    ];
+
+    /**
+     * Feed the recorded steps, one model sample each. At a stale poll ask the
+     * guard as executeTools does: a refusal is recorded in place of the call,
+     * otherwise the poll runs and fails the way it did on 0.19.30.
+     */
+    function replay(): Map<number, ToolDispatchResult | null> {
+      const { session } = mkSessionStub();
+      const state = mkState([], 34);
+      const decisions = new Map<number, ToolDispatchResult | null>();
+      for (const step of RECORDED) {
+        state.modelSampleOrdinal = step.step;
+        if ("stalePoll" in step) {
+          const poll = call("write_stdin", POLL, `poll-${step.step}`);
+          const decision = blockRepeatedFailingCall(state, session, poll);
+          decisions.set(step.step, decision);
+          state.completedToolResults.push(decision === null
+            ? completed(poll, UNKNOWN, true)
+            : completed(poll, decision.content, true, decision.metadata));
+          continue;
+        }
+        state.completedToolResults.push(
+          completed(call(step.name, step.args, `s-${step.step}`), step.content, step.isError),
+        );
+      }
+      return decisions;
+    }
+
+    test("the recorded stale polls after real progress run instead of being refused", () => {
+      const decisions = replay();
+      // 0.19.30 refused step 42 (a Write and a new command came after the
+      // three failures) and ended the turn at step 67.
+      expect(decisions.get(42)).toBeNull();
+      expect(decisions.get(67)).toBeNull();
+    });
+
+    test("answered in plain words, a stale poll never counts toward a refusal", () => {
+      const { session } = mkSessionStub();
+      const answer = exitedSessionMessage(28, { exitCode: 0, finalOutput: "music21 10.5.2" }, "poll");
+      const state = mkState(Array.from({ length: 6 }, (_, i) =>
+        completed(call("write_stdin", POLL, `p-${i}`), answer, false)));
+      const poll = call("write_stdin", POLL, "p-next");
+      expect(identicalFailureRun(state, poll).count).toBe(0);
+      expect(blockRepeatedFailingCall(state, session, poll)).toBeNull();
+    });
+
+    test("a call repeated among reads, polls and an already-run command is still refused, then stops the turn", () => {
+      const { session } = mkSessionStub();
+      const read = call("FileRead", { file_path: "/tmp/a" }, "r-0");
+      const state = mkState([
+        completed(call("exec_command", { cmd: "ls" }, "ls-0"), "a\n\n[exit 0]", false),
+        completed(call(write.name, write.arguments, "w-0"), DENIAL, true),
+        completed(read, "1\tx", false),
+        completed(call(write.name, write.arguments, "w-1"), DENIAL, true),
+        completed(call("write_stdin", { session_id: 7, chars: "" }, "p-0"), "tick\n\n[exit 0]", false),
+        completed(call(write.name, write.arguments, "w-2"), DENIAL, true),
+        completed(call("exec_command", { cmd: "ls" }, "ls-1"), "a\n\n[exit 0]", false),
+      ], 5);
+      const first = blockRepeatedFailingCall(state, session, write);
+      expect(first).not.toBeNull();
+      expect(first?.preventContinuation).toBeUndefined();
+      state.completedToolResults.push(
+        completed(call(write.name, write.arguments, "w-3"), first!.content, true, first!.metadata),
+        completed(call(read.name, read.arguments, "r-1"), "1\tx", false),
+      );
+      state.modelSampleOrdinal = 6;
+      expect(blockRepeatedFailingCall(state, session, write)?.preventContinuation).toBe(true);
+    });
+
+    test("progress is a result that could change a failing call's outcome, the first time it succeeds", () => {
+      const ok = (name: string, args: unknown, id: string, isError = false, metadata?: Record<string, unknown>) =>
+        completed(call(name, args, id), isError ? DENIAL : "ok", isError, metadata);
+      const records: CompletedToolResultRecord[] = [];
+      const progressAfter = (record: CompletedToolResultRecord) => {
+        records.push(record);
+        return lastProgressIndex(mkState(records)) === records.length - 1;
+      };
+      // Reading is never progress, whichever tool reads.
+      expect(progressAfter(ok("exec_command", { cmd: "ls" }, "a"))).toBe(false);
+      expect(progressAfter(ok("exec_command", { cmd: "cat notes.txt" }, "b"))).toBe(false);
+      expect(progressAfter(ok("exec_command", { cmd: "cd src && grep -n todo app.ts | head -20" }, "c"))).toBe(false);
+      expect(progressAfter(ok("FileRead", { file_path: "/tmp/a" }, "d"))).toBe(false);
+      expect(progressAfter(ok("write_stdin", { session_id: 7, chars: "" }, "e"))).toBe(false);
+      expect(progressAfter(ok("write_stdin", { session_id: 7, chars: "ls\n" }, "f"))).toBe(false);
+      // A command that can change things counts once; a new timeout does not make it new.
+      expect(progressAfter(ok("exec_command", { cmd: "npm run build" }, "g"))).toBe(true);
+      expect(progressAfter(ok("exec_command", { cmd: "npm run build", timeoutMs: 5 }, "h"))).toBe(false);
+      expect(progressAfter(ok("exec_command", { cmd: "npm test" }, "i", true))).toBe(false);
+      expect(progressAfter(ok("exec_command", { cmd: "npm test" }, "j"))).toBe(true);
+      // Input counts only when it reached a live session.
+      expect(progressAfter(ok("write_stdin", { session_id: 7, chars: "y\n" }, "k"))).toBe(true);
+      expect(progressAfter(ok("write_stdin", { session_id: 28, chars: "n\n" }, "l", false, { sessionExited: true }))).toBe(false);
+      // A file change counts; the same change again does not.
+      expect(progressAfter(ok("Write", { file_path: "/tmp/a", content: "x" }, "m", true))).toBe(false);
+      expect(progressAfter(ok("Write", { file_path: "/tmp/a", content: "x" }, "n"))).toBe(true);
+      expect(progressAfter(ok("Write", { file_path: "/tmp/a", content: "x" }, "o"))).toBe(false);
+      expect(progressAfter(ok("apply_patch", { input: "*** Begin Patch" }, "p"))).toBe(true);
+      expect(progressAfter(ok("Edit", { file_path: "/tmp/a" }, "q"))).toBe(true);
+    });
+
+    test("a test rerun after a real code change runs; after a read-only look it is still refused", () => {
+      const { session } = mkSessionStub();
+      const rerun = call("exec_command", { cmd: "npm test" }, "t");
+      const failure = "1 failing\n\n[exec exit_code=1 wall_time=2.1000s tokens=40]";
+      const failures = ["t-0", "t-1", "t-2"].map((id) => completed({ ...rerun, id }, failure, true));
+      const afterLook = mkState([...failures,
+        completed(call("exec_command", { cmd: "cat src/app.ts" }, "c"), "x\n\n[exit 0]", false)], 4);
+      expect(blockRepeatedFailingCall(afterLook, session, rerun)).not.toBeNull();
+      const afterFix = mkState([...failures,
+        completed(call("apply_patch", { input: "*** Begin Patch\n*** Update File: src/app.ts" }, "p"),
+          "Success. Updated the following files:\nM src/app.ts", false)], 4);
+      expect(blockRepeatedFailingCall(afterFix, session, rerun)).toBeNull();
+    });
+
+    /**
+     * The fix31s review's driver (reviews/tests/zz-fix31srv-loop.test.ts): a
+     * model retries one failing `npm start`, up to four attempts per cycle,
+     * and does one other thing between cycles. It asks the guard before each
+     * attempt as executeTools does. Returns the attempt at which a refusal
+     * ended the turn, or Infinity after 40 cycles.
+     */
+    function attemptsUntilStop(between: (cycle: number) => CompletedToolResultRecord | undefined): number {
+      const { session } = mkSessionStub();
+      const state = mkState([], 1);
+      const eperm = "listen EPERM: operation not permitted 0.0.0.0:3000\n\n[exec exit_code=1 wall_time=0.2s tokens=12]";
+      let attempts = 0;
+      for (let cycle = 0; cycle < 40; cycle += 1) {
+        for (let k = 0; k < 4; k += 1) {
+          state.modelSampleOrdinal += 1;
+          attempts += 1;
+          const retry = call("exec_command", { cmd: "npm start" }, `x-${cycle}-${k}`);
+          const blocked = blockRepeatedFailingCall(state, session, retry);
+          if (blocked === null) {
+            state.completedToolResults.push(completed(retry, eperm, true));
+            continue;
+          }
+          state.completedToolResults.push(completed(retry, blocked.content, true, blocked.metadata));
+          if (blocked.preventContinuation === true) return attempts;
+          break;
+        }
+        state.modelSampleOrdinal += 1;
+        const other = between(cycle);
+        if (other !== undefined) state.completedToolResults.push(other);
+      }
+      return Number.POSITIVE_INFINITY;
+    }
+
+    // The review ran 160 attempts of each of these loops without a stop under
+    // the first version of the progress rule; 0.19.30 stops them at the fifth.
+    test("a retry loop with a new read-only shell command between cycles is stopped at the fifth attempt", () => {
+      expect(attemptsUntilStop((c) =>
+        completed(call("exec_command", { cmd: `cat notes-${c}.txt` }, `r-${c}`), "x\n\n[exit 0]", false))).toBe(5);
+    });
+
+    test("a retry loop with input the exited-session answer did not send is stopped at the fifth attempt", () => {
+      const notSent = exitedSessionMessage(28, { exitCode: 0 }, "write");
+      expect(attemptsUntilStop((c) =>
+        completed(call("write_stdin", { session_id: 28, chars: `y${c}\n` }, `ws-${c}`), notSent, false,
+          { sessionExited: true }))).toBe(5);
+    });
+
+    test("a retry loop with the same Write between cycles is stopped once that Write stops changing the file", () => {
+      // The first Write created the file, so it is progress; the identical ones after it are not.
+      expect(attemptsUntilStop((c) =>
+        completed(call("Write", { file_path: "/w/a.txt", content: "same" }, `w-${c}`),
+          "File created successfully at: /w/a.txt", false))).toBe(9);
+    });
+
+    test("a retry loop with a read, a repeated command or nothing between cycles is still stopped", () => {
+      expect(attemptsUntilStop((c) =>
+        completed(call("FileRead", { file_path: `/w/n-${c}` }, `f-${c}`), "1\tx", false))).toBe(5);
+      expect(attemptsUntilStop((c) =>
+        completed(call("exec_command", { cmd: "ls" }, `l-${c}`), "a\n\n[exit 0]", false))).toBe(5);
+      // The first build could change the outcome; the same build again cannot.
+      expect(attemptsUntilStop((c) =>
+        completed(call("exec_command", { cmd: "npm run build" }, `b-${c}`), "built\n\n[exit 0]", false))).toBe(9);
+      expect(attemptsUntilStop(() => undefined)).toBe(5);
+    });
+
+    test("a real code change before each rerun keeps the retries running", () => {
+      expect(attemptsUntilStop((c) =>
+        completed(call("apply_patch", { input: `*** Begin Patch\n*** Update File: server.js\n@@ attempt ${c}` }, `p-${c}`),
+          "Success. Updated the following files:\nM server.js", false))).toBe(Number.POSITIVE_INFINITY);
+    });
+
+    test("a refusal before progress does not end the turn, and a new loop after it is stopped again", () => {
+      const { session } = mkSessionStub();
+      const fail = (id: string) => completed(call(write.name, write.arguments, id), DENIAL, true);
+      const state = mkState([fail("w-0"), fail("w-1"), fail("w-2")], 3);
+      const first = blockRepeatedFailingCall(state, session, write);
+      expect(first).not.toBeNull();
+      state.completedToolResults.push(
+        completed(call(write.name, write.arguments, "w-r1"), first!.content, true, first!.metadata),
+        completed(call("apply_patch", { input: "*** Begin Patch" }, "ap"), "Success. Updated the following files:\nM a.ts", false),
+      );
+      state.modelSampleOrdinal = 5;
+      expect(blockRepeatedFailingCall(state, session, write)).toBeNull();
+      state.completedToolResults.push(fail("w-3"), fail("w-4"), fail("w-5"));
+      state.modelSampleOrdinal = 8;
+      const again = blockRepeatedFailingCall(state, session, write);
+      expect(again).not.toBeNull();
+      expect(again?.preventContinuation).toBeUndefined();
+      state.completedToolResults.push(
+        completed(call(write.name, write.arguments, "w-r2"), again!.content, true, again!.metadata),
+      );
+      state.modelSampleOrdinal = 9;
+      expect(blockRepeatedFailingCall(state, session, write)?.preventContinuation).toBe(true);
+    });
+
+    // Flt30-11 (lt30-1931-mpv-C-r1 on 0.19.30, requests 12 to 16): after the
+    // last apply_patch, the same grep and node --check calls were refused for
+    // sandbox_permissions "use_default" until the turn stopped. That value
+    // now runs as "default" (sandbox-permission-values.test.ts); a value that
+    // stays invalid is still a loop and still stops at the same point.
+    test("the Flt30-11 loop still stops where it stopped", () => {
+      const { session } = mkSessionStub();
+      const fields = { justification: "", login: false, max_output_tokens: 12000, prefix_rule: [],
+        sandbox_permissions: "use_default", shell: "bash", tty: false, workdir: "/workspace", yield_time_ms: 10000 };
+      const grep = call("exec_command", { ...fields, cmd: "grep -n \"taillight\" src/car.js | head -80" }, "g");
+      const check = call("exec_command", { ...fields, cmd: "node --check src/car.js; node --check server.js" }, "k");
+      const refusal = "<tool_use_error>InputValidationError: sandbox_permissions must be the plain string " +
+        '"default", "require_escalated" or "with_additional_permissions", not an object.</tool_use_error>';
+      const state = mkState([
+        completed(call("apply_patch", { input: "*** Begin Patch" }, "ap"), "Success. Updated the following files:\nM /workspace/src/car.js", false),
+      ], 13);
+      for (const sample of [13, 14, 15]) {
+        state.completedToolResults.push(
+          completed({ ...grep, id: `g-${sample}` }, refusal, true),
+          completed({ ...check, id: `k-${sample}` }, refusal, true),
+        );
+      }
+      state.modelSampleOrdinal = 16;
+      for (const repeated of [grep, check]) {
+        const blocked = blockRepeatedFailingCall(state, session, repeated);
+        expect(blocked?.preventContinuation).toBeUndefined();
+        state.completedToolResults.push(
+          completed({ ...repeated, id: `${repeated.id}-16` }, blocked!.content, true, blocked!.metadata),
+        );
+      }
+      state.modelSampleOrdinal = 17;
+      expect(blockRepeatedFailingCall(state, session, grep)?.preventContinuation).toBe(true);
+    });
   });
 });

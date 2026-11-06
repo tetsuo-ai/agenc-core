@@ -144,6 +144,25 @@ describe("requestsHelpers", () => {
     expect(requestsHelpers(text)).toBe(false);
   });
 
+  // fx31 re-review: a removed span must not join the words on either side of it.
+  test("the words around a code span or a quote do not join into a request", () => {
+    expect(requestsHelpers("Use `--no` sub-agents flag when you run the tests.")).toBe(false);
+    expect(requestsHelpers('Use "--no" sub-agents flag when you run the tests.')).toBe(false);
+    // A request next to a code span still counts.
+    expect(requestsHelpers("Use two sub-agents to run `npm test` and `npm run lint`.")).toBe(true);
+  });
+
+  // fx31 re-review 2: an opt-out right before a code span or a quote still declines, as on 0.19.30.
+  test.each([
+    "Earlier you asked me to use two sub-agents. Do not use sub-agents `at all`.",
+    'Earlier you asked me to use two sub-agents. Do not use sub-agents "at all".',
+    "Use two sub-agents for the API review. Do not use sub-agents `elsewhere`.",
+    "Spawn two helpers to read the files, but do not delegate `the summary`.",
+    "Do not use helpers `here`; use two sub-agents for the docs.",
+  ])("an opt-out followed by a code span or a quote still wins: %s", (prompt) => {
+    expect(requestsHelpers(prompt)).toBe(false);
+  });
+
   test("treats missing input as no request", () => {
     expect(requestsHelpers(null)).toBe(false);
   });
@@ -213,6 +232,37 @@ describe("routeSwarmTask names helpers like agents and workers", () => {
     const decision = routeSwarmTask(prompt);
     expect(decision.signals).not.toContain("explicit_parallelism");
     expect(decision.mode).toBe("sequential");
+  });
+
+  // sub30 Fsub30-3: code spans and quotes are examples, not requests, as for requestsHelpers.
+  test.each([
+    "Explain `use two helpers` in the docs.",
+    "Document what ```\nuse two helpers\n``` does in the README.",
+    'Is "use two helpers" a good name for this setting?',
+    "Reply to this quote:\n> Parallelize the review across four agents.\nKeep the answer short.",
+  ])("a request for helpers inside code or quotes is not explicit parallelism: %s", (prompt) => {
+    const decision = routeSwarmTask(prompt);
+    expect(decision.signals).not.toContain("explicit_parallelism");
+    expect(decision.mode).toBe("sequential");
+  });
+
+  // fx31 review: a removed span must not join the words around it. These routed sequential on 0.19.30 and stay so.
+  test.each([
+    "Run `npm test` in parallel.",
+    "Delegate `review` to two agents.",
+    "Review `api/` and `tui/` concurrently.",
+    'Check "alpha.txt" and "beta.txt" in parallel.',
+  ])("a pattern does not match across a removed span: %s", (prompt) => {
+    const decision = routeSwarmTask(prompt);
+    expect(decision.signals).not.toContain("explicit_parallelism");
+    expect(decision.mode).toBe("sequential");
+  });
+
+  test("a request next to a quoted example still routes parallel", () => {
+    expect(routeSwarmTask("Use two helpers to review the API and the TUI, as the `swarm` docs describe.")).toMatchObject({
+      mode: "parallel",
+      signals: expect.arrayContaining(["explicit_parallelism"]),
+    });
   });
 
   test.each(["Do not use helpers for this task", "Handle this yourself without helpers", "Use no helpers"])(

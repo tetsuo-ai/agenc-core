@@ -63,3 +63,32 @@ test.each(["linux_seccomp", "none"] as const)("selected sandbox %s controls the 
     expect(seen[0]?.command.env.CI).toBe("1");
   } finally { await manager.closeAll("test cleanup"); await rm(workspace, { recursive: true, force: true }); }
 });
+
+// fx31 review, 0a8691485 (the reviewer's test): local binding only lets a command listen on loopback, so it carries
+// no traffic. The retry defaults of a network-disabled sandbox read { allowLocalBinding: true } as a managed route.
+test("a network-disabled sandbox with local binding still gets the npm and pip retry defaults", async () => {
+  const workspace = await realpath(await mkdtemp(join(tmpdir(), "agenc-local-binding-retries-")));
+  const permissions = permissionProfileFromRuntimePermissions(unrestrictedFileSystemPolicy(), "disabled");
+  const manager = new UnifiedExecProcessManager({
+    cwd: workspace, sessionTempRoot: workspace, baseEnv: { PATH: process.env.PATH ?? "", CI: "1" },
+    sandboxManager: {
+      selectInitial: () => "linux_seccomp",
+      transform: (request: SandboxTransformRequest): SandboxExecRequest => ({
+        command: [process.execPath, "-e", "process.stdout.write(JSON.stringify([process.env.npm_config_fetch_retries ?? null,process.env.PIP_RETRIES ?? null]))"],
+        cwd: request.command.cwd, env: request.command.env, sandbox: request.sandbox,
+        windowsSandboxLevel: request.windowsSandboxLevel,
+        windowsSandboxPrivateDesktop: request.windowsSandboxPrivateDesktop,
+        permissionProfile: request.permissions, fileSystemSandboxPolicy: request.permissions.fileSystem,
+        networkSandboxPolicy: request.permissions.network, arg0: "agenc-local-binding-retries-test",
+      }),
+    },
+  } as never);
+  try {
+    const result = await manager.execCommand({ cmd: "npm --version", workdir: workspace, yield_time_ms: 2_000,
+      runtimeSandbox: { permissionProfile: permissions, sandboxPolicyCwd: workspace, sessionTempRoot: workspace,
+        preference: "require", network: { allowLocalBinding: true } },
+    } as never);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(["0", "0"]);
+  } finally { await manager.closeAll("test cleanup"); await rm(workspace, { recursive: true, force: true }); }
+});

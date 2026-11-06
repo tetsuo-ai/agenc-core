@@ -3,6 +3,7 @@ import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import { shellWorkspaceMutationPermission } from "./shell-mutation-permission.js";
 import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
+import { foldDefaultSandboxPermission } from "./sandbox-permission-values.js";
 import { UnifiedExecError, UnifiedExecUnavailableError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import {
@@ -80,6 +81,20 @@ function errorResult(error: unknown): ToolResult {
   if (error instanceof UnifiedExecUnavailableError) {
     return execUnavailableToolResult(error, "tool:system.write-stdin:exec-unavailable");
   }
+  if (error instanceof UnifiedExecError && error.code === "session_exited") {
+    // Not a failure: the session ended earlier and the message says how. As
+    // an ordinary result a stale poll never feeds the repeat refusal; its text
+    // never changes, so a model that keeps polling is still stopped by the
+    // behavioral backstop.
+    return {
+      content: error.message,
+      metadata: { sessionExited: true },
+      effectDisposition: confirmedNoEffectDisposition(
+        "tool:system.write-stdin:session-exited",
+        error.message,
+      ),
+    };
+  }
   const message = error instanceof Error ? error.message : String(error);
   return {
     content: safeStringify({
@@ -154,6 +169,9 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         ...shellWorkspaceMutationPermission(args),
       });
     },
+    // Same fold as exec_command: a default-meaning sandbox_permissions value
+    // is "default", never an escalation.
+    reshapeModelArgs: foldDefaultSandboxPermission,
     inputSchema: {
       type: "object",
       properties: {

@@ -55,8 +55,10 @@ describe("per-command nested-repository walk count", () => {
     fs.mkdirSync(join(workspace, "sub", ".git", "objects"), { recursive: true });
     fs.writeFileSync(join(workspace, "sub", ".git", "HEAD"), "ref: refs/heads/main\n");
     const plan = createBwrapCommandArgs(["/bin/true"], policy(), workspace, workspace, options());
-    expect(plan.nestedGitBaseline.map((p) => fs.realpathSync(p)))
-      .toContain(fs.realpathSync(join(workspace, "sub", ".git")));
+    // Each entry is "<own path>\u0000<identity>"; the path part is the `.git`
+    // entry's own path with its parent resolved.
+    expect(plan.nestedGitBaseline.map((entry) => entry.split("\u0000")[0]))
+      .toContain(join(fs.realpathSync(join(workspace, "sub")), ".git"));
   });
 
   it("falls back to a start walk when no baseline is supplied", () => {

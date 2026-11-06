@@ -1,9 +1,11 @@
 import { describe, expect, test } from "vitest";
 
+import type { LLMMessage } from "../../src/llm/types.js";
 import {
   OMITTED_BINARY_CARRIER_TEXT,
   isCanonicalBase64Body,
   omitAlteredBinaryCarriers,
+  restoreOmittedBinaryCarriers,
   validatedBinaryCarrierBody,
 } from "../../src/llm/content-conversion.js";
 
@@ -86,5 +88,44 @@ describe("validated binary carriers", () => {
       content: "other",
       omitted: false,
     });
+  });
+});
+
+describe("restoring a kept message's carriers after compaction", () => {
+  const omitted = { type: "text" as const, text: OMITTED_BINARY_CARRIER_TEXT };
+  const image = { type: "image_url" as const, image_url: { url: DATA_URL } };
+  const toolResult = (id: string, parts: LLMMessage["content"]): LLMMessage =>
+    ({ role: "tool", toolCallId: id, toolName: "FileRead", content: parts });
+
+  test("puts back the live carrier of a kept tool result or user message, matched by id", () => {
+    const live: LLMMessage[] = [
+      toolResult("read-1", [{ type: "text", text: "Read image /a.png" }, image]),
+      { role: "user", content: [{ type: "text", text: "Screen" }, image], runtimeOnly: { userMessageId: "user-1" } },
+    ];
+    const replacement: LLMMessage[] = [
+      { role: "user", content: "Summary." },
+      toolResult("read-1", [{ type: "text", text: "Read image /a.png" }, omitted]),
+      { role: "user", content: [{ type: "text", text: "Screen" }, omitted], runtimeOnly: { responseItemId: "user-1" } },
+    ];
+    const restored = restoreOmittedBinaryCarriers(replacement, live);
+    expect(restored[0]).toBe(replacement[0]);
+    expect(restored[1]!.content).toEqual([{ type: "text", text: "Read image /a.png" }, image]);
+    expect(restored[2]!.content).toEqual([{ type: "text", text: "Screen" }, image]);
+    // Copies, so the replacement never shares a part with the history it replaced.
+    expect((restored[1]!.content as unknown[])[1]).not.toBe(image);
+    expect(replacement[1]!.content).toEqual([{ type: "text", text: "Read image /a.png" }, omitted]);
+  });
+
+  test("restores nothing for an ambiguous id, parts that do not line up, or a live part that is no carrier", () => {
+    const kept = toolResult("read-1", [{ type: "text", text: "Read image /a.png" }, omitted]);
+    const cases: LLMMessage[][] = [
+      [toolResult("read-1", [{ type: "text", text: "x" }, image]), toolResult("read-1", [{ type: "text", text: "y" }, image])],
+      [toolResult("read-1", [image, image])],
+      [toolResult("read-1", [{ type: "text", text: "Read image /a.png" }])],
+      [toolResult("read-1", [{ type: "text", text: "Read image /a.png" }, { type: "text", text: "not an image" }])],
+      [toolResult("read-2", [{ type: "text", text: "Read image /a.png" }, image])],
+      [{ role: "user", content: [{ type: "text", text: "Read image /a.png" }, image] }],
+    ];
+    for (const live of cases) expect(restoreOmittedBinaryCarriers([kept], live)[0]).toBe(kept);
   });
 });

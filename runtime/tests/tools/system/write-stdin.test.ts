@@ -113,6 +113,24 @@ describe("write_stdin failures after the write started", () => {
   });
 });
 
+// tb4h music-harmony (2026-11-06): polls of a session that had already exited
+// got "Unknown process id" as an error, which fed the repeat refusal.
+describe("write_stdin to a session that already exited", () => {
+  test("returns the manager's plain-words answer as an ordinary, no-effect result", async () => {
+    const message =
+      "Session 4 already exited with code 0. Nothing more will come from it, so there is nothing " +
+      "left to poll. Its final output, returned earlier, ended with:\nmusic21 10.5.2";
+    const tool = toolWhoseManagerThrows(new UnifiedExecError("session_exited", message));
+    for (const chars of ["", "y\n"]) {
+      const result = await tool.execute({ session_id: 4, chars });
+      expect(result.isError).toBeFalsy();
+      expect(result.content).toBe(message);
+      expect(result.metadata).toMatchObject({ sessionExited: true });
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    }
+  });
+});
+
 function completedWrite(overrides: Partial<ExecCommandToolOutput> = {}): ExecCommandToolOutput {
   return {
     output: "hello",

@@ -102,6 +102,9 @@ const ENUMERATED_HELPER_RE =
   /^[ \t]*(?:[-*+][ \t]+)?(?:helper|sub[ -]?agent|agent)[ \t]+(one|two|three|four|five|six|[1-9])[ \t]*[:.)-]/gimu;
 // Code, quoted lines and double-quoted text are examples, not requests.
 const QUOTED_OR_CODE_RE = /```[\s\S]*?(?:```|(?![\s\S]))|~~~[\s\S]*?(?:~~~|(?![\s\S]))|`[^`\n]*`|^[ \t]*>.*$|"[^"\n]*"|“[^”\n]*”/gmu;
+// What a removed span becomes: neither a word nor a space, so no pattern joins the words on either side of it
+// ("Run `npm test` in parallel", "Use `--no` sub-agents flag").
+const REMOVED_SPAN = " | ";
 
 function normalizedInput(input: string | null): string {
   return (input ?? "").replace(/\s+/gu, " ").trim();
@@ -169,9 +172,16 @@ export function routeSwarmTask(userInput: string | null): SwarmRoutingDecision {
   const signals = new Set<SwarmRoutingSignal>();
   const listItems = independentListItemCount(userInput ?? "");
   const negatedIndependence = NEGATED_INDEPENDENCE_RE.test(input);
+  // Code spans, fenced blocks, quoted lines and double-quoted text are
+  // examples, not requests, as for requestsHelpers: "Explain `use two
+  // helpers` in the docs" asks for no helpers (sub30 Fsub30-3). Each span
+  // becomes a separator that is neither a word nor a space, so a pattern
+  // cannot join the words around it ("Run `npm test` in parallel" stays
+  // sequential, as when the span was read): the signal can only be lost.
+  const requested = normalizedInput(rawInput.replace(QUOTED_OR_CODE_RE, REMOVED_SPAN));
   if (EXPLICIT_NO_DELEGATION_RE.test(input))
     signals.add("explicit_no_delegation");
-  if (EXPLICIT_PARALLEL_RE.test(input)) signals.add("explicit_parallelism");
+  if (EXPLICIT_PARALLEL_RE.test(requested)) signals.add("explicit_parallelism");
   if (EXPLICIT_INDEPENDENCE_RE.test(input) && !negatedIndependence)
     signals.add("explicit_independence");
   if (listItems >= 2) signals.add("independent_list");
@@ -271,7 +281,8 @@ function helperRequestInClause(clause: string): boolean {
  * Whether a root-human request explicitly asks for helpers, outside /swarm (prompts/attachments/delegation-request.ts):
  * it names helpers, helper agents or sub-agents to use, spawn or delegate to ("using two helpers", "spawn a
  * sub-agent", "delegate the review to two agents", "Helper one: ..." and "Helper two: ..." lines). Code spans, fenced
- * blocks, quoted lines and double-quoted text are ignored, a programming noun after the helper noun rules the phrase
+ * blocks, quoted lines and double-quoted text are ignored, and the words on either side of one do not join into a
+ * request, so "Use `--no` sub-agents flag" is no request. A programming noun after the helper noun rules the phrase
  * out, and an explicit no-delegation constraint wins. Each sentence is read on its own: a negation cue before the
  * match ("please avoid using sub-agents", "instead of spawning sub-agents") or a question about the feature ("how do I
  * use sub-agents?") is not a request. A conditional request still counts: the reminder it brings states the
@@ -279,9 +290,12 @@ function helperRequestInClause(clause: string): boolean {
  */
 export function requestsHelpers(userInput: string | null): boolean {
   if (!HELPER_WORD_RE.test(userInput ?? "")) return false;
-  const unquoted = (userInput ?? "").replace(QUOTED_OR_CODE_RE, " ");
+  const unquoted = (userInput ?? "").replace(QUOTED_OR_CODE_RE, REMOVED_SPAN);
   const input = normalizedInput(unquoted);
-  if (input.length === 0 || EXPLICIT_NO_DELEGATION_RE.test(input)) return false;
+  // The opt-out reads a removed span as a space, as on 0.19.30, so it still ends its clause before a span: "Do not
+  // use sub-agents `at all`." declines. The separator applies to the request patterns only.
+  const optOut = normalizedInput((userInput ?? "").replace(QUOTED_OR_CODE_RE, " "));
+  if (input.length === 0 || EXPLICIT_NO_DELEGATION_RE.test(optOut)) return false;
   if (input.split(/(?<=[.!?;])\s+/u).some(helperRequestInClause)) return true;
   const labels = new Set([...unquoted.matchAll(ENUMERATED_HELPER_RE)].map((match) => match[1]?.toLowerCase()));
   return labels.size >= 2;

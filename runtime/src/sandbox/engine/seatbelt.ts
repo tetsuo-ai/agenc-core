@@ -703,6 +703,18 @@ function buildSeatbeltAccessPolicy(
         .replaceAll('"', '\\"');
       requireParts.push(`(require-not (regex #"${regex}"))`);
     }
+    // A standalone nested repository (`<root>/.../.git`, not the top-level
+    // `.git` handled above) carries the same execution and redirection
+    // surface a later host-side git would run when it descends through a
+    // gitlink. On Linux the created-path monitor removes such a repository if
+    // a command assembles one during its run; macOS has no such monitor, so
+    // the profile statically refuses writes to that surface at any depth,
+    // exactly the narrowed set Linux keeps read-only. Inert data (refs,
+    // objects, index, HEAD) stays writable, so ordinary work in an existing
+    // nested repository is fine and only `git init` of a nested repository
+    // needs the same escalation as at the root.
+    const nestedRegex = seatbeltNestedGitSurfaceRegex(root).replaceAll('"', '\\"');
+    requireParts.push(`(require-not (regex #"${nestedRegex}"))`);
     policyComponents.push(`(require-all ${requireParts.join(" ")} )`);
   });
 
@@ -711,6 +723,23 @@ function buildSeatbeltAccessPolicy(
     `(allow ${action}\n${policyComponents.join(" ")}\n)`,
     params,
   ];
+}
+
+function seatbeltNestedGitSurfaceRegex(root: string): string {
+  let normalizedRoot = root;
+  while (normalizedRoot.length > 1 && normalizedRoot.endsWith("/")) {
+    normalizedRoot = normalizedRoot.slice(0, -1);
+  }
+  const base = normalizedRoot === "/" ? "" : escapeRegex(normalizedRoot);
+  const surface =
+    "(hooks|config|config\\.worktree|info|modules|worktrees|commondir|remotes|branches|objects/info)";
+  // `.+/` requires at least one path segment before `.git`, so this matches a
+  // nested repository only, never the top-level `<root>/.git`. The optional
+  // group also matches the nested `.git` entry itself, as the top-level rule
+  // does: without it a prepared directory could be renamed onto a nested
+  // `.git`, or a gitfile or symlink pointer created there, and macOS has no
+  // monitor to remove either afterward.
+  return `^${base}/.+/\\.git(/${surface}(/.*)?)?$`;
 }
 
 function seatbeltProtectedMetadataNameRegex(root: string, name: string): string {
