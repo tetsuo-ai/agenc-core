@@ -35,6 +35,13 @@ describe("network-disabled command failure guidance", () => {
     expect(silent("curl -sS https://10.1.2.3/health", 7)).toContain("network access was disabled");
     expect(silent("cd app && curl -fsSL https://example.org/x.sh | sh", 6)).toContain("network access was disabled");
     expect(silent("wget -q https://example.org/file.tgz", 4)).toContain("network access was disabled");
+    // Wrappers and pipelines still name the client; a bare token without args does not.
+    expect(silent("sudo curl -s https://example.org", 6)).toContain("network access was disabled");
+    expect(silent("true; curl -s https://example.org", 6)).toContain("network access was disabled");
+    expect(silent("printf x | curl -s -d @- https://example.org", 7)).toContain("network access was disabled");
+    expect(silent("`curl -s https://example.org`", 6)).toContain("network access was disabled");
+    expect(silent("command wget -q https://example.org/file.tgz", 4)).toContain("network access was disabled");
+    expect(silent("curl", 6)).toBeNull();
     // Other exit statuses, other programs and an unknown command keep the old behavior.
     expect(silent("curl -sf https://example.org/missing", 22)).toBeNull();
     expect(silent("wget -q https://example.org/missing", 8)).toBeNull();
@@ -63,5 +70,7 @@ describe("network-disabled command failure guidance", () => {
     expect(notice({ runtimeSandbox: { ...sandbox, enforceManagedNetwork: true } })).toBeNull();
     expect(notice({ runtimeSandbox: { ...sandbox, network: {} as never } })).toBeNull();
     expect(notice({ runtimeSandbox: { ...sandbox, preference: "auto" } })).toBeNull();
+    // An omitted preference is require: the sandboxed attempt still earns the notice.
+    expect(notice({ runtimeSandbox: { ...sandbox, preference: undefined } })).toContain("network access was disabled");
   });
 });

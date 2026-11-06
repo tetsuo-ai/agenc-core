@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 vi.mock("../../src/config/env.js", () => { throw new Error("cwd ingress must not load configuration projection"); });
 vi.mock("../../src/config/schema.js", () => { throw new Error("cwd ingress must not construct settings schemas"); });
-import { resolveCliCwdForStartup } from "../../src/bin/cli-cwd.js";
+import { readProcessCwdSafely, resolveCliCwdForStartup } from "../../src/bin/cli-cwd.js";
 import { resolveWorkspace } from "../../src/config/workspace-environment.js";
 
 describe("configuration-free startup cwd", () => {
@@ -16,5 +16,9 @@ describe("configuration-free startup cwd", () => {
     expect(resolveCliCwdForStartup({ AGENC_WORKSPACE: "relative" }, { cwdFn: () => { throw new Error("gone"); } })).toEqual({
       ok: false, message: "AGENC_WORKSPACE must be absolute when the current working directory is unavailable.",
     });
+  });
+  it("never throws when process.cwd() is gone: resume and the Windows card read null", () => {
+    expect(readProcessCwdSafely(() => "/work")).toBe("/work");
+    expect(readProcessCwdSafely(() => { throw new Error("gone"); })).toBeNull();
   });
 });
