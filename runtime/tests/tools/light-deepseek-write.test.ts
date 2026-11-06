@@ -83,3 +83,20 @@ test.each([
   const full = registryFor(provider, model).registry;
   expect(await head(new Set(full.tools.map(tool => tool.name)))).toBe(await head());
 });
+
+// fx30 review N2: with apply_patch disabled, native Flash's Write still said "Use apply_patch for partial changes".
+test("native Flash's Write points to apply_patch only when apply_patch is built", async () => {
+  const { session, registry: full } = registryFor("deepseek", "deepseek-flash");
+  const write = (registry: ReturnType<typeof buildToolRegistry>) =>
+    registry.toLLMTools().find(tool => tool.function.name === "Write")!.function.description ?? "";
+  expect(write(full)).toContain("Use apply_patch for partial changes");
+  const noPatch = buildToolRegistry({
+    workspaceRoot: "/tmp", lightMode: true, getSession: () => session, toolsConfig: { disabled_tools: ["apply_patch"] },
+  });
+  expect(noPatch.toLLMTools().map(tool => tool.function.name)).not.toContain("apply_patch");
+  expect(write(noPatch)).not.toContain("apply_patch");
+  // The Light Write that Edit sessions use; Edit loads through system.searchTools.
+  expect(write(noPatch)).toBe(write(registryFor("deepseek", "deepseek-v4-pro").registry));
+  const loaded = await noPatch.dispatch({ id: "load-edit", name: "system.searchTools", arguments: JSON.stringify({ select: "Edit" }) });
+  expect((JSON.parse(loaded.content) as { loaded?: string[] }).loaded).toEqual(["Edit"]);
+});
