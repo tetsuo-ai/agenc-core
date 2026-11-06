@@ -88,7 +88,10 @@ export function startProtectedCreateMonitor(
     }
   }
   // Nested repositories moved aside by the final check, for the notice.
-  const moved: Array<{ readonly from: string; readonly to: string }> = [];
+  const outcomes: Array<
+    | { readonly kind: "moved"; readonly dir: string; readonly to: string }
+    | { readonly kind: "removed" | "left"; readonly dir: string }
+  > = [];
   const scanNestedRepos = () => {
     for (const root of scanRoots) {
       let found: string[];
@@ -104,16 +107,18 @@ export function startProtectedCreateMonitor(
         if (target === undefined) { violation = true; continue; }
         // Move the new repository's `.git` aside rather than delete it: the
         // folder stops being a repository (git looks only for `.git`), so the
-        // protection holds, and nothing is lost if the user, not the command,
-        // made it. Only if the move cannot be made is it removed instead.
+        // protection holds, and nothing is lost whoever made it. Only if the
+        // move cannot be made is it removed instead; if neither can be done it
+        // is left in place. Every outcome is reported in the notice.
+        const dir = path.dirname(nested);
         try {
           const destination = moveGitAside(target);
-          if (destination !== undefined) moved.push({ from: nested, to: destination });
+          if (destination !== undefined) outcomes.push({ kind: "moved", dir, to: destination });
         } catch {
           try {
-            checkTarget(target);
+            if (checkTarget(target)) outcomes.push({ kind: "removed", dir });
           } catch {
-            // left in place on any error below
+            outcomes.push({ kind: "left", dir });
           }
         }
         // A new real nested repository is itself the violation, whether or
@@ -159,11 +164,24 @@ export function startProtectedCreateMonitor(
       return violation;
     },
     notice(): string | undefined {
-      if (moved.length === 0) return undefined;
-      return moved.map(({ from, to }) =>
-        `agenc: this command created a nested git repository at ${path.dirname(from)}; ` +
-        `its .git was moved aside to ${to}, so git no longer treats that folder as a repository. ` +
-        "Nothing was deleted. If you created it yourself, rename it back to .git.").join("\n");
+      if (outcomes.length === 0) return undefined;
+      // The monitor cannot tell who made the repository, so no message claims
+      // it; renaming it back would reinstate its hooks and config, so the
+      // message cautions first.
+      return outcomes.map((outcome) => {
+        const where = `agenc: a nested git repository appeared at ${outcome.dir} while this command ran`;
+        switch (outcome.kind) {
+          case "moved":
+            return `${where}, so its .git was moved aside to ${outcome.to} and git no longer treats that folder ` +
+              "as a repository. Nothing was deleted. If you made it yourself, check its hooks and config, then " +
+              `rename it back to .git; otherwise delete ${outcome.to}.`;
+          case "removed":
+            return `${where} and could not be moved aside, so its .git was removed.`;
+          case "left":
+            return `${where} and could not be moved aside or removed. Check ${outcome.dir}/.git/hooks and ` +
+              `${outcome.dir}/.git/config before running git there.`;
+        }
+      }).join("\n");
     },
   };
 }
@@ -279,20 +297,37 @@ function moveGitAside(target: WatchedTarget): string | undefined {
       closeQuietly(directory);
       directory = child.fd;
     }
-    if (!entryExists(directory, target.leaf)) return undefined;
-    const stamp = new Date().toISOString().replace(/[-:.]/gu, "");
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      moveAsideSequence += 1;
-      const name = `${target.leaf}.agenc-moved-${stamp}-${process.pid}-${moveAsideSequence}`;
-      if (entryExists(directory, name)) continue;
-      const pinned = directory;
-      withOwnerAccess(pinned, () => fs.renameSync(descriptorPath(pinned, target.leaf), descriptorPath(pinned, name)));
-      return path.join(path.sep, ...target.parents, name);
+    // withOwnerAccess may add owner rwx to this folder (the user's own) to
+    // look up or rename the entry; put its original mode back afterwards.
+    const parent = directory;
+    const originalMode = fs.statSync(descriptorPath(parent)).mode & 0o7777;
+    try {
+      return moveWithinParent(parent, target);
+    } finally {
+      try {
+        const self = descriptorPath(parent);
+        if ((fs.statSync(self).mode & 0o7777) !== originalMode) fs.chmodSync(self, originalMode);
+      } catch {
+        // The folder is gone or unreadable: nothing left to restore.
+      }
     }
-    throw new Error("no free name to move the nested repository aside");
   } finally {
     closeQuietly(directory);
   }
+}
+
+/** Renames `target.leaf` within the pinned parent `directory` to a free `.git.agenc-moved-...` name. */
+function moveWithinParent(directory: number, target: WatchedTarget): string | undefined {
+  if (!entryExists(directory, target.leaf)) return undefined;
+  const stamp = new Date().toISOString().replace(/[-:.]/gu, "");
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    moveAsideSequence += 1;
+    const name = `${target.leaf}.agenc-moved-${stamp}-${process.pid}-${moveAsideSequence}`;
+    if (entryExists(directory, name)) continue;
+    withOwnerAccess(directory, () => fs.renameSync(descriptorPath(directory, target.leaf), descriptorPath(directory, name)));
+    return path.join(path.sep, ...target.parents, name);
+  }
+  throw new Error("no free name to move the nested repository aside");
 }
 
 /** A clean exit becomes a failure when the command created a protected path. */

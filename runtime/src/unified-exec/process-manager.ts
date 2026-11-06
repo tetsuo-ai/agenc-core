@@ -2385,7 +2385,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
             const protectedCreateViolation = stopAttachedProtectedCreateMonitor(child);
             // Say where a nested repository created during the command went.
             const protectedCreateNotice = takeAttachedProtectedCreateNotice(child);
-            if (protectedCreateNotice !== undefined) notifyData("stderr", protectedCreateNotice);
+            if (protectedCreateNotice !== undefined) notifyData("stderr", `${protectedCreateNotice}\n`);
             if (state.exitCode !== null && state.exitCode !== undefined) {
               state = { ...state, exitCode: protectedCreateExitCode(state.exitCode, protectedCreateViolation) };
             }

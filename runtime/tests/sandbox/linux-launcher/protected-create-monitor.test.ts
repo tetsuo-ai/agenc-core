@@ -357,8 +357,63 @@ describe.runIf(process.platform === "linux")("nested-repository scan", () => {
     const kept = path.join(root, "sub", aside[0]!);
     expect(fs.lstatSync(path.join(kept, "HEAD")).isFile()).toBe(true);
     expect(fs.readFileSync(path.join(kept, "config"), "utf8")).toContain("fsmonitor = /planted");
-    // The failure message says where it went.
-    expect(monitor.notice?.()).toContain(kept);
+    // The failure message says where it went, does not claim who made it,
+    // and cautions before renaming it back.
+    const notice = monitor.notice?.() ?? "";
+    expect(notice).toContain(kept);
+    expect(notice).toContain("appeared at");
+    expect(notice).toContain("check its hooks and config");
+    expect(notice).not.toMatch(/this command created|you created/u);
+  });
+
+  const busy = () => { throw Object.assign(new Error("EBUSY: resource busy"), { code: "EBUSY" }); };
+  const plainRepo = (dir: string) => {
+    fs.mkdirSync(path.join(dir, ".git", "objects"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+  };
+
+  it("removes the nested .git when it cannot be moved aside, and says so", () => {
+    // Review fallback F1: the rename fails, so the protection holds by removal.
+    const monitor = startProtectedCreateMonitor([], [root]);
+    plainRepo(path.join(root, "sub"));
+    vi.spyOn(fs, "renameSync").mockImplementation(busy as never);
+    expect(monitor.stop()).toBe(true);
+    expect(fs.existsSync(path.join(root, "sub", ".git"))).toBe(false);
+    expect(movedAside(path.join(root, "sub"))).toHaveLength(0);
+    expect(monitor.notice?.()).toMatch(/could not be moved aside, so its \.git was removed\./u);
+  });
+
+  it("reports a nested .git it can neither move aside nor remove", () => {
+    // Review fallback F2: rename and removal both fail; the repository is left
+    // in place, the command fails, and the notice says what to check.
+    const monitor = startProtectedCreateMonitor([], [root]);
+    plainRepo(path.join(root, "sub"));
+    vi.spyOn(fs, "renameSync").mockImplementation(busy as never);
+    vi.spyOn(fs, "unlinkSync").mockImplementation(busy as never);
+    vi.spyOn(fs, "rmdirSync").mockImplementation(busy as never);
+    const violation = monitor.stop();
+    vi.restoreAllMocks();
+    expect(violation).toBe(true);
+    expect(fs.existsSync(path.join(root, "sub", ".git", "HEAD"))).toBe(true);
+    const notice = monitor.notice?.() ?? "";
+    expect(notice).toContain("could not be moved aside or removed");
+    expect(notice).toContain(`${path.join(root, "sub")}/.git/hooks`);
+  });
+
+  it("restores the parent folder's mode after moving a nested .git aside", () => {
+    const monitor = startProtectedCreateMonitor([], [root]);
+    plainRepo(path.join(root, "sub"));
+    // A folder the owner cannot write: the move needs write on it, so the
+    // monitor raises the owner's access for the rename and puts it back.
+    fs.chmodSync(path.join(root, "sub"), 0o500);
+    try {
+      expect(monitor.stop()).toBe(true);
+      expect(fs.statSync(path.join(root, "sub")).mode & 0o7777).toBe(0o500);
+      expect(fs.existsSync(path.join(root, "sub", ".git"))).toBe(false);
+      expect(movedAside(path.join(root, "sub"))).toHaveLength(1);
+    } finally {
+      fs.chmodSync(path.join(root, "sub"), 0o700);
+    }
   });
 
   it("leaves host git no longer treating the folder as a repository once moved aside", () => {
