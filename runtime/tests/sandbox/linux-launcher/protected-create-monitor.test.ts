@@ -298,6 +298,26 @@ describe("protected-create exit code", () => {
   });
 });
 
+describe("off Linux", () => {
+  // The descriptor walk needs Linux /proc, so off Linux the monitor removes
+  // nothing and fails the command (fail closed). Stubbing the platform keeps
+  // this covered on the Linux gate without a skipped test. (macOS uses the
+  // Seatbelt sandbox, not this monitor.)
+  it("removes nothing and fails the command", () => {
+    const real = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    try {
+      const target = path.join(root, ".agenc");
+      fs.mkdirSync(target);
+      const monitor = startProtectedCreateMonitor([target]);
+      expect(monitor.stop()).toBe(true);
+      expect(fs.existsSync(target)).toBe(true);
+    } finally {
+      Object.defineProperty(process, "platform", { value: real, configurable: true });
+    }
+  });
+});
+
 /**
  * A workspace whose missing `.agenc` has an ancestor `.agenc` (a project under
  * a HOME holding ~/.agenc): it cannot get a placeholder mount.
