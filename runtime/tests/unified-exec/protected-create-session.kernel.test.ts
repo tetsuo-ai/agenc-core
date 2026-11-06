@@ -124,6 +124,35 @@ describe("protected-create targets in the warm session sandbox", () => {
     expect(created.exitCode).toBe(1);
     expect(fs.existsSync(path.join(work, ".agenc"))).toBe(false);
   });
+
+  it("narrows a real .git on the per-command route: inert writes land, its surface stays protected", async () => {
+    // A real repository is narrowed (#3172): refs, objects, index, HEAD and other inert data under
+    // .git are writable, while the execution and redirection surface (hooks, config, info, modules,
+    // worktrees, commondir, objects/info, ...) stays read-only. This is the per-command route
+    // (persistentSession false); the warm-session route is covered by "keeps git work ...".
+    execFileSync("git", ["init", "-q", "-b", "main", work], { stdio: "ignore" });
+    const config = fs.readFileSync(path.join(work, ".git", "config"), "utf8");
+    const perCommand = { ...policy, persistentSession: false };
+    // Ordinary inert data under .git is writable.
+    const ref = await run("printf 0000000000000000000000000000000000000000 > .git/refs/heads/topic && printf wrote", { runtimeSandbox: perCommand });
+    expect(ref.stdout).toBe("wrote");
+    expect(ref.exitCode).toBe(0);
+    expect(fs.existsSync(path.join(work, ".git", "refs", "heads", "topic"))).toBe(true);
+    // A missing surface entry created during a command is removed and the clean exit fails.
+    const modules = await run("mkdir .git/modules && printf ran", { runtimeSandbox: perCommand });
+    expect(modules.stdout).toBe("ran");
+    expect(modules.exitCode).toBe(1);
+    expect(fs.existsSync(path.join(work, ".git", "modules"))).toBe(false);
+    const commondir = await run("printf ../elsewhere > .git/commondir; printf done", { runtimeSandbox: perCommand });
+    expect(commondir.stdout).toBe("done");
+    expect(commondir.exitCode).toBe(1);
+    expect(fs.existsSync(path.join(work, ".git", "commondir"))).toBe(false);
+    // An existing surface entry stays read-only.
+    const hookWrite = await run("printf x > .git/hooks/pre-commit 2>/dev/null && echo wrote || echo blocked", { runtimeSandbox: perCommand });
+    expect(hookWrite.stdout.trim()).toBe("blocked");
+    expect(fs.existsSync(path.join(work, ".git", "hooks", "pre-commit"))).toBe(false);
+    expect(fs.readFileSync(path.join(work, ".git", "config"), "utf8")).toBe(config);
+  });
 });
 
 describe("read-only commands that run side by side", () => {
