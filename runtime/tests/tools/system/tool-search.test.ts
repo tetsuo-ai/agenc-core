@@ -77,6 +77,36 @@ describe("system.searchTools", () => {
     expect(JSON.parse((await tool.execute({ query: "unmatchablezzzz" })).content).results).toEqual([]);
   });
 
+  test("another harness's tool name finds the AgenC tool for that job first", async () => {
+    // As agents/v2 registers them: spawn_agent names its own keywords, and the
+    // other agent tools get the default family keyword "agent".
+    const agentEntry = (name: string, description: string, keywords = ["agent"]): ToolCatalogEntry => ({
+      ...deferredCatalogEntry(name), description,
+      metadata: { ...deferredCatalogEntry(name).metadata, family: "agent", keywords },
+    });
+    const agents = [
+      agentEntry("assign_task", "Assign one correlated task to an existing non-root reusable worker."),
+      agentEntry("close_agent", "Close a spawned agent and its descendants."),
+      agentEntry("inspect_csv_agent_job", "Read a bounded summary and item page for a CSV agent job."),
+      agentEntry("list_agents", "List live agents and recovered task results in the current root thread tree."),
+      agentEntry("list_csv_job_reviews", "List a bounded cursor page of CSV job items with unknown outcomes."),
+      agentEntry("report_agent_job_result", "Called by a subagent worker to record its analysis result."),
+      agentEntry("spawn_agent", "Spawns an agent to work on the specified task.", ["agent", "spawn", "delegate", "subagent"]),
+    ];
+    for (const query of ["Agent", "agent", "sub-agent", "Sub-Agent", "sub agent", "subagent"]) {
+      const payload = JSON.parse((await searchFixture(agents).execute({ query })).content);
+      expect(payload.results[0]?.name, query).toBe("spawn_agent");
+    }
+    // Several targets keep the table's order of preference.
+    const shells = [searchEntry("system.bash", "Run a bash command."), searchEntry("exec_command", "Run a program in a terminal session.")];
+    const bash = JSON.parse((await searchFixture(shells).execute({ query: "bash" })).content);
+    expect(bash.results.map((entry: { name: string }) => entry.name)).toEqual(["exec_command", "system.bash"]);
+    // A tool registered under the query's exact name still comes first.
+    const exact = JSON.parse((await searchFixture([...agents, agentEntry("agent", "A plugin tool named agent.")])
+      .execute({ query: "Agent" })).content);
+    expect(exact.results.slice(0, 2).map((entry: { name: string }) => entry.name)).toEqual(["agent", "spawn_agent"]);
+  });
+
   test("partial matching respects catalog scope, hidden and exact family/source/profile filters", async () => {
     const hidden = { ...searchCatalog[0]!, metadata: { ...searchCatalog[0]!.metadata, hiddenByDefault: true } };
     const tool = searchFixture([hidden, ...searchCatalog.slice(1)]);

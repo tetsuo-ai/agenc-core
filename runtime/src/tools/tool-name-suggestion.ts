@@ -67,6 +67,17 @@ export const FOREIGN_TOOL_NAME_TARGETS: ReadonlyArray<{
 ];
 
 /**
+ * The AgenC tools that another harness's tool name `name` points to, in order
+ * of preference, or an empty list. `Agent`, `sub-agent` and `subagent` all
+ * point to spawn_agent. Tool search ranks these first for such a query.
+ */
+export function foreignToolNameTargets(name: string): readonly string[] {
+  const key = toolNameKey(name);
+  if (key.length === 0) return [];
+  return FOREIGN_TOOL_NAME_TARGETS.find((entry) => entry.names.includes(key))?.tools ?? [];
+}
+
+/**
  * The available tool `requested` most likely meant, or undefined without a
  * clear match. An available name that differs only in case or separators
  * wins (`grep` -> `Grep`) unless more than one does; otherwise the first
@@ -82,10 +93,7 @@ export function suggestAvailableToolName(
   if (key.length === 0) return undefined;
   const sameKey = [...available].filter((name) => toolNameKey(name) === key);
   if (sameKey.length > 0) return sameKey.length === 1 ? sameKey[0] : undefined;
-  const target = FOREIGN_TOOL_NAME_TARGETS.find((entry) =>
-    entry.names.includes(key),
-  );
-  return target?.tools.find((tool) => available.has(tool));
+  return foreignToolNameTargets(requested).find((tool) => available.has(tool));
 }
 
 /** What a suggestion needs to know about one tool the session can dispatch. */
