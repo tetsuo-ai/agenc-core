@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { prepareDirectBwrapPlan } from "../../../src/sandbox/linux-launcher/direct-bwrap.js";
+import { consumeDirectBwrapPlan, prepareDirectBwrapPlan } from "../../../src/sandbox/linux-launcher/direct-bwrap.js";
 import { prepareLinuxSandboxProbeHint } from "../../../src/sandbox/linux-launcher/probe-cache.js";
 import { spawnContainedProcess, terminateProcessTreeAndReport, waitForContainedProcessSettlement } from "../../../src/utils/supervisedProcess.js";
 
@@ -20,11 +20,26 @@ function modelContent(result: Awaited<ReturnType<typeof run>>): string {
 const runtime = fileURLToPath(new URL("../../../", import.meta.url));
 const quote = (value: string): string => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 let root: string, cwd: string, temp: string;
+
+// Since #3172 a real .git is narrowed: only its execution/redirection surface (hooks, config,
+// config.worktree, info, modules, worktrees, commondir, remotes, branches, objects/info) stays
+// read-only and every other path under it is writable inert data. A surface entry that is
+// missing becomes a created-path-monitor target, and the immutable direct route has no
+// per-command monitor, so it declines such a workspace. Provision every surface entry so the
+// plan carries no created-path targets and the immutable direct path applies, as it did for
+// the whole .git before #3172. The declining case is covered on its own below.
+function provisionNarrowedGit(git: string): void {
+  for (const dir of ["hooks", "info", "modules", "worktrees", "remotes", "branches", "objects/info"]) {
+    fs.mkdirSync(path.join(git, dir), { recursive: true });
+  }
+  for (const file of ["config", "config.worktree", "commondir"]) fs.writeFileSync(path.join(git, file), "");
+}
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "agenc-direct-kernel-"));
   cwd = path.join(root, "work"); temp = path.join(root, "temp");
   fs.mkdirSync(cwd); fs.mkdirSync(temp);
-  for (const name of [".git", ".agenc", ".agents"]) fs.mkdirSync(path.join(cwd, name));
+  for (const name of [".agenc", ".agents"]) fs.mkdirSync(path.join(cwd, name));
+  provisionNarrowedGit(path.join(cwd, ".git"));
 });
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
@@ -82,7 +97,7 @@ test.each([false, true])("keeps filesystem confinement and closes every transpor
   const outside = path.join(root, "outside"); fs.writeFileSync(outside, "retained");
   const code = `import os,json
 denied=[]
-for p in ${JSON.stringify([outside, path.join(cwd, ".git/new"), path.join(cwd, ".agenc/new"), path.join(cwd, ".agents/new")])}:
+for p in ${JSON.stringify([outside, path.join(cwd, ".git/config"), path.join(cwd, ".agenc/new"), path.join(cwd, ".agents/new")])}:
  try:
   with open(p,'w') as f: f.write('BAD')
  except PermissionError: denied.append(p)
@@ -102,6 +117,39 @@ print(json.dumps({'denied':len(denied),'fds':fds,'env':os.environ.get('NODE_ENV'
   expect(JSON.parse(result.stdout)).toEqual({ denied: 4, fds: [], env: "production" });
   expect(fs.readFileSync(outside, "utf8")).toBe("retained");
   expect(fs.readFileSync(path.join(cwd, "allowed"), "utf8")).toBe("once");
+});
+
+test("declines the immutable direct route for a narrowed .git with missing surface entries", () => {
+  // With the surface entries missing the plan carries created-path targets, so the immutable
+  // direct route must decline; a caller that runs the created-path monitor (production, through
+  // prepareDirectBwrapV3Plan with monitorProtectedCreates) still gets a plan carrying those
+  // entries. Real-kernel enforcement of the surface and of the monitored route is covered by
+  // linux-launcher.kernel.test.ts and unified-exec/protected-create-session.kernel.test.ts.
+  const git = path.join(cwd, ".git");
+  fs.rmSync(git, { recursive: true, force: true }); fs.mkdirSync(git);
+  const profile = { fileSystem: { kind: "restricted", includePlatformDefaults: true, entries: [
+    { path: { kind: "special", value: { kind: "root" } }, access: "read" },
+    { path: { kind: "path", path: cwd }, access: "write" },
+  ] }, network: "disabled" };
+  const args = [path.join(runtime, "bin/agenc-linux-sandbox"), "--sandbox-policy-cwd", cwd,
+    "--command-cwd", cwd, "--session-temp-root", temp, "--permission-profile", JSON.stringify(profile),
+    "--", "/bin/bash", "-c", "printf ordinary"];
+  const env = { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: cwd, NODE_ENV: "production" };
+  expect(prepareDirectBwrapPlan({ program: process.execPath, args, cwd, env })).toBeUndefined();
+  const monitored = prepareDirectBwrapPlan({ program: process.execPath, args, cwd, env, monitorProtectedCreates: true });
+  expect(monitored, "a caller that runs the monitor gets a plan").toBeDefined();
+  const handoff = consumeDirectBwrapPlan(monitored!);
+  try {
+    // The planner resolves targets to physical paths; compare against the physical cwd.
+    const physicalCwd = fs.realpathSync(cwd);
+    const relTargets = (handoff.protectedCreateTargets ?? []).map(target => path.relative(physicalCwd, target));
+    for (const surface of [".git/config", ".git/hooks", ".git/info", path.join(".git", "objects", "info")]) {
+      expect(relTargets, JSON.stringify(relTargets)).toContain(surface);
+    }
+    expect(relTargets).not.toContain(".git");
+  } finally {
+    handoff.dispose();
+  }
 });
 
 test("matches the direct route without prepared evidence", async () => {
