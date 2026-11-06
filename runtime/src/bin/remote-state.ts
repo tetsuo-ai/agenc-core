@@ -1,5 +1,5 @@
 // Local pairing state only. No connector, relay, credential read or network import.
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { readDaemonRuntimeInfo, resolveAgenCDaemonRuntimeInfoPath } from "../app-server/daemon-runtime-info.js";
@@ -77,8 +77,22 @@ export function revokeLegacyRemote(context: RemoteCliRuntimeContext): LegacyRemo
   } catch (error) {
     errors.push(error);
   }
-  // The same test the connectors make before they keep running.
-  return { revoked: !existsSync(pairPath(context)), errors };
+  // pair.json is gone, so no connector can keep or reuse the pairing. Only
+  // ENOENT (nothing there) and ENOTDIR (its folder is now a file) prove it is
+  // gone; existsSync would read any other error -- EACCES on a folder that
+  // lost its search bit, a folder owned by another user -- as "not there" and
+  // report a pairing still on disk as revoked. Any such error is not revoked,
+  // so the daemon fails closed.
+  let revoked: boolean;
+  try {
+    lstatSync(pairPath(context));
+    revoked = false;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    revoked = code === "ENOENT" || code === "ENOTDIR";
+    if (!revoked) errors.push(error);
+  }
+  return { revoked, errors };
 }
 export function cookiePath(context: RemoteCliRuntimeContext): string {
   return join(context.home.path, "daemon.cookie");

@@ -115,6 +115,7 @@ import {
   stopMarker,
   writePairFile,
 } from "../../src/bin/remote-state.js";
+import { McpHttpSseServerTransport } from "../../src/mcp-server/http-sse.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { ConfigStore } from "../config/store.js";
@@ -4526,6 +4527,109 @@ token_cap = 123
         await running.catch(() => {});
       }
       await rm(agencHome, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it("review B: stops when a reload turns remote control off, cannot revoke the pairing and its MCP change then fails", async () => {
+    const agencHome = await tempAgencHome();
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-rvb-mcp-"));
+    const workspaceA = join(workspaceRoot, "workspace-a");
+    const workspaceB = join(workspaceRoot, "workspace-b");
+    await Promise.all([mkdir(workspaceA), mkdir(workspaceB)]);
+    const port = await availableLoopbackPort();
+    const mcpServer = (workspace: string) =>
+      `\n[mcp.server]\nenabled = true\ntransport = "sse"\nhost = "127.0.0.1"\nport = ${port}\nworkspace = ${JSON.stringify(workspace)}\n`;
+    await writeFile(
+      join(agencHome, "config.toml"),
+      `config_version = 2\n\n[remote_control]\nenabled = true\n${mcpServer(workspaceA)}`,
+    );
+    const host = createHost(agencHome);
+    host.env[AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV] = String(LOADED_DAEMON_REQUEST_TIMEOUT_MS);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    const remote = captureRemoteCliRuntimeContext({ AGENC_HOME: agencHome });
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    const replace = vi.spyOn(McpHttpSseServerTransport.prototype, "replaceServerFactory");
+    let legacy: WebSocket | undefined;
+    let settled = false;
+    const answerTo = (socket: WebSocket, id: string) => new Promise<Record<string, unknown>>((resolve) => {
+      const onMessage = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (message.id !== id) return;
+        socket.off("message", onMessage);
+        resolve(message);
+      };
+      socket.on("message", onMessage);
+    });
+    try {
+      await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
+      const webSocketUrl = await waitForDaemonWebSocketUrl(
+        io,
+        LOADED_DAEMON_MILESTONE_BUDGET_MS,
+        { running, stderrText: io.stderrText },
+      );
+      // A connector started before remote_control.enabled existed: the
+      // daemon cookie and no bridge flag.
+      const authCookie = (await readFile(cookiePath, "utf8")).trim();
+      legacy = new WebSocket(webSocketUrl);
+      await once(legacy, "open");
+      const initialized = answerTo(legacy, "legacy");
+      legacy.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: "legacy",
+        method: "initialize",
+        params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION }, authCookie, capabilities: {} },
+      }));
+      await expect(initialized).resolves.toMatchObject({ result: { type: "initialized" } });
+      writePairFile(remote, {
+        pairingId: "legacy-pairing",
+        hostSecret: "legacy-secret",
+        machineName: "fixture",
+        relayUrl: "wss://relay.invalid",
+        backendUrl: "https://backend.invalid",
+        createdAt: "2026-11-01T00:00:00.000Z",
+      });
+      chmodSync(join(agencHome, "remote"), 0o500);
+      // The same reload changes the MCP workspace, and applying that change
+      // fails after the revocation has already failed.
+      replace.mockImplementation(() => {
+        throw new Error("injected MCP workspace apply failure");
+      });
+      await writeFile(join(agencHome, "config.toml"), `config_version = 2\n${mcpServer(workspaceB)}`);
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.not.toBe(0);
+      expect(existsSync(pairPath(remote))).toBe(true);
+      const outcome = await Promise.race([running, delay(5_000).then(() => "still running" as const)]);
+      settled = outcome !== "still running";
+      if (!settled) {
+        // Remote control is off and the pairing is left, yet the cookie-only
+        // client is still served.
+        const after = answerTo(legacy, "after");
+        legacy.send(JSON.stringify({ jsonrpc: "2.0", id: "after", method: "session.list", params: {} }));
+        const answer = await Promise.race([after, delay(2_000).then(() => null)]);
+        expect(answer?.result, "a cookie-only client is served after the failed revocation").toBeUndefined();
+      }
+      expect(outcome).toBe(1);
+      expect(io.stderrText()).toContain("the phone remote pairing could not be revoked");
+    } finally {
+      replace.mockRestore();
+      chmodSync(join(agencHome, "remote"), 0o700);
+      legacy?.terminate();
+      if (!settled) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await Promise.all([
+        rm(agencHome, { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
     }
   }, 90_000);
 

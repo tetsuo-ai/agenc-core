@@ -1368,6 +1368,18 @@ async function runAgenCDaemonForegroundLocked(
             // In the same step as adopting the setting, before any later
             // await can hand a request to a pairing it no longer allows.
             revocationFailure = revokeLegacyRemotePairing();
+            if (revocationFailure !== undefined) {
+              // Fail closed right here, before adopt() or anything after it
+              // can throw and skip the stop: set the shutdown state, resolve
+              // the failure, then throw so the reload fails and the prepared
+              // MCP handle is rejected in the finally. A reload whose MCP
+              // change also fails can no longer leave the daemon serving a
+              // pairing the configuration no longer allows.
+              io.stderr.write(`agenc: ${revocationFailure.message}; stopping the daemon\n`);
+              shuttingDown = true;
+              resolveRemoteRevocationFailure(revocationFailure);
+              throw revocationFailure;
+            }
             activeMcpServer = preparedMcpChange.adopt();
             adopted = true;
           } finally {
@@ -1375,15 +1387,9 @@ async function runAgenCDaemonForegroundLocked(
               await preparedMcpChange.reject();
             }
           }
-          if (revocationFailure !== undefined) {
-            io.stderr.write(`agenc: ${revocationFailure.message}; stopping the daemon\n`);
-            shuttingDown = true;
-            resolveRemoteRevocationFailure(revocationFailure);
-          }
           if (preparedMcpChange.closePreviousAfterAdoption) {
             await closeReplacedDaemonMcpServer(previousMcpServer, io);
           }
-          if (revocationFailure !== undefined) throw revocationFailure;
           // Open sessions keep the config they started with, except the
           // cross-provider subagent settings: a provider the user turned off
           // must stop taking spawns now, not after a restart. A session that
