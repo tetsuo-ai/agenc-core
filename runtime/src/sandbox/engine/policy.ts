@@ -402,8 +402,9 @@ export function getWritableRootsWithCwd(
     // sandbox refuses a planted hook/config/alternate there too. Missing
     // carve-outs inside it are watched by the created-path monitor, as for the
     // top-level narrowed `.git`.
-    const nestedRepoGitDirs = nestedGitMetadataDirs(root);
-    const nestedGitCarveouts = nestedRepoGitDirs.flatMap((gitDir) =>
+    const nestedGit = nestedGitFindings(root);
+    const nestedRepoGitDirs = nestedGit.descentPoints;
+    const nestedGitCarveouts = nestedGit.repoDirs.flatMap((gitDir) =>
       gitNarrowedReadOnlyCarveouts(gitDir),
     );
     const readOnlySubpaths = dedupPaths([
@@ -824,9 +825,25 @@ const NESTED_GIT_SCAN_MAX_DIRS = 4096;
  * The scan never follows a symlink and never descends into a `.git`; it is
  * bounded in depth and in directories visited so it cannot walk a huge tree.
  */
-function nestedGitMetadataDirs(root: string): string[] {
+/**
+ * Findings of the bounded nested-`.git` scan under `root`, from a single walk:
+ * `repoDirs` are real nested repositories (HEAD + objects) whose execution
+ * surface is narrowed read-only; `descentPoints` are every nested `.git` a
+ * later host-side git could descend through, which is the repositories plus
+ * `.git` pointers (a gitfile, i.e. a regular file, or a symlink). The
+ * created-path monitor uses `descentPoints` as its baseline so a pointer that
+ * already exists (for example a linked worktree's `.git` gitfile) is left
+ * alone while one a command creates during its run is caught.
+ */
+interface NestedGitFindings {
+  readonly repoDirs: string[];
+  readonly descentPoints: string[];
+}
+export function nestedGitFindings(root: string): NestedGitFindings {
   const start = normalizePathForPolicy(root);
-  const found: string[] = [];
+  const topLevelGit = path.join(start, GIT_METADATA_DIR_NAME);
+  const repoDirs: string[] = [];
+  const descentPoints: string[] = [];
   let visited = 0;
   const walk = (dir: string, depth: number): void => {
     if (depth > NESTED_GIT_SCAN_MAX_DEPTH || visited >= NESTED_GIT_SCAN_MAX_DIRS) return;
@@ -839,22 +856,26 @@ function nestedGitMetadataDirs(root: string): string[] {
     visited += 1;
     for (const entry of entries) {
       if (visited >= NESTED_GIT_SCAN_MAX_DIRS) return;
-      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
       const child = path.join(dir, entry.name);
       if (entry.name === GIT_METADATA_DIR_NAME) {
-        // A `.git` directory, not the root's own: a nested repository. Record
-        // it when it is a real repository, and do not descend into it (its
-        // contents are git data).
-        if (child !== path.join(start, GIT_METADATA_DIR_NAME) && gitDirectoryIsRepository(child)) {
-          found.push(child);
+        // A `.git` that is not the root's own. A real repository directory is
+        // narrowed and never descended into. A `.git` pointer (a gitfile or a
+        // symlink) is a descent redirect, not inert data, so it is a descent
+        // point even though it is not a directory.
+        if (child === topLevelGit) continue;
+        if (entry.isDirectory() && !entry.isSymbolicLink()) {
+          if (gitDirectoryIsRepository(child)) { repoDirs.push(child); descentPoints.push(child); }
+        } else if (entry.isFile() || entry.isSymbolicLink()) {
+          descentPoints.push(child);
         }
         continue;
       }
+      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
       walk(child, depth + 1);
     }
   };
   walk(start, 0);
-  return found;
+  return { repoDirs, descentPoints };
 }
 
 

@@ -81,7 +81,7 @@ export function startProtectedCreateMonitor(
   } else {
     for (const root of scanRoots) {
       try {
-        for (const nested of nestedRealGitRepos(root)) baseline.add(nested);
+        for (const nested of nestedGitDescentPoints(root)) baseline.add(nested);
       } catch {
         violation = true;
       }
@@ -96,7 +96,7 @@ export function startProtectedCreateMonitor(
     for (const root of scanRoots) {
       let found: string[];
       try {
-        found = nestedRealGitRepos(root);
+        found = nestedGitDescentPoints(root);
       } catch {
         violation = true;
         continue;
@@ -215,7 +215,7 @@ function isRealGitRepository(gitDir: string): boolean {
  * module so the created-path monitor pulls in nothing but `node:fs`/`node:path`
  * and can run inside the standalone launchers that load it.
  */
-function nestedRealGitRepos(root: string): string[] {
+function nestedGitDescentPoints(root: string): string[] {
   const start = path.resolve(root);
   const topLevelGit = path.join(start, ".git");
   const found: string[] = [];
@@ -231,12 +231,21 @@ function nestedRealGitRepos(root: string): string[] {
     visited += 1;
     for (const entry of entries) {
       if (visited >= NESTED_GIT_SCAN_MAX_DIRS) return;
-      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
       const child = path.join(dir, entry.name);
       if (entry.name === ".git") {
-        if (child !== topLevelGit && isRealGitRepository(child)) found.push(child);
+        // A nested `.git` a later host-side git could descend through: a real
+        // repository directory, or a pointer (a gitfile or a symlink). Must
+        // mirror the policy's nestedGitFindings descentPoints exactly so the
+        // plan-provided baseline and this scan compare like for like.
+        if (child === topLevelGit) continue;
+        if (entry.isDirectory() && !entry.isSymbolicLink()) {
+          if (isRealGitRepository(child)) found.push(child);
+        } else if (entry.isFile() || entry.isSymbolicLink()) {
+          found.push(child);
+        }
         continue;
       }
+      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
       walk(child, depth + 1);
     }
   };

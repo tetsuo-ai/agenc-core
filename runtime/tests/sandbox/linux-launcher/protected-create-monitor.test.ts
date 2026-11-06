@@ -438,6 +438,28 @@ describe.runIf(process.platform === "linux")("nested-repository scan", () => {
     expect(gitIn(path.join(root, "kept"), "rev-parse", "--git-dir").stdout.trim()).toBe(".git");
   });
 
+  it("catches at stop a nested .git gitfile or symlink created during the run", () => {
+    // A nested `.git` that is a pointer (a gitfile, or a symlink) is a
+    // descent redirect a later host-side git would follow, not inert data.
+    const subGit = path.join(root, "sub", ".git");
+    fs.mkdirSync(path.join(root, "sub"), { recursive: true });
+    const monitor = startProtectedCreateMonitor([], [root]);
+    fs.writeFileSync(subGit, "gitdir: /elsewhere\n");
+    expect(monitor.stop()).toBe(true);
+    expect(fs.existsSync(subGit)).toBe(false);
+  });
+
+  it("leaves a pre-existing nested .git gitfile (a linked worktree) alone", () => {
+    // A linked worktree records `sub/.git` as a gitfile before the command.
+    // It is in the baseline, so the monitor must not remove it.
+    const subGit = path.join(root, "wt", ".git");
+    fs.mkdirSync(path.join(root, "wt"), { recursive: true });
+    fs.writeFileSync(subGit, "gitdir: /main/.git/worktrees/wt\n");
+    const monitor = startProtectedCreateMonitor([], [root]);
+    expect(monitor.stop()).toBe(false);
+    expect(fs.existsSync(subGit)).toBe(true);
+  });
+
   it("catches at stop a nested .git promoted to a real repository during the run", () => {
     const sub = path.join(root, "sub", ".git");
     // Not a repository at start (no HEAD, no objects): not in the baseline.
