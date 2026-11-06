@@ -28,6 +28,27 @@ export const LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES: ReadonlySet<string> = new Set
   "exec_command",
 ]);
 
+/**
+ * The core tools native DeepSeek Light first presents in a compact form
+ * (tool-registry.ts compactDeepSeekCoreCatalog). A system.searchTools
+ * selection of any of them switches the session once to the full core schemas.
+ */
+export const COMPACT_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "system.searchTools",
+  "exec_command",
+  "write_stdin",
+  "kill_process",
+  "FileRead",
+]);
+
+/**
+ * Compact core tools whose discovery switches even without a selection: a
+ * sandbox notice that advises escalation discovers exec_command. An exec yield
+ * discovers write_stdin and kill_process, which the compact catalog already
+ * carries in a usable form, so a yield, a poll or a kill does not switch.
+ */
+export const COMPACT_CORE_SWITCH_DISCOVERIES: readonly string[] = ["exec_command", "FileRead", "system.searchTools"];
+
 /** Native Flash can use the guarded whole-file writer without a discovery round. */
 export function lightUsesDeepSeekWrite(providerName: string | undefined, model?: string): boolean {
   return providerName === "deepseek" && model?.trim().toLowerCase() === "deepseek-flash";

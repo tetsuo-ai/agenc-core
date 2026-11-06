@@ -5151,7 +5151,7 @@ export class Session {
       const cacheProvider = this.services?.providerService?.current().instance;
       if (cacheProvider) {
         const cache: RolloutItem = { type: "session_state", payload: {
-          promptCache: capturePromptCacheState(this, cacheProvider),
+          promptCache: capturePromptCacheState(this, cacheProvider, this.services.registry),
         } };
         // Cache metadata is optional. Oversized state must not prevent a turn
         // from completing or make its canonical recovery line unreadable.

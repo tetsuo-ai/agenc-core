@@ -47,6 +47,7 @@ import { lspDiagnosticsProducer } from "./lsp-diagnostics.js";
 import { mcpResourcesProducer } from "./mcp-resources.js";
 import { relevantMemoriesProducer } from "./relevant-memories.js";
 import { skillListingProducer } from "./skill-listing.js";
+import { delegationRequestProducer } from "./delegation-request.js";
 import { workspaceFilesProducer } from "./workspace-files.js";
 import type { Attachment } from "./types.js";
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
@@ -137,6 +138,12 @@ export interface GetAttachmentsOptions {
    * deferred-tools delta hash.
    */
   readonly loadedTools: readonly LLMTool[];
+  /**
+   * Whether the session's tool catalog holds a tool, loaded or not: a tool
+   * this request does not carry that system.searchTools can load. Lazy, so
+   * a producer asks only on the turns that need it. Absent: unknown.
+   */
+  readonly catalogIncludes?: (toolName: string) => boolean;
   /**
    * Names of discovered tools (through `system.searchTools`, an exec yield
    * or an escalation) that this request carries only because they were
@@ -259,6 +266,9 @@ const PRODUCERS: readonly AttachmentProducer[] = [
   mcpResourcesProducer,
   fileMentionsProducer,
   skillListingProducer,
+  // Last, so on a session's first turn it follows the setup reminders that
+  // sessions share in the provider's prompt cache.
+  delegationRequestProducer,
 ];
 
 /**

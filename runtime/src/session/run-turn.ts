@@ -293,6 +293,7 @@ import {
   prepareAgenCTurnContext,
 } from "./run-turn-query-messages.js";
 import {
+  catalogIncludesTool,
   extractLastUserText,
   placeRetainedAttachments,
 } from "./run-turn-attachments.js";
@@ -1025,6 +1026,7 @@ async function prepareSamplingRequestBoundary(
     },
     userInput,
     loadedTools: builtTools(session, ctx),
+    catalogIncludes: (toolName) => catalogIncludesTool(session.services.registry, toolName),
     discoveredToolNames:
       session.services.registry.getLoadedDeferredToolNames?.() ??
       session.services.registry.getDiscoveredToolNames?.() ?? new Set(),
