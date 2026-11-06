@@ -624,7 +624,21 @@ function enforceRuntimeSandboxAttemptChecks(
     // check is about the same file.
     const bound = boundTargetFor(input.args, path.resolve(cwd, target));
     const checked = bound?.canonical ?? target;
-    const reached = physicalWritePathWithCwd(profile.fileSystem, checked, cwd, sessionTempRoot);
+    // Following the links on the path can refuse a loop (more than the link
+    // limit, or a cycle) with ELOOP. That is a fail-closed refusal, so turn
+    // it into the sandbox's own clean denial rather than letting an
+    // unclassified error escape the gate.
+    let reached: string;
+    let landing: string;
+    try {
+      reached = physicalWritePathWithCwd(profile.fileSystem, checked, cwd, sessionTempRoot);
+      landing = writeLandingAuthorityPath(path.resolve(cwd, checked));
+    } catch (error) {
+      throw new SandboxDeniedError(
+        `sandbox workspace_write could not resolve where ${target} leads: ${error instanceof Error ? error.message : String(error)}`,
+        { denial: "filesystem", target, policy },
+      );
+    }
     if (
       reached !== target &&
       !canWritePathWithCwd(profile.fileSystem, reached, cwd, sessionTempRoot)
@@ -638,7 +652,6 @@ function enforceRuntimeSandboxAttemptChecks(
         },
       );
     }
-    const landing = writeLandingAuthorityPath(path.resolve(cwd, checked));
     const protectedEntry = protectedEntryReachedByWrite(profile.fileSystem, landing, cwd, sessionTempRoot);
     if (protectedEntry !== undefined) {
       throw new SandboxDeniedError(
