@@ -558,17 +558,33 @@ export function protectedEntryReachedByWrite(
   cwd: string,
   sessionTempRoot: string,
 ): string | undefined {
-  const protectedEntries = getWritableRootsWithCwd(policy, cwd, sessionTempRoot).flatMap((root) => [
-    ...root.readOnlySubpaths,
-    ...(root.protectedMetadataNames ?? []).map((name) => path.join(root.root, name)),
-  ]);
-  for (const entry of protectedEntries) {
-    let physical: string;
+  const protectedEntries: { readonly entry: string; readonly physical: string }[] = [];
+  for (const root of getWritableRootsWithCwd(policy, cwd, sessionTempRoot)) {
+    let physicalRoot: string;
     try {
-      physical = canonicalAuthorityPath(entry);
+      physicalRoot = canonicalAuthorityPath(root.root);
     } catch {
       continue;
     }
+    // Reserved authority paths keep their own checks, by their own spelling.
+    const reserved = new Set(root.reservedReadOnlyPaths ?? []);
+    for (const entry of [
+      ...root.readOnlySubpaths.filter((subpath) => !reserved.has(subpath)),
+      ...(root.protectedMetadataNames ?? []).map((name) => path.join(root.root, name)),
+    ]) {
+      let physical: string;
+      try {
+        physical = canonicalAuthorityPath(entry);
+      } catch {
+        continue;
+      }
+      // An entry that leads to its writable root, or above it, cannot make
+      // that whole root read-only: the root is writable.
+      if (isWithinAuthorityPath(physicalRoot, physical)) continue;
+      protectedEntries.push({ entry, physical });
+    }
+  }
+  for (const { entry, physical } of protectedEntries) {
     if (isWithinAuthorityPath(landing, physical)) return entry;
   }
   let file: fs.Stats;
@@ -579,8 +595,8 @@ export function protectedEntryReachedByWrite(
   }
   if (!file.isFile() || file.nlink < 2) return undefined;
   const budget = { remaining: MAX_PROTECTED_LINK_SCAN_ENTRIES };
-  for (const entry of protectedEntries) {
-    const found = holdsFile(entry, file, budget);
+  for (const { entry, physical } of protectedEntries) {
+    const found = holdsFile(physical, file, budget);
     if (found !== false) return entry;
   }
   return undefined;
