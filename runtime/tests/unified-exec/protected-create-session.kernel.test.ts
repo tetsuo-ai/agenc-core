@@ -200,24 +200,64 @@ describe("protected-create targets in the warm session sandbox", () => {
     expect(fs.existsSync(path.join(work, ".git", "new"))).toBe(false);
   });
 
-  it("fails the command and removes a nested repository assembled during the run", async () => {
+  const assembleNestedRepo =
+    "mkdir -p sub/.git/objects && " +
+    "printf 'ref: refs/heads/main\n' > sub/.git/HEAD && " +
+    "printf '[core]\n\tfsmonitor = /tmp/evil\n' > sub/.git/config && printf ran";
+  const movedAside = (folder: string) =>
+    fs.readdirSync(folder).filter((name) => name.startsWith(".git.agenc-moved-"));
+  // Host git, with a ceiling so it cannot find a repository above the workspace.
+  const hostGit = (folder: string, ...args: string[]) => {
+    try {
+      return execFileSync("git", args, { cwd: folder, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+        env: { PATH: "/usr/bin:/bin", HOME: base, GIT_CEILING_DIRECTORIES: base } }).trim();
+    } catch {
+      return undefined;
+    }
+  };
+  const expectMovedAside = (result: { exitCode: number | null; stderr: string }) => {
+    expect(result.exitCode).not.toBe(0);
+    // Moved, not deleted: `.git` is gone and one sibling keeps its contents.
+    expect(fs.existsSync(path.join(work, "sub", ".git"))).toBe(false);
+    const aside = movedAside(path.join(work, "sub"));
+    expect(aside).toHaveLength(1);
+    const kept = path.join(fs.realpathSync(path.join(work, "sub")), aside[0]!);
+    expect(fs.readFileSync(path.join(kept, "config"), "utf8")).toContain("fsmonitor = /tmp/evil");
+    // The command's failure output says where it went.
+    expect(result.stderr).toContain(kept);
+    // Host git no longer treats the folder as a repository.
+    expect(hostGit(path.join(work, "sub"), "rev-parse", "--git-dir")).toBeUndefined();
+  };
+
+  it("fails the command and moves aside a nested repository assembled during the run", async () => {
     // At launch `sub` does not exist, so the fixed plan carves out nothing for
     // it and the shell can write freely under `sub/.git`. The command then
     // assembles a real nested repository (HEAD + objects) carrying a planted
     // fsmonitor, which a later host-side git descending through its gitlink
-    // would run. The created-path monitor scans the writable root, finds the
-    // new real nested repository that was not there at the start, removes it
-    // and fails the command.
+    // would run. The created-path monitor finds the new real nested repository
+    // that was not there at the start, moves its `.git` aside under a name git
+    // does not use (so nothing is lost) and fails the command.
     const perCommand = { ...policy, persistentSession: false };
-    const assemble = await run(
-      "mkdir -p sub/.git/objects && " +
-      "printf 'ref: refs/heads/main\n' > sub/.git/HEAD && " +
-      "printf '[core]\n\tfsmonitor = /tmp/evil\n' > sub/.git/config && printf ran",
-      { runtimeSandbox: perCommand },
-    );
+    const assemble = await run(assembleNestedRepo, { runtimeSandbox: perCommand });
     expect(assemble.stdout).toBe("ran");
-    expect(assemble.exitCode).not.toBe(0);
-    expect(fs.existsSync(path.join(work, "sub", ".git")), "the new nested repo is removed").toBe(false);
+    expectMovedAside(assemble);
+  });
+
+  it("moves aside a nested repository a warm-session command assembles, and says where", async () => {
+    const assemble = await run(assembleNestedRepo);
+    expect(assemble.stdout).toBe("ran");
+    expectMovedAside(assemble);
+  });
+
+  it("leaves a pre-existing nested repository in place, with nothing moved aside", async () => {
+    execFileSync("git", ["init", "-q", "-b", "main", path.join(work, "kept")], { stdio: "ignore" });
+    const perCommand = { ...policy, persistentSession: false };
+    const ordinary = await run("printf fine > note.txt && printf ok", { runtimeSandbox: perCommand });
+    expect(ordinary.stdout).toBe("ok");
+    expect(ordinary.exitCode).toBe(0);
+    expect(fs.lstatSync(path.join(work, "kept", ".git")).isDirectory()).toBe(true);
+    expect(movedAside(path.join(work, "kept"))).toHaveLength(0);
+    expect(hostGit(path.join(work, "kept"), "rev-parse", "--git-dir")).toBe(".git");
   });
 });
 

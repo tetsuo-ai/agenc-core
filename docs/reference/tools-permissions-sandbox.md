@@ -786,6 +786,12 @@ run a planted hook, config key or alternates redirect. Narrowing applies only to
 a real repository (a `.git` with `HEAD` and an `objects` directory); a `.git`
 that is not a repository stays fully read-only, so a confined command cannot
 leave a repository skeleton under a `.git` the workspace never initialized.
+A nested repository that a command assembles during its run is not deleted:
+when the command ends, its `.git` is renamed in place to
+`.git.agenc-moved-<time>-<id>`, a name git does not use, so the folder is no longer
+a repository and no later git command runs its hooks or config, while every file
+is kept. The command fails, and its output names the new path. If you created
+that repository yourself while the command was running, rename it back to `.git`.
 AgenC's own git status refresh in the footer no longer descends into submodules,
 so a submodule's own state is not shown there and its hooks never run from the
 refresh. Each file tool call is also bound to the files it was checked

@@ -10,6 +10,11 @@ export interface ProtectedCreateMonitor {
    * did. Later calls report the same answer without checking again.
    */
   readonly stop: () => boolean;
+  /**
+   * After stop(): a message for the command's output when a nested repository
+   * created during the run was moved aside, naming where each one went.
+   */
+  readonly notice?: () => string | undefined;
 }
 
 /**
@@ -82,6 +87,8 @@ export function startProtectedCreateMonitor(
       }
     }
   }
+  // Nested repositories moved aside by the final check, for the notice.
+  const moved: Array<{ readonly from: string; readonly to: string }> = [];
   const scanNestedRepos = () => {
     for (const root of scanRoots) {
       let found: string[];
@@ -95,13 +102,22 @@ export function startProtectedCreateMonitor(
         if (baseline.has(nested)) continue;
         const target = watchedTarget(nested);
         if (target === undefined) { violation = true; continue; }
+        // Move the new repository's `.git` aside rather than delete it: the
+        // folder stops being a repository (git looks only for `.git`), so the
+        // protection holds, and nothing is lost if the user, not the command,
+        // made it. Only if the move cannot be made is it removed instead.
         try {
-          checkTarget(target);
+          const destination = moveGitAside(target);
+          if (destination !== undefined) moved.push({ from: nested, to: destination });
         } catch {
-          // left in place on any error below
+          try {
+            checkTarget(target);
+          } catch {
+            // left in place on any error below
+          }
         }
         // A new real nested repository is itself the violation, whether or
-        // not the removal walk reached it.
+        // not the move or removal reached it.
         violation = true;
       }
     }
@@ -141,6 +157,13 @@ export function startProtectedCreateMonitor(
         scanNestedRepos();
       }
       return violation;
+    },
+    notice(): string | undefined {
+      if (moved.length === 0) return undefined;
+      return moved.map(({ from, to }) =>
+        `agenc: this command created a nested git repository at ${path.dirname(from)}; ` +
+        `its .git was moved aside to ${to}, so git no longer treats that folder as a repository. ` +
+        "Nothing was deleted. If you created it yourself, rename it back to .git.").join("\n");
     },
   };
 }
@@ -238,6 +261,40 @@ function checkTarget(target: WatchedTarget): boolean {
   }
 }
 
+/**
+ * Renames a nested `.git` to a sibling name git does not treat as a
+ * repository (`.git.agenc-moved-<time>`), walking to its parent from `/`
+ * through descriptors without following any link, the same walk the removal
+ * uses, and renaming within that pinned parent. Returns the new physical path,
+ * or undefined when nothing is there. Throws when it cannot move it, so the
+ * caller falls back to removal and the protection still holds.
+ */
+let moveAsideSequence = 0;
+function moveGitAside(target: WatchedTarget): string | undefined {
+  let directory = fs.openSync(path.sep, DIRECTORY_FLAGS);
+  try {
+    for (const name of target.parents) {
+      const child = openChildDirectory(directory, name);
+      if (child.kind !== "directory") throw new Error("nested repository parent is not a plain directory");
+      closeQuietly(directory);
+      directory = child.fd;
+    }
+    if (!entryExists(directory, target.leaf)) return undefined;
+    const stamp = new Date().toISOString().replace(/[-:.]/gu, "");
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      moveAsideSequence += 1;
+      const name = `${target.leaf}.agenc-moved-${stamp}-${process.pid}-${moveAsideSequence}`;
+      if (entryExists(directory, name)) continue;
+      const pinned = directory;
+      withOwnerAccess(pinned, () => fs.renameSync(descriptorPath(pinned, target.leaf), descriptorPath(pinned, name)));
+      return path.join(path.sep, ...target.parents, name);
+    }
+    throw new Error("no free name to move the nested repository aside");
+  } finally {
+    closeQuietly(directory);
+  }
+}
+
 /** A clean exit becomes a failure when the command created a protected path. */
 export function protectedCreateExitCode(exitCode: number, violation: boolean): number {
   return violation && exitCode === 0 ? 1 : exitCode;
@@ -259,11 +316,23 @@ export function attachProtectedCreateMonitor(
 }
 
 /** Idempotent: false when no monitor is attached or it was already stopped. */
+const attachedNotices = new WeakMap<object, string>();
+
 export function stopAttachedProtectedCreateMonitor(child: object): boolean {
   const monitor = attachedMonitors.get(child);
   if (monitor === undefined) return false;
   attachedMonitors.delete(child);
-  return monitor.stop();
+  const violation = monitor.stop();
+  const notice = monitor.notice?.();
+  if (notice !== undefined) attachedNotices.set(child, notice);
+  return violation;
+}
+
+/** The notice of the attached monitor's final check, once, after it stopped. */
+export function takeAttachedProtectedCreateNotice(child: object): string | undefined {
+  const notice = attachedNotices.get(child);
+  attachedNotices.delete(child);
+  return notice;
 }
 
 // Directory descriptors (Linux). A path that starts at /proc/self/fd/<fd>/ is

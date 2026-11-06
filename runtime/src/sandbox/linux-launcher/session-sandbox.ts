@@ -221,6 +221,9 @@ export class SessionSandbox {
       // reaped (or the namespace is gone): the final check cannot miss a
       // protected path it created. Such a command fails, as in the launcher.
       const protectedCreateViolation = protectedCreates.stop();
+      // Say where a nested repository created during the command went.
+      const protectedCreateNotice = protectedCreates.notice?.();
+      if (protectedCreateNotice !== undefined) stderr.write(`${protectedCreateNotice}\n`);
       if (status !== undefined && (status & 127) === 0) {
         status = protectedCreateExitCode((status >> 8) & 255, protectedCreateViolation) << 8;
       }

@@ -5,6 +5,7 @@
  * and a clean exit fails. Plans that leave such paths unmounted reach only a
  * launcher that runs the monitor.
  */
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -333,6 +334,53 @@ describe.runIf(process.platform === "linux")("nested-repository scan", () => {
     const monitor = startProtectedCreateMonitor([], [root]);
     expect(monitor.stop()).toBe(false);
     expect(fs.existsSync(path.join(root, "kept", ".git", "HEAD"))).toBe(true);
+  });
+
+  const movedAside = (folder: string) =>
+    fs.readdirSync(folder).filter((name) => name.startsWith(".git.agenc-moved-"));
+  // git with a ceiling at the test root's parent, so it cannot find an
+  // enclosing repository above the test tree.
+  const gitIn = (folder: string, ...args: string[]) => spawnSync("git", args, {
+    cwd: folder, encoding: "utf8",
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root, GIT_CEILING_DIRECTORIES: path.dirname(root) },
+  });
+
+  it("moves a nested repository created during the run aside instead of deleting it", () => {
+    const monitor = startProtectedCreateMonitor([], [root]);
+    expect(gitIn(root, "init", "-q", "sub").status).toBe(0);
+    fs.writeFileSync(path.join(root, "sub", ".git", "config"), "[core]\n\tfsmonitor = /planted\n");
+    expect(monitor.stop()).toBe(true);
+    // Moved, not deleted: .git is gone, one sibling holds its contents intact.
+    expect(fs.existsSync(path.join(root, "sub", ".git"))).toBe(false);
+    const aside = movedAside(path.join(root, "sub"));
+    expect(aside).toHaveLength(1);
+    const kept = path.join(root, "sub", aside[0]!);
+    expect(fs.lstatSync(path.join(kept, "HEAD")).isFile()).toBe(true);
+    expect(fs.readFileSync(path.join(kept, "config"), "utf8")).toContain("fsmonitor = /planted");
+    // The failure message says where it went.
+    expect(monitor.notice?.()).toContain(kept);
+  });
+
+  it("leaves host git no longer treating the folder as a repository once moved aside", () => {
+    const monitor = startProtectedCreateMonitor([], [root]);
+    expect(gitIn(root, "init", "-q", "sub").status).toBe(0);
+    // Before the final check git sees sub as its own repository.
+    expect(gitIn(path.join(root, "sub"), "rev-parse", "--git-dir").stdout.trim()).toBe(".git");
+    expect(monitor.stop()).toBe(true);
+    // After it, sub is not a repository: the moved name is not one git uses.
+    const after = gitIn(path.join(root, "sub"), "rev-parse", "--git-dir");
+    expect(after.status).not.toBe(0);
+    expect(after.stderr).toMatch(/not a git repository/u);
+  });
+
+  it("leaves a pre-existing nested repository untouched, with nothing moved aside", () => {
+    expect(gitIn(root, "init", "-q", "kept").status).toBe(0);
+    const monitor = startProtectedCreateMonitor([], [root]);
+    expect(monitor.stop()).toBe(false);
+    expect(monitor.notice?.()).toBeUndefined();
+    expect(fs.lstatSync(path.join(root, "kept", ".git")).isDirectory()).toBe(true);
+    expect(movedAside(path.join(root, "kept"))).toHaveLength(0);
+    expect(gitIn(path.join(root, "kept"), "rev-parse", "--git-dir").stdout.trim()).toBe(".git");
   });
 
   it("catches at stop a nested .git promoted to a real repository during the run", () => {

@@ -280,6 +280,10 @@ async function runLinuxSandboxOptions(
     try {
       const exitCode = await waitForChildWithSignalRelay(spawned.child);
       protectedCreateViolation = protectedMonitor.stop();
+      // The launcher's stderr is the command's: say where a nested repository
+      // created during the command went.
+      const protectedCreateNotice = protectedMonitor.notice?.();
+      if (protectedCreateNotice !== undefined) process.stderr.write(`${protectedCreateNotice}\n`);
       return protectedCreateExitCode(exitCode, protectedCreateViolation);
     } finally {
       if (!protectedCreateViolation) protectedMonitor.stop();
@@ -367,6 +371,10 @@ async function runUnderLandlockFallback(input: {
       });
       const exitCode = await waitForChildWithSignalRelay(child);
       protectedCreateViolation = protectedMonitor.stop();
+      // The launcher's stderr is the command's: say where a nested repository
+      // created during the command went.
+      const protectedCreateNotice = protectedMonitor.notice?.();
+      if (protectedCreateNotice !== undefined) process.stderr.write(`${protectedCreateNotice}\n`);
       return protectedCreateExitCode(exitCode, protectedCreateViolation);
     } finally {
       if (!protectedCreateViolation) protectedMonitor.stop();
