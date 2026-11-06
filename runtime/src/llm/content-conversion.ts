@@ -178,6 +178,82 @@ export function omitAlteredBinaryCarriers(
   return omitted ? { content: kept, omitted } : { content: target, omitted: false };
 }
 
+const omitsCarrier = (part: LLMContentPart): boolean =>
+  part.type === "text" && part.text === OMITTED_BINARY_CARRIER_TEXT;
+
+/** Who a message is across the durable round trip: a tool result's call id, a user message's id. */
+function keptMessageIdentity(message: unknown): string | undefined {
+  if (!message || typeof message !== "object") return undefined;
+  const { role, toolCallId, runtimeOnly } = message as {
+    readonly role?: unknown;
+    readonly toolCallId?: unknown;
+    readonly runtimeOnly?: { readonly userMessageId?: unknown; readonly responseItemId?: unknown };
+  };
+  if (role === "tool") return typeof toolCallId === "string" ? `tool:${toolCallId}` : undefined;
+  const id = runtimeOnly?.userMessageId ?? runtimeOnly?.responseItemId;
+  return role === "user" && typeof id === "string" ? `user:${id}` : undefined;
+}
+
+function partType(part: unknown): unknown {
+  return part !== null && typeof part === "object" ? (part as { readonly type?: unknown }).type : undefined;
+}
+
+function shallowCarrierCopy(part: LLMContentPart): LLMContentPart {
+  if (part.type === "image_url") return { ...part, image_url: { ...part.image_url } };
+  if (part.type === "document") return { ...part, source: { ...part.source } };
+  return { ...part };
+}
+
+/**
+ * Put the live binary carriers back into the messages a compaction kept.
+ *
+ * A replacement history is read back from the durable record, where each
+ * carrier that omitAlteredBinaryCarriers drops is a text omission. So every
+ * such screenshot of the retained tail reached the model as that note after
+ * a compaction, and a visual task lost the screens its kept analysis was
+ * about (lt30 Flt30-5). The model was shown those images before the
+ * compaction, so the in-memory history keeps them. The durable record keeps
+ * its omission, and every projection of a kept message to its durable form
+ * omits them again. A kept message is matched in `live`, the history the
+ * compaction replaces, by its tool call id or its user message id, never by
+ * position. Only a part that the replacement omits where the live message
+ * holds a validated carrier changes, and only when every other part lines up
+ * with the live message.
+ */
+export function restoreOmittedBinaryCarriers(
+  replacement: readonly LLMMessage[],
+  live: readonly unknown[],
+): LLMMessage[] {
+  if (!replacement.some((message) => Array.isArray(message.content) && message.content.some(omitsCarrier))) {
+    return [...replacement];
+  }
+  // An identity seen twice restores nothing.
+  const sources = new Map<string, unknown>();
+  for (const message of live) {
+    const key = keptMessageIdentity(message);
+    if (key !== undefined) sources.set(key, sources.has(key) ? null : message);
+  }
+  return replacement.map((message) => {
+    const content = message.content;
+    if (!Array.isArray(content) || !content.some(omitsCarrier)) return message;
+    const key = keptMessageIdentity(message);
+    const source = key === undefined ? undefined : sources.get(key);
+    const original = source !== null && typeof source === "object" ? (source as { readonly content?: unknown }).content : undefined;
+    if (!Array.isArray(original) || original.length !== content.length) return message;
+    if (content.some((part, index) => !omitsCarrier(part) && part.type !== partType(original[index]))) return message;
+    let restored = false;
+    const parts = content.map((part, index) => {
+      const carrier: unknown = original[index];
+      const type = partType(carrier);
+      if (!omitsCarrier(part) || (type !== "image_url" && type !== "document") ||
+        validatedBinaryCarrierBody(carrier) === null) return part;
+      restored = true;
+      return shallowCarrierCopy(carrier as LLMContentPart);
+    });
+    return restored ? { ...message, content: parts } : message;
+  });
+}
+
 export function cloneLlmContent(content: unknown): LLMMessage["content"] {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {

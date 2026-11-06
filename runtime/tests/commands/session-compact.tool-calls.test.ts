@@ -27,6 +27,8 @@ import * as systemPrompt from "../../src/prompts/system-prompt.js";
 import * as permissionInstructions from "../../src/session/permission-instructions.js";
 import * as outputStyles from "../../src/constants/outputStyles.js";
 import { usesLocalToolProfile } from "../../src/llm/wire/capability-gating.js";
+import { OMITTED_BINARY_CARRIER_TEXT } from "../../src/llm/content-conversion.js";
+import { syntheticPng } from "../helpers/redacted-inline-image-fixture.js";
 
 const TOOL_CALL_ID = "toolu_compact_1792";
 const TOOL_ARGUMENTS = JSON.stringify({ command: "pwd" });
@@ -222,5 +224,38 @@ describe("/compact keeps retained assistant tool calls", () => {
       { id: TOOL_CALL_ID, name: "Bash", arguments: TOOL_ARGUMENTS },
     ]);
     expect(JSON.stringify(history)).not.toContain("first request");
+  });
+
+  test("a retained screenshot the durable record cannot store survives manual compaction in memory", async () => {
+    // lt30 Flt30-5: the kept tail came back from the durable record, which holds an omission note for this image.
+    summarizer.manualCompactCall.mockImplementation(keepRecentTail);
+    const shot = syntheticPng(true);
+    const { session } = mkSession({
+      provider: mkProvider({ content: "unused by the mocked summarizer" }),
+      modelInfo: { contextWindow: 131_072 },
+      history: [
+        { role: "user", content: "first request" },
+        { role: "assistant", content: "first answer" },
+        { role: "user", content: "Check the screen." },
+        { role: "assistant", content: "", toolCalls: [
+          { id: "read-screen", name: "FileRead", arguments: JSON.stringify({ file_path: "/app/shots/01.png" }) },
+        ] },
+        { role: "tool", toolCallId: "read-screen", toolName: "FileRead", content: [
+          { type: "text", text: "Read image /app/shots/01.png" },
+          { type: "image_url", image_url: { url: shot } },
+        ] },
+      ],
+    });
+
+    const result = await compactCommand.execute(commandContext(session));
+
+    expect(result).toMatchObject({ kind: "compact" });
+    const history = session.snapshotHistoryMessages();
+    expect(JSON.stringify(history)).not.toContain("first request");
+    expect(history.find((message) => message.toolCallId === "read-screen")?.content).toEqual([
+      { type: "text", text: "Read image /app/shots/01.png" },
+      { type: "image_url", image_url: { url: shot } },
+    ]);
+    expect(JSON.stringify(history)).not.toContain(OMITTED_BINARY_CARRIER_TEXT);
   });
 });
