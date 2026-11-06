@@ -45,6 +45,12 @@ returns the refusal. `agenc remote status`, `agenc remote off`, `/remote status`
 and `/remote off` remain local and available. A stored `remote/pair.json` never
 authorizes startup or reconnects on its own. The daemon rejects phone bridge
 initialization and does not load the browser relay service when disabled.
+While remote control is not enabled, the daemon also revokes a pairing made by
+an older connector at startup and after every reload: it changes the stop
+marker and removes `remote/pair.json`. If `pair.json` cannot be removed (for
+example the `remote` folder is read-only), the daemon does not start, and a
+reload that turns remote control off stops the daemon. Remove the file or fix
+the folder's permissions, then start the daemon again.
 Browser `remote.*` enrollment also requires this switch; Telegram Connections
 retain their separate owner approval.
 
