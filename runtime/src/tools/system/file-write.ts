@@ -73,6 +73,7 @@ import { WorkspaceMutationError } from "../../workspace/mutation-error.js";
 import { type WorkspaceFileMutationTestHooks } from "../../workspace/file-mutation-transaction.js";
 import { describeWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence } from "../../workspace/file-mutation-evidence.js";
 import { executeWorkspaceFileMutation } from "../../workspace/lazy-file-mutation.js";
+import { boundTargetFor, observeFileTarget } from "../bound-targets.js";
 import { logForDebugging } from "../../utils/debug.js";
 
 export const FILE_WRITE_TOOL_NAME = "Write";
@@ -324,6 +325,12 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
       if (!filePath) return { code: "invalid_write", message: "file_path must be a non-empty string" };
       return unreadFilePreflight(args, [filePath], allowedPaths[0] ?? process.cwd(), allowedPaths);
     },
+    observeTargets(input) {
+      const filePath = asNonEmptyString((input as FileWriteToolInput).file_path);
+      if (!filePath) return [];
+      const cwd = asNonEmptyString(input.cwd) ?? allowedPaths[0] ?? process.cwd();
+      return [observeFileTarget(resolve(cwd, filePath))];
+    },
     checkPermissions(input, context) {
       const args = input as FileWriteToolInput;
       const filePath = asNonEmptyString(args.file_path);
@@ -369,6 +376,8 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
       }
 
       const absoluteInput = resolve(cwd, filePath);
+      // The file this call was checked against before any prompt.
+      const expectedTarget = boundTargetFor(rawArgs, absoluteInput);
 
       const safe = await safePathAllowingSessionPlanFile(
         absoluteInput,
@@ -540,6 +549,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
             await boundMutation.writeContent(data);
           },
           writeUsesBoundMutation: true,
+          ...(expectedTarget !== undefined ? { expectedTarget } : {}),
           testHooks: config,
         });
       } catch (err) {

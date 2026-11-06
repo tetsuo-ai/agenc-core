@@ -35,6 +35,8 @@ export const SESSION_ALLOWED_ROOTS_ARG = "__agencSessionAllowedRoots";
 export const SESSION_ALLOWED_ROOTS_SIG_ARG = "__agencSessionAllowedRootsSig";
 export const SESSION_PLAN_FILE_ARG = "__agencSessionPlanFile";
 export const SESSION_PLAN_FILE_SIG_ARG = "__agencSessionPlanFileSig";
+export const BOUND_TARGETS_ARG = "__agencBoundTargets";
+export const BOUND_TARGETS_SIG_ARG = "__agencBoundTargetsSig";
 
 /**
  * Per-process secret keying the trusted-roots HMAC. Generated once at
@@ -92,6 +94,23 @@ export function verifySessionPlanFileArgs(
   return supplied.length === expected.length && timingSafeEqual(supplied, expected)
     ? Object.freeze(authority)
     : null;
+}
+
+/**
+ * Hex HMAC-SHA256 over the serialized file targets a dispatch observed for a
+ * call before its approval (tools/bound-targets.ts), with the same secret.
+ */
+export function signBoundTargets(serialized: string): string {
+  return createHmac("sha256", PROCESS_SECRET)
+    .update(`bound-targets-v1\n${serialized}`)
+    .digest("hex");
+}
+
+export function verifyBoundTargetsSignature(serialized: string, signature: unknown): boolean {
+  if (typeof signature !== "string") return false;
+  const expected = Buffer.from(signBoundTargets(serialized), "hex");
+  const supplied = Buffer.from(signature, "hex");
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
 /**

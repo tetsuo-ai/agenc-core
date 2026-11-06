@@ -52,6 +52,7 @@ import { analyzeShellRuntimeAccess } from "./shell.js";
 import { isSessionCronMemoryMutation } from "./session-cron.js";
 import { cronLockAuthorityRoots, overlapsCronAuthority, protectCronAuthority } from "../../sandbox/cron-authority-protection.js";
 import { canonicalAuthorityPath, desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority, writeLandingAuthorityPath } from "../../sandbox/desktop-authority-protection.js";
+import { boundTargetFor } from "../bound-targets.js";
 import { protectAgencHomeUnderWritableRoot, sandboxAgencHome } from "../../sandbox/agenc-home-protection.js";
 import { daemonSocketAuthorityRoots, protectDaemonSocket } from "../../sandbox/daemon-socket-protection.js";
 import { routineRunOptions } from "../../session/runtime-options.js";
@@ -618,7 +619,12 @@ function enforceRuntimeSandboxAttemptChecks(
     ) {
       continue;
     }
-    const reached = physicalWritePathWithCwd(profile.fileSystem, target, cwd, sessionTempRoot);
+    // The file this call was checked against before any prompt, when the
+    // dispatcher bound one: the tool changes that file or nothing, so this
+    // check is about the same file.
+    const bound = boundTargetFor(input.args, path.resolve(cwd, target));
+    const checked = bound?.canonical ?? target;
+    const reached = physicalWritePathWithCwd(profile.fileSystem, checked, cwd, sessionTempRoot);
     if (
       reached !== target &&
       !canWritePathWithCwd(profile.fileSystem, reached, cwd, sessionTempRoot)
@@ -632,7 +638,7 @@ function enforceRuntimeSandboxAttemptChecks(
         },
       );
     }
-    const landing = writeLandingAuthorityPath(path.resolve(cwd, target));
+    const landing = writeLandingAuthorityPath(path.resolve(cwd, checked));
     const protectedEntry = protectedEntryReachedByWrite(profile.fileSystem, landing, cwd, sessionTempRoot);
     if (protectedEntry !== undefined) {
       throw new SandboxDeniedError(

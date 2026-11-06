@@ -34,7 +34,7 @@
  */
 
 import { writeFile, mkdir } from "node:fs/promises";
-import { join, isAbsolute } from "node:path";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 
@@ -61,7 +61,8 @@ import {
   withToolCallTransport,
 } from "./session-provider-authority.js";
 import { preEffectRefusal } from "../results.js";
-import { readWorkspaceImage } from "./imagine-edit.js";
+import { imageReferencePath, readWorkspaceImage } from "./imagine-edit.js";
+import { boundTargetFor, observeFileTarget } from "../bound-targets.js";
 import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
 import {
@@ -684,15 +685,17 @@ function isLocalImageRef(ref: string): boolean {
 async function imageRefToUrl(
   value: string,
   workspaceRoot: string,
+  args: Readonly<Record<string, unknown>>,
   signal?: AbortSignal,
 ): Promise<string | { readonly error: string } | undefined> {
   const ref = value.trim();
   if (!ref) return undefined;
   if (!isLocalImageRef(ref)) return ref;
-  const path = isAbsolute(ref) ? ref : join(workspaceRoot, ref);
+  const path = imageReferencePath(workspaceRoot, ref);
   if (!existsSync(path)) return undefined;
   signal?.throwIfAborted();
-  const image = await readWorkspaceImage(workspaceRoot, ref);
+  // The bytes sent are those of the file checked before the approval.
+  const image = await readWorkspaceImage(workspaceRoot, ref, boundTargetFor(args, path));
   if ("error" in image) return image;
   return `data:${image.type};base64,${image.bytes.toString("base64")}`;
 }
@@ -1905,15 +1908,25 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
         const decision = checkToolPathPermission({
           toolName: "ImagineVideo",
           input: args,
-          path: ref,
+          path: imageReferencePath(opts.workspaceRoot, ref),
           cwd: opts.workspaceRoot,
           context: context.getAppState().toolPermissionContext,
           operationType: "read",
+          literal: true,
         });
         if (decision.behavior === "deny") return decision;
         if (decision.behavior !== "allow") ask ??= decision;
       }
       return ask ?? { behavior: "passthrough", message: "ImagineVideo sends its local images to the video provider." };
+    },
+    // Observed before any approval: the images sent are the ones checked.
+    observeTargets(args) {
+      return [
+        args.image_url,
+        ...(Array.isArray(args.reference_image_urls) ? args.reference_image_urls : []),
+      ].map(stringValue)
+        .filter((ref): ref is string => ref !== undefined && isLocalImageRef(ref))
+        .map((ref) => observeFileTarget(imageReferencePath(opts.workspaceRoot, ref)));
     },
     execute: async (args) => {
       const admittedSignal = abortSignalFromArgs(args);
@@ -1929,7 +1942,7 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
 
       const imageUrlRaw = stringValue(args.image_url);
       const imageUrl = imageUrlRaw
-        ? await imageRefToUrl(imageUrlRaw, opts.workspaceRoot, admittedSignal)
+        ? await imageRefToUrl(imageUrlRaw, opts.workspaceRoot, args, admittedSignal)
         : undefined;
       if (typeof imageUrl === "object") {
         return refusal({ error: `image_url: ${imageUrl.error}` });
@@ -1952,7 +1965,7 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
       }
       const referenceImages: { url: string }[] = [];
       for (const r of refRaw) {
-        const url = await imageRefToUrl(r, opts.workspaceRoot, admittedSignal);
+        const url = await imageRefToUrl(r, opts.workspaceRoot, args, admittedSignal);
         if (typeof url === "object") {
           return refusal({ error: `reference_image_urls: ${url.error}` });
         }

@@ -15,7 +15,8 @@
  * @module
  */
 
-import { mkdir, open, realpath, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, readlink, realpath, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -25,6 +26,7 @@ import {
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { boundTargetFor, observeFileTarget, type ObservedFileTarget } from "../bound-targets.js";
 import type { Tool, ToolResult } from "../types.js";
 import { readInvokingSession } from "../runtimes/context.js";
 import {
@@ -168,32 +170,89 @@ function imageType(bytes: Buffer): "image/png" | "image/jpeg" | "image/webp" | u
   return undefined;
 }
 
-/** Read the input image: a regular file inside the workspace, PNG, JPEG or WebP, under 25 MB. */
+/**
+ * The file an image reference names, read literally: a relative reference is
+ * taken from the workspace root, and no quote, glob or `~` in it is special.
+ * Permission checks and the reader use this same path.
+ */
+export function imageReferencePath(workspaceRoot: string, ref: string): string {
+  return isAbsolute(ref) ? ref : resolve(workspaceRoot, ref);
+}
+
+/** Where the file a descriptor holds is now, or undefined when unknown. */
+async function openedFilePath(fd: number, opened: { dev: number; ino: number }, path: string): Promise<string | undefined> {
+  if (process.platform === "linux") {
+    try {
+      const location = await readlink(`/proc/self/fd/${fd}`);
+      return location.endsWith(" (deleted)") ? undefined : location;
+    } catch {
+      // Fall back to the path check below.
+    }
+  }
+  try {
+    const canonical = await realpath(path);
+    const current = await stat(canonical);
+    return current.dev === opened.dev && current.ino === opened.ino ? canonical : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Read the input image: a regular file inside the workspace, PNG, JPEG or
+ * WebP, under 25 MB. Every check is about the file the descriptor holds,
+ * which is the file whose bytes are returned: its real path must be inside
+ * the workspace and, when the call was bound to an observation of the file
+ * before its approval (`expected`), it must be that same file.
+ */
 export async function readWorkspaceImage(
   workspaceRoot: string,
   ref: string,
+  expected?: ObservedFileTarget,
 ): Promise<
   | { readonly bytes: Buffer; readonly path: string; readonly type: "image/png" | "image/jpeg" | "image/webp" }
   | { readonly error: string }
 > {
   let root: string;
-  let path: string;
   try {
     root = await realpath(workspaceRoot);
-    path = await realpath(isAbsolute(ref) ? ref : resolve(workspaceRoot, ref));
   } catch {
     return { error: `image not found: ${ref}` };
   }
-  const inside = relative(root, path);
-  if (inside === "" || inside.startsWith(`..${sep}`) || inside === ".." || isAbsolute(inside)) {
-    return { error: "image must be a file inside the workspace" };
-  }
-  const handle = await open(path, "r");
+  const literal = imageReferencePath(workspaceRoot, ref);
+  let handle;
   try {
-    const stat = await handle.stat();
-    if (!stat.isFile()) return { error: "image must be a regular file" };
-    if (stat.size > MAX_INPUT_BYTES) return { error: "image is larger than the 25 MB limit" };
-    const bytes = await handle.readFile();
+    // Non-blocking, so a FIFO cannot hold the call; a regular file reads as usual.
+    handle = await open(literal, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+  } catch {
+    return { error: `image not found: ${ref}` };
+  }
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile()) return { error: "image must be a regular file" };
+    const path = await openedFilePath(handle.fd, opened, literal);
+    if (path === undefined) return { error: `image changed while it was opened: ${ref}` };
+    const inside = relative(root, path);
+    if (inside === "" || inside.startsWith(`..${sep}`) || inside === ".." || isAbsolute(inside)) {
+      return { error: "image must be a file inside the workspace" };
+    }
+    if (expected !== undefined && (expected.canonical !== path || expected.identity !== `${opened.dev}:${opened.ino}`)) {
+      return {
+        error: `image ${ref} is not the file this call was checked against: it changed after the check ` +
+          "(for example a link was pointed elsewhere). It was not sent; run the call again.",
+      };
+    }
+    if (opened.size > MAX_INPUT_BYTES) return { error: "image is larger than the 25 MB limit" };
+    // Read at most one byte past the limit, whatever the file grows to.
+    const buffer = Buffer.alloc(MAX_INPUT_BYTES + 1);
+    let length = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+      if (length > MAX_INPUT_BYTES) return { error: "image is larger than the 25 MB limit" };
+    }
+    const bytes = Buffer.from(buffer.subarray(0, length));
     const type = imageType(bytes);
     if (type === undefined) return { error: "image must be a PNG, JPEG or WebP file" };
     return { bytes, path, type };
@@ -280,6 +339,7 @@ export function createImagineEditTool(opts: ImagineEditToolOptions): Tool {
     // The image is read and sent to Venice: the read must pass the same
     // deny, ask and protected-path rules as FileRead. An allowed read still
     // waits for this tool's own approval.
+    // The image is checked by the very path the reader opens, literally.
     checkPermissions(input, context) {
       const args = input as Record<string, unknown>;
       const ref = stringValue(args.image);
@@ -287,14 +347,20 @@ export function createImagineEditTool(opts: ImagineEditToolOptions): Tool {
         const decision = checkToolPathPermission({
           toolName: "ImagineEdit",
           input: args,
-          path: ref,
+          path: imageReferencePath(opts.workspaceRoot, ref),
           cwd: opts.workspaceRoot,
           context: context.getAppState().toolPermissionContext,
           operationType: "read",
+          literal: true,
         });
         if (decision.behavior !== "allow") return decision;
       }
       return { behavior: "passthrough", message: "ImagineEdit sends a workspace image to Venice." };
+    },
+    // Observed before any approval: the image sent is the one checked.
+    observeTargets(args) {
+      const ref = stringValue(args.image);
+      return ref === undefined ? [] : [observeFileTarget(imageReferencePath(opts.workspaceRoot, ref))];
     },
     execute: async (args) => {
       const signal = args.__abortSignal instanceof AbortSignal ? args.__abortSignal : undefined;
@@ -320,7 +386,11 @@ export function createImagineEditTool(opts: ImagineEditToolOptions): Tool {
           ? `Venice edit model must be a priced edit model in Venice's list: ${names.join(", ")}`
           : "Venice's upscale price could not be read");
       }
-      const input = await readWorkspaceImage(opts.workspaceRoot, ref);
+      const input = await readWorkspaceImage(
+        opts.workspaceRoot,
+        ref,
+        boundTargetFor(args, imageReferencePath(opts.workspaceRoot, ref)),
+      );
       if ("error" in input) return refusal(input.error);
       const timeout = AbortSignal.timeout(190_000);
       const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;

@@ -54,7 +54,7 @@ import {
   reviewDecisionIsAllow,
   type ReviewDecision,
 } from "../review-decision.js";
-import { getPathsForPermissionCheck } from "../path-validation.js";
+import { fileGrantTargets } from "../../tools/bound-targets.js";
 import { getAskRuleForTool, getDenyRuleForTool } from "../rules.js";
 import { hookDispatcherApprovalSource } from "../tool-approval.js";
 import type {
@@ -1463,10 +1463,11 @@ function buildApprovalCacheKeys(
     // text is the operation, not its permission scope. Retain other options,
     // cwd and execution policies so a grant cannot authorize another action.
     // The file is the one the path reaches through its links when asked: a
-    // link re-pointed at another file (a git hook) asks again.
+    // link re-pointed at another file (a git hook) asks again. Its name is
+    // kept byte for byte: two POSIX names that normalize alike are two files.
     const filePath = resolvePath(cwd, args.file_path);
     scopedArgs = { ...args, file_path: filePath };
-    resolvedTargets = getPathsForPermissionCheck(filePath);
+    resolvedTargets = fileGrantTargets(filePath);
     if (tool.name === "Write") delete scopedArgs.content;
     else {
       delete scopedArgs.old_string;

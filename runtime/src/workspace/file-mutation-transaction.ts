@@ -1,5 +1,5 @@
-import { WorkspacePathIdentityChangedError, WorkspaceFileMutationPreEffectConflictError, WorkspaceBoundReadFileTooLargeError, markWorkspaceMutationNoEffect } from "./file-mutation-evidence.js";
-export { WorkspaceFileMutationPreEffectConflictError, WorkspaceBoundReadFileTooLargeError, type WorkspaceMutationNoEffectEvidence, markWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence, describeWorkspaceMutationNoEffect } from "./file-mutation-evidence.js";
+import { WorkspacePathIdentityChangedError, WorkspaceFileMutationPreEffectConflictError, WorkspaceBoundReadFileTooLargeError, WorkspaceTargetChangedSinceCheckError, markWorkspaceMutationNoEffect } from "./file-mutation-evidence.js";
+export { WorkspaceFileMutationPreEffectConflictError, WorkspaceBoundReadFileTooLargeError, WorkspaceTargetChangedSinceCheckError, type WorkspaceMutationNoEffectEvidence, markWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence, describeWorkspaceMutationNoEffect } from "./file-mutation-evidence.js";
 import { constants } from "node:fs";
 import type { BigIntStats, Stats } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
@@ -62,6 +62,8 @@ export type WorkspaceFilePathObservedState =
 export interface WorkspaceFilePathTransactionGuard {
   readonly path: string;
   readonly targetExisted: boolean;
+  /** `dev:ino` of the target the guard bound when it existed, else null. */
+  readonly targetIdentity: string | null;
   readonly backupContent?: Buffer;
   readonly assertOriginalState: () => Promise<void>;
   readonly assertState: (
@@ -4825,6 +4827,7 @@ export async function captureWorkspaceFilePathTransactionGuard(
   return {
     path: identity.expectedPath,
     targetExisted: backup.existed,
+    targetIdentity: identity.targetExisted ? `${identity.anchorDev}:${identity.anchorIno}` : null,
     ...(backup.content !== undefined
       ? { backupContent: Buffer.from(backup.content) }
       : {}),
@@ -4880,6 +4883,12 @@ export async function executeWorkspaceFileMutation(input: {
   readonly writeUsesBoundMutation?: boolean;
   /** Decodes the observed post-write bytes before comparing to afterText. */
   readonly decodeObserved?: (content: Buffer) => string;
+  /**
+   * The target this call was checked against (tools/bound-targets.ts): its
+   * canonical path and `dev:ino`, or null when it did not exist. A target the
+   * guard binds that is not this file refuses the write before any effect.
+   */
+  readonly expectedTarget?: { readonly canonical: string; readonly identity: string | null };
   readonly testHooks?: WorkspaceFileMutationTestHooks;
 }): Promise<void> {
   let guard: WorkspaceFilePathTransactionGuard;
@@ -4888,6 +4897,13 @@ export async function executeWorkspaceFileMutation(input: {
   } catch (error) {
     // No target syscall has run, so this remains a true pre-effect failure.
     throw markWorkspaceMutationNoEffect(error, "pre_effect");
+  }
+  if (
+    input.expectedTarget !== undefined &&
+    (guard.path !== input.expectedTarget.canonical || guard.targetIdentity !== input.expectedTarget.identity)
+  ) {
+    await guard.dispose();
+    throw markWorkspaceMutationNoEffect(new WorkspaceTargetChangedSinceCheckError(input.path), "pre_effect");
   }
 
   try {

@@ -33,6 +33,7 @@ import { sessionDispatchAuthority } from "../../tools/session-dispatch-authority
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 
 import { isWorkflowApprovalSession } from "../../permissions/approval-failure.js";
+import { observeBoundTargets, withBoundTargets } from "../../tools/bound-targets.js";
 import {
   approvalRootForDispatch,
   filesystemRootsForDispatch,
@@ -870,6 +871,9 @@ export class StreamingToolExecutor {
             tool.toolCall.name,
             effectiveArgs,
           );
+          // Also before any prompt: the files this call reads or changes, so
+          // the tool acts only on the ones it was checked against.
+          const boundTargets = observeBoundTargets(toolDef, effectiveArgs);
           const approvalArgs = withPlanApprovalPreview(
             tool.toolCall.name,
             effectiveArgs,
@@ -950,7 +954,7 @@ export class StreamingToolExecutor {
               // receive this through `injectChildToolArgs` in
               // `agents/run-agent.ts`; the main-session dispatch
               // uses the same trusted conversation authority here.
-              const dispatchArgs = filesystemRootsForDispatch(
+              const dispatchArgs = withBoundTargets(filesystemRootsForDispatch(
                 tool.toolCall.name,
                 effectiveArgs,
                 {
@@ -959,7 +963,7 @@ export class StreamingToolExecutor {
                   sandboxMode: sandbox,
                   session: session as FilesystemRootSessionLike | undefined,
                 },
-              );
+              ), boundTargets);
               const dispatchCall: LLMToolCall = {
                 ...tool.toolCall,
                 // Re-stringify so the registry sees the (possibly)

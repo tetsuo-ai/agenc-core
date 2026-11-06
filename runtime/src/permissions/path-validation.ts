@@ -88,6 +88,12 @@ export interface ValidatePathOptions {
   readonly durableMemory?: SessionDurableMemoryDirectories;
   /** Unresolved spellings (trailing dots, 8.3, relative names) for safety only. */
   readonly extraSafetyPaths?: readonly string[];
+  /**
+   * The path names one file exactly as a reader opens it: quotes, `~`, `$`
+   * and glob characters are part of the name. Without it a bracketed name
+   * was checked as a glob, which grants its base folder.
+   */
+  readonly literal?: boolean;
 }
 
 export interface ToolPathPermissionOptions {
@@ -101,6 +107,8 @@ export interface ToolPathPermissionOptions {
   readonly planFileAuthority?: SessionPlanFileAuthority | null;
   /** See {@link ValidatePathOptions.durableMemory}. */
   readonly durableMemory?: SessionDurableMemoryDirectories;
+  /** See {@link ValidatePathOptions.literal}. */
+  readonly literal?: boolean;
 }
 
 export function formatDirectoryList(directories: string[]): string {
@@ -891,6 +899,9 @@ export function validatePath(
   operationType: FileOperationType,
   options: ValidatePathOptions = {},
 ): ResolvedPathCheckResult {
+  if (options.literal === true) {
+    return validateLiteralPath(path, cwd, toolPermissionContext, operationType, options);
+  }
   const cleanPath = expandTilde(path.replace(/^['"]|['"]$/g, ""));
 
   if (containsVulnerableUncPath(cleanPath)) {
@@ -992,6 +1003,49 @@ export function validatePath(
     resolvedPath,
     decisionReason: result.decisionReason,
   };
+}
+
+/** {@link validatePath} for a path that names one file as it is spelled. */
+function validateLiteralPath(
+  path: string,
+  cwd: string,
+  toolPermissionContext: ToolPermissionContext,
+  operationType: FileOperationType,
+  options: ValidatePathOptions,
+): ResolvedPathCheckResult {
+  if (containsVulnerableUncPath(path)) {
+    return {
+      allowed: false,
+      resolvedPath: path,
+      decisionReason: {
+        type: "safetyCheck",
+        classifierApprovable: false,
+        reason: "UNC network paths require manual approval",
+      },
+    };
+  }
+  const absolutePath = isAbsolute(path) ? path : resolve(cwd, path);
+  if (absolutePath.length > MAX_PATH_LENGTH) {
+    return {
+      allowed: false,
+      resolvedPath: path,
+      decisionReason: {
+        type: "safetyCheck",
+        classifierApprovable: false,
+        reason: "Path exceeds maximum length",
+      },
+    };
+  }
+  const { resolvedPath } = safeResolvePath(absolutePath);
+  const result = isPathAllowed(
+    resolvedPath,
+    toolPermissionContext,
+    operationType,
+    cwd,
+    getPathsForPermissionCheck(absolutePath),
+    { ...options, extraSafetyPaths: uniquePaths([...(options.extraSafetyPaths ?? []), path]) },
+  );
+  return { allowed: result.allowed, resolvedPath, decisionReason: result.decisionReason };
 }
 
 function permissionVerb(operationType: FileOperationType): "read" | "write" {
@@ -1162,6 +1216,7 @@ export function checkToolPathPermission(
         ? opts.planFileAuthority
         : null,
       ...(opts.durableMemory !== undefined ? { durableMemory: opts.durableMemory } : {}),
+      ...(opts.literal === true ? { literal: true } : {}),
     },
   );
   // A file tool confines itself to the workspace root plus the signed roots
