@@ -31,3 +31,18 @@ it("P2 a pre-existing nested .git GITFILE pointer is left alone at stop", () => 
   expect(monitorFor().stop()).toBe(false);
   expect(fs.readFileSync(join(ws, "sub", ".git"), "utf8")).toBe("gitdir: ../.git/modules/sub\n");
 });
+
+it("P3 a pre-existing gitfile pointer REWRITTEN during the run is flagged", () => {
+  fs.mkdirSync(join(ws, "sub"));
+  fs.writeFileSync(join(ws, "sub", ".git"), "gitdir: ../.git/modules/sub\n");
+  const monitor = monitorFor();
+  fs.writeFileSync(join(ws, "sub", ".git"), "gitdir: ../elsewhere\n");
+  expect(monitor.stop(), "violation for a pointer whose target changed during the run").toBe(true);
+});
+
+it("P4 an existing nested gitfile pointer is a read-only carve-out for the shell path", () => {
+  fs.mkdirSync(join(ws, "sub"));
+  fs.writeFileSync(join(ws, "sub", ".git"), "gitdir: ../.git/modules/sub\n");
+  const root = getWritableRootsWithCwd(policy(), ws, base).find((r) => r.root === ws);
+  expect(root?.readOnlySubpaths ?? [], "readOnlySubpaths").toContain(join(ws, "sub", ".git"));
+});

@@ -76,6 +76,43 @@ export interface BwrapCommandArgs {
 const MAX_UNREADABLE_GLOB_MATCHES = 4096;
 const MAX_UNREADABLE_GLOB_VISITS = 20000;
 
+/**
+ * Identity of a nested `.git` descent point at one moment: its type, its
+ * dev:ino and, for a pointer, what it points at (a gitfile's first 4 KiB, a
+ * symlink's target). A real repository directory is identified by dev:ino
+ * only, since its contents change legitimately. The baseline records this at
+ * command start and the stop scan recomputes it, so a pointer rewritten in
+ * place, or a `.git` replaced by another, is caught even though its path did
+ * not change. Must match the monitor's descentPointIdentity exactly.
+ */
+function descentPointIdentity(entry: string): string {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(entry);
+  } catch {
+    return "missing";
+  }
+  const kind = stat.isSymbolicLink() ? "link" : stat.isDirectory() ? "dir" : stat.isFile() ? "file" : "other";
+  let data = "";
+  try {
+    if (kind === "link") {
+      data = fs.readlinkSync(entry);
+    } else if (kind === "file") {
+      const fd = fs.openSync(entry, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      try {
+        const buffer = Buffer.alloc(4096);
+        const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        data = buffer.subarray(0, read).toString("hex");
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+  } catch {
+    data = "unreadable";
+  }
+  return `${kind}:${stat.dev}:${stat.ino}:${data}`;
+}
+
 export function createBwrapCommandArgs(
   command: readonly string[],
   fileSystemSandboxPolicy: FileSystemSandboxPolicy,
@@ -166,10 +203,14 @@ export function createBwrapCommandArgs(
     // symlink to its target, which never matches the monitor's stop scan
     // (that reports the link's own path), so an unchanged symlink pointer
     // would be treated as created during the run and removed.
+    // Each baseline entry is `<own path>\u0000<identity>` (a path cannot hold
+    // NUL), so the monitor can tell a pointer rewritten or a `.git` replaced
+    // during the run from one left alone.
     nestedGitBaseline: writableRoots.flatMap((root) =>
-      (root.nestedRepoGitDirs ?? []).map((entry) =>
-        path.join(canonical(path.dirname(entry)), path.basename(entry)),
-      ),
+      (root.nestedRepoGitDirs ?? []).map((entry) => {
+        const own = path.join(canonical(path.dirname(entry)), path.basename(entry));
+        return `${own}\u0000${descentPointIdentity(own)}`;
+      }),
     ),
   };
 }

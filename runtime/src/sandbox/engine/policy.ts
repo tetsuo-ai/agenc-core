@@ -411,6 +411,7 @@ export function getWritableRootsWithCwd(
       ...defaultCarveouts,
       ...explicitCarveouts,
       ...nestedGitCarveouts,
+      ...nestedGit.pointerFiles,
       ...reservedReadOnlyPaths,
     ]);
     return {
@@ -838,12 +839,19 @@ const NESTED_GIT_SCAN_MAX_DIRS = 4096;
 interface NestedGitFindings {
   readonly repoDirs: string[];
   readonly descentPoints: string[];
+  /**
+   * Every nested `.git` that is a regular file (a gitfile pointer), whatever it
+   * points at. Each is bound read-only so a shell command cannot rewrite it in
+   * place, as the top-level gitfile already is.
+   */
+  readonly pointerFiles: string[];
 }
 export function nestedGitFindings(root: string): NestedGitFindings {
   const start = normalizePathForPolicy(root);
   const topLevelGit = path.join(start, GIT_METADATA_DIR_NAME);
   const repoDirs: string[] = [];
   const descentPoints: string[] = [];
+  const pointerFiles: string[] = [];
   let visited = 0;
   const walk = (dir: string, depth: number): void => {
     if (depth > NESTED_GIT_SCAN_MAX_DEPTH || visited >= NESTED_GIT_SCAN_MAX_DIRS) return;
@@ -867,6 +875,7 @@ export function nestedGitFindings(root: string): NestedGitFindings {
           if (gitDirectoryIsRepository(child)) { repoDirs.push(child); descentPoints.push(child); }
         } else if (entry.isFile() || entry.isSymbolicLink()) {
           descentPoints.push(child);
+          if (entry.isFile()) pointerFiles.push(child);
         }
         continue;
       }
@@ -875,7 +884,7 @@ export function nestedGitFindings(root: string): NestedGitFindings {
     }
   };
   walk(start, 0);
-  return { repoDirs, descentPoints };
+  return { repoDirs, descentPoints, pointerFiles };
 }
 
 

@@ -78,13 +78,21 @@ export function startProtectedCreateMonitor(
       return path.resolve(entry);
     }
   };
-  const baseline = new Set<string>();
+  // Baseline: each descent point present at command start, keyed by its own
+  // path, with its identity (type, dev:ino and pointer data). A plan-supplied
+  // entry is `<own path>\u0000<identity>`; an entry without an identity part
+  // is identified now.
+  const baseline = new Map<string, string>();
   if (nestedGitBaseline !== undefined) {
-    for (const nested of nestedGitBaseline) baseline.add(canonicalBaseline(nested));
+    for (const entry of nestedGitBaseline) {
+      const split = entry.indexOf("\u0000");
+      const own = canonicalBaseline(split === -1 ? entry : entry.slice(0, split));
+      baseline.set(own, split === -1 ? descentPointIdentity(own) : entry.slice(split + 1));
+    }
   } else {
     for (const root of scanRoots) {
       try {
-        for (const nested of nestedGitDescentPoints(root)) baseline.add(nested);
+        for (const nested of nestedGitDescentPoints(root)) baseline.set(nested, descentPointIdentity(nested));
       } catch {
         violation = true;
       }
@@ -105,7 +113,9 @@ export function startProtectedCreateMonitor(
         continue;
       }
       for (const nested of found) {
-        if (baseline.has(nested)) continue;
+        // Unchanged since the start: left alone. New, or rewritten/replaced in
+        // place (same path, different identity): removed and the command fails.
+        if (baseline.get(nested) === descentPointIdentity(nested)) continue;
         const target = watchedTarget(nested);
         if (target === undefined) { violation = true; continue; }
         // Move the new repository's `.git` aside rather than delete it: the
@@ -218,6 +228,43 @@ function isRealGitRepository(gitDir: string): boolean {
  * module so the created-path monitor pulls in nothing but `node:fs`/`node:path`
  * and can run inside the standalone launchers that load it.
  */
+/**
+ * Identity of a nested `.git` descent point at one moment: its type, its
+ * dev:ino and, for a pointer, what it points at (a gitfile's first 4 KiB, a
+ * symlink's target). A real repository directory is identified by dev:ino
+ * only, since its contents change legitimately. The baseline records this at
+ * command start and the stop scan recomputes it, so a pointer rewritten in
+ * place, or a `.git` replaced by another, is caught even though its path did
+ * not change. Must match the plan's descentPointIdentity (bwrap) exactly.
+ */
+function descentPointIdentity(entry: string): string {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(entry);
+  } catch {
+    return "missing";
+  }
+  const kind = stat.isSymbolicLink() ? "link" : stat.isDirectory() ? "dir" : stat.isFile() ? "file" : "other";
+  let data = "";
+  try {
+    if (kind === "link") {
+      data = fs.readlinkSync(entry);
+    } else if (kind === "file") {
+      const fd = fs.openSync(entry, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      try {
+        const buffer = Buffer.alloc(4096);
+        const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        data = buffer.subarray(0, read).toString("hex");
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+  } catch {
+    data = "unreadable";
+  }
+  return `${kind}:${stat.dev}:${stat.ino}:${data}`;
+}
+
 function nestedGitDescentPoints(root: string): string[] {
   const start = path.resolve(root);
   const topLevelGit = path.join(start, ".git");
