@@ -504,14 +504,17 @@ test("keeps a narrowed .git and its objects directory from being moved aside and
   }
 });
 
-test("removes a target created under a missing .git/objects without following a link swapped in for it", { timeout: 30_000 }, async () => {
+test("removes a watched .git carve-out without following a link swapped in for it", { timeout: 30_000 }, async () => {
   expect(process.platform).toBe("linux");
   const root = realpathSync(mkdtempSync(join("/var/tmp", "agenc-monitor-swap-kernel-")));
   const project = join(root, "project");
   const temporary = join(root, "temp");
   const victim = join(root, "victim", ".git");
-  // A `.git` without objects: objects/info is watched, nothing anchors objects.
-  mkdirSync(join(project, ".git"), { recursive: true });
+  // A real repository (HEAD + objects) whose `modules` surface entry is
+  // missing: the created-path monitor watches `.git/modules`. The command
+  // creates it, then swaps it for a link to another repository's metadata.
+  mkdirSync(join(project, ".git", "objects"), { recursive: true });
+  writeFileSync(join(project, ".git", "HEAD"), "ref: refs/heads/main\n");
   mkdirSync(temporary);
   mkdirSync(join(victim, "info"), { recursive: true });
   writeFileSync(join(victim, "info", "exclude"), "kept\n");
@@ -528,15 +531,17 @@ test("removes a target created under a missing .git/objects without following a 
         const until = Date.now() + 400;
         let swaps = 0;
         while (Date.now() < until) {
-          fs.mkdirSync('.git/objects/info', { recursive: true });
-          fs.writeFileSync('.git/objects/info/alternates', '/elsewhere\\n');
-          fs.renameSync('.git/objects', '.git/objects.real');
-          fs.symlinkSync(victim, '.git/objects');
-          fs.unlinkSync('.git/objects');
-          fs.renameSync('.git/objects.real', '.git/objects');
-          swaps += 1;
+          try {
+            fs.mkdirSync('.git/modules/sub', { recursive: true });
+            fs.writeFileSync('.git/modules/sub/HEAD', 'planted');
+            fs.renameSync('.git/modules', '.git/modules.real');
+            fs.symlinkSync(victim, '.git/modules');
+            fs.unlinkSync('.git/modules');
+            fs.renameSync('.git/modules.real', '.git/modules');
+            swaps += 1;
+          } catch { break; }
         }
-        fs.mkdirSync('.git/objects/info', { recursive: true });
+        try { fs.mkdirSync('.git/modules', { recursive: true }); } catch {}
         process.stdout.write(String(swaps));
       `, victim],
       cwd: project, env: environment,
@@ -545,9 +550,10 @@ test("removes a target created under a missing .git/objects without following a 
     }));
     expect(result.error).toBeUndefined();
     expect(Number(result.stdout), result.stderr).toBeGreaterThan(0);
-    // Creating a watched target fails the command and the target is removed.
+    // Creating a watched carve-out fails the command, and the swap for a link
+    // never lets the host-side monitor delete the other repository's data.
     expect(result.status).not.toBe(0);
-    expect(existsSync(join(project, ".git", "objects", "info"))).toBe(false);
+    expect(existsSync(join(project, ".git", "modules"))).toBe(false);
     expect(readFileSync(join(victim, "info", "exclude"), "utf8")).toBe("kept\n");
   } finally {
     rmSync(root, { recursive: true, force: true });

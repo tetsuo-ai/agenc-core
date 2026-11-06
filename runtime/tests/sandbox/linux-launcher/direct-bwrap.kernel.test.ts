@@ -126,7 +126,14 @@ test("declines the immutable direct route for a narrowed .git with missing surfa
   // entries. Real-kernel enforcement of the surface and of the monitored route is covered by
   // linux-launcher.kernel.test.ts and unified-exec/protected-create-session.kernel.test.ts.
   const git = path.join(cwd, ".git");
-  fs.rmSync(git, { recursive: true, force: true }); fs.mkdirSync(git);
+  // A real repository (HEAD + objects, as git init writes) whose narrowed
+  // surface entries are missing: only a real repository is narrowed, so the
+  // missing surface becomes created-path targets and the immutable route
+  // declines. (An empty .git is not a repository and stays a whole read-only
+  // bind the immutable route admits.)
+  fs.rmSync(git, { recursive: true, force: true });
+  fs.mkdirSync(path.join(git, "objects"), { recursive: true });
+  fs.writeFileSync(path.join(git, "HEAD"), "ref: refs/heads/main\n");
   const profile = { fileSystem: { kind: "restricted", includePlatformDefaults: true, entries: [
     { path: { kind: "special", value: { kind: "root" } }, access: "read" },
     { path: { kind: "path", path: cwd }, access: "write" },
