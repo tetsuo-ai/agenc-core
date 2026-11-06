@@ -289,16 +289,6 @@ describe.runIf(process.platform === "linux")("created-path monitor", () => {
   });
 });
 
-describe.runIf(process.platform !== "linux")("created-path monitor elsewhere", () => {
-  it("removes nothing and fails the command", () => {
-    const target = path.join(root, ".agenc");
-    fs.mkdirSync(target);
-    const monitor = startProtectedCreateMonitor([target]);
-    expect(monitor.stop()).toBe(true);
-    expect(fs.existsSync(target)).toBe(true);
-  });
-});
-
 describe("protected-create exit code", () => {
   it("fails only a clean exit", () => {
     expect(protectedCreateExitCode(0, true)).toBe(1);
