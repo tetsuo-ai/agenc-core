@@ -98,9 +98,11 @@ import {
   type RuntimeTool as AgentRuntimeTool,
 } from "../llm/runtime-tool-projection.js";
 import type {
+  LLMTool as ChildLLMTool,
   ToolRegistry,
   ToolDispatchResult,
 } from "./_deps/tool-registry.js";
+import { COMPACT_CORE_SWITCH_DISCOVERIES, COMPACT_CORE_TOOL_NAMES } from "../tools/light-profile.js";
 import {
   safeStringify,
   type Tool,
@@ -2345,11 +2347,14 @@ export function buildFilteredRegistry(
       function: { name: tool.name, description: tool.description, parameters: tool.inputSchema },
     });
   }
-  // What the parent presented in full at spawn without discovery (native
-  // DeepSeek Light's stable core catalog). When the child's own exec yield,
-  // escalation or search loads one of these, its spawn-time form stays and
-  // nothing is announced: the request already carries its full schema, and a
-  // changed entry would break the child's cached prompt.
+  // What the parent presented at spawn without discovery (native DeepSeek
+  // Light's stable core catalog). When the child's own exec yield, escalation
+  // or search loads one of these, nothing is announced and its spawn-time form
+  // stays, so the child's cached prompt holds. A compact parent's core tools
+  // switch once, as the parent's would: a selection of a compact core tool or a
+  // discovery of exec_command (an escalation notice), FileRead or
+  // system.searchTools moves the child to the parent's full core schemas. A
+  // child of a parent that had already switched starts with those.
   const stableInitial: ReadonlySet<string> = initialTools === undefined
     ? new Set()
     : new Set([...base.getStableCatalogToolNames?.() ?? []].filter(name => initialTools.has(name)));
@@ -2357,6 +2362,16 @@ export function buildFilteredRegistry(
     for (const name of names) {
       if (toolCatalogScope.has(name)) discoveredToolNames.add(name);
     }
+  };
+  const inheritedExpansion = base.isCoreCatalogExpanded?.() === true;
+  let coreSelected = false;
+  const coreExpanded = (): boolean => inheritedExpansion || coreSelected ||
+    COMPACT_CORE_SWITCH_DISCOVERIES.some(name => discoveredToolNames.has(name));
+  let expandedForms: ReadonlyMap<string, ChildLLMTool> | undefined;
+  const expandedCoreForms = (): ReadonlyMap<string, ChildLLMTool> => {
+    expandedForms ??= new Map((base.toExpandedCoreLLMTools?.() ?? [])
+      .map((tool: ChildLLMTool) => [tool.function.name as string, tool]));
+    return expandedForms;
   };
   // A live exec session exposes polling and termination to Light children;
   // other children follow the standard deferral of all three process tools.
@@ -2388,7 +2403,10 @@ export function buildFilteredRegistry(
         ...(tool.metadata?.preferredProfiles !== undefined ? { preferredProfiles: tool.metadata.preferredProfiles } : {}),
       },
     })),
-    onDiscoverTools: discoverToolNames,
+    onDiscoverTools: (names) => {
+      discoverToolNames(names);
+      if (names.some(name => COMPACT_CORE_TOOL_NAMES.has(name))) coreSelected = true;
+    },
   }) : undefined;
   const searchTools = localSearch === undefined ? undefined
     : async (args: Record<string, unknown>) => {
@@ -2450,7 +2468,9 @@ export function buildFilteredRegistry(
       return fallbackAdvertisedTools().flatMap(tool => {
         const name = tool.function.name;
         const initial = initialTools.get(name);
-        if (initial !== undefined && stableInitial.has(name)) return [initial];
+        if (initial !== undefined && stableInitial.has(name)) {
+          return [coreExpanded() && !inheritedExpansion ? expandedCoreForms().get(name) ?? initial : initial];
+        }
         if (discoveredToolNames.has(name)) return [tool];
         return initial === undefined ? [] : [initial];
       });
@@ -2500,6 +2520,13 @@ export function buildFilteredRegistry(
         ? discoveredToolNames
         : new Set([...discoveredToolNames].filter(name => !stableInitial.has(name))),
       getStableCatalogToolNames: () => stableInitial,
+      isCoreCatalogExpanded: coreExpanded,
+      expandCoreCatalog: () => { coreSelected = true; },
+      toExpandedCoreLLMTools: () => {
+        const forms = expandedCoreForms();
+        return advertisedLLMTools().map(tool => stableInitial.has(tool.function.name as string)
+          ? forms.get(tool.function.name as string) ?? tool : tool);
+      },
       discoverToolNames,
     } : {}),
     async dispatchCodeModeNestedTool(call): Promise<ToolDispatchResult> {

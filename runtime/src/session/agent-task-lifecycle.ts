@@ -289,7 +289,7 @@ export async function recordInitialHistoryOnResume(
     readonly currentModel: string;
   },
 ): Promise<void> {
-  restorePromptCacheState(session, session.provider, rolloutItems);
+  restorePromptCacheState(session, session.provider, rolloutItems, session.services.registry);
   // 1. Agent-task restore. Run first so the cached task lines up with
   // the restored session
   // identity before any model-dependent state mutations.

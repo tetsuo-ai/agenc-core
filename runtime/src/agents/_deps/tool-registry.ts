@@ -44,8 +44,15 @@ export interface ToolRegistry {
   getDiscoveredToolNames?(): ReadonlySet<string>;
   /** Discovered tools a request carries only because they were discovered. */
   getLoadedDeferredToolNames?(): ReadonlySet<string>;
-  /** Tools every request carries in full without discovery; loading one changes nothing. */
+  /**
+   * Tools every request carries without discovery: loading one is not announced. On native DeepSeek
+   * Light their spawn-time form stays until the child's own core switch (toExpandedCoreLLMTools).
+   */
   getStableCatalogToolNames?(): ReadonlySet<string>;
+  /** The parent's tool list with the full core schemas, whatever its own switch state. */
+  toExpandedCoreLLMTools?(): LLMTool[];
+  /** Whether the registry presents the full core schemas (native DeepSeek Light's switch). */
+  isCoreCatalogExpanded?(): boolean;
   /** Tools the parent keeps for telemetry only; a child never runs them. */
   getUnavailableToolNames?(): ReadonlySet<string>;
 }
