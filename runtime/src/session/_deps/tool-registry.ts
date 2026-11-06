@@ -52,6 +52,10 @@ export interface ToolRegistry {
   getDiscoveredToolNames?(): ReadonlySet<string>;
   /** Discovered tools the request carries only because they were discovered (deferred-tools notice). */
   getLoadedDeferredToolNames?(): ReadonlySet<string>;
+  /** Native DeepSeek Light's compact core catalog has switched to the full core schemas (persisted with the prompt cache state). */
+  isCoreCatalogExpanded?(): boolean;
+  /** Present the full core schemas from now on: a switch restored with the conversation. */
+  expandCoreCatalog?(): void;
   discoverToolNames?(toolNames: readonly string[]): void;
   /** Catalog tools that load through system.searchTools; fixed per session. */
   getDeferredToolNames?(): ReadonlySet<string>;

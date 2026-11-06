@@ -31,7 +31,7 @@ import type { LLMTool, LLMToolCall } from "./llm/types.js";
 import { lightPresentation, standardPresentation, withHardTimeoutWording } from "./tools/light-presentation.js";
 import { execHardTimeoutEnabled } from "./tools/system/exec-timeout-mode.js";
 import { WEB_SEARCH_INITIAL_TOOLS } from "./tools/web-search-mode.js";
-import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch, lightUsesBatchEdit, lightUsesDeepSeekWrite, lightUsesGlmTuning } from "./tools/light-profile.js";
+import { COMPACT_CORE_SWITCH_DISCOVERIES, COMPACT_CORE_TOOL_NAMES, LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch, lightUsesBatchEdit, lightUsesDeepSeekWrite, lightUsesGlmTuning } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
   Tool,
@@ -192,12 +192,30 @@ export interface ToolRegistry {
    */
   getLoadedDeferredToolNames?(): ReadonlySet<string>;
   /**
-   * Tools every request carries in full without discovery (native DeepSeek
-   * Light's stable core catalog), so loading one changes nothing; empty
-   * elsewhere. A Light child keeps these in the form its parent presented
-   * when it spawned the child, and does not announce them either.
+   * Tools every request carries without discovery (native DeepSeek Light's
+   * stable core catalog), so loading one is not announced; empty elsewhere. A
+   * Light child keeps these in the form its parent presented when it spawned
+   * the child, until the child's own core switch moves the compact ones to the
+   * parent's full core schemas (toExpandedCoreLLMTools), and does not announce
+   * them either.
    */
   getStableCatalogToolNames?(): ReadonlySet<string>;
+  /**
+   * Whether native DeepSeek Light's compact core catalog has switched to the
+   * full core schemas (a selection of a compact core tool, an escalation
+   * notice, or a restored or inherited switch). The session persists it with
+   * its prompt cache state, so a resumed or restarted conversation keeps the
+   * catalog it last sent.
+   */
+  isCoreCatalogExpanded?(): boolean;
+  /** Present the full core schemas from now on: a switch restored with the conversation or inherited at spawn. */
+  expandCoreCatalog?(): void;
+  /**
+   * The tool list as the registry presents it with the full core schemas,
+   * whatever its own switch state. A Light child of a compact DeepSeek parent
+   * switches to these forms.
+   */
+  toExpandedCoreLLMTools?(): LLMTool[];
   discoverToolNames?(toolNames: readonly string[]): void;
   /**
    * Catalog tools a request does not carry until system.searchTools (or the
@@ -751,15 +769,6 @@ const STANDARD_COMPACT_PRESENTATION: ReadonlySet<string> = new Set([
   "Grep",
 ]);
 
-/**
- * The core tools native DeepSeek Light first presents in a compact form whose
- * remaining fields load through system.searchTools. Discovering one of them
- * (a selection, or exec_command after a sandbox notice advises escalation)
- * moves the session to the full core schemas. An exec yield discovers
- * write_stdin and kill_process, which the compact catalog already carries.
- */
-const COMPACT_CORE_SCHEMA_TOOLS: readonly string[] = ["exec_command", "FileRead", SYSTEM_SEARCH_TOOLS_NAME];
-
 export function buildToolRegistry(
   options: BuildToolRegistryOptions,
 ): ToolRegistry {
@@ -767,6 +776,10 @@ export function buildToolRegistry(
     options.unifiedExecManager ??
     new UnifiedExecProcessManager({ cwd: options.workspaceRoot });
   const discoveredToolNames = new Set<string>();
+  // Native DeepSeek Light's compact core catalog has switched to the full core
+  // schemas through a selection of a compact core tool, or the switch was
+  // restored with the conversation or inherited at spawn (expandCoreCatalog).
+  let coreCatalogExpanded = false;
   // Standard sessions defer the tools most sessions never call (see
   // tools/rare-tool-deferral.ts); Light keeps its own initial tool set.
   const deferRareTools = options.deferRareTools === true;
@@ -806,7 +819,12 @@ export function buildToolRegistry(
           spec.tool,
           isDeferredSpec(spec) ? { ...spec, deferred: true } : spec,
         )),
-    onDiscoverTools: markDiscovered,
+    onDiscoverTools: (toolNames) => {
+      markDiscovered(toolNames);
+      // Selecting a compact core tool loads its full schema, so the search
+      // result's "loaded" is true there too: the core schemas switch to full.
+      if (toolNames.some((name) => COMPACT_CORE_TOOL_NAMES.has(name))) coreCatalogExpanded = true;
+    },
     ...(options.lightMode === true ? { compactResults: true } : {}),
     ...(options.mcpToolsProvider?.primeCatalogs !== undefined
       ? { onBeforeSearch: () => options.mcpToolsProvider!.primeCatalogs!() }
@@ -1178,17 +1196,27 @@ export function buildToolRegistry(
     return options.lightMode === true && sessionModelIdentity().provider?.trim().toLowerCase() === "deepseek";
   }
   /**
-   * The stable catalog starts compact: exec_command, write_stdin and kill_process
-   * with the fields process sessions use, and the lean FileRead and
-   * system.searchTools (light-presentation.ts COMPACT_EXEC_FIELDS). A yield or a
-   * poll leaves it unchanged. Selecting a core tool's schema through
-   * system.searchTools, or a sandbox notice that advises escalation, presents the
-   * full core schemas from then on: one catalog change per session at most. The
-   * compact form needs system.searchTools to load the rest.
+   * Whether the session has switched to the full core schemas: a selection of
+   * a compact core tool, a discovery of exec_command (a sandbox notice that
+   * advises escalation), FileRead or system.searchTools, or a switch restored
+   * with the conversation or inherited at spawn. Discovery only grows, so the
+   * switch happens once.
+   */
+  function coreSchemasExpanded(): boolean {
+    return coreCatalogExpanded || COMPACT_CORE_SWITCH_DISCOVERIES.some((name) => discoveredToolNames.has(name));
+  }
+  /**
+   * The stable catalog starts compact: exec_command and write_stdin with the
+   * fields process sessions and approvals use, kill_process with shorter text,
+   * and the lean FileRead and system.searchTools (light-presentation.ts
+   * COMPACT_EXEC_FIELDS). A yield, a poll or a kill leaves it unchanged; a
+   * switch (coreSchemasExpanded) presents the full core schemas from then on,
+   * and the session keeps it across a resume or restart (the prompt cache
+   * state persists it). The compact form needs system.searchTools to load the
+   * rest.
    */
   function compactDeepSeekCoreCatalog(searchVisible: boolean): boolean {
-    return searchVisible && stableDeepSeekCoreCatalog() &&
-      !COMPACT_CORE_SCHEMA_TOOLS.some((name) => discoveredToolNames.has(name));
+    return searchVisible && stableDeepSeekCoreCatalog() && !coreSchemasExpanded();
   }
   function usesBatchEdit(): boolean {
     if (options.lightMode !== true) return false;
@@ -1583,14 +1611,15 @@ export function buildToolRegistry(
     })];
   }
 
-  let presentationMemo: { router: ToolRouter; discovered: readonly string[];
+  let presentationMemo: { router: ToolRouter; discovered: readonly string[]; coreExpanded: boolean;
     provider: string | undefined; planMode: boolean; webSearch: boolean; hardTimeout: boolean; tools: LLMTool[] } | undefined;
-  function buildPresentedTools(router: ToolRouter): LLMTool[] {
+  /** `fullCore` presents the full core schemas whatever the switch state (a Light child's switch). */
+  function buildPresentedTools(router: ToolRouter, fullCore = false): LLMTool[] {
       const identity = sessionModelIdentity();
       const visible = standardDeferral ? loadOrderedSpecs(visibleSpecs(router)) : visibleSpecs(router);
       const searchVisible = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME);
       const stableCore = stableDeepSeekCoreCatalog();
-      const compactCore = compactDeepSeekCoreCatalog(searchVisible);
+      const compactCore = !fullCore && compactDeepSeekCoreCatalog(searchVisible);
       const leanExec = !stableCore && searchVisible && !discoveredToolNames.has("exec_command");
       const leanGrep = searchVisible && !discoveredToolNames.has("Grep");
       const leanSearch = (compactCore || !stableCore) && !discoveredToolNames.has(SYSTEM_SEARCH_TOOLS_NAME);
@@ -1647,23 +1676,36 @@ export function buildToolRegistry(
       const planMode = planModeActive();
       const webSearch = options.webSearchEnabled?.() === true;
       const hardTimeout = execHardTimeout();
+      const coreExpanded = coreCatalogExpanded;
       const memo = presentationMemo;
       if (memo?.router === router && memo.provider === provider && memo.planMode === planMode && memo.webSearch === webSearch &&
-          memo.hardTimeout === hardTimeout &&
+          memo.hardTimeout === hardTimeout && memo.coreExpanded === coreExpanded &&
           memo.discovered.length === discovered.length &&
           memo.discovered.every((name, i) => name === discovered[i])) return memo.tools;
       const tools = buildPresentedTools(router);
-      presentationMemo = { router, provider, planMode, webSearch, hardTimeout, discovered, tools };
+      presentationMemo = { router, provider, planMode, webSearch, hardTimeout, coreExpanded, discovered, tools };
       return tools;
+    },
+    toExpandedCoreLLMTools(): LLMTool[] {
+      return buildPresentedTools(buildRouter(), true);
+    },
+    isCoreCatalogExpanded(): boolean {
+      return coreSchemasExpanded();
+    },
+    expandCoreCatalog(): void {
+      coreCatalogExpanded = true;
     },
     getDiscoveredToolNames(): ReadonlySet<string> {
       return discoveredToolNames;
     },
     getLoadedDeferredToolNames(): ReadonlySet<string> {
       // Elsewhere a discovered initial tool changes form (a lean schema expands),
-      // so its discovery is still announced. The stable DeepSeek catalog presents
-      // its tools in full from the first request; loading one adds nothing new.
-      // Discovery itself is kept, so a later provider switch still carries them.
+      // so its discovery is still announced. The stable DeepSeek catalog carries
+      // its core tools from the first request: loading one is not announced, and
+      // neither is the switch from its compact to its full core schemas, since
+      // the selection result or the sandbox notice that caused it already tells
+      // the model. Discovery itself is kept, so a later provider switch still
+      // carries the tools.
       if (!stableDeepSeekCoreCatalog()) return discoveredToolNames;
       const presented = stableCatalogToolNames();
       return new Set([...discoveredToolNames].filter((name) => !presented.has(name)));

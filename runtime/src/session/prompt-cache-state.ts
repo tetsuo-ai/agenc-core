@@ -18,9 +18,22 @@ export interface PromptCacheState {
   readonly provider: string;
   readonly providerScope?: string;
   readonly functionCallItemIds?: readonly (readonly [string, string])[];
+  /**
+   * Native DeepSeek Light's compact core catalog had switched to the full core
+   * schemas (tool-registry.ts isCoreCatalogExpanded). A resumed, restarted or
+   * forked conversation presents the full schemas again, the tool list it last
+   * sent, instead of switching a second time.
+   */
+  readonly coreCatalog?: "expanded";
 }
 
-export function capturePromptCacheState(sessionKey: object, provider: LLMProvider): PromptCacheState {
+/** The registry surface that records and restores the core catalog switch. */
+export interface CoreCatalogSwitch {
+  isCoreCatalogExpanded?(): boolean;
+  expandCoreCatalog?(): void;
+}
+
+export function capturePromptCacheState(sessionKey: object, provider: LLMProvider, registry?: CoreCatalogSwitch): PromptCacheState {
   const state = getAttachmentTrackingState(sessionKey);
   const attachments: PersistedAttachmentTrackingState = {
     ...state,
@@ -35,7 +48,8 @@ export function capturePromptCacheState(sessionKey: object, provider: LLMProvide
   };
   return { version: 1, attachments, provider: provider.name,
     providerScope: provider.functionCallItemIdsScope,
-    functionCallItemIds: provider.exportFunctionCallItemIds?.() };
+    functionCallItemIds: provider.exportFunctionCallItemIds?.(),
+    ...(registry?.isCoreCatalogExpanded?.() === true ? { coreCatalog: "expanded" as const } : {}) };
 }
 
 /** Validate optional cache metadata before restoring its mutable containers. */
@@ -79,11 +93,17 @@ function validAttachments(value: unknown): value is PersistedAttachmentTrackingS
       (typeof message.content === "string" || Array.isArray(message.content))));
 }
 
-export function restorePromptCacheState(sessionKey: object, provider: LLMProvider, items: readonly RolloutItem[]): void {
+export function restorePromptCacheState(
+  sessionKey: object,
+  provider: LLMProvider,
+  items: readonly RolloutItem[],
+  registry?: CoreCatalogSwitch,
+): void {
   for (let index = items.length - 1; index >= 0; index--) {
     const item = items[index];
     if (item?.type !== "session_state" || !Object.hasOwn(item.payload, "promptCache")) continue;
     const cache = item.payload.promptCache;
+    if (cache?.version === 1 && cache.coreCatalog === "expanded") registry?.expandCoreCatalog?.();
     if (cache?.version !== 1 || !validAttachments(cache.attachments)) return;
     const state = getAttachmentTrackingState(sessionKey);
     // Fresh copies are essential: a fork/resume must not mutate its source.
@@ -113,5 +133,6 @@ export function isPromptCacheState(value: unknown): value is PromptCacheState {
     (cache.providerScope === undefined || typeof cache.providerScope === "string") &&
     (cache.functionCallItemIds === undefined || (Array.isArray(cache.functionCallItemIds) &&
       cache.functionCallItemIds.every(entry => Array.isArray(entry) && entry.length === 2 &&
-        entry.every(part => typeof part === "string")))) && validAttachments(cache.attachments);
+        entry.every(part => typeof part === "string")))) &&
+    (cache.coreCatalog === undefined || cache.coreCatalog === "expanded") && validAttachments(cache.attachments);
 }
