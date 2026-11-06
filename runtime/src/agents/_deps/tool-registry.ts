@@ -42,6 +42,10 @@ export interface ToolRegistry {
   toLLMTools(): LLMTool[];
   dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult>;
   getDiscoveredToolNames?(): ReadonlySet<string>;
+  /** Discovered tools a request carries only because they were discovered. */
+  getLoadedDeferredToolNames?(): ReadonlySet<string>;
+  /** Tools every request carries in full without discovery; loading one changes nothing. */
+  getStableCatalogToolNames?(): ReadonlySet<string>;
   /** Tools the parent keeps for telemetry only; a child never runs them. */
   getUnavailableToolNames?(): ReadonlySet<string>;
 }

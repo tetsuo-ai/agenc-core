@@ -191,6 +191,13 @@ export interface ToolRegistry {
    * Callers without it fall back to getDiscoveredToolNames.
    */
   getLoadedDeferredToolNames?(): ReadonlySet<string>;
+  /**
+   * Tools every request carries in full without discovery (native DeepSeek
+   * Light's stable core catalog), so loading one changes nothing; empty
+   * elsewhere. A Light child keeps these in the form its parent presented
+   * when it spawned the child, and does not announce them either.
+   */
+  getStableCatalogToolNames?(): ReadonlySet<string>;
   discoverToolNames?(toolNames: readonly string[]): void;
   /**
    * Catalog tools a request does not carry until system.searchTools (or the
@@ -1448,6 +1455,20 @@ export function buildToolRegistry(
     );
   }
 
+  /**
+   * What a stable DeepSeek catalog request carries without discovery; empty
+   * elsewhere. MCP tools that a policy presents without search (deferMcpTools
+   * = false, or no system.searchTools) stay out: as on other providers, the
+   * notice announces one the user names, with its call-it-directly nudge, and
+   * its removal when its server disconnects.
+   */
+  function stableCatalogToolNames(): ReadonlySet<string> {
+    if (!stableDeepSeekCoreCatalog()) return new Set();
+    return new Set(visibleSpecs(buildRouter(), false)
+      .filter((spec) => spec.tool.metadata?.source !== "mcp")
+      .map((spec) => spec.tool.name));
+  }
+
   async function executeConfiguredTool(
     spec: ConfiguredToolSpec,
     callId: string,
@@ -1617,8 +1638,11 @@ export function buildToolRegistry(
       // its tools in full from the first request; loading one adds nothing new.
       // Discovery itself is kept, so a later provider switch still carries them.
       if (!stableDeepSeekCoreCatalog()) return discoveredToolNames;
-      const presented = new Set(visibleSpecs(buildRouter(), false).map((spec) => spec.tool.name));
+      const presented = stableCatalogToolNames();
       return new Set([...discoveredToolNames].filter((name) => !presented.has(name)));
+    },
+    getStableCatalogToolNames(): ReadonlySet<string> {
+      return stableCatalogToolNames();
     },
     getDeferredToolNames(): ReadonlySet<string> {
       return new Set(allSpecs()
