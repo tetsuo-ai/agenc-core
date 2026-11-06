@@ -39,6 +39,7 @@ import { randomUUID } from "node:crypto";
 import { isHiddenGoalContinuation } from "./hidden-goal-history.js";
 import { MAX_RECOVERY_CANONICAL_LINE_BYTES } from "../state/recovery-contract.js";
 import { isKnownEmptyProviderReasoning } from "../llm/types.js";
+import { restoreOmittedBinaryCarriers } from "../llm/content-conversion.js";
 import { persistDisplayAttachments } from "./display-artifact-store.js";
 import { boundDisplayCompletionEvent } from "./display-completion.js";
 import { createLazySavedPluginSecretRedactor } from '../plugins/secret-redaction.js';
@@ -4992,7 +4993,12 @@ export class Session {
           : params.compactionResult.transaction.committed.replacement_history;
       const applyProjection = async (): Promise<void> => {
         await this.state.with((sessionState) => {
-          sessionState.history = projectedItems.map(responseItemToLlmMessage);
+          // The kept tail keeps its screenshots in memory where the durable
+          // replacement could only store an omission note.
+          sessionState.history = restoreOmittedBinaryCarriers(
+            projectedItems.map(responseItemToLlmMessage),
+            sessionState.history,
+          );
         });
       };
       if (params.compactionResult.transaction !== undefined) {

@@ -9,6 +9,7 @@
 
 import { resetSentContextImages, unseenImageSourcesRemovedByCompaction } from "./query-image-budget.js";
 import type { LLMMessage } from "../llm/types.js";
+import { restoreOmittedBinaryCarriers } from "../llm/content-conversion.js";
 import { getSelectedProviderEnvironment } from "../utils/model/providers.js";
 import type { CompactionResult } from "../services/compact/types.js";
 import { getAutoCompactPolicyForEnvironment } from "../services/compact/thresholds.js";
@@ -675,9 +676,12 @@ async function runAutoCompact(
         // projection so `prepareContext` (next phase) sees the same
         // post-compact replacement history the rollout recorded.
         const beforeCompaction = state.messages;
+        // The kept tail keeps its screenshots in memory where the durable
+        // replacement could only store an omission note.
+        const retained = restoreOmittedBinaryCarriers(compacted, beforeCompaction);
         state.messages = unsentImageTurn
-          ? [...compacted, { ...unsentImageTurn }]
-          : [...compacted];
+          ? [...retained, { ...unsentImageTurn }]
+          : retained;
         const unseenSources = unseenImageSourcesRemovedByCompaction(session, beforeCompaction, state.messages);
         if (unseenSources.length > 0) {
           state.messages.push({ role: "user", content:

@@ -1,5 +1,10 @@
 import { installPreparedCompactionPressure } from "../helpers/prepared-compaction-pressure.js";
 import { afterEach, expect, test, vi } from "vitest";
+import { OMITTED_BINARY_CARRIER_TEXT } from "../../src/llm/content-conversion.js";
+import { redactSecretsInValue } from "../../src/secrets/sanitizer.js";
+import { inspectImageDataUrl } from "../../src/utils/image-validation.js";
+import { createToolResultIntegrity } from "../../src/session/tool-result-integrity.js";
+import { syntheticPng } from "../helpers/redacted-inline-image-fixture.js";
 import type { LLMContentPart, LLMMessage } from "../../src/llm/types.js";
 import { clearSession } from "../../src/commands/clear.js";
 import { runTurn, setAutoCompactImplForTests } from "../../src/session/run-turn.js";
@@ -313,5 +318,60 @@ test("compaction after an eviction names only the image no request showed", asyn
     expect(afterCompact).not.toContain("screen 8");
     expect(afterCompact).toContain("Compaction removed 1 new image before you could inspect it. Missing image sources: the newly attached image.");
     expect(afterCompact.match(/Compaction removed/g)).toHaveLength(1);
+  } finally { session.mountRolloutStore(null); harness.close(); }
+});
+
+test("compaction keeps the screenshots of the tail it retains (lt30 Flt30-5)", async () => {
+  // lt30 O-r1: after a compaction the five FileRead screenshots of the kept tail reached the model as an omission
+  // note, and the kept analysis was about exactly those screens. A screenshot whose base64 holds a run the durable
+  // record cannot store unchanged is omitted there, and the replacement history is read back from that record.
+  const shot = syntheticPng(true);
+  expect(inspectImageDataUrl(shot)?.ok).toBe(true);
+  expect(redactSecretsInValue(shot)).not.toBe(shot);
+  const harness = createCompactionTransactionHarness([]);
+  const reads = [1, 2, 3, 4, 5].map(index => ({ id: `read-${index}`, path: `/app/shots/0${index}.png` }));
+  const result = (id: string, path: string): LLMMessage => {
+    const content: LLMContentPart[] = [{ type: "text", text: `Read image ${path}` }, { type: "image_url", image_url: { url: shot } }];
+    return { role: "tool", toolCallId: id, toolName: "FileRead", content, runtimeOnly: {
+      toolResultIntegrity: createToolResultIntegrity({ runId: harness.store.sessionId, toolCallId: id, content }) } };
+  };
+  const history: LLMMessage[] = [
+    { role: "user", content: "Review the five screens." },
+    { role: "assistant", content: "", toolCalls: reads.map(({ id, path }) => ({ id, name: "FileRead", arguments: JSON.stringify({ file_path: path }) })) },
+    ...reads.map(({ id, path }) => result(id, path)),
+    { role: "assistant", content: "Analysis of the five screens: the header overlaps the menu on 03." },
+  ];
+  const requests: LLMMessage[][] = [];
+  const provider = mkProvider({ content: "fixed" }, { onChatStream: messages => requests.push(messages) });
+  Object.assign(provider, { name: "deepseek" });
+  const { session } = mkSession({ provider, history });
+  Object.assign(session.config, { model: "deepseek-flash" });
+  const ctx = mkCtx({ modelProviderId: "deepseek" });
+  attachCompactionSession(session, harness);
+  // The compaction summarizes the first request and keeps the tail: the reads, their screenshots and the analysis.
+  setAutoCompactImplForTests(async (offered: unknown) => ({ wasCompacted: true, compactionResult: {
+    message: "Earlier work summarized.",
+    replacementHistory: [{ role: "user", content: "Earlier work summarized." }, ...(offered as LLMMessage[]).slice(1)],
+  } }));
+  const screens = (messages: readonly LLMMessage[]): number => JSON.stringify(messages).split(shot).length - 1;
+  try {
+    Object.assign(ctx.modelInfo, { autoCompactTokenLimit: 1_000 });
+    installPreparedCompactionPressure(provider, request =>
+      JSON.stringify(request.messages).includes("Review the five screens") ? 18_130 : 100);
+    await drain(runTurn(session, ctx, "Fix the header on screen 03."));
+    expect(requests).toHaveLength(1);
+    const afterCompact = JSON.stringify(requests[0]);
+    expect(afterCompact).toContain("Earlier work summarized.");
+    expect(afterCompact).not.toContain("Review the five screens");
+    expect(screens(requests[0]!)).toBe(5);
+    expect(afterCompact).not.toContain(OMITTED_BINARY_CARRIER_TEXT);
+    // The durable record still leaves them out.
+    const durable = JSON.stringify(harness.store.readAll());
+    expect(durable).toContain(OMITTED_BINARY_CARRIER_TEXT);
+    expect(durable).not.toContain(shot);
+    // The next turn still shows them.
+    await drain(runTurn(session, ctx, "Check the fix."));
+    expect(requests).toHaveLength(2);
+    expect(screens(requests[1]!)).toBe(5);
   } finally { session.mountRolloutStore(null); harness.close(); }
 });
