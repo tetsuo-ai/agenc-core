@@ -171,7 +171,9 @@ describe("requestsHelpers", () => {
 });
 
 // It runs synchronously on every Light root turn's text in the daemon. Every match of every pattern is checked, so the
-// look-back for a negation is bounded: unbounded, 1 MB of "avoid using sub-agents, " took 30 s (re-review R1).
+// look-back for a negation is bounded: unbounded, 1 MB of "avoid using sub-agents, " took 30 s (re-review R1). A run
+// takes about 30 to 45 ms; the 500 ms bound leaves room for a loaded machine and still fails the quadratic version
+// about 60 times over.
 describe("requestsHelpers on large inputs", () => {
   const MB = 1 << 20;
   const repeat = (unit: string, size: number) => unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
@@ -182,7 +184,7 @@ describe("requestsHelpers on large inputs", () => {
     ["The agent reads the file. ", false],
     ["Add a helper function, keep the helpers small; the agent SDK. ", false],
     ["The parser reads the file. It keeps the rows in order; the writer flushes them. ", false],
-  ])("1 MB of %j takes well under 100 ms", (unit, expected) => {
+  ])("1 MB of %j finishes in under 500 ms", (unit, expected) => {
     const text = repeat(unit, MB);
     let best = Number.POSITIVE_INFINITY;
     for (let run = 0; run < 3; run += 1) {
@@ -190,7 +192,7 @@ describe("requestsHelpers on large inputs", () => {
       expect(requestsHelpers(text)).toBe(expected);
       best = Math.min(best, performance.now() - start);
     }
-    expect(best).toBeLessThan(100);
+    expect(best).toBeLessThan(500);
   });
 });
 
