@@ -37,13 +37,16 @@ import { withheldImagePlaceholder } from "./query-image-withheld.js";
 
 // What this process knows about the images of each session's current
 // context epoch, keyed by the session object so concurrent conversations
-// never mix: every image the last dispatched request presented (shown, or
-// named by a budget placeholder), and the images the last prepared
-// projection would show the model or withheld only for this budget. A
-// resumed session or a restarted daemon starts with neither, so it never
-// claims that an image an earlier process sent was left unseen.
+// never mix: every image still in the conversation that a dispatched request
+// of the epoch presented (shown, or named by a budget placeholder), and the
+// images the last prepared projection would show the model or withheld only
+// for this budget, and the images a dispatched request of the epoch carried
+// itself (shown, not named by a placeholder). A resumed session or a
+// restarted daemon starts with none, so it never claims that an image an
+// earlier process sent was left unseen, or that it was shown.
 const dispatchedImages = new WeakMap<object, ReadonlySet<string>>();
 const preparedImages = new WeakMap<object, ReadonlySet<string>>();
+const shownImages = new WeakMap<object, ReadonlySet<string>>();
 
 function contextImageUrls(messages: readonly LLMMessage[]): Set<string> {
   return new Set(messages.flatMap(message => Array.isArray(message.content)
@@ -54,10 +57,43 @@ function contextImageUrls(messages: readonly LLMMessage[]): Set<string> {
  * The request about to be dispatched presents what its prepared projection
  * showed or named in a budget placeholder, and every image it carries. The
  * dispatched request is a snapshot whose placeholder parts are copies, so the
- * prepared set, not placeholder identity, records the placeholders.
+ * prepared set, not placeholder identity, records the placeholders. The
+ * record keeps what earlier requests of the epoch presented while the image
+ * is still in `history`, the conversation this request was built from: a
+ * request that withholds an image for its model (a text-only fallback or
+ * skill model) does not make an image the model already saw look unseen, and
+ * an image that left the conversation (/clear, a manual compaction, a cleared
+ * agent history) is dropped from the record at the next request instead of
+ * counting as shown for good. Compaction and a forked turn start a new
+ * record.
  */
-export function rememberSentContextImages(session: object, messages: readonly LLMMessage[]): void {
-  dispatchedImages.set(session, new Set([...preparedImages.get(session) ?? [], ...contextImageUrls(messages)]));
+export function rememberSentContextImages(
+  session: object,
+  messages: readonly LLMMessage[],
+  history: readonly LLMMessage[],
+): void {
+  const inConversation = contextImageUrls(history);
+  const carried = contextImageUrls(messages);
+  const stillInConversation = (record: ReadonlySet<string> | undefined): string[] =>
+    [...record ?? []].filter(url => inConversation.has(url));
+  dispatchedImages.set(session, new Set([
+    ...stillInConversation(dispatchedImages.get(session)),
+    ...preparedImages.get(session) ?? [],
+    ...carried,
+  ]));
+  shownImages.set(session, new Set([...stillInConversation(shownImages.get(session)), ...carried]));
+}
+
+/**
+ * Whether a dispatched request of this epoch carried the image itself. The
+ * turn-aware admission says an evicted image was already shown only then: a
+ * request may have withheld it for a text-only model, for a provider refusal
+ * or as undecodable. An evicted image never returns to a request, so its
+ * note stays the same from one request to the next.
+ */
+export function contextImageShownBefore(session: object): (url: string) => boolean {
+  const shown = shownImages.get(session);
+  return (url) => shown?.has(url) === true;
 }
 
 /**
@@ -83,6 +119,7 @@ export function rememberPreparedContextImages(
 export function resetSentContextImages(session: object): void {
   dispatchedImages.delete(session);
   preparedImages.delete(session);
+  shownImages.delete(session);
 }
 
 /**
@@ -95,11 +132,13 @@ export function resetSentContextImages(session: object): void {
 export function isolateContextImageEvidence(session: object): () => void {
   const dispatched = dispatchedImages.get(session);
   const prepared = preparedImages.get(session);
+  const shown = shownImages.get(session);
   resetSentContextImages(session);
   return () => {
     resetSentContextImages(session);
     if (dispatched !== undefined) dispatchedImages.set(session, dispatched);
     if (prepared !== undefined) preparedImages.set(session, prepared);
+    if (shown !== undefined) shownImages.set(session, shown);
   };
 }
 
@@ -147,6 +186,14 @@ export const DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES = 6 * 1024 * 1024;
 export const CONTEXT_IMAGE_BUDGET_ENV = "AGENC_CONTEXT_IMAGE_BUDGET_BYTES";
 export const OMITTED_IMAGE_TEXT =
   "[image omitted: an earlier screenshot is no longer in context; capture or read it again if it is still needed]";
+/**
+ * An image the turn-aware admission leaves out after a request showed it
+ * (contextImageShownBefore). Reading it again would push out newer images, so
+ * a task that reads every image before it records anything can loop. An
+ * evicted image no request showed keeps OMITTED_IMAGE_TEXT.
+ */
+export const EVICTED_IMAGE_TEXT =
+  "[image omitted: this image was already shown to you in an earlier request and is no longer in context. Record what you need from each image as you go.]";
 export const OVERSIZED_IMAGE_TEXT =
   "[image omitted: this image exceeds the inline image request limit; resize it or capture a smaller version before sending it again]";
 
@@ -343,6 +390,7 @@ function imageSource(message: LLMMessage, calls: ReadonlyMap<string, { readonly 
 export function admitContextImageBytes(
   messages: readonly LLMMessage[],
   budgetBytes: number,
+  wasShown: (url: string) => boolean,
 ): BoundedImageQuery {
   const totalBytes = inlineImageSizes(messages).reduce((total, bytes) => total + bytes, 0);
   if (budgetBytes <= 0 || totalBytes <= budgetBytes) {
@@ -361,7 +409,8 @@ export function admitContextImageBytes(
       if (verdict === "kept") return part;
       omitted++;
       changed = true;
-      return withheldImagePlaceholder(part, verdict === "evicted" ? OMITTED_IMAGE_TEXT
+      const shown = part.type === "image_url" && wasShown(part.image_url.url);
+      return withheldImagePlaceholder(part, verdict === "evicted" ? (shown ? EVICTED_IMAGE_TEXT : OMITTED_IMAGE_TEXT)
         : verdict === "oversized" ? OVERSIZED_IMAGE_TEXT
           : unfitImageText(imageSource(message, calls)));
     });
@@ -370,13 +419,18 @@ export function admitContextImageBytes(
   return { messages: out, omitted, retainedBytes, totalBytes };
 }
 
-/** The image budget this provider's request projection applies. */
+/**
+ * The image budget this provider's request projection applies. `wasShown`
+ * picks the note of an evicted image on providers that use the turn-aware
+ * admission (contextImageShownBefore for a request of this session).
+ */
 export function boundContextImagesForProvider(
   messages: readonly LLMMessage[],
   budgetBytes: number,
   provider: string | undefined,
+  wasShown: (url: string) => boolean,
 ): BoundedImageQuery {
   return preservesQueryPrefix(provider)
-    ? admitContextImageBytes(messages, budgetBytes)
+    ? admitContextImageBytes(messages, budgetBytes, wasShown)
     : boundContextImageBytes(messages, budgetBytes);
 }
