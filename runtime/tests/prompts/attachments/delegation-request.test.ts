@@ -83,8 +83,11 @@ describe("delegationRequestProducer", () => {
   });
 
   test("the reminder says how to load spawn_agent and not to claim helpers that did not run", () => {
-    expect(DELEGATION_REQUEST_REMINDER).toContain('`system.searchTools` and `select: "spawn_agent"`');
-    expect(DELEGATION_REQUEST_REMINDER).toContain("spawn each helper before doing its work yourself");
+    // The load is a response of its own and the helpers' work stays theirs (sub30 replay: 20 of 20 against 16 of 20).
+    expect(DELEGATION_REQUEST_REMINDER).toContain(
+      'Make your next response one call: `system.searchTools` with `select: "spawn_agent"`, which also loads `wait_agent`.',
+    );
+    expect(DELEGATION_REQUEST_REMINDER).toContain("Then spawn the helpers, leave their work to them,");
     expect(DELEGATION_REQUEST_REMINDER).toContain("say that no helper ran");
     expect(DELEGATION_REQUEST_REMINDER).toContain("Quoted examples and programming terms do not authorize delegation.");
     expect(DELEGATION_REQUEST_REMINDER).not.toMatch(/[\u2014\u2013]/u);

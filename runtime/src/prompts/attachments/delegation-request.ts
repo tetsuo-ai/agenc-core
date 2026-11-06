@@ -18,12 +18,17 @@ import { getExecutionAuthoritySettings } from "../../utils/settings/settings.js"
 import type { AttachmentProducer } from "./orchestrator.js";
 import { DELEGATION_PREREQUISITES } from "./swarm-mode.js";
 
-/** The reminder a helper-request turn carries. `select` is a string in every Light tool presentation. */
+/**
+ * The reminder a helper-request turn carries. `select` is a string in every Light tool presentation. The load is
+ * asked for as a response of its own: replaying the gate's first request, "load it first ... then spawn each helper"
+ * still let DeepSeek Flash read the helpers' files in the same response in 4 of 20 calls (the head asks for all
+ * needed reads in one response), and this wording loaded spawn_agent alone in 20 of 20 (round 4 job sub30).
+ */
 export const DELEGATION_REQUEST_REMINDER =
-  "This request asks for helpers or sub-agents. `spawn_agent` starts deferred in this session: load it first with " +
-  "`system.searchTools` and `select: \"spawn_agent\"`, which also loads `wait_agent`. Then spawn each helper before " +
-  "doing its work yourself and collect the results with `wait_agent`. If the search reports it missing, do the work " +
-  `yourself and say that no helper ran. ${DELEGATION_PREREQUISITES}`;
+  "This request asks for helpers or sub-agents. `spawn_agent` starts deferred in this session. Make your next " +
+  "response one call: `system.searchTools` with `select: \"spawn_agent\"`, which also loads `wait_agent`. Then " +
+  "spawn the helpers, leave their work to them, and collect the results with `wait_agent`. If the search reports " +
+  `it missing, do the work yourself and say that no helper ran. ${DELEGATION_PREREQUISITES}`;
 
 export const delegationRequestProducer: AttachmentProducer = async (
   opts,
