@@ -98,7 +98,7 @@ describe("a safety-check approval", () => {
     await vi.waitFor(() => expect(broker.list(session.conversationId)).toHaveLength(1));
     const [pending] = broker.list(session.conversationId);
     expect(pending?.permissions).toEqual(["tool.use", "single_call"]);
-    expect(formatPendingToolApprovals([pending!])).toContain("session grant covers this call only, protected path");
+    expect(formatPendingToolApprovals([pending!])).toContain("session grant covers this call only, safety check");
     expect(broker.resolve(session.conversationId, pending!.requestId, APPROVED_FOR_SESSION)).toBe(true);
     expect((await decision).decision).toEqual(APPROVED_FOR_SESSION);
   });

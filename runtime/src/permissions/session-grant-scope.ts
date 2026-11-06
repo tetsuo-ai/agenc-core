@@ -24,14 +24,16 @@ export function sessionGrantScope(opts: {
    */
   readonly coversAllCalls: boolean;
   /**
-   * A safety check asked (a protected path or an ambiguous path shape): no
-   * session grant answers or records the call, so approving it for the
-   * session approves this call only.
+   * A safety check asked: no session grant answers or records the call, so
+   * approving it for the session approves this call only. The safety check is
+   * often a protected path, but not always (a cross-machine message bridge or
+   * a wallet install consent is one too), so the label says "safety check",
+   * not "protected path".
    */
   readonly singleCall?: boolean;
 }): SessionGrantScope {
   if (opts.singleCall === true) {
-    return { short: "this call only", long: "this call only, protected path" };
+    return { short: "this call only", long: "this call only, safety check" };
   }
   if (opts.coversAllCalls) {
     return { short: "all calls", long: `any arguments, every ${opts.toolLabel} call` };

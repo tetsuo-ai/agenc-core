@@ -93,7 +93,7 @@ describe("a request no session grant can cover", () => {
   });
 
   test.each([
-    ["a full card", 40, "2approveforsessionthiscallonly,protectedpath"],
+    ["a full card", 40, "2approveforsessionthiscallonly,safetycheck"],
     ["a short card", 16, "2approveforsession·thiscallonly"],
   ])("says the session choice approves this call only on %s", async (_label, rows, row) => {
     const decisions: ReviewDecision[] = [];
