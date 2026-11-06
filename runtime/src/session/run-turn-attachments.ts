@@ -1,13 +1,15 @@
 /**
  * Placement of per-request context and attachment messages in the query
  * projection, and the last-user-text extraction the attachments
- * orchestrator reads. Pure move out of run-turn.ts; the declarations are
- * the originals byte for byte.
+ * orchestrator reads. Pure move out of run-turn.ts; the moved declarations
+ * are the originals byte for byte. catalogIncludesTool backs the
+ * orchestrator's catalogIncludes option.
  *
  * @module
  */
 
 import type { LLMMessage } from "../llm/types.js";
+import type { ToolRegistry } from "../tool-registry.js";
 import {
   currentUserMessageIndex,
   isAttachmentMessage,
@@ -150,8 +152,22 @@ function extractLastUserText(
   return null;
 }
 
+/**
+ * Whether the session's catalog holds `toolName`, loaded or not. Tools kept
+ * only for telemetry (getUnavailableToolNames) are never offered, so they do
+ * not count.
+ */
+function catalogIncludesTool(
+  registry: Pick<ToolRegistry, "tools" | "getUnavailableToolNames">,
+  toolName: string,
+): boolean {
+  if (registry.getUnavailableToolNames?.().has(toolName) === true) return false;
+  return registry.tools.some((tool) => tool.name === toolName);
+}
+
 // Shared with run-turn.ts and its sibling modules.
 export {
+  catalogIncludesTool,
   placeRetainedAttachments,
   extractLastUserText,
 };

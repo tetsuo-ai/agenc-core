@@ -57,6 +57,7 @@ describe("attachments orchestrator", () => {
       "mcpResourcesProducer",
       "fileMentionsProducer",
       "skillListingProducer",
+      "delegationRequestProducer",
     ]);
     expect(__INTERNAL.localReadOnlyProducerNames).toEqual([]);
   });
