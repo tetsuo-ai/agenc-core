@@ -88,7 +88,15 @@ export function startProtectedCreateMonitor(
       }
     }
   };
-  const scan = () => {
+  // The top-level protected-create targets are a few fixed paths: check them
+  // at start, on every poll and at stop, so a created `.git` surface is
+  // removed promptly. The nested-repository walk covers the whole writable
+  // tree, so it does NOT run on the poll: it runs once here (the baseline
+  // above) and once in stop(), after the command's whole process tree is
+  // gone. That keeps the guarantee (the command fails and the repository is
+  // removed before any later host-side git can descend into it) without a
+  // continuous full-tree walk for the life of every command.
+  const scanTargets = () => {
     for (const target of watched) {
       if (target === undefined) continue;
       try {
@@ -99,18 +107,20 @@ export function startProtectedCreateMonitor(
         violation = true;
       }
     }
-    scanNestedRepos();
   };
-  scan();
-  const interval = setInterval(scan, PROTECTED_CREATE_POLL_MS);
+  scanTargets();
+  const interval = watched.length === 0
+    ? undefined
+    : setInterval(scanTargets, PROTECTED_CREATE_POLL_MS);
   // The watched command keeps its owner alive; the poll itself never should.
-  interval.unref?.();
+  interval?.unref?.();
   return {
     stop(): boolean {
       if (!stopped) {
         stopped = true;
-        clearInterval(interval);
-        scan();
+        if (interval !== undefined) clearInterval(interval);
+        scanTargets();
+        scanNestedRepos();
       }
       return violation;
     },

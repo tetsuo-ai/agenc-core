@@ -13,6 +13,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   attachProtectedCreateMonitor,
+  PROTECTED_CREATE_POLL_MS,
   protectedCreateExitCode,
   startProtectedCreateMonitor,
   stopAttachedProtectedCreateMonitor,
@@ -286,6 +287,63 @@ describe.runIf(process.platform === "linux")("created-path monitor", () => {
     fs.mkdirSync(target);
     expect(monitor.stop()).toBe(false);
     expect(fs.existsSync(target)).toBe(true);
+  });
+});
+
+describe.runIf(process.platform === "linux")("nested-repository scan", () => {
+  /** A real repository, as git init writes: HEAD and an objects directory. */
+  const makeRepo = (dir: string) => {
+    fs.mkdirSync(path.join(dir, ".git", "objects"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+  };
+  /** readdir calls of the nested-repository walk (string paths under root). */
+  const walkCalls = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.filter(([dir]) =>
+    typeof dir === "string" && (dir === root || dir.startsWith(`${root}${path.sep}`))).length;
+
+  it("walks the writable roots only at start and in stop, never on the poll", async () => {
+    const readdir = vi.spyOn(fs, "readdirSync");
+    const target = path.join(root, ".agenc");
+    const monitor = startProtectedCreateMonitor([target], [root]);
+    const atStart = walkCalls(readdir);
+    // The baseline walk ran once at start.
+    expect(atStart).toBeGreaterThan(0);
+    makeRepo(path.join(root, "sub"));
+    fs.writeFileSync(target, "x");
+    // The poll still runs for the top-level target and removes it promptly...
+    await vi.waitFor(() => expect(fs.existsSync(target)).toBe(false), { timeout: 2_000, interval: 20 });
+    await delay(3 * PROTECTED_CREATE_POLL_MS);
+    // ...but no poll walked the tree: the new nested repository is untouched.
+    expect(walkCalls(readdir)).toBe(atStart);
+    expect(fs.existsSync(path.join(root, "sub", ".git"))).toBe(true);
+    // stop() walks once more, removes it and fails the command.
+    expect(monitor.stop()).toBe(true);
+    expect(walkCalls(readdir)).toBeGreaterThan(atStart);
+    expect(fs.existsSync(path.join(root, "sub", ".git"))).toBe(false);
+  });
+
+  it("starts no poll timer when there are only scan roots", () => {
+    const timer = vi.spyOn(globalThis, "setInterval");
+    const monitor = startProtectedCreateMonitor([], [root]);
+    expect(timer).not.toHaveBeenCalled();
+    expect(monitor.stop()).toBe(false);
+  });
+
+  it("leaves a nested repository that existed at start alone", () => {
+    makeRepo(path.join(root, "kept"));
+    const monitor = startProtectedCreateMonitor([], [root]);
+    expect(monitor.stop()).toBe(false);
+    expect(fs.existsSync(path.join(root, "kept", ".git", "HEAD"))).toBe(true);
+  });
+
+  it("catches at stop a nested .git promoted to a real repository during the run", () => {
+    const sub = path.join(root, "sub", ".git");
+    // Not a repository at start (no HEAD, no objects): not in the baseline.
+    fs.mkdirSync(path.join(sub, "hooks"), { recursive: true });
+    const monitor = startProtectedCreateMonitor([], [root]);
+    fs.writeFileSync(path.join(sub, "HEAD"), "ref: refs/heads/main\n");
+    fs.mkdirSync(path.join(sub, "objects"));
+    expect(monitor.stop()).toBe(true);
+    expect(fs.existsSync(sub)).toBe(false);
   });
 });
 
