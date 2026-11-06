@@ -45,7 +45,7 @@ export interface SwarmRoutingDecision {
 }
 
 const EXPLICIT_PARALLEL_RE =
-  /\b(?:parallel(?:ize|ise)|fan[ -]?out|use\s+(?:a\s+)?swarm|(?:use|spawn|launch|engage)\s+(?:multiple|several|[2-9]|two|three|four)\s+(?:independent\s+)?(?:agents?|sub[ -]?agents?|workers?|helpers?)|(?:delegate|assign)\s+(?:(?:these|the)\s+)?(?:independent|separate)|(?:delegate|assign)\b(?:\s+\w+){0,6}\s+to\s+(?:multiple|several|[2-9]|two|three|four)\s+(?:independent\s+)?(?:agents?|sub[ -]?agents?|workers?|helpers?)|concurrently\s+(?:investigate|research|review|audit|analy[sz]e|check|test|implement|build|fix|work|run|execute|handle|perform|complete)|(?:investigate|research|review|audit|analy[sz]e|check|test|implement|build|fix|work|run|execute|handle|perform|complete|do)\b(?:\s+\w+){0,6}\s+(?:concurrently|in\s+parallel))\b/iu;
+  /\b(?:parallel(?:ize|ise)|fan[ -]?out|use\s+(?:a\s+)?swarm|(?:use|spawn|launch|engage)\s+(?:multiple|several|[2-9]|two|three|four)\s+(?:independent\s+)?(?:agents?|sub[ -]?agents?|workers?|helpers)|(?:delegate|assign)\s+(?:(?:these|the)\s+)?(?:independent|separate)|(?:delegate|assign)\b(?:\s+\w+){0,6}\s+to\s+(?:multiple|several|[2-9]|two|three|four)\s+(?:independent\s+)?(?:agents?|sub[ -]?agents?|workers?|helpers)|concurrently\s+(?:investigate|research|review|audit|analy[sz]e|check|test|implement|build|fix|work|run|execute|handle|perform|complete)|(?:investigate|research|review|audit|analy[sz]e|check|test|implement|build|fix|work|run|execute|handle|perform|complete|do)\b(?:\s+\w+){0,6}\s+(?:concurrently|in\s+parallel))\b/iu;
 const EXPLICIT_INDEPENDENCE_RE =
   /\b(?:decomposable|disjoint|independent(?:ly)?|separate(?:ly)?|unrelated)\b/iu;
 const NEGATED_INDEPENDENCE_RE =
@@ -62,8 +62,9 @@ const HIGH_RISK_CHANGE_RE =
   /\b(?:auth(?:entication|orization)?|database|deploy|mainnet|migration|payment|production|release|schema|security|sign(?:ing|ature)?|wallet)\b/iu;
 
 // Explicit requests for helpers outside /swarm (requestsHelpers below). The nouns name the helpers: "sub-agents",
-// "helper agents" and "child agents" with or without a count; "helpers" and "agents" with a plural count; "an agent" with any of the
-// verbs; "a helper" only with a verb that starts one ("spawn a helper"), since "use a helper" mostly means a helper
+// "helper agents" and "child agents" with or without a count; "helpers" and "agents" with a plural count or right
+// after "spawn" ("spawn helpers", "have two helpers read ..."); "an agent" with any of the verbs; "a helper" only with
+// a verb that starts one ("spawn a helper"), since "use a helper" or "delegate to a helper" mostly means a helper
 // function. "Workers" are left out here: outside /swarm they are mostly code (thread, gunicorn or Cloudflare workers).
 const HELPER_SPECIFIC_NOUN = String.raw`(?:sub[ -]?agents?|helper[ -]agents?|child[ -]agents?|agent[ -]helpers?)`;
 const HELPER_COUNT = String.raw`(?:a|an|one|two|three|four|five|six|several|multiple|some|[2-9]|1[0-9])`;
@@ -78,15 +79,19 @@ const HELPER_USE_VERB = String.raw`(?:use|uses|using|with|via|through|run|runnin
 const HELPER_NOT_NEGATED = String.raw`(?<!(?:\b(?:not|never|without|no\s+need\s+to)|n['’]t)\s+)`;
 const HELPER_REQUEST_RES: readonly RegExp[] = [
   // "use sub-agents", "spawn a helper agent", "with two independent sub-agents"
-  new RegExp(String.raw`${HELPER_NOT_NEGATED}\b${HELPER_USE_VERB}\s+(?:(?:the|these|those|your)\s+)?(?:${HELPER_COUNT}\s+)?${HELPER_QUALIFIER}${HELPER_SPECIFIC_NOUN}\b${HELPER_NOT_CODE}`, "iu"),
+  new RegExp(String.raw`${HELPER_NOT_NEGATED}\b${HELPER_USE_VERB}\s+(?:(?:the|these|those|your)\s+)?(?:${HELPER_COUNT}\s+)?${HELPER_QUALIFIER}${HELPER_SPECIFIC_NOUN}\b${HELPER_NOT_CODE}`, "giu"),
   // "have a sub-agent look at the logs", "let two helper agents check the docs"
-  new RegExp(String.raw`${HELPER_NOT_NEGATED}\b(?:have|let|need|want)\s+(?:(?:the|your)\s+)?(?:${HELPER_COUNT}\s+)?${HELPER_QUALIFIER}${HELPER_SPECIFIC_NOUN}\b${HELPER_NOT_CODE}`, "iu"),
+  new RegExp(String.raw`${HELPER_NOT_NEGATED}\b(?:have|let|need|want)\s+(?:(?:the|your)\s+)?(?:${HELPER_COUNT}\s+)?${HELPER_QUALIFIER}${HELPER_SPECIFIC_NOUN}\b${HELPER_NOT_CODE}`, "giu"),
   // "using two helpers", "spawn three agents", "use an agent", "spawn a helper"
-  new RegExp(String.raw`${HELPER_NOT_NEGATED}\b(?:${HELPER_USE_VERB}\s+(?:${HELPER_PLURAL_COUNT}\s+${HELPER_QUALIFIER}(?:helpers|agents)|(?:a|an|one)\s+${HELPER_QUALIFIER}agent)|${HELPER_START_VERB}\s+(?:a|an|one)\s+${HELPER_QUALIFIER}helper)\b${HELPER_NOT_CODE}`, "iu"),
+  new RegExp(String.raw`${HELPER_NOT_NEGATED}\b(?:${HELPER_USE_VERB}\s+(?:${HELPER_PLURAL_COUNT}\s+${HELPER_QUALIFIER}(?:helpers|agents)|(?:a|an|one)\s+${HELPER_QUALIFIER}agent)|${HELPER_START_VERB}\s+(?:a|an|one)\s+${HELPER_QUALIFIER}helper)\b${HELPER_NOT_CODE}`, "giu"),
+  // "Have two helpers read alpha.txt and beta.txt", "Let two agents check the docs" (not "we have two helpers in utils")
+  new RegExp(String.raw`(?:^|\b(?:please|then|and|can\s+you|could\s+you|would\s+you)\s+)(?:have|let)\s+(?:(?:the|your)\s+)?${HELPER_PLURAL_COUNT}\s+${HELPER_QUALIFIER}(?:helpers|agents)\b${HELPER_NOT_CODE}`, "giu"),
+  // "Spawn helpers for the lint and the tests", "spawn agents to check each file"
+  new RegExp(String.raw`${HELPER_NOT_NEGATED}\b(?:spawn|spin\s+up|fire\s+up|kick\s+off)\s+${HELPER_QUALIFIER}(?:helpers|agents)\b${HELPER_NOT_CODE}`, "giu"),
   // "delegate the review to two agents", "split the work between sub-agents"
-  new RegExp(String.raw`${HELPER_NOT_NEGATED}\b(?:delegate|delegating|hand\s+off|handing\s+off|assign|assigning|offload|offloading|farm\s+out|split|splitting)\b(?:\s+[\w'’-]+){0,8}?\s+(?:to|between|among|across)\s+(?:(?:the|your)\s+)?(?:(?:${HELPER_COUNT}\s+)?${HELPER_QUALIFIER}${HELPER_SPECIFIC_NOUN}|${HELPER_COUNT}\s+${HELPER_QUALIFIER}(?:helpers?|agents?))\b${HELPER_NOT_CODE}`, "iu"),
+  new RegExp(String.raw`${HELPER_NOT_NEGATED}\b(?:delegate|delegating|hand\s+off|handing\s+off|assign|assigning|offload|offloading|farm\s+out|split|splitting)\b(?:\s+[\w'’-]+){0,8}?\s+(?:to|between|among|across)\s+(?:(?:the|your)\s+)?(?:(?:${HELPER_COUNT}\s+)?${HELPER_QUALIFIER}${HELPER_SPECIFIC_NOUN}|${HELPER_PLURAL_COUNT}\s+${HELPER_QUALIFIER}(?:helpers|agents)|(?:a|an|one)\s+${HELPER_QUALIFIER}agent)\b${HELPER_NOT_CODE}`, "giu"),
   // "in parallel with helpers", "concurrently using sub-agents"
-  new RegExp(String.raw`\b(?:in\s+parallel|concurrently|simultaneously|at\s+the\s+same\s+time)\s+(?:using|with|via|through|by)\s+(?:${HELPER_COUNT}\s+)?${HELPER_QUALIFIER}(?:${HELPER_SPECIFIC_NOUN}|helpers?|agents?)\b${HELPER_NOT_CODE}`, "iu"),
+  new RegExp(String.raw`\b(?:in\s+parallel|concurrently|simultaneously|at\s+the\s+same\s+time)\s+(?:using|with|via|through|by)\s+(?:(?:${HELPER_COUNT}\s+)?${HELPER_QUALIFIER}${HELPER_SPECIFIC_NOUN}|(?:${HELPER_PLURAL_COUNT}\s+)?${HELPER_QUALIFIER}(?:helpers|agents))\b${HELPER_NOT_CODE}`, "giu"),
 ];
 // "Helper one: ...", "Agent 2: ..." on their own lines; two different labels make a request.
 const ENUMERATED_HELPER_RE =
@@ -217,19 +222,49 @@ export function routeSwarmTask(userInput: string | null): SwarmRoutingDecision {
   };
 }
 
+// A negation cue before the match, in its own part of the sentence: "Please avoid using sub-agents", "Instead of
+// spawning sub-agents, read both files yourself". Parts end at commas, colons and "but", "so" or "then", so "Instead
+// of reading them yourself, spawn two helpers" still asks.
+const HELPER_NEGATION_RE = /\b(?:not|never|no|without|avoid|avoiding|instead\s+of|rather\s+than|stop|skip)\b|n['’]t\b/iu;
+const HELPER_PART_BOUNDARY_RE = /[,:]|\b(?:but|so|then)\b/iu;
+// A "not" left before an aside still governs the verb after it: "You should not, in this case, spawn helpers".
+const HELPER_DANGLING_NEGATION_RE = /(?:\b(?:not|never)|n['’]t)\s*$/iu;
+// "Using sub-agents would be overkill here, just read the file."
+const HELPER_NEEDLESS_RE = /\b(?:overkill|unnecessary|not\s+(?:needed|necessary))\b/iu;
+// Questions about the feature ask for an answer, not for helpers: "How do I use sub-agents in AgenC?". Requests
+// phrased as questions ("Can you", "Could you", "Would you") still count.
+const HELPER_QUESTION_RE =
+  /^(?:(?:so|and|but|ok|okay|also)[, ]+)?(?:how|what|why|when|where|which|who|whether|does|do|did|is|are|should\s+(?:i|we)|can\s+(?:i|we)|could\s+(?:i|we)|would\s+it)\b/iu;
+
+function helperRequestInClause(clause: string): boolean {
+  if (/\?\s*$/u.test(clause) && HELPER_QUESTION_RE.test(clause)) return false;
+  if (HELPER_NEEDLESS_RE.test(clause)) return false;
+  for (const pattern of HELPER_REQUEST_RES) {
+    for (const match of clause.matchAll(pattern)) {
+      const parts = clause.slice(0, match.index).split(HELPER_PART_BOUNDARY_RE);
+      if (HELPER_NEGATION_RE.test(parts.at(-1) ?? "")) continue;
+      if (parts.slice(0, -1).some((part) => HELPER_DANGLING_NEGATION_RE.test(part))) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Whether a root-human request explicitly asks for helpers, outside /swarm (prompts/attachments/delegation-request.ts):
  * it names helpers, helper agents or sub-agents to use, spawn or delegate to ("using two helpers", "spawn a
  * sub-agent", "delegate the review to two agents", "Helper one: ..." and "Helper two: ..." lines). Code spans, fenced
  * blocks, quoted lines and double-quoted text are ignored, a programming noun after the helper noun rules the phrase
- * out, and an explicit no-delegation constraint wins. A conditional request still counts: the reminder it brings
- * states the prerequisites.
+ * out, and an explicit no-delegation constraint wins. Each sentence is read on its own: a negation cue before the
+ * match ("please avoid using sub-agents", "instead of spawning sub-agents") or a question about the feature ("how do I
+ * use sub-agents?") is not a request. A conditional request still counts: the reminder it brings states the
+ * prerequisites.
  */
 export function requestsHelpers(userInput: string | null): boolean {
   const unquoted = (userInput ?? "").replace(QUOTED_OR_CODE_RE, " ");
   const input = normalizedInput(unquoted);
   if (input.length === 0 || EXPLICIT_NO_DELEGATION_RE.test(input)) return false;
-  if (HELPER_REQUEST_RES.some((pattern) => pattern.test(input))) return true;
+  if (input.split(/(?<=[.!?;])\s+/u).some(helperRequestInClause)) return true;
   const labels = new Set([...unquoted.matchAll(ENUMERATED_HELPER_RE)].map((match) => match[1]?.toLowerCase()));
   return labels.size >= 2;
 }

@@ -94,11 +94,13 @@ guidance: environment checks, one patch per change and an acceptance review.
 
 A Light session loads `spawn_agent` through `system.searchTools`, and its
 prompt does not name it. A message that asks for helpers or sub-agents, such
-as "use two helpers" or "spawn a sub-agent", carries one reminder: load
-`spawn_agent` in a response of its own, spawn the helpers and leave their work
-to them, and say so when no helper ran. A phrase like "a helper function" or "worker threads" is code,
-not a request. Other messages are sent as before, and swarm mode (`/swarm`)
-keeps its own routing reminder.
+as "use two helpers" or "spawn a sub-agent", carries one reminder, in the TUI
+and in print mode alike: load `spawn_agent` in a response of its own, spawn the
+helpers and leave their work to them, and say so when no helper ran. A phrase
+like "a helper function" or "worker threads" is code, not a request, and so are
+questions about sub-agents and requests not to use them. The check reads
+English. Other messages are sent as before, and swarm mode (`/swarm`) keeps its
+own routing reminder.
 
 ### Status line
 

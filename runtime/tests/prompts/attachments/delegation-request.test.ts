@@ -2,6 +2,7 @@
  * The Light helper-request reminder (prompts/attachments/delegation-request.ts): only a Light root turn that asks for
  * helpers, while spawn_agent is in the catalog but not loaded, carries it; every other turn carries nothing.
  */
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { LLMTool } from "../../llm/types.js";
@@ -9,6 +10,7 @@ import {
   _resetAttachmentTrackingStateForTest,
   getAttachmentTrackingState,
 } from "../../session/attachment-state.js";
+import { requestsHelpers } from "../../agents/swarm-routing.js";
 import { updateSettingsForSource } from "../../utils/settings/settings.js";
 import {
   DELEGATION_REQUEST_REMINDER,
@@ -91,6 +93,18 @@ describe("delegationRequestProducer", () => {
     expect(DELEGATION_REQUEST_REMINDER).toContain("say that no helper ran");
     expect(DELEGATION_REQUEST_REMINDER).toContain("Quoted examples and programming terms do not authorize delegation.");
     expect(DELEGATION_REQUEST_REMINDER).not.toMatch(/[\u2014\u2013]/u);
+  });
+
+  test("the gate's helper scenario and its replayed first request still carry the reminder", async () => {
+    // HELPERS is eg/gate.py scenario 4's text and the user message of the replayed first request (int30 run
+    // de8c71a5a562-20261106T052741-35825, candidate-s4-a1 call-0024), byte for byte.
+    expect(createHash("sha256").update(HELPERS).digest("hex")).toBe(
+      "6ac50e7a33d73c16406a21fab7b78f5950883262a6465636388fadae5f05213d",
+    );
+    expect(requestsHelpers(HELPERS)).toBe(true);
+    expect(await produce(makeOpts(sessionKey(), HELPERS))).toEqual([
+      { kind: "critical_system_reminder", content: DELEGATION_REQUEST_REMINDER },
+    ]);
   });
 
   test("an ordinary Light turn carries nothing", async () => {

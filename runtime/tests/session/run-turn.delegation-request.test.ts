@@ -1,6 +1,7 @@
 /**
  * The helper-request reminder reaches the model through a real turn: run-turn answers the orchestrator's
- * catalogIncludes from the session registry, and the reminder sits right before the request it answers.
+ * catalogIncludes from the session registry, and the reminder sits right before the request it answers in the
+ * projected messages (on native DeepSeek the wire then puts the session tail between them).
  */
 import { beforeEach, describe, expect, test } from "vitest";
 
@@ -81,7 +82,7 @@ beforeEach(async () => {
 });
 
 describe("runTurn helper-request reminder", () => {
-  test("a Light request for helpers carries the reminder right before the request", async () => {
+  test("a Light request for helpers carries the reminder right before it in the projected messages", async () => {
     const messages = await firstRequest(HELPERS);
     const index = messages.findIndex((message) => message.content === REMINDER);
     expect(index).toBeGreaterThanOrEqual(0);

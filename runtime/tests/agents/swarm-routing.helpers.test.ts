@@ -37,6 +37,19 @@ describe("requestsHelpers", () => {
     "Use subagents only with my approval.",
     "Helper one: read a.txt\nHelper two: read b.txt",
     "Agent 1: audit the API\nAgent 2: audit the TUI",
+    // Review item 5: plain requests.
+    "Have two helpers read alpha.txt and beta.txt.",
+    "Let two helpers check the docs.",
+    "Spawn helpers for the lint and the tests.",
+    "Spawn agents to check each file.",
+    // A negation cue elsewhere in the sentence does not cancel the request.
+    "Instead of doing it yourself, spawn two helpers.",
+    "No, use two helpers.",
+    "Rather than reading the files yourself, use two sub-agents.",
+    "Don't read the files yourself, use two helpers instead.",
+    "I do not need the docs, but use two helpers for the tests.",
+    // English request in other text (review note N2).
+    "Por favor use two sub-agents para esto",
   ])("asks for helpers: %s", (text) => {
     expect(requestsHelpers(text)).toBe(true);
   });
@@ -78,12 +91,49 @@ describe("requestsHelpers", () => {
     'Explain "Spawn two independent agents to inspect the files."',
     "Helper one: read a.txt",
     "",
+    // Review item 1: opt-outs.
+    "I don't want you to use sub-agents for this.",
+    "You do not need to use sub-agents for this.",
+    "Please avoid using sub-agents.",
+    "Instead of spawning sub-agents, read both files yourself.",
+    "Rather than using two helpers, just do it.",
+    "Using sub-agents would be overkill here, just read the file.",
+    "There is no reason to use sub-agents here.",
+    "Please, do not use sub-agents.",
+    "You should not, in this case, spawn helpers.",
+    "Do not, under any circumstances, spawn sub-agents.",
+    "Never, ever spawn helpers.",
+    // Review item 2: questions about the feature.
+    "How do I use sub-agents in AgenC?",
+    "Does AgenC support spawning sub-agents?",
+    "Should I use sub-agents for this?",
+    "What does 'spawn two agents' mean in the docs?",
+    "What does \u2018spawn two agents\u2019 mean?",
+    // Review item 3: a single helper is a helper function.
+    "Delegate the formatting to a helper.",
+    "Offload the date parsing to a helper.",
+    "Hand off the parsing to a helper so the handler stays short.",
+    "Process the files concurrently using a helper that limits the pool size.",
+    // Other languages (review note N2).
+    "Agrega una funcion helper para las fechas.",
+    "Usa un helper para parsear la fecha.",
+    "El agente usa sub-agents con un helper para cada archivo? Explica el codigo.",
   ])("does not ask for helpers: %s", (text) => {
     expect(requestsHelpers(text)).toBe(false);
   });
 
   test("treats missing input as no request", () => {
     expect(requestsHelpers(null)).toBe(false);
+  });
+
+  // The docs say the check reads English: these requests are not detected (review note N2).
+  test.each([
+    "Usa dos sub-agentes para revisar la API y la TUI.",
+    "Lanza dos agentes en paralelo para revisar alpha.txt y beta.txt.",
+    "Utilise deux sous-agents pour verifier les fichiers.",
+    "Verwende zwei Subagenten fuer die Pruefung.",
+  ])("reads English only: %s", (text) => {
+    expect(requestsHelpers(text)).toBe(false);
   });
 });
 
@@ -92,6 +142,18 @@ describe("routeSwarmTask names helpers like agents and workers", () => {
     expect(routeSwarmTask("Use two helpers to review the API and the TUI").signals).toContain(
       "explicit_parallelism",
     );
+  });
+
+  // Review item 4: a helper followed by a code noun stays code under /swarm too, as on de8c71a5a562.
+  test.each([
+    "Use two helper functions for parsing and formatting.",
+    "Use 2 helper methods instead of one big function.",
+    "Spawn two helper processes that watch the files.",
+    "Delegate the parsing to two helper functions.",
+  ])("a helper followed by a code noun is not explicit parallelism: %s", (prompt) => {
+    const decision = routeSwarmTask(prompt);
+    expect(decision.signals).not.toContain("explicit_parallelism");
+    expect(decision.mode).toBe("sequential");
   });
 
   test.each(["Do not use helpers for this task", "Handle this yourself without helpers", "Use no helpers"])(
