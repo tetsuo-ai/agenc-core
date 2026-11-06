@@ -217,8 +217,16 @@ async function spawnCandidate(kind: CandidateKind = "child"): Promise<Candidate>
     await once(child, "spawn");
     pid = child.pid!;
   }
-  await waitFor("the candidate argv", async () =>
-    (await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "")).includes(entrypoint));
+  // The held candidate's PID first belongs to the holder shell's fork, whose
+  // argv also names the entrypoint. Discovery must see the exec'd daemon, so
+  // wait for its exact argv; matching the path alone raced the exec under load.
+  const daemonArgv = [process.execPath, entrypoint, "daemon", "start", "--foreground"];
+  await waitFor("the candidate argv", async () => {
+    const argv = (await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "")).split("\0").slice(0, -1);
+    return kind === "python"
+      ? argv.includes(entrypoint)
+      : argv.length === daemonArgv.length && argv.every((arg, index) => arg === daemonArgv[index]);
+  });
 
   const candidate: Candidate = {
     pid,
