@@ -933,6 +933,25 @@ export async function checkRuleBasedPermissions(
     }
   }
 
+  // 1c. Tool-specific permission check (e.g. bash subcommand rules). Run
+  // first so a whole-tool ask rule never returns before the tool's own deny
+  // or safety reason, matching permissions/evaluator.ts.
+  const checkTool = async (): Promise<PermissionResult> => {
+    try {
+      const parsedInput = tool.inputSchema.parse(input)
+      return await tool.checkPermissions(parsedInput, context)
+    } catch (e) {
+      if (e instanceof AbortError || e instanceof APIUserAbortError) {
+        throw e
+      }
+      logError(e)
+      return {
+        behavior: 'passthrough',
+        message: createPermissionRequestMessage(tool.name),
+      }
+    }
+  }
+
   // 1b. Entire tool has an ask rule
   const askRule = getAskRuleForTool(appState.toolPermissionContext, tool)
   if (askRule) {
@@ -943,6 +962,14 @@ export async function checkRuleBasedPermissions(
       shouldUseSandbox(input)
 
     if (!canSandboxAutoAllow) {
+      const checked = await checkTool()
+      if (checked?.behavior === 'deny') return checked
+      if (
+        checked?.behavior === 'ask' &&
+        checked.decisionReason?.type === 'safetyCheck'
+      ) {
+        return checked
+      }
       return {
         behavior: 'ask',
         decisionReason: {
@@ -955,20 +982,7 @@ export async function checkRuleBasedPermissions(
     // Fall through to let tool.checkPermissions handle command-specific rules
   }
 
-  // 1c. Tool-specific permission check (e.g. bash subcommand rules)
-  let toolPermissionResult: PermissionResult = {
-    behavior: 'passthrough',
-    message: createPermissionRequestMessage(tool.name),
-  }
-  try {
-    const parsedInput = tool.inputSchema.parse(input)
-    toolPermissionResult = await tool.checkPermissions(parsedInput, context)
-  } catch (e) {
-    if (e instanceof AbortError || e instanceof APIUserAbortError) {
-      throw e
-    }
-    logError(e)
-  }
+  const toolPermissionResult: PermissionResult = await checkTool()
 
   // 1d. Tool implementation denied (catches bash subcommand denies wrapped
   // in subcommandResults — no need to inspect decisionReason.type)

@@ -936,12 +936,17 @@ export async function arbitratePermissionMode(
         : {}),
     }));
   if (merged) {
-    // SEC-02: PreToolUse `allow` means "skip the human prompt", not "skip deny
-    // floors". Whole-tool settings deny/ask are already re-checked inside
-    // mergeHookPermissionDecision; content rules, unattended denylist, and
-    // tool safetyCheck still run through the evaluator when available.
+    // SEC-02: a PreToolUse `allow` means "skip the human prompt", not "skip
+    // deny floors"; a PreToolUse `ask` means "a person decides", not "let an
+    // ordinary card answer a call the tool's own check would refuse or must
+    // hold open for a safety reason". Whole-tool settings deny/ask are already
+    // re-checked inside mergeHookPermissionDecision; for a hook allow OR ask,
+    // the tool's own deny, its safetyCheck and its required interaction still
+    // run through the evaluator when available, so a path deny stays a deny
+    // and a protected-path call keeps its single-call status whatever the hook
+    // said.
     if (
-      merged.behavior === "allow" &&
+      (merged.behavior === "allow" || merged.behavior === "ask") &&
       opts.includeEvaluator !== false &&
       canUseTool &&
       permissionContext
@@ -985,20 +990,25 @@ export async function arbitratePermissionMode(
           mergedDecision: merged,
         };
       }
-      return {
-        kind: "allow",
-        args:
-          floorDecision.behavior === "allow" || floorDecision.behavior === "ask"
-            ? (floorDecision.updatedInput ?? merged.args ?? opts.args)
-            : (merged.args ?? opts.args),
-        source: "pre-tool-use-hook",
-        reasonCode: hookPermissionReasonCode("allow", merged.decisionReason),
-        ...(merged.message !== undefined ? { message: merged.message } : {}),
-        ...(merged.decisionReason !== undefined
-          ? { decisionReason: merged.decisionReason }
-          : {}),
-        mergedDecision: merged,
-      };
+      // The floor did not refuse or require a person: the hook's own verdict
+      // stands. An allow skips the prompt; an ask still shows its card, but
+      // now only after the floor had its say.
+      if (merged.behavior === "allow") {
+        return {
+          kind: "allow",
+          args:
+            floorDecision.behavior === "allow" || floorDecision.behavior === "ask"
+              ? (floorDecision.updatedInput ?? merged.args ?? opts.args)
+              : (merged.args ?? opts.args),
+          source: "pre-tool-use-hook",
+          reasonCode: hookPermissionReasonCode("allow", merged.decisionReason),
+          ...(merged.message !== undefined ? { message: merged.message } : {}),
+          ...(merged.decisionReason !== undefined
+            ? { decisionReason: merged.decisionReason }
+            : {}),
+          mergedDecision: merged,
+        };
+      }
     }
     return {
       kind: merged.behavior,
