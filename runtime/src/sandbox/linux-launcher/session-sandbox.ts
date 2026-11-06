@@ -74,6 +74,7 @@ export class SessionSandbox {
   private cleanupFailure?: SessionSandboxCleanupError;
   /** Missing protected paths of the current namespace, watched per command. */
   private protectedCreateTargets: readonly string[] = [];
+  private nestedGitScanRoots: readonly string[] = [];
 
   /** Running a command, starting or closing: a new command cannot use it now. */
   get busy(): boolean {
@@ -128,6 +129,7 @@ export class SessionSandbox {
           }
           this.identities = [...paths].map(file => [file, mountIdentity(file)] as const);
           this.protectedCreateTargets = [...launch.protectedCreateTargets];
+          this.nestedGitScanRoots = [...(launch.nestedGitScanRoots ?? [])];
           validateAdmission();
           this.received = Buffer.alloc(0);
           // The native broker is amortized over the session. Its private
@@ -206,7 +208,7 @@ export class SessionSandbox {
     // The namespace leaves missing protected paths unmounted; the same
     // created-path monitor as the per-command launcher watches them from
     // before this command starts until it is over.
-    const protectedCreates = startProtectedCreateMonitor(this.protectedCreateTargets);
+    const protectedCreates = startProtectedCreateMonitor(this.protectedCreateTargets, this.nestedGitScanRoots);
     const finish = (status: number | undefined, residual: boolean, failure?: Error): void => {
       if (this.active?.child !== child) return;
       this.active = undefined;

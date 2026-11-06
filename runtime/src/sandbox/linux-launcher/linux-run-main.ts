@@ -265,6 +265,7 @@ async function runLinuxSandboxOptions(
         );
     const protectedMonitor = startProtectedCreateMonitor(
       bwrapArgs.protectedCreateTargets,
+      bwrapArgs.nestedGitScanRoots,
     );
     const spawned = spawnBubblewrap(launcher, finalArgs, {
       cwd: hostCommandCwd,
@@ -348,9 +349,10 @@ async function runUnderLandlockFallback(input: {
     // Same post-hoc guarantee as the bubblewrap path: creating a protected
     // metadata target during the run fails the run even when the command
     // itself exits 0. Watch from before the command starts.
-    const protectedMonitor = startProtectedCreateMonitor([
-      ...plan.protectedCreateTargets,
-    ]);
+    const protectedMonitor = startProtectedCreateMonitor(
+      [...plan.protectedCreateTargets],
+      [...plan.nestedGitScanRoots],
+    );
     let protectedCreateViolation = false;
     try {
       const child = spawn(launcherPath, args, {

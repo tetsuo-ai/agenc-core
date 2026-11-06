@@ -773,7 +773,7 @@ function isExistingDirectory(target: string): boolean {
  * repository keeps working; an empty `.git` has neither and cannot bootstrap
  * them while it is fully read-only.
  */
-function gitDirectoryIsRepository(target: string): boolean {
+export function gitDirectoryIsRepository(target: string): boolean {
   if (!isExistingDirectory(target)) return false;
   try {
     return (
@@ -814,7 +814,7 @@ const NESTED_GIT_SCAN_MAX_DIRS = 4096;
  * The scan never follows a symlink and never descends into a `.git`; it is
  * bounded in depth and in directories visited so it cannot walk a huge tree.
  */
-function nestedGitMetadataDirs(root: string): string[] {
+export function nestedGitMetadataDirs(root: string): string[] {
   const start = normalizePathForPolicy(root);
   const found: string[] = [];
   let visited = 0;
@@ -1080,18 +1080,17 @@ function metadataChildOfWritableRoot(
     ) {
       return path.join(entry.path, firstComponent);
     }
-    // A standalone nested repository's `.git` at any depth below the writable
-    // root (not a registered submodule under `<root>/.git/modules`, and never
-    // a `.git` gitfile or symlink): its execution/redirection surface is
-    // protected like the top-level `.git`, so a sandboxed command cannot plant
-    // a hook, an executable config key or an alternates redirect in it that a
-    // later host-side git command descending into the gitlinked repo would
-    // run. Only the surface stays read-only; the nested repo's inert data
+    // A `.git` at any depth below the writable root (a standalone nested
+    // repository, not a registered submodule under `<root>/.git/modules`) is
+    // protected by name, the same way as the top-level `.git`: absent, a
+    // non-repository, a gitfile or a symlink, it is fully protected, so it
+    // cannot be created or assembled into a repository with a planted hook or
+    // config; once it is a real repository it is narrowed, so only its
+    // execution/redirection surface stays read-only and its inert data
     // (refs, objects, index) remains writable through gitMetadataDirWriteAllowed.
     const gitIndex = components.indexOf(GIT_METADATA_DIR_NAME);
     if (gitIndex > 0) {
-      const gitDir = path.join(entry.path, ...components.slice(0, gitIndex + 1));
-      if (gitDirectoryIsRepository(gitDir)) return gitDir;
+      return path.join(entry.path, ...components.slice(0, gitIndex + 1));
     }
   }
   return null;

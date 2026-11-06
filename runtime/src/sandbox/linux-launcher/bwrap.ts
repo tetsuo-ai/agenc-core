@@ -57,6 +57,13 @@ export interface BwrapCommandArgs {
   readonly args: readonly string[];
   readonly usesBubblewrap: boolean;
   readonly protectedCreateTargets: readonly string[];
+  /**
+   * Physical paths of the restricted writable roots. The created-path monitor
+   * scans them for a nested repository (`sub/.git`) that appears or is
+   * promoted to a real repository during the run, which the fixed plan cannot
+   * carve out ahead of time. Empty for a full-disk-write policy.
+   */
+  readonly nestedGitScanRoots: readonly string[];
 }
 
 const MAX_UNREADABLE_GLOB_MATCHES = 4096;
@@ -114,7 +121,7 @@ export function createBwrapCommandArgs(
     }
   }
   if (fullWrite && options.networkMode === "full-access" && options.seccompFd === undefined) {
-    return { args: [...command], usesBubblewrap: false, protectedCreateTargets: [] };
+    return { args: [...command], usesBubblewrap: false, protectedCreateTargets: [], nestedGitScanRoots: [] };
   }
   const protectedCreateTargets: string[] = [];
 
@@ -132,6 +139,16 @@ export function createBwrapCommandArgs(
     args,
     usesBubblewrap: true,
     protectedCreateTargets,
+    nestedGitScanRoots: fullWrite
+      ? []
+      : getWritableRootsWithCwd(fileSystemSandboxPolicy, sandboxPolicyCwd, options.sessionTempRoot)
+          .map((root) => {
+            try {
+              return canonicalAuthorityPath(root.root);
+            } catch {
+              return root.root;
+            }
+          }),
   };
 }
 

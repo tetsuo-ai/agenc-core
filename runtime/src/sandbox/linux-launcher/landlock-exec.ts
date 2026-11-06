@@ -91,6 +91,12 @@ export type LandlockPlan =
        * a run that creates one fails.
        */
       readonly protectedCreateTargets: readonly string[];
+      /**
+       * Physical writable roots the protected-create monitor scans for a
+       * nested repository created or promoted to a real repository during the
+       * run (the Landlock plan, like the bubblewrap plan, is fixed at launch).
+       */
+      readonly nestedGitScanRoots: readonly string[];
     }
   | { readonly kind: "refused"; readonly reason: string };
 
@@ -311,5 +317,6 @@ export function planLandlockConfinement(input: LandlockPlanInput): LandlockPlan 
     readOnly: compact(readOnly),
     readWrite: compact(readWrite),
     protectedCreateTargets: [...new Set(protectedCreateTargets)],
+    nestedGitScanRoots: [...new Set(readWrite)],
   };
 }

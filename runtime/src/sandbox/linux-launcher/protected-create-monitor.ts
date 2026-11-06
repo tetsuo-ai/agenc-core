@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { canonicalAuthorityPath } from "../desktop-authority-protection.js";
+import { nestedGitMetadataDirs } from "../engine/policy.js";
 
 /** How often a running command's protected-create targets are rechecked. */
 export const PROTECTED_CREATE_POLL_MS = 100;
@@ -31,13 +33,63 @@ export interface ProtectedCreateMonitor {
  */
 export function startProtectedCreateMonitor(
   targets: readonly string[],
+  nestedGitScanRoots: readonly string[] = [],
 ): ProtectedCreateMonitor {
-  if (targets.length === 0) return { stop() { return false; } };
+  if (targets.length === 0 && nestedGitScanRoots.length === 0) {
+    return { stop() { return false; } };
+  }
   let violation = false;
   let stopped = false;
   const watched = targets.map(watchedTarget);
   // A target that cannot be walked to is never cleaned: fail closed.
   if (watched.some((target) => target === undefined)) violation = true;
+  // A nested repository (`sub/.git`, not a `.git/modules` submodule) that is
+  // already a real repository when the command starts is legitimate and
+  // handled by the plan's carve-outs. Only one that APPEARS or is PROMOTED to
+  // a real repository during the run is a violation: a confined command can
+  // assemble a nested repo with a planted fsmonitor/hook that a later
+  // host-side git would run. Snapshot the pre-existing ones so they are left
+  // alone, and remove any new one through the same no-follow walk, failing
+  // the command.
+  const scanRoots = nestedGitScanRoots.map((root) => {
+    try {
+      return canonicalAuthorityPath(root);
+    } catch {
+      return root;
+    }
+  });
+  const baseline = new Set<string>();
+  for (const root of scanRoots) {
+    try {
+      for (const nested of nestedGitMetadataDirs(root)) baseline.add(nested);
+    } catch {
+      violation = true;
+    }
+  }
+  const scanNestedRepos = () => {
+    for (const root of scanRoots) {
+      let found: string[];
+      try {
+        found = nestedGitMetadataDirs(root);
+      } catch {
+        violation = true;
+        continue;
+      }
+      for (const nested of found) {
+        if (baseline.has(nested)) continue;
+        const target = watchedTarget(nested);
+        if (target === undefined) { violation = true; continue; }
+        try {
+          checkTarget(target);
+        } catch {
+          // left in place on any error below
+        }
+        // A new real nested repository is itself the violation, whether or
+        // not the removal walk reached it.
+        violation = true;
+      }
+    }
+  };
   const scan = () => {
     for (const target of watched) {
       if (target === undefined) continue;
@@ -49,6 +101,7 @@ export function startProtectedCreateMonitor(
         violation = true;
       }
     }
+    scanNestedRepos();
   };
   scan();
   const interval = setInterval(scan, PROTECTED_CREATE_POLL_MS);

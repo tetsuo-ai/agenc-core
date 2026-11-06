@@ -15,6 +15,11 @@ export interface DirectBwrapHandoff {
      * created-path monitor the per-command launcher runs.
      */
     readonly protectedCreateTargets: readonly string[];
+    /**
+     * Physical restricted writable roots the session's created-path monitor
+     * scans for a nested repository created or promoted during a command.
+     */
+    readonly nestedGitScanRoots?: readonly string[];
   };
   /** Fixed trusted installed artifact, absent on the legacy V2 handoff. */
   readonly namespaceInitArtifact?: string;
@@ -24,6 +29,11 @@ export interface DirectBwrapHandoff {
    * around the command (only callers that asked for it get such a plan).
    */
   readonly protectedCreateTargets?: readonly string[];
+  /**
+   * Physical restricted writable roots the per-command created-path monitor
+   * scans for a nested repository created or promoted during the command.
+   */
+  readonly nestedGitScanRoots?: readonly string[];
   readonly sourceFd: number | undefined;
   readonly isCurrent: () => boolean;
   readonly dispose: () => void;

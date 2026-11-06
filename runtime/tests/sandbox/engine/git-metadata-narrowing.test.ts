@@ -197,11 +197,15 @@ describe("narrowed .git write policy (file-tool preflight)", () => {
     expect(canWrite(path.join(sub, "hooks", "pre-commit"))).toBe(false);
     expect(canWrite(path.join(sub, "objects", "info", "alternates"))).toBe(false);
     expect(canWrite(path.join(sub, "refs", "heads", "topic"))).toBe(true);
-    // A nested .git that is not a repository is ordinary writable data: host
-    // git cannot descend into it through a gitlink, so it is no threat.
+    // A nested .git that is not a repository is protected by name, the same as
+    // the top-level .git: it cannot be created or assembled into a repository
+    // with a planted hook or config, so a command cannot plant one and then
+    // promote it. Only inert data of an already-real nested repo is writable.
     const bare = path.join(root, "bare", ".git");
     fs.mkdirSync(path.join(bare, "hooks"), { recursive: true });
-    expect(canWrite(path.join(bare, "config"))).toBe(true);
+    expect(canWrite(path.join(bare, "config"))).toBe(false);
+    expect(canWrite(path.join(bare, "hooks", "pre-commit"))).toBe(false);
+    expect(canWrite(path.join(bare, "HEAD"))).toBe(false);
   });
 
   it("never narrows .agenc or .agents", () => {

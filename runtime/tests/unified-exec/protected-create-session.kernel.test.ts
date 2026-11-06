@@ -185,6 +185,26 @@ describe("protected-create targets in the warm session sandbox", () => {
     expect(inert.stdout.trim()).toBe("blocked");
     expect(fs.existsSync(path.join(work, ".git", "new"))).toBe(false);
   });
+
+  it("fails the command and removes a nested repository assembled during the run", async () => {
+    // At launch `sub` does not exist, so the fixed plan carves out nothing for
+    // it and the shell can write freely under `sub/.git`. The command then
+    // assembles a real nested repository (HEAD + objects) carrying a planted
+    // fsmonitor, which a later host-side git descending through its gitlink
+    // would run. The created-path monitor scans the writable root, finds the
+    // new real nested repository that was not there at the start, removes it
+    // and fails the command.
+    const perCommand = { ...policy, persistentSession: false };
+    const assemble = await run(
+      "mkdir -p sub/.git/objects && " +
+      "printf 'ref: refs/heads/main\n' > sub/.git/HEAD && " +
+      "printf '[core]\n\tfsmonitor = /tmp/evil\n' > sub/.git/config && printf ran",
+      { runtimeSandbox: perCommand },
+    );
+    expect(assemble.stdout).toBe("ran");
+    expect(assemble.exitCode).not.toBe(0);
+    expect(fs.existsSync(path.join(work, "sub", ".git")), "the new nested repo is removed").toBe(false);
+  });
 });
 
 describe("read-only commands that run side by side", () => {
