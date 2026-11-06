@@ -73,6 +73,20 @@ describe("protected-create targets in the warm session sandbox", () => {
     expect(fs.existsSync(path.join(work, ".agenc"))).toBe(false);
   });
 
+  it("keeps a nested repository the user adds between commands in a warm session", async () => {
+    // The warm namespace (and the plan that built it) is from the first
+    // command. A repository the user clones or inits inside the workspace
+    // afterwards is not created by the next command, so that command must not
+    // treat it as one it assembled and remove it.
+    const first = await run(namespace);
+    expect(first.exitCode).toBe(0);
+    execFileSync("git", ["init", "-q", "-b", "main", path.join(work, "vendor", "lib")], { stdio: "ignore" });
+    const second = await run("printf next");
+    expect(second.stdout).toBe("next");
+    expect(second.exitCode).toBe(0);
+    expect(fs.existsSync(path.join(work, "vendor", "lib", ".git", "HEAD")), "the user's repository survives").toBe(true);
+  });
+
   it("rebuilds the namespace for a protected path created outside it instead of removing it", async () => {
     const launch = vi.spyOn(supervised, "spawnContainedProcess");
     const spawn = vi.spyOn(SessionSandbox.prototype, "spawn");
