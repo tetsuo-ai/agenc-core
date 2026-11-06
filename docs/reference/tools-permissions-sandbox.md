@@ -680,11 +680,15 @@ rules. Persisted add/remove operations also refresh the live rule sources before
 reporting success, without selecting a different model or effort. A matching
 deny wins over allow rules in every mode, including bypass. A whole-tool ask
 rule (for example `ImagineEdit`), and a PreToolUse hook that answers ask, still
-ask about every call, but the tool's own check runs first on every path: a deny
-it reaches, such as a `FileRead` deny on the image the tool would send, is
-returned as a deny, and a safety check (a protected path) keeps its reason, so
-its card offers that one call only whether the ask came from the rule, the hook,
-or both.
+ask about every call in a mode that asks, but the tool's own check runs first on
+every path: a deny it reaches, such as a `FileRead` deny on the image the tool
+would send, is returned as a deny, and a safety check (a protected path) keeps
+its reason, so its card offers that one call only whether the ask came from the
+rule, the hook, or both. Because the tool's own check (which includes the
+permission mode) runs first, a hook that answers ask is refused in a mode that
+never asks: in `dontAsk` a hook ask ends as a deny rather than a card (default
+and `acceptEdits` still ask). In `auto` mode the safety classifier runs before a
+hook's card, so a classifier deny refuses the call before any card appears.
 Shell deny and ask rules with command content are checked before any approval
 prompt, including exact commands, wildcard/prefix patterns, compound commands
 and shell wrappers. Transparent launchers such as `env`, `command`, `nice`,
