@@ -115,6 +115,7 @@ import {
 import {
   CONTEXT_IMAGE_BUDGET_ENV,
   boundContextImagesForProvider,
+  contextImageShownBefore,
   rememberPreparedContextImages,
   rememberSentContextImages,
   resolveContextImageBudgetBytes,
@@ -870,6 +871,7 @@ function projectSamplingImages(
     offeredImages,
     imageBudgetBytes,
     imageProvider,
+    contextImageShownBefore(session),
   );
   if (boundedImages.omitted > 0) {
     state.messagesForQuery = boundedImages.messages;
@@ -1344,7 +1346,7 @@ async function runSamplingRequest(
     }
     if (admitted !== true) prepared = { ...prepared, request: admitted };
   }
-  rememberSentContextImages(session, prepared.request.input);
+  rememberSentContextImages(session, prepared.request.input, state.messages);
   const samplingContext = prepared.samplingContext;
   const previousSample = state.reasoningCapPolicy?.sample;
   const samplingModel = skillInvocationRequestModel(session, samplingContext) ??
@@ -2599,7 +2601,7 @@ async function assertSeedUserPromptFits(
   const visible = withholdImagesForModel(seedMessages, imagePolicy, rejectedImagesFor(session, imagePolicy.route));
   const bounded = boundContextImagesForProvider(visible.messages, resolveContextImageBudgetBytes(
     session.services.userShell?.childEnvironment ?? process.env,
-  ), ctx.modelProviderId ?? session.services.provider.name);
+  ), ctx.modelProviderId ?? session.services.provider.name, contextImageShownBefore(session));
   state.messagesForQuery = withholdUndecodableToolImages(bounded.messages).messages;
   const request = buildSamplingRequestContract(state, session, ctx);
   const model = skillInvocationRequestModel(session, ctx) ??
@@ -2805,7 +2807,7 @@ async function* runTurnKernelInner(
       return prepared.kind === "request" ? prepared : null;
     }, {
       callProvider: (messages, options, samplingContext) => {
-        rememberSentContextImages(session, messages);
+        rememberSentContextImages(session, messages, state.messages);
         return runAdmittedModelCall({
           session, provider: session.services.provider, messages, options,
           stepId: admittedModelStepId(ctx, state, "primary"),
@@ -3700,7 +3702,7 @@ async function* runTurnKernelInner(
         ).messages;
         projectSamplingImages(state, ctx, session, session.services.configStore!.current());
         const wrapupRequest = buildSamplingRequestContract(state, session, ctx);
-        rememberSentContextImages(session, wrapupRequest.input);
+        rememberSentContextImages(session, wrapupRequest.input, state.messages);
         const wrapped = await stepLimitWrapup({ session, ctx,
           request: wrapupRequest, signal,
           fallback: stepTrail.fallback(lastContent) });

@@ -7,6 +7,7 @@ import {
   boundContextImagesForProvider,
   CONTEXT_IMAGE_BUDGET_ENV,
   DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES,
+  EVICTED_IMAGE_TEXT,
   OMITTED_IMAGE_TEXT,
   OVERSIZED_IMAGE_TEXT,
   resolveContextImageBudgetBytes,
@@ -55,12 +56,20 @@ function imageSlots(messages: readonly LLMMessage[]): string[] {
       part.type === "image_url" ? ["IMG"] : part.type === "text" && part.text.startsWith("[image") ? [part.text] : []));
 }
 
+/** A session on one vision model: the request of every earlier batch showed its images. */
+const shownBefore = (): boolean => true;
+
 /** Projections of a session in which each request reads one more image. */
-function readingRequests(sizes: readonly number[], budget: number, start: LLMMessage[] = [{ role: "user", content: "Inspect each screen." }]) {
+function readingRequests(
+  sizes: readonly number[],
+  budget: number,
+  start: LLMMessage[] = [{ role: "user", content: "Inspect each screen." }],
+  wasShown: (url: string) => boolean = shownBefore,
+) {
   const history = [...start];
   return sizes.map((bytes, index) => {
     history.push(...readImage(`shot-${index}`, bytes));
-    return admitContextImageBytes(history, budget);
+    return admitContextImageBytes(history, budget, wasShown);
   });
 }
 
@@ -187,7 +196,7 @@ describe("admitContextImageBytes", () => {
     const requests = readingRequests([1000, 1000, 1000, 1000, 1000], 6000);
     expect(requests.map(({ omitted }) => omitted)).toEqual([0, 0, 0, 0, 0]);
     expect(prefixRepeats(requests)).toEqual([true, true, true, true]);
-    expect(admitContextImageBytes([image(4000, "one"), image(4000, "two")], 0).omitted).toBe(0);
+    expect(admitContextImageBytes([image(4000, "one"), image(4000, "two")], 0, shownBefore).omitted).toBe(0);
   });
 
   test("the budget is full, then the next new image is visible", () => {
@@ -196,10 +205,36 @@ describe("admitContextImageBytes", () => {
     const full = requests[6]!;
     // The new screenshot reaches the model; the oldest leave in one batch.
     expect(imageSlots(full.messages)).toEqual([
-      OMITTED_IMAGE_TEXT, OMITTED_IMAGE_TEXT, OMITTED_IMAGE_TEXT, OMITTED_IMAGE_TEXT, "IMG", "IMG", "IMG",
+      EVICTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT, "IMG", "IMG", "IMG",
     ]);
     expect(full.retainedBytes).toBe(3000);
     expect(JSON.stringify(full.messages)).not.toContain("not inspected");
+  });
+
+  test("an image that leaves after its own request showed it says so and does not invite a re-read", () => {
+    // A task that read every image before recording anything re-read the
+    // evicted ones until the no-progress backstop ended the turn.
+    const requests = readingRequests([1000, 1000, 1000, 1000, 1000, 1000, 1000], 6000);
+    const placeholder = imageSlots(requests[6]!.messages)[0]!;
+    expect(placeholder).toMatch(/already shown to you in an earlier request/);
+    expect(placeholder).toMatch(/Record what you need from each image as you go/);
+    expect(placeholder).not.toMatch(/again/);
+    // Each placeholder repeats in every later request, so it stays short.
+    expect(placeholder.length).toBeLessThan(160);
+    // The base policy can leave out a new image no request showed, so it keeps the neutral text.
+    const shots = Array.from({ length: 7 }, (_, index) => image(1000, String(index)));
+    expect(imageSlots(boundContextImageBytes(shots, 6000).messages)[0]).toBe(OMITTED_IMAGE_TEXT);
+  });
+
+  test("an evicted image no request showed keeps the neutral note, the same in every later request", () => {
+    // fx30 review N1: the second screen's own request went to a text-only model and withheld it.
+    const notShown = (url: string): boolean => !url.includes("shot-1");
+    const requests = readingRequests(Array(8).fill(1000), 6000, undefined, notShown);
+    expect(imageSlots(requests[6]!.messages).slice(0, 4)).toEqual([
+      EVICTED_IMAGE_TEXT, OMITTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT,
+    ]);
+    // The next request repeats the evicted notes byte for byte, so the cached prefix holds.
+    expect(prefixRepeats(requests.slice(6))).toEqual([true]);
   });
 
   test("repeated reads past the budget break the cache once per batch, not once per image", () => {
@@ -214,6 +249,7 @@ describe("admitContextImageBytes", () => {
   });
 
   test("keeps the images sent with the turn while its tool results fill the budget", () => {
+    const evicted = EVICTED_IMAGE_TEXT;
     const omitted = OMITTED_IMAGE_TEXT;
     const turn: LLMMessage[] = [
       ...readImage("earlier", 1000),
@@ -223,27 +259,27 @@ describe("admitContextImageBytes", () => {
     for (const index of [0, 1, 2, 3]) turn.push(...readImage(`shot-${index}`, 1000));
     // 1000 earlier + 2000 mockup + four 1000-byte captures: the fourth capture
     // overflows. The earlier screen and the older captures go, not the mockup.
-    const bounded = admitContextImageBytes(turn, 6000);
-    expect(imageSlots(bounded.messages)).toEqual([omitted, "IMG", omitted, omitted, omitted, "IMG"]);
+    const bounded = admitContextImageBytes(turn, 6000, shownBefore);
+    expect(imageSlots(bounded.messages)).toEqual([evicted, "IMG", evicted, evicted, evicted, "IMG"]);
     expect(bounded.retainedBytes).toBe(3000);
     // The base policy left the mockup out first.
     expect(imageSlots(boundContextImageBytes(turn, 6000).messages)).toEqual([omitted, omitted, omitted, "IMG", "IMG", "IMG"]);
     // A later turn no longer owns the mockup: it is the oldest image and leaves with the next batch.
     const later: LLMMessage[] = [...turn, { role: "assistant", content: "Done." }, { role: "user", content: "Check four more screens." }];
     for (const index of [0, 1, 2, 3]) later.push(...readImage(`later-${index}`, 1000));
-    expect(imageSlots(admitContextImageBytes(later, 6000).messages)).toEqual([
-      omitted, omitted, omitted, omitted, omitted, omitted, omitted, "IMG", "IMG", "IMG",
+    expect(imageSlots(admitContextImageBytes(later, 6000, shownBefore).messages)).toEqual([
+      evicted, evicted, evicted, evicted, evicted, evicted, evicted, "IMG", "IMG", "IMG",
     ]);
     // Until that batch, the earlier verdicts stand byte for byte.
-    expect(admitContextImageBytes(later.slice(0, -2), 6000).messages.slice(0, turn.length)).toEqual(bounded.messages);
+    expect(admitContextImageBytes(later.slice(0, -2), 6000, shownBefore).messages.slice(0, turn.length)).toEqual(bounded.messages);
   });
 
   test("shows every image the latest tool results returned together when they fit together", () => {
     const history: LLMMessage[] = [{ role: "user", content: "Compare the screens." }, ...readImage("old", 3000)];
     history.push({ role: "assistant", content: "", toolCalls: ["a", "b", "c"].map((id) => ({ id, name: "FileRead", arguments: `{"file_path":"/work/${id}.png"}` })) });
     for (const id of ["a", "b", "c"]) history.push(readImage(id, 1500)[1]!);
-    const bounded = admitContextImageBytes(history, 6000);
-    expect(imageSlots(bounded.messages)).toEqual([OMITTED_IMAGE_TEXT, "IMG", "IMG", "IMG"]);
+    const bounded = admitContextImageBytes(history, 6000, shownBefore);
+    expect(imageSlots(bounded.messages)).toEqual([EVICTED_IMAGE_TEXT, "IMG", "IMG", "IMG"]);
     // The base policy evicts down to half and also hides a new result.
     expect(imageSlots(boundContextImageBytes(history, 6000).messages)).toEqual([OMITTED_IMAGE_TEXT, OMITTED_IMAGE_TEXT, "IMG", "IMG"]);
   });
@@ -252,7 +288,7 @@ describe("admitContextImageBytes", () => {
     const history: LLMMessage[] = [{ role: "user", content: "Compare the screens." }];
     history.push({ role: "assistant", content: "", toolCalls: ["a", "b", "c"].map((id) => ({ id, name: "FileRead", arguments: `{"file_path":"/work/${id}.png"}` })) });
     for (const id of ["a", "b", "c"]) history.push(readImage(id, 2500)[1]!);
-    const bounded = admitContextImageBytes(history, 6000);
+    const bounded = admitContextImageBytes(history, 6000, shownBefore);
     expect(imageSlots(bounded.messages)).toEqual([unfitImageText('"/work/a.png"'), "IMG", "IMG"]);
     expect(unfitImageText('"/work/a.png"')).not.toMatch(/compaction/i);
     expect(bounded.retainedBytes).toBe(5000);
@@ -262,8 +298,8 @@ describe("admitContextImageBytes", () => {
     const history: LLMMessage[] = [...readImage("old", 2000), { role: "assistant", content: "Checked." },
       { role: "user", content: [{ type: "text", text: "Here is the bug." }, { type: "image_url", image_url: { url: `data:image/png;base64,${"U".repeat(1978)}` } }] },
       ...readImage("huge", 7000)];
-    const bounded = admitContextImageBytes(history, 6000);
-    expect(imageSlots(bounded.messages)).toEqual([OMITTED_IMAGE_TEXT, "IMG", OVERSIZED_IMAGE_TEXT]);
+    const bounded = admitContextImageBytes(history, 6000, shownBefore);
+    expect(imageSlots(bounded.messages)).toEqual([EVICTED_IMAGE_TEXT, "IMG", OVERSIZED_IMAGE_TEXT]);
   });
 
   test("an appended message never changes an earlier verdict", () => {
@@ -277,7 +313,7 @@ describe("admitContextImageBytes", () => {
       const ids = Array.from({ length: 1 + Math.floor(random() * 3) }, (_, index) => `r${request}-${index}`);
       history.push({ role: "assistant", content: "", toolCalls: ids.map((id) => ({ id, name: "FileRead", arguments: `{"file_path":"/work/${id}.png"}` })) });
       for (const id of ids) history.push(readImage(id, 300 + Math.floor(random() * 2500))[1]!);
-      const slots = imageSlots(admitContextImageBytes(history, 6000).messages);
+      const slots = imageSlots(admitContextImageBytes(history, 6000, shownBefore).messages);
       // An image, once left out, never returns, and a kept one changes only by leaving.
       for (const [index, slot] of previous.entries()) {
         if (slot !== "IMG") expect(slots[index]).toBe(slot);
@@ -294,7 +330,7 @@ describe("admitContextImageBytes", () => {
       { role: "tool", content: "x".repeat(10_000), toolCallId: "c1", toolName: "Read" },
       image(500, "shot"),
     ];
-    const bounded = admitContextImageBytes(messages, 400);
+    const bounded = admitContextImageBytes(messages, 400, shownBefore);
     expect(bounded.totalBytes).toBe(500);
     expect(bounded.omitted).toBe(1);
     expect(bounded.messages[0]).toBe(messages[0]);
@@ -307,9 +343,9 @@ test("only providers that cache an unchanged prefix use the turn-aware admission
   history.push({ role: "assistant", content: "", toolCalls: ["a", "b", "c"].map((id) => ({ id, name: "FileRead", arguments: `{"file_path":"/work/${id}.png"}` })) });
   for (const id of ["a", "b", "c"]) history.push(readImage(id, 1500)[1]!);
   for (const provider of ["deepseek", "openai", "anthropic"]) {
-    expect(boundContextImagesForProvider(history, 6000, provider)).toEqual(admitContextImageBytes(history, 6000));
+    expect(boundContextImagesForProvider(history, 6000, provider, shownBefore)).toEqual(admitContextImageBytes(history, 6000, shownBefore));
   }
   for (const provider of ["local-test", "ollama", undefined]) {
-    expect(boundContextImagesForProvider(history, 6000, provider)).toEqual(boundContextImageBytes(history, 6000));
+    expect(boundContextImagesForProvider(history, 6000, provider, shownBefore)).toEqual(boundContextImageBytes(history, 6000));
   }
 });

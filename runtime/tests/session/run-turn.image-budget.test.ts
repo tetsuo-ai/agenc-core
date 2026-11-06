@@ -4,6 +4,7 @@ import type { LLMContentPart, LLMMessage } from "../../src/llm/types.js";
 import { runTurn } from "../../src/session/run-turn.js";
 import {
   CONTEXT_IMAGE_BUDGET_ENV,
+  EVICTED_IMAGE_TEXT,
   OMITTED_IMAGE_TEXT,
   OVERSIZED_IMAGE_TEXT,
 } from "../../src/session/query-image-budget.js";
@@ -171,6 +172,7 @@ describe("context image budget for providers that cache an unchanged prefix", ()
 
     const projected = seen[0]!.filter((message) => message.role === "user" && Array.isArray(message.content));
     const projectedParts = projected.map((message) => message.content as LLMContentPart[]);
+    // The old screen came with the history; no request of this process showed it, so its note stays neutral.
     expect(projectedParts[0]).toContainEqual({ type: "text", text: OMITTED_IMAGE_TEXT });
     expect(projectedParts[0]?.some((part) => part.type === "image_url")).toBe(false);
     if (fits) {
@@ -183,4 +185,33 @@ describe("context image budget for providers that cache an unchanged prefix", ()
       ? message.content.filter((part) => part.type === "image_url") : []);
     expect(durableImages).toHaveLength(2);
   });
+});
+
+// fx30 review N1: the evicted note said "already shown to you" for screens whose own request went to the text-only
+// deepseek-v4-pro, which withheld them.
+test("screens a text-only model never received keep the neutral note when a vision request evicts them", async () => {
+  vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "5000");
+  const image = (tag: string): LLMContentPart => ({ type: "image_url", image_url: { url: `data:image/png;base64,${tag.repeat(2000)}` } });
+  const seen: LLMMessage[][] = [];
+  const provider = mkProvider({ content: "noted" }, { onChatStream: (messages) => seen.push(messages) });
+  Object.assign(provider, { name: "deepseek" });
+  const { session } = mkSession({ provider });
+  const ctx = mkCtx({ modelProviderId: "deepseek" });
+  Object.assign(session.config, { model: "deepseek-v4-pro" });
+  await drain(runTurn(session, ctx, [{ type: "text", text: "Screens A and B" }, image("A"), image("B")]));
+  expect(JSON.stringify(seen[0])).not.toContain("AAAA");
+  // Back on deepseek-flash, a third screen overflows the budget and A and B leave in one batch.
+  Object.assign(session.config, { model: "deepseek-flash" });
+  await drain(runTurn(session, ctx, [{ type: "text", text: "Screen C" }, image("C")]));
+  const last = JSON.stringify(seen[1]);
+  expect(last).toContain("CCCC");
+  expect(last).not.toContain(EVICTED_IMAGE_TEXT);
+  expect(last.split(OMITTED_IMAGE_TEXT)).toHaveLength(3);
+  // Screens a vision request did show read as shown when they leave; A and B keep the neutral note.
+  await drain(runTurn(session, ctx, [{ type: "text", text: "Screen D" }, image("D")]));
+  await drain(runTurn(session, ctx, [{ type: "text", text: "Screen E" }, image("E")]));
+  const later = JSON.stringify(seen[3]);
+  expect(later).toContain("EEEE");
+  expect(later).toContain(EVICTED_IMAGE_TEXT);
+  expect(later.split(OMITTED_IMAGE_TEXT)).toHaveLength(3);
 });

@@ -70,12 +70,12 @@ async function runFork(inFork: (session: Session) => void): Promise<Session> {
   const forkTurn = vi.fn(async function* (_input: string | readonly LLMContentPart[]) {
     inFork(session);
     rememberPreparedContextImages(session, [a], [a], [a]);
-    rememberSentContextImages(session, [a]);
+    rememberSentContextImages(session, [a], [a]);
     yield* [] as never[];
   });
   session = sourceSession(forkTurn);
   rememberPreparedContextImages(session, [a, b], [a, b], [a, b]);
-  rememberSentContextImages(session, [a, b]);
+  rememberSentContextImages(session, [a, b], [a, b]);
   const manager = new ConversationThreadManager({ now: () => 45 });
   await manager.registerConversationRootSession(session, { prewarm: false });
   const forked = await manager.forkThread(session, { kind: "truncate_before_nth_user_message", n: 1 });
@@ -102,6 +102,43 @@ test("the source session's image evidence survives a forked turn", async () => {
   // Back in the source conversation, the next request prepares A, B and the
   // new screen C, and a compaction runs before it is sent. B was shown by the
   // source's last request, so only C is unseen.
+  rememberPreparedContextImages(session, [a, b, c], [a, b, c], [a, b, c]);
+  expect(unseenImageSourcesRemovedByCompaction(session, [a, b, c], [])).toEqual(["the newly attached image"]);
+});
+
+test.each(["throws", "is interrupted"] as const)("the source session's image evidence comes back when a forked turn %s", async (ending) => {
+  const [a, b, c] = [screen("A"), screen("B"), screen("C")];
+  let session: Session;
+  let entered!: () => void;
+  const inTurn = new Promise<void>((resolve) => { entered = resolve; });
+  const forkTurn = vi.fn(async function* (
+    _input: string | readonly LLMContentPart[],
+    options: { readonly signal: AbortSignal },
+  ) {
+    // The fork's request shows only A, then its turn ends without completing.
+    rememberPreparedContextImages(session, [a], [a], [a]);
+    rememberSentContextImages(session, [a], [a]);
+    if (ending === "throws") throw new Error("provider stream failed");
+    entered();
+    await new Promise((resolve) => options.signal.addEventListener("abort", resolve, { once: true }));
+    throw new Error("aborted by the user");
+    yield* [] as never[];
+  });
+  session = sourceSession(forkTurn as never);
+  rememberPreparedContextImages(session, [a, b], [a, b], [a, b]);
+  rememberSentContextImages(session, [a, b], [a, b]);
+  const manager = new ConversationThreadManager({ now: () => 45 });
+  await manager.registerConversationRootSession(session, { prewarm: false });
+  const forked = await manager.forkThread(session, { kind: "truncate_before_nth_user_message", n: 1 });
+  const turn = manager.submitTurn(forked.threadId, { type: "user_input", input: "continue fork" });
+  if (ending === "is interrupted") {
+    await inTurn;
+    await manager.submitTurn(forked.threadId, { type: "interrupt", reason: "user stop" });
+  }
+  await expect(turn).rejects.toThrow(ending === "throws" ? "provider stream failed" : "aborted by the user");
+  expect(forkTurn).toHaveBeenCalledTimes(1);
+  // As after a completed fork turn: B was shown by the source's last request,
+  // so only the new screen C is unseen, and the fork's request left nothing.
   rememberPreparedContextImages(session, [a, b, c], [a, b, c], [a, b, c]);
   expect(unseenImageSourcesRemovedByCompaction(session, [a, b, c], [])).toEqual(["the newly attached image"]);
 });
