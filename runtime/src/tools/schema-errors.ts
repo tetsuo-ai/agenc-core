@@ -14,6 +14,10 @@
  */
 import type { Tool } from "./types.js";
 import type { SchemaValidationError } from "./execution.js";
+import {
+  SANDBOX_PERMISSION_VALUES,
+  isDefaultSandboxPermissionAlias,
+} from "./system/sandbox-permission-values.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // AgenC behavior: `formatZodValidationError`
@@ -127,39 +131,26 @@ const SKILL_TOOL_NAMES: ReadonlySet<string> = new Set([
  * as new tools gain specific bad-input guidance.
  */
 /**
- * Tools whose `sandbox_permissions` field a model reliably guesses wrong.
- * Its schema is an enum of three strings, and the default enum prose does
- * not say what to send instead — the live incident's model sent
- * `{"network":"full"}` twelve times.
+ * Tools whose `sandbox_permissions` field a model guesses wrong. Its schema is
+ * an enum of three strings, and the generic enum prose does not say what to
+ * send instead: one model sent `{"network":"full"}` twelve times, another sent
+ * `"use_default"` on every call of a long task.
  */
 const SANDBOX_PERMISSION_TOOL_NAMES: ReadonlySet<string> = new Set([
   "exec_command",
+  "write_stdin",
 ]);
-
-const SANDBOX_PERMISSION_VALUES: readonly string[] = [
-  "default",
-  "require_escalated",
-  "with_additional_permissions",
-];
 
 export function getSchemaValidationErrorOverride(
   tool: Tool,
   input: unknown,
 ): string | null {
   if (SANDBOX_PERMISSION_TOOL_NAMES.has(tool.name) && input && typeof input === "object") {
-    const raw = (input as { sandbox_permissions?: unknown }).sandbox_permissions;
-    if (
-      raw !== undefined &&
-      !(typeof raw === "string" && SANDBOX_PERMISSION_VALUES.includes(raw))
-    ) {
-      return (
-        'sandbox_permissions must be the plain string "default", ' +
-        '"require_escalated" or "with_additional_permissions", not an object. ' +
-        'Scoped permissions belong in additional_permissions alongside ' +
-        '"with_additional_permissions", for example ' +
-        '{"network":{"enabled":true}}. The command was not run.'
-      );
-    }
+    const message = sandboxPermissionsErrorMessage(
+      tool.name,
+      (input as { sandbox_permissions?: unknown }).sandbox_permissions,
+    );
+    if (message !== null) return message;
   }
   if (!SKILL_TOOL_NAMES.has(tool.name)) return null;
   if (!input || typeof input !== "object") return null;
@@ -171,6 +162,58 @@ export function getSchemaValidationErrorOverride(
     );
   }
   return null;
+}
+
+/**
+ * The override for a bad sandbox_permissions value, or null when the value is
+ * absent, one of the three modes, or a spelling that can only mean the default
+ * sandbox: the model-input fold reads that as "default" once the rest of the
+ * call is valid (`system/sandbox-permission-values.ts`), so the generic prose
+ * reports what is actually wrong. An object keeps the object message. Any
+ * other value is named, with the accepted values and what each one does: a
+ * model that already sent a plain string gets nothing to fix from "not an
+ * object".
+ */
+function sandboxPermissionsErrorMessage(toolName: string, raw: unknown): string | null {
+  if (raw === undefined) return null;
+  if (typeof raw === "string" && SANDBOX_PERMISSION_VALUES.includes(raw)) return null;
+  if (isDefaultSandboxPermissionAlias(raw)) return null;
+  const writeStdin = toolName === "write_stdin";
+  if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+    return (
+      'sandbox_permissions must be the plain string "default", ' +
+      '"require_escalated" or "with_additional_permissions", not an object. ' +
+      (writeStdin
+        ? WRITE_STDIN_SANDBOX_OUTCOME
+        : 'Scoped permissions belong in additional_permissions alongside ' +
+          '"with_additional_permissions", for example ' +
+          '{"network":{"enabled":true}}. The command was not run.')
+    );
+  }
+  return (
+    'sandbox_permissions must be "default", "require_escalated" or ' +
+    `"with_additional_permissions", not ${describeRejectedValue(raw)}. ` +
+    (writeStdin
+      ? WRITE_STDIN_SANDBOX_OUTCOME
+      : 'Leave it out or send "default" to run in the sandbox; "require_escalated" ' +
+        'asks to run outside it; "with_additional_permissions" asks for the scopes in ' +
+        "additional_permissions. The command was not run.")
+  );
+}
+
+const WRITE_STDIN_SANDBOX_OUTCOME =
+  "For input, send the value the session was started with; an empty poll needs none. " +
+  "Nothing was sent to the session.";
+
+/** The rejected value as JSON, shortened so a long value cannot flood the result. */
+function describeRejectedValue(value: unknown): string {
+  let text: string;
+  try {
+    text = JSON.stringify(value) ?? String(value);
+  } catch {
+    text = String(value);
+  }
+  return text.length > 80 ? `${text.slice(0, 77)}...` : text;
 }
 
 // ─────────────────────────────────────────────────────────────────────

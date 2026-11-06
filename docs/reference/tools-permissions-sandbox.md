@@ -993,6 +993,16 @@ protected with the sandbox off. The model's explicit way out is unchanged:
 one card before the call runs, or granted without a card under
 `bypassPermissions`.
 
+`sandbox_permissions` takes `"default"`, `"require_escalated"` or
+`"with_additional_permissions"`. On `exec_command` and `write_stdin`, a value
+that can only mean the default sandbox (`"use_default"`, `"none"`, an empty
+string or `null`, in any letter case, with a space or hyphen for the
+underscore) is read as `"default"` before any hook, rule or approval sees the
+call; no value is ever read as an escalation. Any other value refuses the call
+with a message that names the value and the three modes
+(`runtime/src/tools/system/sandbox-permission-values.ts`,
+`runtime/src/tools/schema-errors.ts`).
+
 ### Mobile session-wide approval
 
 Remote clients may settle the currently pending request with

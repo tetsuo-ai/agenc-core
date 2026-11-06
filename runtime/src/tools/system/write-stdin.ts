@@ -3,6 +3,7 @@ import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import { shellWorkspaceMutationPermission } from "./shell-mutation-permission.js";
 import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
+import { foldDefaultSandboxPermission } from "./sandbox-permission-values.js";
 import { UnifiedExecError, UnifiedExecUnavailableError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import {
@@ -154,6 +155,9 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         ...shellWorkspaceMutationPermission(args),
       });
     },
+    // Same fold as exec_command: a default-meaning sandbox_permissions value
+    // is "default", never an escalation.
+    reshapeModelArgs: foldDefaultSandboxPermission,
     inputSchema: {
       type: "object",
       properties: {

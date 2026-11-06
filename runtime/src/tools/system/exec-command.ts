@@ -16,6 +16,7 @@ import {
   shellWorkspaceMutationPermission,
 } from "./shell-mutation-permission.js";
 import { preflightSelfTermination, preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
+import { foldDefaultSandboxPermission } from "./sandbox-permission-values.js";
 import { recordSessionRead, resolveSessionId } from "./filesystem.js";
 import { isCompletePrintedOutput, rememberPrintedOutput, stableWorkspaceText } from "./printed-read-proof.js";
 import type { BashToolConfig } from "./types.js";
@@ -1092,6 +1093,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         ...shellWorkspaceMutationPermission(args),
       });
     },
+    // A sandbox_permissions value that can only mean the default sandbox
+    // ("use_default", "none", "", null) runs as "default"; nothing is ever
+    // read as an escalation.
+    reshapeModelArgs: foldDefaultSandboxPermission,
     inputSchema: {
       type: "object",
       properties: {
