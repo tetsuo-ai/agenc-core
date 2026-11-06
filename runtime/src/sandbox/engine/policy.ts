@@ -415,14 +415,16 @@ export function getWritableRootsWithCwd(
     // sandbox refuses a planted hook/config/alternate there too. Missing
     // carve-outs inside it are watched by the created-path monitor, as for the
     // top-level narrowed `.git`.
-    const nestedRepoGitDirs = nestedGitMetadataDirs(root);
-    const nestedGitCarveouts = nestedRepoGitDirs.flatMap((gitDir) =>
+    const nestedGit = nestedGitFindings(root, writableRoots);
+    const nestedRepoGitDirs = nestedGit.descentPoints;
+    const nestedGitCarveouts = nestedGit.repoDirs.flatMap((gitDir) =>
       gitNarrowedReadOnlyCarveouts(gitDir),
     );
     const readOnlySubpaths = dedupPaths([
       ...defaultCarveouts,
       ...explicitCarveouts,
       ...nestedGitCarveouts,
+      ...nestedGit.pointerFiles,
       ...reservedReadOnlyPaths,
     ]);
     return {
@@ -837,9 +839,87 @@ const NESTED_GIT_SCAN_MAX_DIRS = 4096;
  * The scan never follows a symlink and never descends into a `.git`; it is
  * bounded in depth and in directories visited so it cannot walk a huge tree.
  */
-function nestedGitMetadataDirs(root: string): string[] {
+/**
+ * Findings of the bounded nested-`.git` scan under `root`, from a single walk:
+ * `repoDirs` are real nested repositories (HEAD + objects) whose execution
+ * surface is narrowed read-only; `descentPoints` are every nested `.git` a
+ * later host-side git could descend through, which is the repositories plus
+ * `.git` pointers (a gitfile, i.e. a regular file, or a symlink). The
+ * created-path monitor uses `descentPoints` as its baseline so a pointer that
+ * already exists (for example a linked worktree's `.git` gitfile) is left
+ * alone while one a command creates during its run is caught.
+ */
+interface NestedGitFindings {
+  readonly repoDirs: string[];
+  readonly descentPoints: string[];
+  /**
+   * Nested gitfile pointers that are descent points (they point at writable
+   * workspace data, or do not resolve). Each is bound read-only so a shell
+   * command cannot rewrite it in place, as the top-level gitfile already is.
+   */
+  readonly pointerFiles: string[];
+}
+/**
+ * Whether a nested `.git` pointer (a gitfile or a symlink) can carry planted
+ * code. Its target is read (the `gitdir:` line of a gitfile, or the link of a
+ * symlink), resolved against the pointer's own directory and then to a
+ * physical path, so an alternate spelling cannot pass as outside. A target
+ * inside a protected git surface of a writable root (`<root>/.git/worktrees/...`
+ * or `<root>/.git/modules/...`, which the sandbox keeps read-only) or outside
+ * every writable root is beyond what a confined command can write, so the
+ * pointer is benign: this is how a linked worktree (including AgenC's own
+ * `.agenc-worktrees/<slug>`) and a submodule record their `.git`, and a host
+ * process may add one while a command runs. Any other target is writable data
+ * a command could fill with a hook or config, so the pointer is a descent
+ * point. An unreadable, malformed or unresolvable pointer is a descent point
+ * (fail closed). Must match the monitor's / the policy's copy exactly.
+ */
+function nestedGitPointerIsDescentPoint(pointer: string, isLink: boolean, roots: readonly string[]): boolean {
+  let target: string;
+  try {
+    if (isLink) {
+      target = path.resolve(path.dirname(pointer), fs.readlinkSync(pointer));
+    } else {
+      const fd = fs.openSync(pointer, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      try {
+        const buffer = Buffer.alloc(4096);
+        const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        const line = buffer.subarray(0, read).toString("utf8").split(/\r?\n/u)[0] ?? "";
+        const match = /^gitdir:\s*(.+?)\s*$/u.exec(line);
+        if (match === null) return true;
+        target = path.resolve(path.dirname(pointer), match[1]!);
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+    target = fs.realpathSync(target);
+  } catch {
+    return true;
+  }
+  const within = (child: string, parent: string): boolean =>
+    child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : `${parent}${path.sep}`);
+  let insideAnyRoot = false;
+  for (const root of roots) {
+    let resolvedRoot: string;
+    try {
+      resolvedRoot = fs.realpathSync(root);
+    } catch {
+      resolvedRoot = path.resolve(root);
+    }
+    if (!within(target, resolvedRoot)) continue;
+    insideAnyRoot = true;
+    for (const surface of ["worktrees", "modules"]) {
+      if (within(target, path.join(resolvedRoot, ".git", surface))) return false;
+    }
+  }
+  return insideAnyRoot;
+}
+export function nestedGitFindings(root: string, roots: readonly string[] = [root]): NestedGitFindings {
   const start = normalizePathForPolicy(root);
-  const found: string[] = [];
+  const topLevelGit = path.join(start, GIT_METADATA_DIR_NAME);
+  const repoDirs: string[] = [];
+  const descentPoints: string[] = [];
+  const pointerFiles: string[] = [];
   let visited = 0;
   const walk = (dir: string, depth: number): void => {
     if (depth > NESTED_GIT_SCAN_MAX_DEPTH || visited >= NESTED_GIT_SCAN_MAX_DIRS) return;
@@ -852,22 +932,35 @@ function nestedGitMetadataDirs(root: string): string[] {
     visited += 1;
     for (const entry of entries) {
       if (visited >= NESTED_GIT_SCAN_MAX_DIRS) return;
-      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
       const child = path.join(dir, entry.name);
       if (entry.name === GIT_METADATA_DIR_NAME) {
-        // A `.git` directory, not the root's own: a nested repository. Record
-        // it when it is a real repository, and do not descend into it (its
-        // contents are git data).
-        if (child !== path.join(start, GIT_METADATA_DIR_NAME) && gitDirectoryIsRepository(child)) {
-          found.push(child);
+        // A `.git` that is not the root's own. A real repository directory is
+        // narrowed and never descended into. A `.git` pointer (a gitfile or a
+        // symlink) is a descent redirect, not inert data, so it is a descent
+        // point even though it is not a directory.
+        if (child === topLevelGit) continue;
+        if (entry.isDirectory() && !entry.isSymbolicLink()) {
+          if (gitDirectoryIsRepository(child)) { repoDirs.push(child); descentPoints.push(child); }
+        } else if (entry.isFile() || entry.isSymbolicLink()) {
+          const descent = nestedGitPointerIsDescentPoint(child, entry.isSymbolicLink(), roots);
+          if (descent) descentPoints.push(child);
+          // Bind a gitfile read-only when it is itself a descent point (it points
+          // at writable data, or does not resolve). A benign gitfile (a linked
+          // worktree, including AgenC's own, or an absorbed submodule, pointing
+          // into the protected .git/worktrees or .git/modules) stays writable:
+          // AgenC must still be able to remove its own worktrees, and a rewrite
+          // of one to a writable target makes it a new descent point that the
+          // stop scan removes, failing the command.
+          if (entry.isFile() && descent) pointerFiles.push(child);
         }
         continue;
       }
+      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
       walk(child, depth + 1);
     }
   };
   walk(start, 0);
-  return found;
+  return { repoDirs, descentPoints, pointerFiles };
 }
 
 

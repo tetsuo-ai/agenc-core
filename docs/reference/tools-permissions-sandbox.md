@@ -797,7 +797,23 @@ repository: if you made it yourself, check its hooks and config before renaming 
 back to `.git`.
 AgenC's own git status refresh in the footer no longer descends into submodules,
 so a submodule's own state is not shown there and its hooks never run from the
-refresh. Each file tool call is also bound to the files it was checked
+refresh. A nested `.git` that is a pointer (a gitfile or a symlink), not a
+directory, is a descent redirect in the same way. The file tools refuse
+creating or rewriting one. On the Linux shell path, an existing gitfile pointer
+that points at writable workspace data, or that does not resolve, is bound
+read-only. A benign one, such as a linked worktree's or an absorbed submodule's
+`.git`, which points into the protected `.git/worktrees` or `.git/modules`, stays
+writable so the worktree can still be removed. A pointer that a command creates,
+rewrites or replaces during its run so that it points at writable data is moved
+aside like a nested repository (removed only if it cannot be moved), and the
+command fails; an existing pointer left unchanged is kept. On macOS the sandbox
+profile refuses, at any depth below a writable root, writes to a nested `.git`
+entry itself and to its execution surface: a command cannot create a nested
+`.git`, rename a directory onto one, create a gitfile or symlink pointer there,
+or write a nested hook or config, while inert writes inside an existing nested
+repository (refs, objects, HEAD) still work. macOS has no run-time monitor, so it
+refuses these up front where Linux moves them aside after the command. Each
+file tool call is also bound to the files it was checked
 against before any approval prompt: if a link on its path is pointed
 elsewhere before it runs, the tool changes, reads or sends nothing and says
 to run the call again.
