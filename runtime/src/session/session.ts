@@ -124,7 +124,7 @@ import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
-import { capturePromptCacheState } from "./prompt-cache-state.js";
+import { capturePromptCacheState, coreCatalogSwitchItem } from "./prompt-cache-state.js";
 import type { QuerySource } from "./_deps/query-source.js";
 import {
   freshDenialTracking,
@@ -5143,6 +5143,12 @@ export class Session {
           return ephemeral;
         },
       };
+    }
+    if (typeof this.rolloutStore?.appendRollout === "function") {
+      // The core catalog switch gets its own line at the first event after it
+      // happens, so a process that dies in the switching turn keeps it.
+      const switched = coreCatalogSwitchItem(this, this.services?.registry);
+      if (switched !== undefined) this.rolloutStore.appendRollout(switched);
     }
     if (typeof this.rolloutStore?.appendRollout === "function" &&
       ["turn_complete", "turn_failed", "turn_aborted"].includes(event.msg.type)) {

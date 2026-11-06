@@ -1211,9 +1211,9 @@ export function buildToolRegistry(
    * and the lean FileRead and system.searchTools (light-presentation.ts
    * COMPACT_EXEC_FIELDS). A yield, a poll or a kill leaves it unchanged; a
    * switch (coreSchemasExpanded) presents the full core schemas from then on,
-   * and the session keeps it across a resume or restart (the prompt cache
-   * state persists it). The compact form needs system.searchTools to load the
-   * rest.
+   * and the session keeps it across a resume or restart (the rollout saves it
+   * when it happens, prompt-cache-state.ts coreCatalogSwitchItem). The compact
+   * form needs system.searchTools to load the rest.
    */
   function compactDeepSeekCoreCatalog(searchVisible: boolean): boolean {
     return searchVisible && stableDeepSeekCoreCatalog() && !coreSchemasExpanded();
