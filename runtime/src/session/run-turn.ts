@@ -1344,7 +1344,7 @@ async function runSamplingRequest(
     }
     if (admitted !== true) prepared = { ...prepared, request: admitted };
   }
-  rememberSentContextImages(session, prepared.request.input);
+  rememberSentContextImages(session, prepared.request.input, state.messages);
   const samplingContext = prepared.samplingContext;
   const previousSample = state.reasoningCapPolicy?.sample;
   const samplingModel = skillInvocationRequestModel(session, samplingContext) ??
@@ -2805,7 +2805,7 @@ async function* runTurnKernelInner(
       return prepared.kind === "request" ? prepared : null;
     }, {
       callProvider: (messages, options, samplingContext) => {
-        rememberSentContextImages(session, messages);
+        rememberSentContextImages(session, messages, state.messages);
         return runAdmittedModelCall({
           session, provider: session.services.provider, messages, options,
           stepId: admittedModelStepId(ctx, state, "primary"),
@@ -3700,7 +3700,7 @@ async function* runTurnKernelInner(
         ).messages;
         projectSamplingImages(state, ctx, session, session.services.configStore!.current());
         const wrapupRequest = buildSamplingRequestContract(state, session, ctx);
-        rememberSentContextImages(session, wrapupRequest.input);
+        rememberSentContextImages(session, wrapupRequest.input, state.messages);
         const wrapped = await stepLimitWrapup({ session, ctx,
           request: wrapupRequest, signal,
           fallback: stepTrail.fallback(lastContent) });

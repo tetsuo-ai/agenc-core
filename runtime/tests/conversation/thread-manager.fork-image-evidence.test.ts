@@ -70,12 +70,12 @@ async function runFork(inFork: (session: Session) => void): Promise<Session> {
   const forkTurn = vi.fn(async function* (_input: string | readonly LLMContentPart[]) {
     inFork(session);
     rememberPreparedContextImages(session, [a], [a], [a]);
-    rememberSentContextImages(session, [a]);
+    rememberSentContextImages(session, [a], [a]);
     yield* [] as never[];
   });
   session = sourceSession(forkTurn);
   rememberPreparedContextImages(session, [a, b], [a, b], [a, b]);
-  rememberSentContextImages(session, [a, b]);
+  rememberSentContextImages(session, [a, b], [a, b]);
   const manager = new ConversationThreadManager({ now: () => 45 });
   await manager.registerConversationRootSession(session, { prewarm: false });
   const forked = await manager.forkThread(session, { kind: "truncate_before_nth_user_message", n: 1 });
@@ -117,7 +117,7 @@ test.each(["throws", "is interrupted"] as const)("the source session's image evi
   ) {
     // The fork's request shows only A, then its turn ends without completing.
     rememberPreparedContextImages(session, [a], [a], [a]);
-    rememberSentContextImages(session, [a]);
+    rememberSentContextImages(session, [a], [a]);
     if (ending === "throws") throw new Error("provider stream failed");
     entered();
     await new Promise((resolve) => options.signal.addEventListener("abort", resolve, { once: true }));
@@ -126,7 +126,7 @@ test.each(["throws", "is interrupted"] as const)("the source session's image evi
   });
   session = sourceSession(forkTurn as never);
   rememberPreparedContextImages(session, [a, b], [a, b], [a, b]);
-  rememberSentContextImages(session, [a, b]);
+  rememberSentContextImages(session, [a, b], [a, b]);
   const manager = new ConversationThreadManager({ now: () => 45 });
   await manager.registerConversationRootSession(session, { prewarm: false });
   const forked = await manager.forkThread(session, { kind: "truncate_before_nth_user_message", n: 1 });

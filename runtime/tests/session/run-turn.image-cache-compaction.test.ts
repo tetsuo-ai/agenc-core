@@ -1,6 +1,7 @@
 import { installPreparedCompactionPressure } from "../helpers/prepared-compaction-pressure.js";
 import { afterEach, expect, test, vi } from "vitest";
 import type { LLMContentPart, LLMMessage } from "../../src/llm/types.js";
+import { clearSession } from "../../src/commands/clear.js";
 import { runTurn, setAutoCompactImplForTests } from "../../src/session/run-turn.js";
 import {
   CONTEXT_IMAGE_BUDGET_ENV,
@@ -30,7 +31,7 @@ test("unseen image recovery names only images this process prepared after its la
   const session = {};
   // No request of this process: no evidence, so no image is named.
   expect(unseenImageSourcesRemovedByCompaction(session, messages, [])).toEqual([]);
-  rememberSentContextImages(session, messages.slice(0, 2));
+  rememberSentContextImages(session, messages.slice(0, 2), messages);
   rememberPreparedContextImages(session, messages, messages, messages);
   expect(unseenImageSourcesRemovedByCompaction(session, messages, messages.slice(0, 2)))
     .toEqual(['"/work/current.png"']);
@@ -52,19 +53,71 @@ test("the record of presented images keeps every request since the last compacti
   const session = {};
   // A vision request shows X.
   rememberPreparedContextImages(session, [x], [x], [x]);
-  rememberSentContextImages(session, [x]);
-  // One request goes to a text-only model, whose image policy withholds X.
+  rememberSentContextImages(session, [x], [x]);
+  // One request goes to a text-only model, whose image policy withholds X;
+  // X is still in the conversation.
   rememberPreparedContextImages(session, [text], [text], [text]);
-  rememberSentContextImages(session, [text]);
+  rememberSentContextImages(session, [text], [x, text]);
   // Back on a vision model, X is offered again and a compaction drops it
   // before that request is sent. The model saw X, so it is not named.
   rememberPreparedContextImages(session, [x], [x], [x]);
   expect(unseenImageSourcesRemovedByCompaction(session, [x], [])).toEqual([]);
   // A compaction starts a new record.
   resetSentContextImages(session);
-  rememberSentContextImages(session, [text]);
+  rememberSentContextImages(session, [text], [text]);
   rememberPreparedContextImages(session, [x], [x], [x]);
   expect(unseenImageSourcesRemovedByCompaction(session, [x], [])).toEqual(["the newly attached image"]);
+});
+
+test("an image that left the conversation stops counting at the next request", () => {
+  const x: LLMMessage = { role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,screen-x" } }] };
+  const text: LLMMessage = { role: "user", content: "Summarize the repository." };
+  const session = {};
+  rememberPreparedContextImages(session, [x], [x], [x]);
+  rememberSentContextImages(session, [x], [x]);
+  // /clear, a manual compaction or a cleared agent history leaves X out of the
+  // conversation; the next request's record no longer holds it.
+  rememberPreparedContextImages(session, [text], [text], [text]);
+  rememberSentContextImages(session, [text], [text]);
+  // The same screen attached again and compacted away before any request of
+  // this conversation sent it is named.
+  rememberPreparedContextImages(session, [text, x], [text, x], [text, x]);
+  expect(unseenImageSourcesRemovedByCompaction(session, [text, x], [])).toEqual(["the newly attached image"]);
+});
+
+// fx30 review (item 1): with an accumulating record, /clear left the cleared conversation's images in it, so the same
+// screen attached again later counted as shown and the compaction notice missed it.
+test("after /clear, an image the new conversation never sent is named when compaction removes it", async () => {
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
+  const requests: LLMMessage[][] = [];
+  const provider = mkProvider({ content: "checked" }, { onChatStream: messages => requests.push(messages) });
+  Object.assign(provider, { name: "deepseek" });
+  const harness = createCompactionTransactionHarness([]);
+  const { session } = mkSession({ provider });
+  Object.assign(session.config, { model: "deepseek-flash" });
+  const ctx = mkCtx({ modelProviderId: "deepseek" });
+  attachCompactionSession(session, harness);
+  setAutoCompactImplForTests(async () => ({ wasCompacted: true, compactionResult: {
+    message: "Earlier work summarized.", replacementHistory: [{ role: "user", content: "Earlier work summarized." }],
+  } }));
+  try {
+    // The first conversation shows screen X.
+    await drain(runTurn(session, ctx, [{ type: "text", text: "Screen X" }, { type: "image_url", image_url: { url: png } }]));
+    expect(JSON.stringify(requests[0])).toContain(png);
+    // /clear starts a new conversation on the same session object; its first request carries no image.
+    await clearSession(session);
+    await drain(runTurn(session, ctx, "Summarize the repository."));
+    expect(JSON.stringify(requests[1])).not.toContain(png);
+    // The new conversation attaches the same screen, and natural compaction removes it before any request sent it.
+    Object.assign(ctx.modelInfo, { autoCompactTokenLimit: 1_000 });
+    installPreparedCompactionPressure(provider, request => JSON.stringify(request.messages).includes("Natural pressure") ? 18_130 : 100);
+    await drain(runTurn(session, ctx, [{ type: "text", text: "Natural pressure. ".repeat(400) },
+      { type: "image_url", image_url: { url: png } }]));
+    expect(requests).toHaveLength(3);
+    expect(JSON.stringify(requests[2])).toContain("Earlier work summarized.");
+    // This conversation never showed X, so the notice names it, as 0.19.29 does.
+    expect(JSON.stringify(requests[2])).toContain("Compaction removed 1 new image");
+  } finally { session.mountRolloutStore(null); harness.close(); }
 });
 
 test("a request on a text-only model in between does not make a shown image look unseen at compaction", async () => {

@@ -37,11 +37,12 @@ import { withheldImagePlaceholder } from "./query-image-withheld.js";
 
 // What this process knows about the images of each session's current
 // context epoch, keyed by the session object so concurrent conversations
-// never mix: every image a dispatched request of the epoch presented (shown,
-// or named by a budget placeholder), and the images the last prepared
-// projection would show the model or withheld only for this budget. A
-// resumed session or a restarted daemon starts with neither, so it never
-// claims that an image an earlier process sent was left unseen.
+// never mix: every image still in the conversation that a dispatched request
+// of the epoch presented (shown, or named by a budget placeholder), and the
+// images the last prepared projection would show the model or withheld only
+// for this budget. A resumed session or a restarted daemon starts with
+// neither, so it never claims that an image an earlier process sent was left
+// unseen.
 const dispatchedImages = new WeakMap<object, ReadonlySet<string>>();
 const preparedImages = new WeakMap<object, ReadonlySet<string>>();
 
@@ -55,14 +56,23 @@ function contextImageUrls(messages: readonly LLMMessage[]): Set<string> {
  * showed or named in a budget placeholder, and every image it carries. The
  * dispatched request is a snapshot whose placeholder parts are copies, so the
  * prepared set, not placeholder identity, records the placeholders. The
- * record keeps what earlier requests of the epoch presented: a request that
- * withholds an image for its model (a text-only fallback or skill model)
- * does not make an image the model already saw look unseen. Compaction and a
- * forked turn start a new record.
+ * record keeps what earlier requests of the epoch presented while the image
+ * is still in `history`, the conversation this request was built from: a
+ * request that withholds an image for its model (a text-only fallback or
+ * skill model) does not make an image the model already saw look unseen, and
+ * an image that left the conversation (/clear, a manual compaction, a cleared
+ * agent history) is dropped from the record at the next request instead of
+ * counting as shown for good. Compaction and a forked turn start a new
+ * record.
  */
-export function rememberSentContextImages(session: object, messages: readonly LLMMessage[]): void {
+export function rememberSentContextImages(
+  session: object,
+  messages: readonly LLMMessage[],
+  history: readonly LLMMessage[],
+): void {
+  const inConversation = contextImageUrls(history);
   dispatchedImages.set(session, new Set([
-    ...dispatchedImages.get(session) ?? [],
+    ...[...dispatchedImages.get(session) ?? []].filter(url => inConversation.has(url)),
     ...preparedImages.get(session) ?? [],
     ...contextImageUrls(messages),
   ]));
