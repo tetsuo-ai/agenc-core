@@ -92,7 +92,18 @@ export function revokeLegacyRemote(context: RemoteCliRuntimeContext): LegacyRemo
     revoked = code === "ENOENT" || code === "ENOTDIR";
     if (!revoked) errors.push(error);
   }
-  return { revoked, errors };
+  // The remove step and the confirming lstat fail with the same errno on the
+  // same path (a folder with no search bit raises EACCES on both). Report
+  // each distinct failure once, not the same one twice.
+  const seen = new Set<string>();
+  const distinctErrors = errors.filter((error) => {
+    const e = error as NodeJS.ErrnoException;
+    const signature = `${e.code ?? ""}\u0000${e.syscall ?? ""}\u0000${e.path ?? ""}\u0000${e.message ?? ""}`;
+    if (seen.has(signature)) return false;
+    seen.add(signature);
+    return true;
+  });
+  return { revoked, errors: distinctErrors };
 }
 export function cookiePath(context: RemoteCliRuntimeContext): string {
   return join(context.home.path, "daemon.cookie");
