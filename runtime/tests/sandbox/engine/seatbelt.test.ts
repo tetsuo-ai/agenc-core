@@ -48,16 +48,21 @@ describe("macOS seatbelt policy generation", () => {
     // segment before `.git`, so `git init sub` cannot plant a hook or config
     // that a later host-side git would run, as on Linux.
     const nested =
-      "^/repo/.+/\\.git/(hooks|config|config\\.worktree|info|modules|worktrees|commondir|remotes|branches|objects/info)(/.*)?$";
+      "^/repo/.+/\\.git(/(hooks|config|config\\.worktree|info|modules|worktrees|commondir|remotes|branches|objects/info)(/.*)?)?$";
     expect(policy).toContain(`(require-not (regex #"${nested}"))`);
     const re = new RegExp(nested.replace(/\\\\/gu, "\\"), "u");
     // Catches a nested repository's surface...
     expect(re.test("/repo/pkg/sub/.git/hooks/pre-commit")).toBe(true);
     expect(re.test("/repo/a/b/c/.git/config")).toBe(true);
     expect(re.test("/repo/sub/.git/objects/info/alternates")).toBe(true);
+    // ...and the nested `.git` entry itself, so a prepared directory cannot be
+    // renamed onto it and a gitfile or symlink pointer cannot be created there.
+    expect(re.test("/repo/sub/.git")).toBe(true);
+    expect(re.test("/repo/a/b/.git")).toBe(true);
     // ...but never the top-level .git (its own rule covers that), the nested
     // repository's inert data, or a file merely named like one.
     expect(re.test("/repo/.git/config")).toBe(false);
+    expect(re.test("/repo/.git")).toBe(false);
     expect(re.test("/repo/sub/.git/refs/heads/main")).toBe(false);
     expect(re.test("/repo/sub/.git/objects/ab/cd")).toBe(false);
     expect(re.test("/repo/sub/.git/HEAD")).toBe(false);

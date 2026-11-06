@@ -734,8 +734,12 @@ function seatbeltNestedGitSurfaceRegex(root: string): string {
   const surface =
     "(hooks|config|config\\.worktree|info|modules|worktrees|commondir|remotes|branches|objects/info)";
   // `.+/` requires at least one path segment before `.git`, so this matches a
-  // nested repository only, never the top-level `<root>/.git`.
-  return `^${base}/.+/\\.git/${surface}(/.*)?$`;
+  // nested repository only, never the top-level `<root>/.git`. The optional
+  // group also matches the nested `.git` entry itself, as the top-level rule
+  // does: without it a prepared directory could be renamed onto a nested
+  // `.git`, or a gitfile or symlink pointer created there, and macOS has no
+  // monitor to remove either afterward.
+  return `^${base}/.+/\\.git(/${surface}(/.*)?)?$`;
 }
 
 function seatbeltProtectedMetadataNameRegex(root: string, name: string): string {
