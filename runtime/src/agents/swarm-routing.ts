@@ -169,9 +169,16 @@ export function routeSwarmTask(userInput: string | null): SwarmRoutingDecision {
   const signals = new Set<SwarmRoutingSignal>();
   const listItems = independentListItemCount(userInput ?? "");
   const negatedIndependence = NEGATED_INDEPENDENCE_RE.test(input);
+  // Code spans, fenced blocks, quoted lines and double-quoted text are
+  // examples, not requests, as for requestsHelpers: "Explain `use two
+  // helpers` in the docs" asks for no helpers (sub30 Fsub30-3). Each span
+  // becomes a separator that is neither a word nor a space, so a pattern
+  // cannot join the words around it ("Run `npm test` in parallel" stays
+  // sequential, as when the span was read): the signal can only be lost.
+  const requested = normalizedInput(rawInput.replace(QUOTED_OR_CODE_RE, " | "));
   if (EXPLICIT_NO_DELEGATION_RE.test(input))
     signals.add("explicit_no_delegation");
-  if (EXPLICIT_PARALLEL_RE.test(input)) signals.add("explicit_parallelism");
+  if (EXPLICIT_PARALLEL_RE.test(requested)) signals.add("explicit_parallelism");
   if (EXPLICIT_INDEPENDENCE_RE.test(input) && !negatedIndependence)
     signals.add("explicit_independence");
   if (listItems >= 2) signals.add("independent_list");
