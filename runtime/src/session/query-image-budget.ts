@@ -31,6 +31,8 @@
  * @module
  */
 
+import { createHash } from "node:crypto";
+
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { preservesQueryPrefix } from "./query-prefix-providers.js";
 import { withheldImagePlaceholder } from "./query-image-withheld.js";
@@ -42,15 +44,38 @@ import { withheldImagePlaceholder } from "./query-image-withheld.js";
 // images the last prepared projection would show the model or withheld only
 // for this budget, and the images a dispatched request of the epoch carried
 // itself (shown, not named by a placeholder). A resumed session or a
-// restarted daemon starts with none, so it never claims that an image an
-// earlier process sent was left unseen, or that it was shown.
+// restarted daemon starts with no dispatch evidence, so it never claims that
+// an image an earlier process sent was left unseen. The shown record is saved
+// with the conversation as digests (prompt-cache-state.ts), so an image an
+// earlier process showed keeps its note after a resume.
 const dispatchedImages = new WeakMap<object, ReadonlySet<string>>();
 const preparedImages = new WeakMap<object, ReadonlySet<string>>();
 const shownImages = new WeakMap<object, ReadonlySet<string>>();
+// Digests of the shown record a resumed, restarted or forked session restored,
+// until its next dispatched request finds their images in its history.
+const restoredShownImages = new WeakMap<object, ReadonlySet<string>>();
+// The digest of each image the session's shown record holds or a restored
+// digest was checked against: a data URL can be megabytes, so each is hashed
+// once. Saving the record keeps only the record's own images.
+const imageDigests = new WeakMap<object, Map<string, string>>();
 
 function contextImageUrls(messages: readonly LLMMessage[]): Set<string> {
   return new Set(messages.flatMap(message => Array.isArray(message.content)
     ? message.content.flatMap(part => part.type === "image_url" ? [part.image_url.url] : []) : []));
+}
+
+function imageDigest(session: object, url: string): string {
+  let digests = imageDigests.get(session);
+  if (digests === undefined) {
+    digests = new Map();
+    imageDigests.set(session, digests);
+  }
+  let digest = digests.get(url);
+  if (digest === undefined) {
+    digest = createHash("sha256").update(url, "utf8").digest("hex");
+    digests.set(url, digest);
+  }
+  return digest;
 }
 
 /**
@@ -65,7 +90,8 @@ function contextImageUrls(messages: readonly LLMMessage[]): Set<string> {
  * an image that left the conversation (/clear, a manual compaction, a cleared
  * agent history) is dropped from the record at the next request instead of
  * counting as shown for good. Compaction and a forked turn start a new
- * record.
+ * record. A restored record becomes part of the shown record here, for the
+ * images of `history` it names.
  */
 export function rememberSentContextImages(
   session: object,
@@ -76,24 +102,60 @@ export function rememberSentContextImages(
   const carried = contextImageUrls(messages);
   const stillInConversation = (record: ReadonlySet<string> | undefined): string[] =>
     [...record ?? []].filter(url => inConversation.has(url));
+  const restored = restoredShownImages.get(session);
+  restoredShownImages.delete(session);
+  const shownBeforeRestart = restored === undefined
+    ? []
+    : [...inConversation].filter(url => restored.has(imageDigest(session, url)));
   dispatchedImages.set(session, new Set([
     ...stillInConversation(dispatchedImages.get(session)),
     ...preparedImages.get(session) ?? [],
     ...carried,
   ]));
-  shownImages.set(session, new Set([...stillInConversation(shownImages.get(session)), ...carried]));
+  shownImages.set(session, new Set([
+    ...stillInConversation(shownImages.get(session)),
+    ...shownBeforeRestart,
+    ...carried,
+  ]));
 }
 
 /**
- * Whether a dispatched request of this epoch carried the image itself. The
+ * Whether a dispatched request of this epoch carried the image itself, in
+ * this process or, through the saved record, before a resume or restart. The
  * turn-aware admission says an evicted image was already shown only then: a
  * request may have withheld it for a text-only model, for a provider refusal
  * or as undecodable. An evicted image never returns to a request, so its
- * note stays the same from one request to the next.
+ * note stays the same from one request to the next, and across a resume.
  */
 export function contextImageShownBefore(session: object): (url: string) => boolean {
   const shown = shownImages.get(session);
-  return (url) => shown?.has(url) === true;
+  const restored = restoredShownImages.get(session);
+  return (url) => shown?.has(url) === true ||
+    (restored !== undefined && restored.has(imageDigest(session, url)));
+}
+
+/**
+ * The shown record as sorted SHA-256 digests of the images' URLs, for the
+ * saved prompt cache state, or undefined when it is empty. Digests restored
+ * from an earlier save that no request has matched yet are kept.
+ */
+export function shownContextImageDigests(session: object): string[] | undefined {
+  const previous = imageDigests.get(session);
+  const kept = new Map<string, string>();
+  const digests = new Set(restoredShownImages.get(session) ?? []);
+  for (const url of shownImages.get(session) ?? []) {
+    const digest = previous?.get(url) ?? createHash("sha256").update(url, "utf8").digest("hex");
+    kept.set(url, digest);
+    digests.add(digest);
+  }
+  imageDigests.set(session, kept);
+  return digests.size > 0 ? [...digests].sort() : undefined;
+}
+
+/** Restore a saved shown record (shownContextImageDigests) into a resumed, restarted or forked session. */
+export function restoreShownContextImageDigests(session: object, digests: readonly string[]): void {
+  if (digests.length === 0) return;
+  restoredShownImages.set(session, new Set(digests));
 }
 
 /**
@@ -120,6 +182,8 @@ export function resetSentContextImages(session: object): void {
   dispatchedImages.delete(session);
   preparedImages.delete(session);
   shownImages.delete(session);
+  restoredShownImages.delete(session);
+  imageDigests.delete(session);
 }
 
 /**
@@ -133,12 +197,16 @@ export function isolateContextImageEvidence(session: object): () => void {
   const dispatched = dispatchedImages.get(session);
   const prepared = preparedImages.get(session);
   const shown = shownImages.get(session);
+  const restored = restoredShownImages.get(session);
+  const digests = imageDigests.get(session);
   resetSentContextImages(session);
   return () => {
     resetSentContextImages(session);
     if (dispatched !== undefined) dispatchedImages.set(session, dispatched);
     if (prepared !== undefined) preparedImages.set(session, prepared);
     if (shown !== undefined) shownImages.set(session, shown);
+    if (restored !== undefined) restoredShownImages.set(session, restored);
+    if (digests !== undefined) imageDigests.set(session, digests);
   };
 }
 

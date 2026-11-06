@@ -5,6 +5,13 @@ import { getAttachmentTrackingState } from "../../src/session/attachment-state.j
 import { recordRetainedAttachments, projectRetainedAttachments } from "../../src/session/attachment-retention.js";
 import { capturePromptCacheState, restorePromptCacheState, isPromptCacheState } from "../../src/session/prompt-cache-state.js";
 import { parseRolloutLine, serializeRolloutItem, type RolloutItem } from "../../src/session/rollout-item.js";
+import {
+  boundContextImagesForProvider,
+  contextImageShownBefore,
+  EVICTED_IMAGE_TEXT,
+  OMITTED_IMAGE_TEXT,
+  rememberSentContextImages,
+} from "../../src/session/query-image-budget.js";
 
 const provider = (baseURL = "https://api.openai.com/v1") => new OpenAIProvider({ apiKey: "test", model: "gpt-6-luna", baseURL });
 
@@ -57,4 +64,58 @@ test("legacy rollouts and explicit cache clears retain fresh defaults", () => {
   expect(isPromptCacheState(cache)).toBe(true);
   expect(isPromptCacheState({ ...cache, attachments: {} })).toBe(false);
   expect(isPromptCacheState({ ...cache, version: 9 })).toBe(false);
+});
+
+/** A FileRead call and its image result. */
+function readImage(id: string): LLMMessage[] {
+  return [
+    { role: "assistant", content: "", toolCalls: [{ id, name: "FileRead", arguments: JSON.stringify({ file_path: `/work/${id}.png` }) }] },
+    { role: "tool", toolCallId: id, toolName: "FileRead", content: [
+      { type: "text", text: `Read image /work/${id}.png` },
+      { type: "image_url", image_url: { url: `data:image/png;base64,${id.padEnd(978, "B")}` } },
+    ] },
+  ];
+}
+
+/** The request as a text-only model receives it: the named screen is withheld. */
+function withheld(messages: readonly LLMMessage[], id: string): LLMMessage[] {
+  return messages.map(message => !Array.isArray(message.content) ? message : { ...message, content: message.content.map(part =>
+    part.type === "image_url" && part.image_url.url.includes(id) ? { type: "text" as const, text: "[image withheld]" } : part) });
+}
+
+function imageNotes(messages: readonly LLMMessage[]): string[] {
+  return messages.flatMap(message => !Array.isArray(message.content) ? [] : message.content.flatMap(part =>
+    part.type === "text" && part.text.startsWith("[image omitted") ? [part.text] : []));
+}
+
+test("a resumed or restarted session gives an evicted image the note it had before", () => {
+  // fx30 review R1: the shown record lived only in the process, so after a resume every evicted note turned
+  // neutral once and the first resumed request missed the cache from the first evicted image on.
+  const live = {};
+  const history: LLMMessage[] = [{ role: "user", content: "Inspect each screen." }];
+  for (let index = 0; index < 8; index++) {
+    history.push(...readImage(`shot-${index}`));
+    const request = boundContextImagesForProvider(history, 6000, "deepseek", contextImageShownBefore(live)).messages;
+    // No request carries shot-1: each one withholds it, as for an image the model cannot view.
+    rememberSentContextImages(live, withheld(request, "shot-1"), history);
+  }
+  const before = boundContextImagesForProvider(history, 6000, "deepseek", contextImageShownBefore(live)).messages;
+  expect(imageNotes(before)).toEqual([EVICTED_IMAGE_TEXT, OMITTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT]);
+
+  const cache = capturePromptCacheState(live, provider());
+  expect(cache.shownImageDigests).toHaveLength(7);
+  // Digests only: the saved state carries no image bytes.
+  expect(JSON.stringify(cache)).not.toContain("BBBB");
+  const item = parseRolloutLine(serializeRolloutItem({ type: "session_state", payload: { promptCache: cache } }).trim());
+  expect(item).not.toBeNull();
+  const resumed = {};
+  restorePromptCacheState(resumed, provider(), [item!]);
+  const first = boundContextImagesForProvider(history, 6000, "deepseek", contextImageShownBefore(resumed)).messages;
+  expect(JSON.stringify(first)).toBe(JSON.stringify(before));
+  // The first request after the resume makes the saved record the session's own: the next one repeats the notes.
+  rememberSentContextImages(resumed, first, history);
+  const next = boundContextImagesForProvider(history, 6000, "deepseek", contextImageShownBefore(resumed)).messages;
+  expect(JSON.stringify(next)).toBe(JSON.stringify(before));
+  expect(capturePromptCacheState(resumed, provider()).shownImageDigests).toEqual(cache.shownImageDigests);
+  expect(isPromptCacheState({ ...cache, shownImageDigests: ["not a digest"] })).toBe(false);
 });
