@@ -68,9 +68,12 @@ export function startProtectedCreateMonitor(
   // start: the per-command walks are one in the plan and one in stop(). When
   // no baseline is supplied (e.g. a plan that did not compute it), fall back
   // to walking once here.
+  // The entry's own path with only its parent resolved (never the entry
+  // itself, which for a `.git` symlink would be its target): this is how the
+  // stop scan spells it, so a pre-existing pointer matches its baseline entry.
   const canonicalBaseline = (entry: string): string => {
     try {
-      return fs.realpathSync(entry);
+      return path.join(fs.realpathSync(path.dirname(entry)), path.basename(entry));
     } catch {
       return path.resolve(entry);
     }

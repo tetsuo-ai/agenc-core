@@ -161,8 +161,15 @@ export function createBwrapCommandArgs(
     usesBubblewrap: true,
     protectedCreateTargets,
     nestedGitScanRoots: writableRoots.map((root) => canonical(root.root)),
+    // Spell each descent point as the `.git` entry's own path with only its
+    // parent resolved. Resolving the entry itself would follow a `.git`
+    // symlink to its target, which never matches the monitor's stop scan
+    // (that reports the link's own path), so an unchanged symlink pointer
+    // would be treated as created during the run and removed.
     nestedGitBaseline: writableRoots.flatMap((root) =>
-      (root.nestedRepoGitDirs ?? []).map(canonical),
+      (root.nestedRepoGitDirs ?? []).map((entry) =>
+        path.join(canonical(path.dirname(entry)), path.basename(entry)),
+      ),
     ),
   };
 }
