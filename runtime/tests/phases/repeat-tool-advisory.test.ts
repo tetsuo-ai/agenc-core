@@ -801,24 +801,120 @@ describe("blockRepeatedFailingCall", () => {
       expect(blockRepeatedFailingCall(state, session, write)?.preventContinuation).toBe(true);
     });
 
-    test("progress is a successful file change or a command that had not succeeded before", () => {
-      const ok = (name: string, args: unknown, id: string, isError = false) =>
-        completed(call(name, args, id), isError ? DENIAL : "ok", isError);
+    test("progress is a result that could change a failing call's outcome, the first time it succeeds", () => {
+      const ok = (name: string, args: unknown, id: string, isError = false, metadata?: Record<string, unknown>) =>
+        completed(call(name, args, id), isError ? DENIAL : "ok", isError, metadata);
       const records: CompletedToolResultRecord[] = [];
       const progressAfter = (record: CompletedToolResultRecord) => {
         records.push(record);
         return lastProgressIndex(mkState(records)) === records.length - 1;
       };
-      expect(progressAfter(ok("exec_command", { cmd: "ls" }, "a"))).toBe(true);
-      expect(progressAfter(ok("exec_command", { cmd: "ls", timeoutMs: 5 }, "b"))).toBe(false);
-      expect(progressAfter(ok("FileRead", { file_path: "/tmp/a" }, "c"))).toBe(false);
-      expect(progressAfter(ok("write_stdin", { session_id: 7, chars: "" }, "d"))).toBe(false);
-      expect(progressAfter(ok("write_stdin", { session_id: 7, chars: "status\n" }, "e"))).toBe(true);
-      expect(progressAfter(ok("exec_command", { cmd: "npm test" }, "f", true))).toBe(false);
-      expect(progressAfter(ok("exec_command", { cmd: "npm test" }, "g"))).toBe(true);
-      expect(progressAfter(ok("Write", { file_path: "/tmp/a", content: "x" }, "h", true))).toBe(false);
-      expect(progressAfter(ok("apply_patch", { input: "*** Begin Patch" }, "i"))).toBe(true);
-      expect(progressAfter(ok("Edit", { file_path: "/tmp/a" }, "j"))).toBe(true);
+      // Reading is never progress, whichever tool reads.
+      expect(progressAfter(ok("exec_command", { cmd: "ls" }, "a"))).toBe(false);
+      expect(progressAfter(ok("exec_command", { cmd: "cat notes.txt" }, "b"))).toBe(false);
+      expect(progressAfter(ok("exec_command", { cmd: "cd src && grep -n todo app.ts | head -20" }, "c"))).toBe(false);
+      expect(progressAfter(ok("FileRead", { file_path: "/tmp/a" }, "d"))).toBe(false);
+      expect(progressAfter(ok("write_stdin", { session_id: 7, chars: "" }, "e"))).toBe(false);
+      expect(progressAfter(ok("write_stdin", { session_id: 7, chars: "ls\n" }, "f"))).toBe(false);
+      // A command that can change things counts once; a new timeout does not make it new.
+      expect(progressAfter(ok("exec_command", { cmd: "npm run build" }, "g"))).toBe(true);
+      expect(progressAfter(ok("exec_command", { cmd: "npm run build", timeoutMs: 5 }, "h"))).toBe(false);
+      expect(progressAfter(ok("exec_command", { cmd: "npm test" }, "i", true))).toBe(false);
+      expect(progressAfter(ok("exec_command", { cmd: "npm test" }, "j"))).toBe(true);
+      // Input counts only when it reached a live session.
+      expect(progressAfter(ok("write_stdin", { session_id: 7, chars: "y\n" }, "k"))).toBe(true);
+      expect(progressAfter(ok("write_stdin", { session_id: 28, chars: "n\n" }, "l", false, { sessionExited: true }))).toBe(false);
+      // A file change counts; the same change again does not.
+      expect(progressAfter(ok("Write", { file_path: "/tmp/a", content: "x" }, "m", true))).toBe(false);
+      expect(progressAfter(ok("Write", { file_path: "/tmp/a", content: "x" }, "n"))).toBe(true);
+      expect(progressAfter(ok("Write", { file_path: "/tmp/a", content: "x" }, "o"))).toBe(false);
+      expect(progressAfter(ok("apply_patch", { input: "*** Begin Patch" }, "p"))).toBe(true);
+      expect(progressAfter(ok("Edit", { file_path: "/tmp/a" }, "q"))).toBe(true);
+    });
+
+    test("a test rerun after a real code change runs; after a read-only look it is still refused", () => {
+      const { session } = mkSessionStub();
+      const rerun = call("exec_command", { cmd: "npm test" }, "t");
+      const failure = "1 failing\n\n[exec exit_code=1 wall_time=2.1000s tokens=40]";
+      const failures = ["t-0", "t-1", "t-2"].map((id) => completed({ ...rerun, id }, failure, true));
+      const afterLook = mkState([...failures,
+        completed(call("exec_command", { cmd: "cat src/app.ts" }, "c"), "x\n\n[exit 0]", false)], 4);
+      expect(blockRepeatedFailingCall(afterLook, session, rerun)).not.toBeNull();
+      const afterFix = mkState([...failures,
+        completed(call("apply_patch", { input: "*** Begin Patch\n*** Update File: src/app.ts" }, "p"),
+          "Success. Updated the following files:\nM src/app.ts", false)], 4);
+      expect(blockRepeatedFailingCall(afterFix, session, rerun)).toBeNull();
+    });
+
+    /**
+     * The fix31s review's driver (reviews/tests/zz-fix31srv-loop.test.ts): a
+     * model retries one failing `npm start`, up to four attempts per cycle,
+     * and does one other thing between cycles. It asks the guard before each
+     * attempt as executeTools does. Returns the attempt at which a refusal
+     * ended the turn, or Infinity after 40 cycles.
+     */
+    function attemptsUntilStop(between: (cycle: number) => CompletedToolResultRecord | undefined): number {
+      const { session } = mkSessionStub();
+      const state = mkState([], 1);
+      const eperm = "listen EPERM: operation not permitted 0.0.0.0:3000\n\n[exec exit_code=1 wall_time=0.2s tokens=12]";
+      let attempts = 0;
+      for (let cycle = 0; cycle < 40; cycle += 1) {
+        for (let k = 0; k < 4; k += 1) {
+          state.modelSampleOrdinal += 1;
+          attempts += 1;
+          const retry = call("exec_command", { cmd: "npm start" }, `x-${cycle}-${k}`);
+          const blocked = blockRepeatedFailingCall(state, session, retry);
+          if (blocked === null) {
+            state.completedToolResults.push(completed(retry, eperm, true));
+            continue;
+          }
+          state.completedToolResults.push(completed(retry, blocked.content, true, blocked.metadata));
+          if (blocked.preventContinuation === true) return attempts;
+          break;
+        }
+        state.modelSampleOrdinal += 1;
+        const other = between(cycle);
+        if (other !== undefined) state.completedToolResults.push(other);
+      }
+      return Number.POSITIVE_INFINITY;
+    }
+
+    // The review ran 160 attempts of each of these loops without a stop under
+    // the first version of the progress rule; 0.19.30 stops them at the fifth.
+    test("a retry loop with a new read-only shell command between cycles is stopped at the fifth attempt", () => {
+      expect(attemptsUntilStop((c) =>
+        completed(call("exec_command", { cmd: `cat notes-${c}.txt` }, `r-${c}`), "x\n\n[exit 0]", false))).toBe(5);
+    });
+
+    test("a retry loop with input the exited-session answer did not send is stopped at the fifth attempt", () => {
+      const notSent = exitedSessionMessage(28, { exitCode: 0 }, "write");
+      expect(attemptsUntilStop((c) =>
+        completed(call("write_stdin", { session_id: 28, chars: `y${c}\n` }, `ws-${c}`), notSent, false,
+          { sessionExited: true }))).toBe(5);
+    });
+
+    test("a retry loop with the same Write between cycles is stopped once that Write stops changing the file", () => {
+      // The first Write created the file, so it is progress; the identical ones after it are not.
+      expect(attemptsUntilStop((c) =>
+        completed(call("Write", { file_path: "/w/a.txt", content: "same" }, `w-${c}`),
+          "File created successfully at: /w/a.txt", false))).toBe(9);
+    });
+
+    test("a retry loop with a read, a repeated command or nothing between cycles is still stopped", () => {
+      expect(attemptsUntilStop((c) =>
+        completed(call("FileRead", { file_path: `/w/n-${c}` }, `f-${c}`), "1\tx", false))).toBe(5);
+      expect(attemptsUntilStop((c) =>
+        completed(call("exec_command", { cmd: "ls" }, `l-${c}`), "a\n\n[exit 0]", false))).toBe(5);
+      // The first build could change the outcome; the same build again cannot.
+      expect(attemptsUntilStop((c) =>
+        completed(call("exec_command", { cmd: "npm run build" }, `b-${c}`), "built\n\n[exit 0]", false))).toBe(9);
+      expect(attemptsUntilStop(() => undefined)).toBe(5);
+    });
+
+    test("a real code change before each rerun keeps the retries running", () => {
+      expect(attemptsUntilStop((c) =>
+        completed(call("apply_patch", { input: `*** Begin Patch\n*** Update File: server.js\n@@ attempt ${c}` }, `p-${c}`),
+          "Success. Updated the following files:\nM server.js", false))).toBe(Number.POSITIVE_INFINITY);
     });
 
     test("a refusal before progress does not end the turn, and a new loop after it is stopped again", () => {

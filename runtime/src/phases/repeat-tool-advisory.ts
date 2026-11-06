@@ -26,9 +26,11 @@
  * the turn continue, because an unattended session can only act on that
  * advice by sampling again; a second refusal of the same call means the
  * advice did not land, and the turn ends after the batch. Only failures and
- * refusals since the turn's last real progress count (a successful result
- * that changed files or ran a new command, see `lastProgressIndex`): a call
- * the model retries after it moved on and got work done starts over.
+ * refusals since the turn's last real progress count: a result that could
+ * change the failing call's outcome, such as a file change, a shell command
+ * that is not read-only or stdin input that reached a session (see
+ * `lastProgressIndex`). A test rerun after a real code change runs again; a
+ * retry between reads is still refused.
  *
  * @module
  */
@@ -40,6 +42,7 @@ import type {
   TurnState,
 } from "../session/turn-state.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
+import { classifyReadOnlyShellIntent } from "../permissions/read-only-shell-intent.js";
 import { emitWarning } from "../session/event-log.js";
 import { stableStringify } from "../utils/stableStringify.js";
 
@@ -210,44 +213,51 @@ const FILE_CHANGING_TOOLS: ReadonlySet<string> = new Set([
   "NotebookEdit",
 ]);
 
-/** The command a result ran: an exec_command, or write_stdin input. A poll runs nothing. */
-function commandKey(record: CompletedToolResultRecord): string | undefined {
-  if (record.toolName === "exec_command") return completedRecordKey(record);
-  if (record.toolName !== "write_stdin") return undefined;
+/**
+ * The identity of a successful result that could change the outcome of a call
+ * that keeps failing, or undefined: a file change, an exec_command that
+ * classifyReadOnlyShellIntent does not classify as read-only, or write_stdin
+ * input that reached a live session and is not a read-only command line.
+ * Reads (FileRead, `cat`, `ls`, `grep`), polls, and input the exited-session
+ * answer did not send change nothing the failing call depends on.
+ */
+function progressKey(record: CompletedToolResultRecord): string | undefined {
+  if (record.isError) return undefined;
+  if (FILE_CHANGING_TOOLS.has(record.toolName)) return completedRecordKey(record);
+  if (record.toolName !== "exec_command" && record.toolName !== "write_stdin") return undefined;
+  if (record.metadata?.sessionExited === true) return undefined;
+  let line: unknown;
   try {
-    const chars = (JSON.parse(record.arguments) as { chars?: unknown } | null)?.chars;
-    return typeof chars === "string" && chars.length > 0 ? completedRecordKey(record) : undefined;
+    const parsed = JSON.parse(record.arguments) as Record<string, unknown> | null;
+    line = record.toolName === "exec_command" ? parsed?.cmd : parsed?.chars;
   } catch {
     return undefined;
   }
+  if (typeof line !== "string" || line.length === 0) return undefined;
+  return classifyReadOnlyShellIntent(line).allowed ? undefined : completedRecordKey(record);
 }
 
 /**
  * Position in `completedToolResults` of the turn's last real progress, or -1:
- * a successful result that changed files or ran a command that had not
- * succeeded before in this turn. Failures and refusals of a repeated call
- * count only after that point. A model that got stuck on one call, moved on
- * and made progress, and then tries the call once more starts a new count
- * instead of being stopped: in tb4h music-harmony (2026-11-06) one stale poll,
- * 24 productive steps after the first refusal, ended the turn with 38 minutes
- * left and before the answer file was written. Reading files, polling a
- * session and repeating a command that already succeeded are not progress, so
- * a call repeated among them is still refused and then stops the turn.
+ * the first success of a result that could change a failing call's outcome
+ * ({@link progressKey}). Failures and refusals of a repeated call count only
+ * after that point, so a test rerun after a real code change runs instead of
+ * being refused as an error that "is not going to change". The same edit or
+ * command again is not new progress, and nothing read-only is progress at
+ * all, so a loop that only looks busy is still refused and then stopped as on
+ * 0.19.30: in the fix31s review (2026-11-06), a new `cat` between retries of
+ * one failing `npm start` reset a first version of this rule 40 times. The
+ * stale polls of tb4h music-harmony never count: an exited session's answer
+ * is not a failure.
  */
 export function lastProgressIndex(state: TurnState): number {
-  const succeededCommands = new Set<string>();
+  const seen = new Set<string>();
   let last = -1;
   for (const [index, record] of state.completedToolResults.entries()) {
-    if (record.isError) continue;
-    if (FILE_CHANGING_TOOLS.has(record.toolName)) {
-      last = index;
-      continue;
-    }
-    const command = commandKey(record);
-    if (command !== undefined && !succeededCommands.has(command)) {
-      succeededCommands.add(command);
-      last = index;
-    }
+    const key = progressKey(record);
+    if (key === undefined || seen.has(key)) continue;
+    seen.add(key);
+    last = index;
   }
   return last;
 }
