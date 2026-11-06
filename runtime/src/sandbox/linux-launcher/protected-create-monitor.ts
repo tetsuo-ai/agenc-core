@@ -1,7 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { canonicalAuthorityPath } from "../desktop-authority-protection.js";
-import { nestedGitMetadataDirs } from "../engine/policy.js";
 
 /** How often a running command's protected-create targets are rechecked. */
 export const PROTECTED_CREATE_POLL_MS = 100;
@@ -53,15 +51,15 @@ export function startProtectedCreateMonitor(
   // the command.
   const scanRoots = nestedGitScanRoots.map((root) => {
     try {
-      return canonicalAuthorityPath(root);
+      return fs.realpathSync(root);
     } catch {
-      return root;
+      return path.resolve(root);
     }
   });
   const baseline = new Set<string>();
   for (const root of scanRoots) {
     try {
-      for (const nested of nestedGitMetadataDirs(root)) baseline.add(nested);
+      for (const nested of nestedRealGitRepos(root)) baseline.add(nested);
     } catch {
       violation = true;
     }
@@ -70,7 +68,7 @@ export function startProtectedCreateMonitor(
     for (const root of scanRoots) {
       let found: string[];
       try {
-        found = nestedGitMetadataDirs(root);
+        found = nestedRealGitRepos(root);
       } catch {
         violation = true;
         continue;
@@ -117,6 +115,64 @@ export function startProtectedCreateMonitor(
       return violation;
     },
   };
+}
+
+/** Bounds for the nested-repository scan, matching the sandbox policy scan. */
+const NESTED_GIT_SCAN_MAX_DEPTH = 8;
+const NESTED_GIT_SCAN_MAX_DIRS = 4096;
+
+/**
+ * Whether `gitDir` is a real git repository directory: a `.git` with a `HEAD`
+ * file and an `objects` directory, as `git init` writes. A `.git` that is not
+ * a repository is not narrowed and is no gitlink threat.
+ */
+function isRealGitRepository(gitDir: string): boolean {
+  try {
+    if (!fs.lstatSync(gitDir).isDirectory()) return false;
+    return (
+      fs.lstatSync(path.join(gitDir, "HEAD")).isFile() &&
+      fs.lstatSync(path.join(gitDir, "objects")).isDirectory()
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Real `.git` directories of standalone nested repositories under `root`,
+ * excluding the root's own top-level `.git`. Bounded in depth and in
+ * directories visited, never follows a symlink and never descends into a
+ * `.git` (so a `.git/modules` submodule is not reported). Kept local to this
+ * module so the created-path monitor pulls in nothing but `node:fs`/`node:path`
+ * and can run inside the standalone launchers that load it.
+ */
+function nestedRealGitRepos(root: string): string[] {
+  const start = path.resolve(root);
+  const topLevelGit = path.join(start, ".git");
+  const found: string[] = [];
+  let visited = 0;
+  const walk = (dir: string, depth: number): void => {
+    if (depth > NESTED_GIT_SCAN_MAX_DEPTH || visited >= NESTED_GIT_SCAN_MAX_DIRS) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    visited += 1;
+    for (const entry of entries) {
+      if (visited >= NESTED_GIT_SCAN_MAX_DIRS) return;
+      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+      const child = path.join(dir, entry.name);
+      if (entry.name === ".git") {
+        if (child !== topLevelGit && isRealGitRepository(child)) found.push(child);
+        continue;
+      }
+      walk(child, depth + 1);
+    }
+  };
+  walk(start, 0);
+  return found;
 }
 
 interface WatchedTarget {

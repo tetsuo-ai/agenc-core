@@ -773,7 +773,7 @@ function isExistingDirectory(target: string): boolean {
  * repository keeps working; an empty `.git` has neither and cannot bootstrap
  * them while it is fully read-only.
  */
-export function gitDirectoryIsRepository(target: string): boolean {
+function gitDirectoryIsRepository(target: string): boolean {
   if (!isExistingDirectory(target)) return false;
   try {
     return (
@@ -814,7 +814,7 @@ const NESTED_GIT_SCAN_MAX_DIRS = 4096;
  * The scan never follows a symlink and never descends into a `.git`; it is
  * bounded in depth and in directories visited so it cannot walk a huge tree.
  */
-export function nestedGitMetadataDirs(root: string): string[] {
+function nestedGitMetadataDirs(root: string): string[] {
   const start = normalizePathForPolicy(root);
   const found: string[] = [];
   let visited = 0;
