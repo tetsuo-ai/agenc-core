@@ -128,13 +128,18 @@ const spellingCases: FloorCase[] = [
   ["CHMOD -R 777 /etc", "chmod/chown on system path"],
 ];
 
-/** setsid runs its argv; toybox is a multi-call binary like busybox. */
+/** setsid, unshare, and nsenter run their argv; toybox is a multi-call binary like busybox. */
 const wrapperCases: FloorCase[] = [
   ["setsid rm -rf /", "rm -rf"],
   ["setsid -f -- rm -rf /", "rm -rf"],
+  ["unshare -- rm -rf /", "rm -rf"],
+  ["unshare -Ur -- rm -rf /", "rm -rf"],
+  ["nsenter -- rm -rf /", "rm -rf"],
+  ["nsenter -t 1 -- rm -rf /", "rm -rf"],
   ["toybox rm -rf /", "rm -rf"],
   [`toybox sh -c ${REMOVE_ROOT}`, "rm -rf"],
   [`${DOWNLOAD_PIPE} setsid sh`, "curl|sh"],
+  [`${DOWNLOAD_PIPE} unshare sh`, "curl|sh"],
 ];
 
 function encodedPowerShell(script: string): string {
@@ -187,6 +192,8 @@ export const INERT_SHELL_SCRIPT_COMMANDS: readonly string[] = [
   "pwsh -c 'Remove-Item ./build.log'",
   `pwsh -enc ${encodedPowerShell("Get-Date")}`,
   "setsid ls",
+  "unshare ls",
+  "nsenter echo ok",
   "toybox --long",
   "bash script.sh -c 'rm -rf /'",
   "bash -- -c 'rm -rf /'",
