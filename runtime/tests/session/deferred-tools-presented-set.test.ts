@@ -9,6 +9,7 @@
  * getLoadedDeferredToolNames().
  */
 import { expect, test, vi } from "vitest";
+import { buildFilteredRegistry, TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH } from "../../src/agents/run-agent.js";
 import { deferredToolsDeltaProducer } from "../../src/prompts/attachments/deferred-tools-delta.js";
 import type { GetAttachmentsOptions } from "../../src/prompts/attachments/orchestrator.js";
 import { _resetAttachmentTrackingStateForTest, getAttachmentTrackingState } from "../../src/session/attachment-state.js";
@@ -50,15 +51,8 @@ function lightSession(initial: Partial<Live>) {
     },
   });
   const sessionKey = {};
-  const tracking = getAttachmentTrackingState(sessionKey);
   const names = () => registry.toLLMTools().map((tool) => tool.function.name);
-  const request = () => deferredToolsDeltaProducer({
-    sessionKey, userInput: null,
-    loadedTools: registry.toLLMTools(),
-    discoveredToolNames: registry.getLoadedDeferredToolNames?.() ?? registry.getDiscoveredToolNames?.() ?? new Set(),
-    messages: [], permissionContext: { mode: live.mode } as never, cwd: "/tmp", subagentDepth: 0,
-    signal: new AbortController().signal,
-  } as GetAttachmentsOptions, tracking);
+  const request = () => notice(registry, sessionKey, live.mode);
   const yieldProcess = async () => {
     const result = await registry.tools.find((tool) => tool.name === "exec_command")!
       .execute(withExplicitDangerBoundary({ cmd: "npm run dev", yield_time_ms: 250 }));
@@ -71,7 +65,35 @@ function lightSession(initial: Partial<Live>) {
     markLoadedToolNamesDiscovered(search.name, result, registry.getDiscoveredToolNames?.());
     expect([...registry.getDiscoveredToolNames!()]).toEqual(expect.arrayContaining(toolNames));
   };
-  return { live, names, request, yieldProcess, searchLoad, dispose: () => _resetAttachmentTrackingStateForTest(sessionKey) };
+  return { live, registry, names, request, yieldProcess, searchLoad, dispose: () => _resetAttachmentTrackingStateForTest(sessionKey) };
+}
+
+type NoticeRegistry = Pick<ReturnType<typeof buildToolRegistry>, "toLLMTools" | "getLoadedDeferredToolNames" | "getDiscoveredToolNames">;
+
+/** The deferred-tools notice of one request, from what run-turn passes the producer. */
+function notice(registry: NoticeRegistry, sessionKey: object, mode = "default") {
+  return deferredToolsDeltaProducer({
+    sessionKey, userInput: null,
+    loadedTools: registry.toLLMTools(),
+    discoveredToolNames: registry.getLoadedDeferredToolNames?.() ?? registry.getDiscoveredToolNames?.() ?? new Set(),
+    messages: [], permissionContext: { mode } as never, cwd: "/tmp", subagentDepth: 0,
+    signal: new AbortController().signal,
+  } as GetAttachmentsOptions, getAttachmentTrackingState(sessionKey));
+}
+
+/** A Light child of the session, as run-agent builds one, and its own exec yield. */
+function lightChild(parent: ReturnType<typeof buildToolRegistry>) {
+  const registry = buildFilteredRegistry(parent, {
+    childConversationId: "child", lightMode: true, sandboxExecutionBroker: explicitDangerBroker,
+    unadmittedDispatchOverride: TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
+  }) as unknown as NoticeRegistry & ReturnType<typeof buildFilteredRegistry>;
+  const sessionKey = {};
+  const yieldProcess = async () => {
+    const result = await registry.dispatch({ id: "run", name: "exec_command", arguments: '{"cmd":"npm run dev","yield_time_ms":250}' });
+    expect(result.isError, String(result.content)).not.toBe(true);
+    expect(result.content).toContain("session_id=71");
+  };
+  return { registry, yieldProcess, request: () => notice(registry, sessionKey), dispose: () => _resetAttachmentTrackingStateForTest(sessionKey) };
 }
 
 const added = (names: string[]) => [expect.objectContaining({ kind: "deferred_tools_delta", addedNames: names, removedNames: [] })];
@@ -143,5 +165,89 @@ test("a deepseek-v4-pro to deepseek-flash switch does not remove the apply_patch
     expect(await session.request()).toEqual([]);
   } finally {
     session.dispose();
+  }
+});
+
+test.each(["deepseek-flash", "deepseek-v4-pro"])("a native DeepSeek Light (%s) child's own exec yield keeps its tool list and sends no notice", async (model) => {
+  const session = lightSession({ model });
+  const child = lightChild(session.registry);
+  try {
+    const before = JSON.stringify(child.registry.toLLMTools());
+    expect(child.registry.toLLMTools().map((tool) => tool.function.name)).toEqual(expect.arrayContaining(["write_stdin", "kill_process"]));
+    expect(await child.request()).toEqual([]);
+    await child.yieldProcess();
+    expect([...child.registry.getDiscoveredToolNames!()].sort()).toEqual(["kill_process", "write_stdin"]);
+    // The parent presented both companions in full at spawn; the child keeps
+    // those entries byte for byte, so its cached prompt survives the yield.
+    expect(JSON.stringify(child.registry.toLLMTools())).toBe(before);
+    expect(await child.request()).toEqual([]);
+  } finally {
+    child.dispose();
+    session.dispose();
+  }
+});
+
+test("an OpenAI Light child's own exec yield still adds and announces both process tools", async () => {
+  const session = lightSession({ provider: "openai", model: "gpt-6-luna" });
+  const child = lightChild(session.registry);
+  try {
+    expect(child.registry.toLLMTools().map((tool) => tool.function.name)).not.toContain("write_stdin");
+    expect(await child.request()).toEqual([]);
+    await child.yieldProcess();
+    expect(child.registry.toLLMTools().map((tool) => tool.function.name)).toEqual(expect.arrayContaining(["write_stdin", "kill_process"]));
+    expect(await child.request()).toEqual(added(["kill_process", "write_stdin"]));
+  } finally {
+    child.dispose();
+    session.dispose();
+  }
+});
+
+function mcpTool(name: string): Tool {
+  return {
+    name,
+    description: `${name} description`,
+    inputSchema: { type: "object", properties: { query: { type: "string" } } },
+    recoveryCategory: "read-only",
+    execute: async () => ({ content: "ok" }),
+  } as unknown as Tool;
+}
+
+test.each([
+  { policy: "deferMcpTools = false", options: { deferMcpTools: false } },
+  { policy: "a policy without system.searchTools", options: { toolsConfig: { disabled_tools: ["system.searchTools"] } } },
+])("native DeepSeek Light announces a presented MCP tool the user names and its server disconnect ($policy)", async ({ options }) => {
+  // 0.19.29 batch re-review NIT 1: the tool is presented without search, so
+  // the stable catalog rule kept it out of both notices; on 0.19.28 the user
+  // naming it announced it (with the call-it-directly nudge) and its server
+  // disconnecting announced the removal.
+  let connected = true;
+  const registry = buildToolRegistry({
+    workspaceRoot: "/tmp", lightMode: true, requireAdmission: false,
+    sandboxExecutionBroker: explicitDangerBroker,
+    mcpToolsProvider: { getTools: () => connected ? [mcpTool("mcp.docs.search")] : [] },
+    getSession: () => ({ services: {
+      provider: { name: "deepseek" },
+      providerService: { current: () => ({ provider: "deepseek", model: "deepseek-flash" }) },
+    } }) as unknown as Session,
+    ...options,
+  });
+  const sessionKey = {};
+  const names = () => registry.toLLMTools().map((tool) => tool.function.name);
+  try {
+    expect(names()).toContain("mcp.docs.search");
+    expect(await notice(registry, sessionKey)).toEqual([]);
+    // run-turn discovers an MCP tool the user's message names.
+    registry.discoverToolNames?.(["mcp.docs.search"]);
+    expect(await notice(registry, sessionKey)).toEqual(added(["mcp.docs.search"]));
+    connected = false;
+    expect(names()).not.toContain("mcp.docs.search");
+    expect(await notice(registry, sessionKey)).toEqual([
+      expect.objectContaining({ kind: "deferred_tools_delta", addedNames: [], removedNames: ["mcp.docs.search"] }),
+    ]);
+    // The stable core tools stay out of the notices whatever loads them.
+    registry.discoverToolNames?.(["write_stdin", "kill_process", "exec_command"]);
+    expect(await notice(registry, sessionKey)).toEqual([]);
+  } finally {
+    _resetAttachmentTrackingStateForTest(sessionKey);
   }
 });
