@@ -4,6 +4,7 @@ import {
   encodeMcpToolNameForWire,
 } from "../../llm/wire/mcp-tool-naming.js";
 import { sanitizeSystemReminderContent } from "../../prompts/attachments/system-reminder-sanitizer.js";
+import { foreignToolNameTargets } from "../tool-name-suggestion.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "./tool-search-name.js";
 import {
   codingToolMetadata,
@@ -68,6 +69,7 @@ function scoreCatalogEntry(
   entry: ToolCatalogEntry,
   query: string | undefined,
   tokens: readonly string[],
+  foreignTargets: readonly string[],
 ): CatalogSearchScore | undefined {
   if (!query) return [10, 0, 0, 0];
   const lowered = query.toLowerCase();
@@ -85,9 +87,14 @@ function scoreCatalogEntry(
     ...(entry.metadata.preferredProfiles?.map((profile) => profile.toLowerCase()) ?? []),
   ];
   if (entryName === lowered) return [0, 0, 0, 0];
-  if (entryName.startsWith(lowered)) return [1, 0, 0, 0];
-  if (keywords.some((keyword) => keyword === lowered)) return [2, 0, 0, 0];
-  if (family === lowered || source === lowered) return [3, 0, 0, 0];
+  // The query is another harness's name for this tool (`Agent` names
+  // spawn_agent). Without this, the agent tools that only share its default
+  // `agent` keyword sort ahead of it by name and fill the shortlist.
+  const foreign = foreignTargets.indexOf(entry.name);
+  if (foreign >= 0) return [1, foreignTargets.length - foreign, 0, 0];
+  if (entryName.startsWith(lowered)) return [2, 0, 0, 0];
+  if (keywords.some((keyword) => keyword === lowered)) return [3, 0, 0, 0];
+  if (family === lowered || source === lowered) return [4, 0, 0, 0];
   const words = new Set(haystack.flatMap(splitSearchTokens));
   let matches = 0;
   let direct = 0;
@@ -104,7 +111,7 @@ function scoreCatalogEntry(
   }
   // Coverage wins, then literal matches, then matches in the tool's identity.
   // A mixed-intent query can find several useful tools without matching every word.
-  return matches > 0 ? [4, matches, direct, name] : undefined;
+  return matches > 0 ? [5, matches, direct, name] : undefined;
 }
 
 function mcpUseHint(toolName: string, available: boolean): string | undefined {
@@ -271,6 +278,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
       const parsedQuery = parseToolSearchQuery(toOptionalString(args.query));
       const query = parsedQuery.query;
       const searchTokens = splitSearchTokens(query ?? "").filter((token) => !SEARCH_STOP_WORDS.has(token));
+      const foreignTargets = query ? foreignToolNameTargets(query) : [];
       const explicitSelections = normalizeSelections(args);
       const selectedEntries = explicitSelections
         .map((name) => resolveSelection(name, catalog))
@@ -317,7 +325,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
           }
           return true;
         })
-        .map((entry) => ({ entry, score: scoreCatalogEntry(entry, query, searchTokens) }))
+        .map((entry) => ({ entry, score: scoreCatalogEntry(entry, query, searchTokens, foreignTargets) }))
         .filter((match): match is { entry: ToolCatalogEntry; score: CatalogSearchScore } => match.score !== undefined)
         .sort((left, right) => {
           return left.score[0] - right.score[0] ||
