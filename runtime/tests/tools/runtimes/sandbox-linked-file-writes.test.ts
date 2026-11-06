@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
 import {
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -152,6 +154,48 @@ describe.skipIf(process.platform === "win32")("a native file write through a lin
       expect(decide(tool, writeArgs(name, link("readme", "../README.md")))).toBe("allow");
       expect(decide(tool, writeArgs(name, ".git/refs/heads/feature"))).toBe("allow");
       expect(decide(tool, writeArgs(name, link("ref", "../.git/refs/heads/feature")))).toBe("allow");
+    },
+  );
+
+  it.each(Object.keys(tools) as (keyof typeof tools)[])(
+    "%s is refused where a dangling link leads into protected metadata",
+    (name) => {
+      const tool = tools[name]();
+      // Nothing is there yet: a write through the link would create the hook.
+      expect(decide(tool, writeArgs(name, link("post.sh", "../.git/hooks/post-commit"))))
+        .toMatch(/blocked write .*\.git\/hooks\/post-commit/);
+      expect(decide(tool, writeArgs(name, link("agenc.json", "../.agenc/new.json"))))
+        .toMatch(/blocked write .*\.agenc\/new\.json/);
+      // A dangling link to an ordinary place stays an ordinary write.
+      expect(decide(tool, writeArgs(name, link("new-notes", "../notes.md")))).toBe("allow");
+    },
+  );
+
+  it.each(Object.keys(tools) as (keyof typeof tools)[])(
+    "%s is refused where a protected folder really is on disk under another name",
+    (name) => {
+      const tool = tools[name]();
+      // `.git/hooks` is a link to a folder of another name inside .git.
+      renameSync(join(cwd, ".git", "hooks"), join(cwd, ".git", "hook-store"));
+      symlinkSync("hook-store", join(cwd, ".git", "hooks"));
+      expect(decide(tool, writeArgs(name, ".git/hook-store/pre-commit")))
+        .toMatch(/blocked write .*hook-store\/pre-commit: it changes .*\.git\/hooks under another name/);
+      expect(decide(tool, writeArgs(name, link("x.sh", "../.git/hook-store/pre-commit"))))
+        .toMatch(/blocked write .*hook-store\/pre-commit/);
+      // Ordinary .git data under its own name keeps working.
+      expect(decide(tool, writeArgs(name, ".git/refs/heads/feature"))).toBe("allow");
+    },
+  );
+
+  it.each(Object.keys(tools) as (keyof typeof tools)[])(
+    "%s is refused for another hard link of a protected file and allowed for ordinary hard links",
+    (name) => {
+      const tool = tools[name]();
+      linkSync(join(cwd, ".git", "config"), join(cwd, "scripts", "config-copy"));
+      expect(decide(tool, writeArgs(name, "scripts/config-copy")))
+        .toMatch(/blocked write .*scripts\/config-copy: it changes .*\.git\/config under another name/);
+      linkSync(join(cwd, "README.md"), join(cwd, "scripts", "readme-copy"));
+      expect(decide(tool, writeArgs(name, "scripts/readme-copy"))).toBe("allow");
     },
   );
 

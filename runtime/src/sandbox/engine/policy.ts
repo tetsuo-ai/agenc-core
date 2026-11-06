@@ -13,7 +13,7 @@ import type { BoundReadOnlyCwdCapability } from "../bound-readonly-cwd.js";
 
 import fs from "node:fs";
 import path from "node:path";
-import { canonicalAuthorityPath, isWithinAuthorityPath } from "../desktop-authority-protection.js";
+import { canonicalAuthorityPath, isWithinAuthorityPath, writeLandingAuthorityPath } from "../desktop-authority-protection.js";
 
 import { PROTECTED_METADATA_PATH_NAMES } from "./constants.js";
 export {
@@ -526,7 +526,7 @@ export function physicalWritePathWithCwd(
   cwd: string,
   sessionTempRoot: string,
 ): string {
-  const physical = canonicalAuthorityPath(resolvePathAgainstBase(target, cwd));
+  const physical = writeLandingAuthorityPath(resolvePathAgainstBase(target, cwd));
   let holder: { readonly root: string; readonly physicalRoot: string } | undefined;
   for (const entry of resolvedEntriesWithCwd(policy, cwd, sessionTempRoot)) {
     if (!canWriteAccess(entry.access)) continue;
@@ -539,6 +539,75 @@ export function physicalWritePathWithCwd(
   return holder === undefined
     ? physical
     : path.join(holder.root, path.relative(holder.physicalRoot, physical));
+}
+
+/** Entries walked when looking for another name of a hard-linked file. */
+const MAX_PROTECTED_LINK_SCAN_ENTRIES = 20_000;
+
+/**
+ * The read-only carve-out or protected metadata of a writable root that a
+ * native write landing at the physical place `landing` changes under another
+ * name, or undefined. A carve-out counts where it really is on disk (a
+ * `.git/hooks` linked to a folder of another name), and a file with other
+ * hard links counts when one of them is inside a carve-out: the bytes it
+ * writes are that file's bytes. A scan that cannot finish counts as reached.
+ */
+export function protectedEntryReachedByWrite(
+  policy: FileSystemSandboxPolicy,
+  landing: string,
+  cwd: string,
+  sessionTempRoot: string,
+): string | undefined {
+  const protectedEntries = getWritableRootsWithCwd(policy, cwd, sessionTempRoot).flatMap((root) => [
+    ...root.readOnlySubpaths,
+    ...(root.protectedMetadataNames ?? []).map((name) => path.join(root.root, name)),
+  ]);
+  for (const entry of protectedEntries) {
+    let physical: string;
+    try {
+      physical = canonicalAuthorityPath(entry);
+    } catch {
+      continue;
+    }
+    if (isWithinAuthorityPath(landing, physical)) return entry;
+  }
+  let file: fs.Stats;
+  try {
+    file = fs.lstatSync(landing);
+  } catch {
+    return undefined;
+  }
+  if (!file.isFile() || file.nlink < 2) return undefined;
+  const budget = { remaining: MAX_PROTECTED_LINK_SCAN_ENTRIES };
+  for (const entry of protectedEntries) {
+    const found = holdsFile(entry, file, budget);
+    if (found !== false) return entry;
+  }
+  return undefined;
+}
+
+/** Whether `entry` is, or holds without following links, the file `file`; "unknown" past the budget. */
+function holdsFile(entry: string, file: fs.Stats, budget: { remaining: number }): boolean | "unknown" {
+  if (--budget.remaining < 0) return "unknown";
+  let stats: fs.Stats;
+  try {
+    stats = fs.lstatSync(entry);
+  } catch {
+    return false;
+  }
+  if (stats.isFile()) return stats.dev === file.dev && stats.ino === file.ino;
+  if (!stats.isDirectory()) return false;
+  let names: string[];
+  try {
+    names = fs.readdirSync(entry);
+  } catch {
+    return "unknown";
+  }
+  for (const name of names) {
+    const found = holdsFile(path.join(entry, name), file, budget);
+    if (found !== false) return found;
+  }
+  return false;
 }
 
 /** Containment in the writable roots, minus reserved read-only paths. */

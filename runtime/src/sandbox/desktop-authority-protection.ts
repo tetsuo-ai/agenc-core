@@ -1,4 +1,4 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { resolveHomeContext } from "../config/home.js";
 import type { PermissionProfile } from "./engine/index.js";
@@ -31,6 +31,52 @@ export function canonicalAuthorityPath(target: string): string {
       ancestor = parent;
     }
   }
+}
+
+const PATH_PARTS = process.platform === "win32" ? /[\\/]+/u : /\/+/u;
+/** More links on one path than any real layout needs: refuse, as the OS does. */
+const MAX_WRITE_LANDING_LINKS = 40;
+
+/**
+ * Where a write to `target` lands once every link on its path is followed,
+ * a dangling one too (a write through it creates the link's target), each
+ * relative link read from the folder that holds it and a `..` after it taken
+ * from where it led. {@link canonicalAuthorityPath} keeps a dangling link's
+ * own name instead. Throws ELOOP past {@link MAX_WRITE_LANDING_LINKS} links.
+ */
+export function writeLandingAuthorityPath(target: string): string {
+  const absolute = path.resolve(target);
+  let current = path.parse(absolute).root;
+  let pending = absolute.slice(current.length).split(PATH_PARTS).filter(Boolean);
+  let followed = 0;
+  while (pending.length > 0) {
+    const part = pending.shift()!;
+    if (part === ".") continue;
+    if (part === "..") {
+      current = path.dirname(current);
+      continue;
+    }
+    const candidate = path.join(current, part);
+    let isLink = false;
+    try {
+      isLink = lstatSync(candidate).isSymbolicLink();
+    } catch {
+      // Missing: created by the write, nothing to follow.
+    }
+    if (!isLink) {
+      current = candidate;
+      continue;
+    }
+    if (++followed > MAX_WRITE_LANDING_LINKS) {
+      throw Object.assign(new Error(`too many links on the way to ${target}`), { code: "ELOOP" });
+    }
+    const link = readlinkSync(candidate);
+    if (path.isAbsolute(link)) current = path.parse(link).root;
+    pending = [...link.slice(path.isAbsolute(link) ? path.parse(link).root.length : 0).split(PATH_PARTS).filter(Boolean), ...pending];
+  }
+  // No link is left on the way; spell the existing part the way real paths
+  // are spelled (case, short names), as the writable roots are.
+  return canonicalAuthorityPath(current);
 }
 
 export function desktopAuthorityRoot(

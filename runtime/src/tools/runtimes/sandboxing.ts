@@ -9,6 +9,7 @@ import {
   canWriteRuntimeOwnedPathWithCwd,
   permissionProfileFromRuntimePermissions,
   physicalWritePathWithCwd,
+  protectedEntryReachedByWrite,
   restrictedFileSystemPolicy,
   unrestrictedFileSystemPolicy,
   type FileSystemSandboxEntry,
@@ -50,7 +51,7 @@ import { resolveRuntimePathTarget } from "./paths.js";
 import { analyzeShellRuntimeAccess } from "./shell.js";
 import { isSessionCronMemoryMutation } from "./session-cron.js";
 import { cronLockAuthorityRoots, overlapsCronAuthority, protectCronAuthority } from "../../sandbox/cron-authority-protection.js";
-import { canonicalAuthorityPath, desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
+import { canonicalAuthorityPath, desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority, writeLandingAuthorityPath } from "../../sandbox/desktop-authority-protection.js";
 import { protectAgencHomeUnderWritableRoot, sandboxAgencHome } from "../../sandbox/agenc-home-protection.js";
 import { daemonSocketAuthorityRoots, protectDaemonSocket } from "../../sandbox/daemon-socket-protection.js";
 import { routineRunOptions } from "../../session/runtime-options.js";
@@ -627,6 +628,18 @@ function enforceRuntimeSandboxAttemptChecks(
         {
           denial: "filesystem",
           target: reached,
+          policy,
+        },
+      );
+    }
+    const landing = writeLandingAuthorityPath(path.resolve(cwd, target));
+    const protectedEntry = protectedEntryReachedByWrite(profile.fileSystem, landing, cwd, sessionTempRoot);
+    if (protectedEntry !== undefined) {
+      throw new SandboxDeniedError(
+        `sandbox workspace_write blocked write to ${landing}: it changes ${protectedEntry} under another name (reached through ${target})`,
+        {
+          denial: "filesystem",
+          target: landing,
           policy,
         },
       );
