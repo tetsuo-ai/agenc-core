@@ -797,7 +797,14 @@ repository: if you made it yourself, check its hooks and config before renaming 
 back to `.git`.
 AgenC's own git status refresh in the footer no longer descends into submodules,
 so a submodule's own state is not shown there and its hooks never run from the
-refresh. Each file tool call is also bound to the files it was checked
+refresh. A nested `.git` that is a pointer (a gitfile or a symlink), not a
+directory, is a descent redirect in the same way: it is refused, and one a
+command creates during its run is removed. On macOS the sandbox profile applies
+the same nested-repository rule, so a confined command cannot assemble a nested
+repository's execution surface there either; macOS behaves as Linux does, except
+that macOS has no run-time monitor, so a nested repository created during a
+command is refused by the static profile rather than removed afterward. Each
+file tool call is also bound to the files it was checked
 against before any approval prompt: if a link on its path is pointed
 elsewhere before it runs, the tool changes, reads or sends nothing and says
 to run the call again.

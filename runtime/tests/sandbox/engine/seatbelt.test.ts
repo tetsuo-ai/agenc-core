@@ -31,6 +31,38 @@ import {
 const TEST_SESSION_TEMP_ROOT = "/tmp/agenc-seatbelt-session-root";
 
 describe("macOS seatbelt policy generation", () => {
+  it("refuses a nested repository's execution surface at any depth (macOS parity with Linux)", () => {
+    const args = createSeatbeltCommandArgs({
+      command: ["/bin/echo", "ok"],
+      fileSystemSandboxPolicy: restrictedFileSystemPolicy([
+        { path: { kind: "path", path: "/repo" }, access: "write" },
+      ]),
+      networkSandboxPolicy: "disabled",
+      sandboxPolicyCwd: "/repo",
+      sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+      enforceManagedNetwork: true,
+      network: { env: {}, allowLocalBinding: false, allowUnixSockets: [] },
+    });
+    const policy = args[1] ?? "";
+    // The nested surface rule is present and requires at least one path
+    // segment before `.git`, so `git init sub` cannot plant a hook or config
+    // that a later host-side git would run, as on Linux.
+    const nested =
+      "^/repo/.+/\\.git/(hooks|config|config\\.worktree|info|modules|worktrees|commondir|remotes|branches|objects/info)(/.*)?$";
+    expect(policy).toContain(`(require-not (regex #"${nested}"))`);
+    const re = new RegExp(nested.replace(/\\\\/gu, "\\"), "u");
+    // Catches a nested repository's surface...
+    expect(re.test("/repo/pkg/sub/.git/hooks/pre-commit")).toBe(true);
+    expect(re.test("/repo/a/b/c/.git/config")).toBe(true);
+    expect(re.test("/repo/sub/.git/objects/info/alternates")).toBe(true);
+    // ...but never the top-level .git (its own rule covers that), the nested
+    // repository's inert data, or a file merely named like one.
+    expect(re.test("/repo/.git/config")).toBe(false);
+    expect(re.test("/repo/sub/.git/refs/heads/main")).toBe(false);
+    expect(re.test("/repo/sub/.git/objects/ab/cd")).toBe(false);
+    expect(re.test("/repo/sub/.git/HEAD")).toBe(false);
+  });
+
   it("builds file, proxy, and unix-socket policy sections", () => {
     const args = createSeatbeltCommandArgs({
       command: ["/bin/echo", "ok"],
