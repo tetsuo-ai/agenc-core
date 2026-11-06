@@ -74,6 +74,12 @@ async function fixture() {
     expect(host.spawnDetachedDaemon).not.toHaveBeenCalled();
     handle = await tryPrepareProvisionalDaemon(host);
   }
+  if (speculativeLockTimeouts.count > 0) {
+    // Only 20 misses in a row fail, so print each retry for the suite output:
+    // a start that usually misses its budget shows up as a trend.
+    console.warn(`daemon-provisional-handoff fixture: the speculative start's short lifecycle-lock attempt ` +
+      `timed out ${speculativeLockTimeouts.count} time(s) before a start succeeded`);
+  }
   expect(handle).not.toBeNull();
   return { host, handle: handle!, cancel, pidPath, alive: () => alive };
 }
