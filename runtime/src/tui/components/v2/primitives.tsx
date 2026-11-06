@@ -1553,17 +1553,60 @@ const APPROVAL_COMMAND_LINE_CAP = 8
  */
 export const APPROVAL_COMMAND_SPARE_COLS = 2
 
+/** `<U+XXXX>` for a code point, four hex digits or more, upper case. */
+function visibleCodepoint(cp: number): string {
+  return `<U+${cp.toString(16).toUpperCase().padStart(4, '0')}>`
+}
+
+/** Bidi overrides and other invisible format characters a card must not hide. */
+function isInvisibleFormatChar(cp: number): boolean {
+  return (
+    (cp >= 0x200b && cp <= 0x200f) || // zero-width space/joiners, LRM/RLM
+    (cp >= 0x202a && cp <= 0x202e) || // bidi embeddings and overrides
+    (cp >= 0x2066 && cp <= 0x2069) // bidi isolates
+  )
+}
+
+/**
+ * Every character of `text` in a visible form: a C0 control other than a
+ * line feed, or DEL, becomes caret notation (`^M` for a carriage return,
+ * `^[` for escape, `^?` for DEL), so an escape sequence is shown and never
+ * reaches the terminal to hide the text around it or conceal it; a C1
+ * control and an invisible bidi/format character become `<U+XXXX>`. A tab
+ * stays a tab (it is measured, not hidden) and a line feed is left for the
+ * row split. The card and its full view both pass their rows through this,
+ * so neither shows a shell input as something other than what will run.
+ */
+export function visibleControlChars(text: string): string {
+  let out = ''
+  for (const ch of text) {
+    const cp = ch.codePointAt(0)!
+    if (cp === 0x0a || cp === 0x09) {
+      out += ch
+    } else if (cp < 0x20 || cp === 0x7f) {
+      out += `^${String.fromCharCode(cp ^ 0x40)}`
+    } else if ((cp >= 0x80 && cp <= 0x9f) || isInvisibleFormatChar(cp)) {
+      out += visibleCodepoint(cp)
+    } else {
+      out += ch
+    }
+  }
+  return out
+}
+
 /**
  * The rows a shell command takes `width` columns wide: each of its lines,
  * wrapped, the first behind the `$ ` prompt glyph and the rest indented
- * under it. The Enter that ends typed input adds no row. The card and its
+ * under it. Each line is made visible first ({@link visibleControlChars}),
+ * so a control character or escape sequence never drops or hides what
+ * follows it. The Enter that ends typed input adds no row. The card and its
  * full command view both show these rows, so neither drops a character.
  */
 export function approvalCommandRows(command: string, width: number): string[] {
   const textWidth = Number.isFinite(width) ? Math.max(1, Math.trunc(width) - 2) : 78
   const rows: string[] = []
   for (const line of command.replace(/\r?\n$/u, '').split(/\r?\n/u)) {
-    for (const part of wrapText(line, textWidth, 'wrap').split('\n')) {
+    for (const part of wrapText(visibleControlChars(line), textWidth, 'wrap').split('\n')) {
       rows.push(`${rows.length === 0 ? '$' : ' '} ${part}`)
     }
   }
@@ -1914,7 +1957,7 @@ export function ApprovalCard({
           // Empty/`{}` inputs (EnterPlanMode and friends) render no line at all.
           // A long path loses its middle, never its file name.
           <ThemedText color="text2" wrap="truncate-middle">
-            {command}
+            {visibleControlChars(command)}
           </ThemedText>
         )}
         {showPreview && diffPreview !== undefined ? (
