@@ -281,9 +281,9 @@ const LEAN_EXEC_POINTER =
  * uncached; the catalog therefore carries from the first request what process sessions and approvals
  * need: exec_command's lean fields plus yield_time_ms and max_output_tokens, the approval fields the
  * permission text asks for (sandbox_permissions, justification, prefix_rule), and write_stdin and
- * kill_process. In 1,060 recorded DeepSeek Light sessions (round 4, 2026-10-25 to 2026-11-05, 96 percent
- * in bypassPermissions, none a proactive-escalation task) and the long three.js runs, exec_command used
- * cmd, workdir, timeoutMs, background, yield_time_ms, max_output_tokens and detach (5 of 4,288 calls),
+ * kill_process. In 1,113 recorded DeepSeek Light sessions (round 4, 2026-10-25 to 2026-11-05, the long
+ * three.js runs included, 95 percent in bypassPermissions, none a proactive-escalation task), exec_command
+ * used cmd, workdir, timeoutMs, background, yield_time_ms, max_output_tokens and detach (5 of 5,795 calls),
  * write_stdin session_id, chars, yield_time_ms and max_output_tokens, and kill_process session_id; tty,
  * login, shell and additional_permissions were never used. Those are still accepted and named in the
  * pointer; a selection of a compact core tool, or a sandbox notice that advises escalation, presents the
