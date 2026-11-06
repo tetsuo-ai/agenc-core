@@ -45,13 +45,13 @@ export interface SwarmRoutingDecision {
 }
 
 const EXPLICIT_PARALLEL_RE =
-  /\b(?:parallel(?:ize|ise)|fan[ -]?out|use\s+(?:a\s+)?swarm|(?:use|spawn|launch|engage)\s+(?:multiple|several|[2-9]|two|three|four)\s+(?:independent\s+)?(?:agents?|sub[ -]?agents?|workers?)|(?:delegate|assign)\s+(?:(?:these|the)\s+)?(?:independent|separate)|(?:delegate|assign)\b(?:\s+\w+){0,6}\s+to\s+(?:multiple|several|[2-9]|two|three|four)\s+(?:independent\s+)?(?:agents?|sub[ -]?agents?|workers?)|concurrently\s+(?:investigate|research|review|audit|analy[sz]e|check|test|implement|build|fix|work|run|execute|handle|perform|complete)|(?:investigate|research|review|audit|analy[sz]e|check|test|implement|build|fix|work|run|execute|handle|perform|complete|do)\b(?:\s+\w+){0,6}\s+(?:concurrently|in\s+parallel))\b/iu;
+  /\b(?:parallel(?:ize|ise)|fan[ -]?out|use\s+(?:a\s+)?swarm|(?:use|spawn|launch|engage)\s+(?:multiple|several|[2-9]|two|three|four)\s+(?:independent\s+)?(?:agents?|sub[ -]?agents?|workers?|helpers?)|(?:delegate|assign)\s+(?:(?:these|the)\s+)?(?:independent|separate)|(?:delegate|assign)\b(?:\s+\w+){0,6}\s+to\s+(?:multiple|several|[2-9]|two|three|four)\s+(?:independent\s+)?(?:agents?|sub[ -]?agents?|workers?|helpers?)|concurrently\s+(?:investigate|research|review|audit|analy[sz]e|check|test|implement|build|fix|work|run|execute|handle|perform|complete)|(?:investigate|research|review|audit|analy[sz]e|check|test|implement|build|fix|work|run|execute|handle|perform|complete|do)\b(?:\s+\w+){0,6}\s+(?:concurrently|in\s+parallel))\b/iu;
 const EXPLICIT_INDEPENDENCE_RE =
   /\b(?:decomposable|disjoint|independent(?:ly)?|separate(?:ly)?|unrelated)\b/iu;
 const NEGATED_INDEPENDENCE_RE =
   /(?:\b(?:no|not|never)\s+(?:(?:actually|entirely|fully|mutually|necessarily|truly)\s+)?(?:decomposable|disjoint|independent(?:ly)?|separate(?:ly)?|unrelated)\b|\b(?:aren['’]?t|isn['’]?t|wasn['’]?t|weren['’]?t)\s+(?:(?:actually|entirely|fully|mutually|necessarily|truly)\s+)?(?:decomposable|disjoint|independent(?:ly)?|separate(?:ly)?|unrelated)\b|\bnon[ -]?(?:decomposable|independent)\b)/iu;
 const EXPLICIT_NO_DELEGATION_RE =
-  /(?:\b(?:do\s+not|don['’]?t|never)\s+(?:delegate(?:\s+(?:anything|this|it|(?:this|the)\s+(?:task|request|work)|any\s+of\s+(?:this|the)\s+(?:task|request|work)))?|parallel(?:ize|ise)(?:\s+(?:this|it|(?:this|the)\s+(?:task|request|work)))?|fan[ -]?out(?:\s+(?:this|it|(?:this|the)\s+(?:task|request|work)))?|spawn\s+(?:(?:any|additional|multiple|new)\s+)?(?:agents?|sub[ -]?agents?|workers?)(?:\s+(?:for|on)\s+(?:this|it|(?:this|the)\s+(?:task|request|work)))?|use\s+(?:(?:any|multiple)\s+)?(?:agents?|sub[ -]?agents?|workers?|a\s+swarm)(?:\s+(?:for|on)\s+(?:this|it|(?:this|the)\s+(?:task|request|work)))?)(?=\s*(?:$|[.!?,;:]|\b(?:and|but)\b))|(?:^|[.!?;:]\s*)no\s+(?:delegation|agents?|sub[ -]?agents?|workers?|swarm|fan[ -]?out)\s*(?=$|[.!?;:])|\bno\s+(?:delegation|agents?|sub[ -]?agents?|workers?|swarm|fan[ -]?out)\s+(?:for|on)\s+(?:this|the)\s+(?:task|request|work)\b|\b(?:spawn|use)\s+no\s+(?:agents?|sub[ -]?agents?|workers?|swarm)\b|\bkeep\s+(?:this|it|(?:this|the)\s+(?:task|request|work))\s+local\b|\b(?:handle|do|complete)\s+(?:this|it|(?:this|the)\s+(?:task|request|work))\s+(?:alone|yourself|without\s+(?:delegation|agents?|sub[ -]?agents?|workers?|a\s+swarm))\b|\b(?:proceed|work)\s+(?:alone|without\s+(?:delegation|agents?|sub[ -]?agents?|workers?|a\s+swarm))\b|^(?:please\s+)?without\s+(?:delegation|agents?|sub[ -]?agents?|workers?|a\s+swarm)\b)/iu;
+  /(?:\b(?:do\s+not|don['’]?t|never)\s+(?:delegate(?:\s+(?:anything|this|it|(?:this|the)\s+(?:task|request|work)|any\s+of\s+(?:this|the)\s+(?:task|request|work)))?|parallel(?:ize|ise)(?:\s+(?:this|it|(?:this|the)\s+(?:task|request|work)))?|fan[ -]?out(?:\s+(?:this|it|(?:this|the)\s+(?:task|request|work)))?|spawn\s+(?:(?:any|additional|multiple|new)\s+)?(?:agents?|sub[ -]?agents?|workers?|helpers?)(?:\s+(?:for|on)\s+(?:this|it|(?:this|the)\s+(?:task|request|work)))?|use\s+(?:(?:any|multiple)\s+)?(?:agents?|sub[ -]?agents?|workers?|helpers?|a\s+swarm)(?:\s+(?:for|on)\s+(?:this|it|(?:this|the)\s+(?:task|request|work)))?)(?=\s*(?:$|[.!?,;:]|\b(?:and|but)\b))|(?:^|[.!?;:]\s*)no\s+(?:delegation|agents?|sub[ -]?agents?|workers?|helpers?|swarm|fan[ -]?out)\s*(?=$|[.!?;:])|\bno\s+(?:delegation|agents?|sub[ -]?agents?|workers?|helpers?|swarm|fan[ -]?out)\s+(?:for|on)\s+(?:this|the)\s+(?:task|request|work)\b|\b(?:spawn|use)\s+no\s+(?:agents?|sub[ -]?agents?|workers?|helpers?|swarm)\b|\bkeep\s+(?:this|it|(?:this|the)\s+(?:task|request|work))\s+local\b|\b(?:handle|do|complete)\s+(?:this|it|(?:this|the)\s+(?:task|request|work))\s+(?:alone|yourself|without\s+(?:delegation|agents?|sub[ -]?agents?|workers?|helpers?|a\s+swarm))\b|\b(?:proceed|work)\s+(?:alone|without\s+(?:delegation|agents?|sub[ -]?agents?|workers?|helpers?|a\s+swarm))\b|^(?:please\s+)?without\s+(?:delegation|agents?|sub[ -]?agents?|workers?|helpers?|a\s+swarm)\b)/iu;
 const MULTI_DOMAIN_RE =
   /\b(?:end[ -]to[ -]end|across|compare|comparison|audit|research|review)\b/iu;
 const WRITE_TASK_RE =
@@ -60,6 +60,39 @@ const SHARED_STATE_COUPLING_RE =
   /\b(?:single\s+(?:bug|failure|file|function|issue)|tightly\s+coupled|same\s+file|sequential|in\s+order|one\s+at\s+a\s+time)\b/iu;
 const HIGH_RISK_CHANGE_RE =
   /\b(?:auth(?:entication|orization)?|database|deploy|mainnet|migration|payment|production|release|schema|security|sign(?:ing|ature)?|wallet)\b/iu;
+
+// Explicit requests for helpers outside /swarm (requestsHelpers below). The nouns name the helpers: "sub-agents",
+// "helper agents" and "child agents" with or without a count; "helpers" and "agents" with a plural count; "an agent" with any of the
+// verbs; "a helper" only with a verb that starts one ("spawn a helper"), since "use a helper" mostly means a helper
+// function. "Workers" are left out here: outside /swarm they are mostly code (thread, gunicorn or Cloudflare workers).
+const HELPER_SPECIFIC_NOUN = String.raw`(?:sub[ -]?agents?|helper[ -]agents?|child[ -]agents?|agent[ -]helpers?)`;
+const HELPER_COUNT = String.raw`(?:a|an|one|two|three|four|five|six|several|multiple|some|[2-9]|1[0-9])`;
+const HELPER_PLURAL_COUNT = String.raw`(?:two|three|four|five|six|several|multiple|some|[2-9]|1[0-9])`;
+const HELPER_QUALIFIER = String.raw`(?:(?:independent|separate|parallel|dedicated|background)\s+)?`;
+// A code noun or a file extension right after the helper noun makes it a programming term: "a helper function",
+// "an agent SDK", "the agents module", "helpers.ts".
+const HELPER_NOT_CODE = String.raw`(?!\.\w|[ -]?(?:functions?|methods?|class(?:es)?|modules?|files?|folders?|director(?:y|ies)|scripts?|threads?|process(?:es)?|types?|interfaces?|utils?|utilit(?:y|ies)|librar(?:y|ies)|hooks?|components?|packages?|apps?|routes?|tests?|specs?|nodes?|pools?|queues?|services?|servers?|daemons?|frameworks?|sdks?|apis?|endpoints?|config(?:s|urations?)?|settings?|code|logic|bots?|objects?|binar(?:y|ies)|images?|containers?|fields?|columns?|propert(?:y|ies)|variables?|attributes?|parameters?|arguments?|arrays?|lists?|maps?|tables?|records?|schemas?|models?|strings?|names?|ids?)\b)`;
+const HELPER_START_VERB = String.raw`(?:spawn|spawns|spawning|launch|launches|launching|start|starting|dispatch|send|ask|get|engage|employ|spin\s+up|fire\s+up|kick\s+off|bring\s+in)`;
+const HELPER_USE_VERB = String.raw`(?:use|uses|using|with|via|through|run|running|${HELPER_START_VERB})`;
+// "do not use two helpers", "without using sub-agents", "no need to spawn agents".
+const HELPER_NOT_NEGATED = String.raw`(?<!(?:\b(?:not|never|without|no\s+need\s+to)|n['’]t)\s+)`;
+const HELPER_REQUEST_RES: readonly RegExp[] = [
+  // "use sub-agents", "spawn a helper agent", "with two independent sub-agents"
+  new RegExp(String.raw`${HELPER_NOT_NEGATED}\b${HELPER_USE_VERB}\s+(?:(?:the|these|those|your)\s+)?(?:${HELPER_COUNT}\s+)?${HELPER_QUALIFIER}${HELPER_SPECIFIC_NOUN}\b${HELPER_NOT_CODE}`, "iu"),
+  // "have a sub-agent look at the logs", "let two helper agents check the docs"
+  new RegExp(String.raw`${HELPER_NOT_NEGATED}\b(?:have|let|need|want)\s+(?:(?:the|your)\s+)?(?:${HELPER_COUNT}\s+)?${HELPER_QUALIFIER}${HELPER_SPECIFIC_NOUN}\b${HELPER_NOT_CODE}`, "iu"),
+  // "using two helpers", "spawn three agents", "use an agent", "spawn a helper"
+  new RegExp(String.raw`${HELPER_NOT_NEGATED}\b(?:${HELPER_USE_VERB}\s+(?:${HELPER_PLURAL_COUNT}\s+${HELPER_QUALIFIER}(?:helpers|agents)|(?:a|an|one)\s+${HELPER_QUALIFIER}agent)|${HELPER_START_VERB}\s+(?:a|an|one)\s+${HELPER_QUALIFIER}helper)\b${HELPER_NOT_CODE}`, "iu"),
+  // "delegate the review to two agents", "split the work between sub-agents"
+  new RegExp(String.raw`${HELPER_NOT_NEGATED}\b(?:delegate|delegating|hand\s+off|handing\s+off|assign|assigning|offload|offloading|farm\s+out|split|splitting)\b(?:\s+[\w'’-]+){0,8}?\s+(?:to|between|among|across)\s+(?:(?:the|your)\s+)?(?:(?:${HELPER_COUNT}\s+)?${HELPER_QUALIFIER}${HELPER_SPECIFIC_NOUN}|${HELPER_COUNT}\s+${HELPER_QUALIFIER}(?:helpers?|agents?))\b${HELPER_NOT_CODE}`, "iu"),
+  // "in parallel with helpers", "concurrently using sub-agents"
+  new RegExp(String.raw`\b(?:in\s+parallel|concurrently|simultaneously|at\s+the\s+same\s+time)\s+(?:using|with|via|through|by)\s+(?:${HELPER_COUNT}\s+)?${HELPER_QUALIFIER}(?:${HELPER_SPECIFIC_NOUN}|helpers?|agents?)\b${HELPER_NOT_CODE}`, "iu"),
+];
+// "Helper one: ...", "Agent 2: ..." on their own lines; two different labels make a request.
+const ENUMERATED_HELPER_RE =
+  /^[ \t]*(?:[-*+][ \t]+)?(?:helper|sub[ -]?agent|agent)[ \t]+(one|two|three|four|five|six|[1-9])[ \t]*[:.)-]/gimu;
+// Code, quoted lines and double-quoted text are examples, not requests.
+const QUOTED_OR_CODE_RE = /```[\s\S]*?(?:```|(?![\s\S]))|~~~[\s\S]*?(?:~~~|(?![\s\S]))|`[^`\n]*`|^[ \t]*>.*$|"[^"\n]*"|“[^”\n]*”/gmu;
 
 function normalizedInput(input: string | null): string {
   return (input ?? "").replace(/\s+/gu, " ").trim();
@@ -182,6 +215,23 @@ export function routeSwarmTask(userInput: string | null): SwarmRoutingDecision {
       ? "Independent writable subtasks are present; isolate disjoint changes and verify each integration boundary."
       : "Independent analysis subtasks are present and can be synthesized without shared filesystem writes.",
   };
+}
+
+/**
+ * Whether a root-human request explicitly asks for helpers, outside /swarm (prompts/attachments/delegation-request.ts):
+ * it names helpers, helper agents or sub-agents to use, spawn or delegate to ("using two helpers", "spawn a
+ * sub-agent", "delegate the review to two agents", "Helper one: ..." and "Helper two: ..." lines). Code spans, fenced
+ * blocks, quoted lines and double-quoted text are ignored, a programming noun after the helper noun rules the phrase
+ * out, and an explicit no-delegation constraint wins. A conditional request still counts: the reminder it brings
+ * states the prerequisites.
+ */
+export function requestsHelpers(userInput: string | null): boolean {
+  const unquoted = (userInput ?? "").replace(QUOTED_OR_CODE_RE, " ");
+  const input = normalizedInput(unquoted);
+  if (input.length === 0 || EXPLICIT_NO_DELEGATION_RE.test(input)) return false;
+  if (HELPER_REQUEST_RES.some((pattern) => pattern.test(input))) return true;
+  const labels = new Set([...unquoted.matchAll(ENUMERATED_HELPER_RE)].map((match) => match[1]?.toLowerCase()));
+  return labels.size >= 2;
 }
 
 export function swarmRoutingReceipt(

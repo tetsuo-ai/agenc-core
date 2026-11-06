@@ -72,6 +72,12 @@ export interface AttachmentTrackingState {
   /** Exact root-human turn whose MCP resource mentions were consumed. */
   lastMcpResourceMentionTurnId?: string;
   /**
+   * Turn whose root-human text the Light helper-request producer
+   * (prompts/attachments/delegation-request.ts) has read; it reads each
+   * turn's text once, on the turn's first request.
+   */
+  lastDelegationRequestTurnId?: string;
+  /**
    * Map of MCP server name → instruction block last announced. Same
    * rationale as `lastDeferredToolsSet`. MCP instructions are immutable
    * for the lifetime of a connection (set once at handshake), so the
