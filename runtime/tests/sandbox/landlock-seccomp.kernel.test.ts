@@ -174,6 +174,30 @@ async function runInheritedFallback(
 }
 
 describe("Landlock and seccomp on the native kernel", () => {
+  it("moves aside a nested repository a command assembles under the Landlock fallback, and says where", async () => {
+    // linux-run-main's Landlock rung (bubblewrap unusable): the same monitor
+    // moves the new nested .git aside and the notice reaches the launcher's
+    // stderr hook; the run fails.
+    const workspace = fs.realpathSync(withTempDir("landlock-moveaside-"));
+    const profile: PermissionProfile = {
+      fileSystem: restrictedFileSystemPolicy(
+        [
+          { path: { kind: "special", value: { kind: "root" } }, access: "read" },
+          { path: { kind: "path", path: workspace }, access: "write" },
+        ],
+        { includePlatformDefaults: true },
+      ),
+      network: "disabled",
+    };
+    const { exitCode, stderr } = await runFallback(profile, workspace, ["/bin/sh", "-c", "mkdir -p sub/.git/objects && printf 'ref: refs/heads/main\\n' > sub/.git/HEAD && printf '[core]\\n\\tfsmonitor = /tmp/evil\\n' > sub/.git/config && printf ran"]);
+    expect(exitCode).not.toBe(0);
+    expect(fs.existsSync(path.join(workspace, "sub", ".git"))).toBe(false);
+    const aside = fs.readdirSync(path.join(workspace, "sub")).filter((name) => name.startsWith(".git.agenc-moved-"));
+    expect(aside).toHaveLength(1);
+    expect(fs.readFileSync(path.join(workspace, "sub", aside[0]!, "config"), "utf8")).toContain("fsmonitor = /tmp/evil");
+    expect(stderr.join("\n")).toContain(path.join(workspace, "sub", aside[0]!));
+  });
+
   const SOCKET_PROBE = [
     PYTHON,
     "-c",

@@ -75,7 +75,6 @@ export class SessionSandbox {
   /** Missing protected paths of the current namespace, watched per command. */
   private protectedCreateTargets: readonly string[] = [];
   private nestedGitScanRoots: readonly string[] = [];
-  private nestedGitBaseline: readonly string[] | undefined;
 
   /** Running a command, starting or closing: a new command cannot use it now. */
   get busy(): boolean {
@@ -131,7 +130,6 @@ export class SessionSandbox {
           this.identities = [...paths].map(file => [file, mountIdentity(file)] as const);
           this.protectedCreateTargets = [...launch.protectedCreateTargets];
           this.nestedGitScanRoots = [...(launch.nestedGitScanRoots ?? [])];
-          this.nestedGitBaseline = launch.nestedGitBaseline === undefined ? undefined : [...launch.nestedGitBaseline];
           validateAdmission();
           this.received = Buffer.alloc(0);
           // The native broker is amortized over the session. Its private
@@ -210,7 +208,12 @@ export class SessionSandbox {
     // The namespace leaves missing protected paths unmounted; the same
     // created-path monitor as the per-command launcher watches them from
     // before this command starts until it is over.
-    const protectedCreates = startProtectedCreateMonitor(this.protectedCreateTargets, this.nestedGitScanRoots, this.nestedGitBaseline);
+    // No precomputed nested-repository baseline here: the plan that built this
+    // namespace ran when the session started, and nested repositories (or
+    // worktrees) the user or another agent adds afterwards are not in it, so
+    // reusing it would treat them as created by this command and remove them.
+    // The monitor takes its baseline when this command starts instead.
+    const protectedCreates = startProtectedCreateMonitor(this.protectedCreateTargets, this.nestedGitScanRoots);
     const finish = (status: number | undefined, residual: boolean, failure?: Error): void => {
       if (this.active?.child !== child) return;
       this.active = undefined;
@@ -218,6 +221,9 @@ export class SessionSandbox {
       // reaped (or the namespace is gone): the final check cannot miss a
       // protected path it created. Such a command fails, as in the launcher.
       const protectedCreateViolation = protectedCreates.stop();
+      // Say where a nested repository created during the command went.
+      const protectedCreateNotice = protectedCreates.notice?.();
+      if (protectedCreateNotice !== undefined) stderr.write(`${protectedCreateNotice}\n`);
       if (status !== undefined && (status & 127) === 0) {
         status = protectedCreateExitCode((status >> 8) & 255, protectedCreateViolation) << 8;
       }

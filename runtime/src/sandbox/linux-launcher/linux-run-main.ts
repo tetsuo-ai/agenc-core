@@ -234,6 +234,7 @@ async function runLinuxSandboxOptions(
         extraDeviceBindPaths,
         hostCommandCwd,
         env,
+        onStderr: deps.onStderr,
       });
     }
     if (options.inheritedCwd && launcher.supportsBindFd !== true) {
@@ -280,6 +281,10 @@ async function runLinuxSandboxOptions(
     try {
       const exitCode = await waitForChildWithSignalRelay(spawned.child);
       protectedCreateViolation = protectedMonitor.stop();
+      // The launcher's stderr is the command's: say where a nested repository
+      // created during the command went.
+      const protectedCreateNotice = protectedMonitor.notice?.();
+      if (protectedCreateNotice !== undefined) emitLauncherNotice(protectedCreateNotice, deps.onStderr);
       return protectedCreateExitCode(exitCode, protectedCreateViolation);
     } finally {
       if (!protectedCreateViolation) protectedMonitor.stop();
@@ -291,6 +296,19 @@ async function runLinuxSandboxOptions(
   }
 }
 
+/**
+ * The launcher's stderr is the command's: a notice about a nested repository
+ * created during the command goes there, as one line per outcome, or to the
+ * caller's stderr hook when one is given.
+ */
+function emitLauncherNotice(notice: string, onStderr: ((line: string) => void) | undefined): void {
+  if (onStderr !== undefined) {
+    for (const line of notice.split("\n")) onStderr(line);
+  } else {
+    process.stderr.write(`${notice}\n`);
+  }
+}
+
 async function runUnderLandlockFallback(input: {
   readonly options: LinuxSandboxLauncherOptions;
   readonly fileSystem: FileSystemSandboxPolicy;
@@ -299,6 +317,7 @@ async function runUnderLandlockFallback(input: {
   readonly extraDeviceBindPaths: readonly string[];
   readonly hostCommandCwd: string;
   readonly env: NodeJS.ProcessEnv;
+  readonly onStderr?: (line: string) => void;
 }): Promise<number> {
   const unavailable =
     "AgenC could not find bubblewrap on PATH; install bubblewrap or " +
@@ -367,6 +386,10 @@ async function runUnderLandlockFallback(input: {
       });
       const exitCode = await waitForChildWithSignalRelay(child);
       protectedCreateViolation = protectedMonitor.stop();
+      // The launcher's stderr is the command's: say where a nested repository
+      // created during the command went.
+      const protectedCreateNotice = protectedMonitor.notice?.();
+      if (protectedCreateNotice !== undefined) emitLauncherNotice(protectedCreateNotice, input.onStderr);
       return protectedCreateExitCode(exitCode, protectedCreateViolation);
     } finally {
       if (!protectedCreateViolation) protectedMonitor.stop();

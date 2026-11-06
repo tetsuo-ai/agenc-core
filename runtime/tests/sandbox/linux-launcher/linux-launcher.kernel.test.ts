@@ -560,6 +560,44 @@ test("removes a watched .git carve-out without following a link swapped in for i
   }
 });
 
+test("moves aside a nested repository a launcher-route command assembles, and says where", { timeout: 30_000 }, async () => {
+  // The per-command Node launcher (bubblewrap path): a command assembles a
+  // real nested repository; the launcher's created-path monitor moves its .git
+  // aside, writes where it went to the command's stderr, and fails the run.
+  expect(process.platform).toBe("linux");
+  const root = realpathSync(mkdtempSync(join("/var/tmp", "agenc-moveaside-launcher-")));
+  const project = join(root, "project");
+  const temporary = join(root, "temp");
+  mkdirSync(project);
+  mkdirSync(temporary);
+  try {
+    const environment = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, AGENC_HOME: join(root, "home") };
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: project, env: environment,
+      sessionTempRoot: temporary, agencLinuxSandboxExe: launcherEntry });
+    expect(broker.status().kind).toBe("ready");
+    const result = await broker.prepareSpawn("tool", {
+      program: "/bin/sh",
+      args: ["-c", "mkdir -p sub/.git/objects && printf 'ref: refs/heads/main\\n' > sub/.git/HEAD && printf '[core]\\n\\tfsmonitor = /tmp/evil\\n' > sub/.git/config && printf ran"],
+      cwd: project, env: environment,
+    }).run(async command => spawnSync(command.program, [...command.args], {
+      cwd: command.cwd, env: command.env, encoding: "utf8", timeout: 10_000,
+    }));
+    expect(result.stdout).toBe("ran");
+    expect(result.status).not.toBe(0);
+    expect(existsSync(join(project, "sub", ".git"))).toBe(false);
+    const aside = readdirSync(join(project, "sub")).filter((name) => name.startsWith(".git.agenc-moved-"));
+    expect(aside).toHaveLength(1);
+    expect(readFileSync(join(project, "sub", aside[0]!, "config"), "utf8")).toContain("fsmonitor = /tmp/evil");
+    expect(result.stderr).toContain(join(project, "sub", aside[0]!));
+    expect(result.stderr).toContain("check its hooks and config");
+    const git = spawnSync("git", ["rev-parse", "--git-dir"], { cwd: join(project, "sub"), encoding: "utf8",
+      env: { PATH: "/usr/bin:/bin", HOME: root, GIT_CEILING_DIRECTORIES: root } });
+    expect(git.status, "host git no longer treats the folder as a repository").not.toBe(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test(
   "enforces the production Linux sandbox boundary with the real kernel",
   { timeout: 30_000 },

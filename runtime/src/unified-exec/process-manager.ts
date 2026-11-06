@@ -2,7 +2,7 @@ import { OneShotProcessServer, OneShotProcessServerCleanupError } from "./one-sh
 import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { SessionSandbox, SessionSandboxCleanupError, type SessionSandboxAvailability } from "../sandbox/linux-launcher/session-sandbox.js";
 import { prepareDirectBwrapV3Plan } from "../sandbox/linux-launcher/direct-bwrap.js";
-import { protectedCreateExitCode, stopAttachedProtectedCreateMonitor } from "../sandbox/linux-launcher/protected-create-monitor.js";
+import { protectedCreateExitCode, stopAttachedProtectedCreateMonitor, takeAttachedProtectedCreateNotice } from "../sandbox/linux-launcher/protected-create-monitor.js";
 import { prepareLinuxSandboxProbeHint } from "../sandbox/linux-launcher/probe-cache.js";
 import {
   spawn,
@@ -2383,6 +2383,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
             // fails, exactly as in the per-command launcher. (The session
             // sandbox runs its own check when the executor reports.)
             const protectedCreateViolation = stopAttachedProtectedCreateMonitor(child);
+            // Say where a nested repository created during the command went.
+            const protectedCreateNotice = takeAttachedProtectedCreateNotice(child);
+            if (protectedCreateNotice !== undefined) notifyData("stderr", `${protectedCreateNotice}\n`);
             if (state.exitCode !== null && state.exitCode !== undefined) {
               state = { ...state, exitCode: protectedCreateExitCode(state.exitCode, protectedCreateViolation) };
             }
