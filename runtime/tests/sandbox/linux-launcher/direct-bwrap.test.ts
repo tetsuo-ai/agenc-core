@@ -143,11 +143,13 @@ describe.runIf(process.platform === "linux")("guarded immutable direct bwrap pla
 
   it("still rebuilds actual confinement when paths change after proc evidence was prepared", () => {
     const { f, prepared } = withPreparedProbe();
-    // A narrowed .git appears after the proc evidence was prepared. Its missing
+    // A narrowed .git (a real repository: HEAD + objects, as git init writes)
+    // appears after the proc evidence was prepared. Its missing
     // hooks/config/pointer carve-outs need a create monitor, so the direct
     // route must refuse (re-plan) even with valid proc-probe evidence rather
     // than reuse stale evidence that predates the repository.
-    fs.mkdirSync(path.join(f.cwd, ".git"));
+    fs.mkdirSync(path.join(f.cwd, ".git", "objects"), { recursive: true });
+    fs.writeFileSync(path.join(f.cwd, ".git", "HEAD"), "ref: refs/heads/main\n");
     expect(prepareDirectBwrapPlan({ ...f, args: prepared.args })).toBeUndefined();
     expect(fs.readdirSync(f.temp)).toEqual([]);
   });
@@ -267,13 +269,28 @@ describe.runIf(process.platform === "linux")("guarded immutable direct bwrap pla
   it("declines the direct path for a narrowed .git workspace", () => {
     const f = fixture();
     expect(prepareDirectBwrapPlan(f)).toBeDefined();
-    fs.mkdirSync(path.join(f.cwd, ".git"));
+    // A real repository (HEAD + objects): narrowed, so its missing surface
+    // carve-outs need the create monitor and the immutable route declines.
+    fs.mkdirSync(path.join(f.cwd, ".git", "objects"), { recursive: true });
+    fs.writeFileSync(path.join(f.cwd, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const before = fs.readdirSync(path.join(f.cwd, ".git")).sort();
     expect(prepareDirectBwrapPlan(f)).toBeUndefined();
     expect(fs.readdirSync(f.temp)).toEqual([]);
     // No host entry is created inside the workspace .git while planning.
-    expect(fs.readdirSync(path.join(f.cwd, ".git"))).toEqual([]);
-    fs.rmdirSync(path.join(f.cwd, ".git"));
+    expect(fs.readdirSync(path.join(f.cwd, ".git")).sort()).toEqual(before);
+    fs.rmSync(path.join(f.cwd, ".git"), { recursive: true, force: true });
     expect(prepareDirectBwrapPlan(f)).toBeDefined();
+  });
+
+  it("admits the direct path for a .git that is not a repository", () => {
+    // An empty .git (no HEAD/objects) is not narrowed: it stays a whole
+    // read-only bind, so there is no missing narrowed surface to watch and the
+    // immutable direct route admits it (the whole .git is already protected).
+    const f = fixture();
+    fs.mkdirSync(path.join(f.cwd, ".git"));
+    const plan = prepareDirectBwrapPlan(f);
+    expect(plan).toBeDefined();
+    consumeDirectBwrapPlan(plan!).dispose();
   });
 
   it("keeps the bounded platform helpers equivalent to the unchanged launcher", () => {

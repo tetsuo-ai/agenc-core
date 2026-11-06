@@ -164,6 +164,46 @@ describe("narrowed .git write policy (file-tool preflight)", () => {
     expect(canWrite(path.join(root, ".git", "refs", "heads", "x"))).toBe(false);
   });
 
+  it("keeps a .git that is not a repository fully protected", () => {
+    // An empty `.git` (the placeholder the sandbox mounts for a missing
+    // protected-metadata name) or any non-repository `.git` has no HEAD and no
+    // objects directory. Narrowing applies only to a real repository, so this
+    // stays fully read-only: a confined command cannot leave a repository
+    // skeleton (refs, objects, HEAD) under it.
+    fs.mkdirSync(path.join(root, ".git"), { recursive: true });
+    expect(canWrite(path.join(root, ".git", "config"))).toBe(false);
+    expect(canWrite(path.join(root, ".git", "hooks", "pre-commit"))).toBe(false);
+    expect(canWrite(path.join(root, ".git", "refs", "heads", "x"))).toBe(false);
+    expect(canWrite(path.join(root, ".git", "objects", "ab", "cdef"))).toBe(false);
+    expect(canWrite(path.join(root, ".git", "HEAD"))).toBe(false);
+    expect(canWrite(path.join(root, ".git", "new"))).toBe(false);
+    // A real repository (HEAD + objects, as git init writes) is narrowed, so
+    // inert data stays writable and only the surface is read-only.
+    fs.writeFileSync(path.join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+    fs.mkdirSync(path.join(root, ".git", "objects"), { recursive: true });
+    expect(canWrite(path.join(root, ".git", "refs", "heads", "x"))).toBe(true);
+    expect(canWrite(path.join(root, ".git", "config"))).toBe(false);
+  });
+
+  it("protects a standalone nested repository's execution surface", () => {
+    // A real nested repo (git init sub): its config/hooks/objects-info run or
+    // redirect host git when it descends through a gitlink, so they are
+    // refused like the top-level .git; its inert data stays writable.
+    const sub = path.join(root, "sub", ".git");
+    fs.mkdirSync(path.join(sub, "hooks"), { recursive: true });
+    fs.mkdirSync(path.join(sub, "objects"), { recursive: true });
+    fs.writeFileSync(path.join(sub, "HEAD"), "ref: refs/heads/main\n");
+    expect(canWrite(path.join(sub, "config"))).toBe(false);
+    expect(canWrite(path.join(sub, "hooks", "pre-commit"))).toBe(false);
+    expect(canWrite(path.join(sub, "objects", "info", "alternates"))).toBe(false);
+    expect(canWrite(path.join(sub, "refs", "heads", "topic"))).toBe(true);
+    // A nested .git that is not a repository is ordinary writable data: host
+    // git cannot descend into it through a gitlink, so it is no threat.
+    const bare = path.join(root, "bare", ".git");
+    fs.mkdirSync(path.join(bare, "hooks"), { recursive: true });
+    expect(canWrite(path.join(bare, "config"))).toBe(true);
+  });
+
   it("never narrows .agenc or .agents", () => {
     makeGitDir();
     fs.mkdirSync(path.join(root, ".agenc"), { recursive: true });
