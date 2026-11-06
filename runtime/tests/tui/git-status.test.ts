@@ -25,8 +25,14 @@ describe('git composer status', () => {
     expect(parseGitStatus(headers)).toEqual({ branch: 'main', changed: 0, ahead: 0, behind: 0 });
     expect(parseGitStatus('# branch.oid (initial)\0# branch.head new\0')?.branch).toBe('new');
     expect(parseGitStatus('# branch.oid abcdef1234567890\0# branch.head (detached)\0')?.branch).toBe('abcdef1');
+    expect(parseGitStatus('# branch.oid (initial)\0# branch.head (detached)\0')).toBeNull();
     expect(parseGitStatus('')).toBeNull();
     expect(parseGitStatus('# branch.oid (initial)\0')).toBeNull();
+  });
+  it('strips control bytes from ref names before they reach the terminal', () => {
+    expect(parseGitStatus('# branch.oid abcdef1234567890\0# branch.head feat\x07ure\0')?.branch)
+      .toBe('feature');
+    expect(parseGitStatus('# branch.oid abcdef1234567890\0# branch.head \x07\x1b\0')).toBeNull();
   });
   it('counts each record once, skips rename source paths, and combines ahead and behind', () => {
     const records = [headers, '# branch.upstream origin/main', '# branch.ab +1 -2',
