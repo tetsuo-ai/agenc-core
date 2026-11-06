@@ -336,7 +336,8 @@ function computeOrderedReplacements(
  * exactly once in the original file. A hunk with an @@ context line, a pure
  * insertion or an end-of-file marker depends on its position, and another
  * hunk may have replaced its context line, so such a patch is rejected.
- * Output planning still rejects overlapping replacements before any write.
+ * Two hunks whose expected lines overlap are rejected by name, before any
+ * write.
  */
 function computeUnorderedReplacements(
   corpus: PreparedSeekCorpus,
@@ -358,7 +359,7 @@ function computeUnorderedReplacements(
         `or an end-of-file marker must be listed in file order:\n${orderedError.chunk.oldLines.join("\n")}`,
     );
   }
-  const replacements = chunks.map((chunk): Replacement => {
+  const placed = chunks.map((chunk, hunk): { readonly hunk: number; readonly replacement: Replacement } => {
     assertApplyPatchActive(control, "replacement planning");
     let pattern = chunk.oldLines;
     let newSlice = chunk.newLines;
@@ -385,9 +386,24 @@ function computeUnorderedReplacements(
         : `Failed to find expected lines in ${path} exactly. When hunks are not in file order, each must match ` +
           `the file text exactly once:\n${chunk.oldLines.join("\n")}`);
     }
-    return { startIndex: matches[0]!, oldLength: pattern.length, newLines: newSlice };
+    return { hunk, replacement: { startIndex: matches[0]!, oldLength: pattern.length, newLines: newSlice } };
   });
-  return replacements.sort((left, right) => left.startIndex - right.startIndex);
+  placed.sort((left, right) => left.replacement.startIndex - right.replacement.startIndex);
+  for (let index = 1; index < placed.length; index += 1) {
+    const [earlier, later] = [placed[index - 1]!, placed[index]!];
+    if (later.replacement.startIndex >= earlier.replacement.startIndex + earlier.replacement.oldLength) continue;
+    const [first, second] = earlier.hunk < later.hunk ? [earlier, later] : [later, earlier];
+    const lines = (replacement: Replacement): string => replacement.oldLength === 1
+      ? `line ${replacement.startIndex + 1}`
+      : `lines ${replacement.startIndex + 1}-${replacement.startIndex + replacement.oldLength}`;
+    throw new ApplyPatchRuntimeError(
+      `Hunks ${first.hunk + 1} and ${second.hunk + 1} of the update to ${path} change the same lines: hunk ` +
+        `${first.hunk + 1} expects ${lines(first.replacement)} and hunk ${second.hunk + 1} expects ` +
+        `${lines(second.replacement)}. Merge them into one hunk.\nHunk ${first.hunk + 1}:\n` +
+        `${chunks[first.hunk]!.oldLines.join("\n")}\nHunk ${second.hunk + 1}:\n${chunks[second.hunk]!.oldLines.join("\n")}`,
+    );
+  }
+  return placed.map(({ replacement }) => replacement);
 }
 
 async function readFileToUpdate(
