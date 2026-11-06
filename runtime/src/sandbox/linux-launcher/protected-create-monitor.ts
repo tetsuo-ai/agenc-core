@@ -92,7 +92,7 @@ export function startProtectedCreateMonitor(
   } else {
     for (const root of scanRoots) {
       try {
-        for (const nested of nestedGitDescentPoints(root)) baseline.set(nested, descentPointIdentity(nested));
+        for (const nested of nestedGitDescentPoints(root, scanRoots)) baseline.set(nested, descentPointIdentity(nested));
       } catch {
         violation = true;
       }
@@ -107,7 +107,7 @@ export function startProtectedCreateMonitor(
     for (const root of scanRoots) {
       let found: string[];
       try {
-        found = nestedGitDescentPoints(root);
+        found = nestedGitDescentPoints(root, scanRoots);
       } catch {
         violation = true;
         continue;
@@ -265,7 +265,62 @@ function descentPointIdentity(entry: string): string {
   return `${kind}:${stat.dev}:${stat.ino}:${data}`;
 }
 
-function nestedGitDescentPoints(root: string): string[] {
+/**
+ * Whether a nested `.git` pointer (a gitfile or a symlink) can carry planted
+ * code. Its target is read (the `gitdir:` line of a gitfile, or the link of a
+ * symlink), resolved against the pointer's own directory and then to a
+ * physical path, so an alternate spelling cannot pass as outside. A target
+ * inside a protected git surface of a writable root (`<root>/.git/worktrees/...`
+ * or `<root>/.git/modules/...`, which the sandbox keeps read-only) or outside
+ * every writable root is beyond what a confined command can write, so the
+ * pointer is benign: this is how a linked worktree (including AgenC's own
+ * `.agenc-worktrees/<slug>`) and a submodule record their `.git`, and a host
+ * process may add one while a command runs. Any other target is writable data
+ * a command could fill with a hook or config, so the pointer is a descent
+ * point. An unreadable, malformed or unresolvable pointer is a descent point
+ * (fail closed). Must match the monitor's / the policy's copy exactly.
+ */
+function nestedGitPointerIsDescentPoint(pointer: string, isLink: boolean, roots: readonly string[]): boolean {
+  let target: string;
+  try {
+    if (isLink) {
+      target = path.resolve(path.dirname(pointer), fs.readlinkSync(pointer));
+    } else {
+      const fd = fs.openSync(pointer, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      try {
+        const buffer = Buffer.alloc(4096);
+        const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        const line = buffer.subarray(0, read).toString("utf8").split(/\r?\n/u)[0] ?? "";
+        const match = /^gitdir:\s*(.+?)\s*$/u.exec(line);
+        if (match === null) return true;
+        target = path.resolve(path.dirname(pointer), match[1]!);
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+    target = fs.realpathSync(target);
+  } catch {
+    return true;
+  }
+  const within = (child: string, parent: string): boolean =>
+    child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : `${parent}${path.sep}`);
+  let insideAnyRoot = false;
+  for (const root of roots) {
+    let resolvedRoot: string;
+    try {
+      resolvedRoot = fs.realpathSync(root);
+    } catch {
+      resolvedRoot = path.resolve(root);
+    }
+    if (!within(target, resolvedRoot)) continue;
+    insideAnyRoot = true;
+    for (const surface of ["worktrees", "modules"]) {
+      if (within(target, path.join(resolvedRoot, ".git", surface))) return false;
+    }
+  }
+  return insideAnyRoot;
+}
+function nestedGitDescentPoints(root: string, roots: readonly string[] = [root]): string[] {
   const start = path.resolve(root);
   const topLevelGit = path.join(start, ".git");
   const found: string[] = [];
@@ -291,7 +346,7 @@ function nestedGitDescentPoints(root: string): string[] {
         if (entry.isDirectory() && !entry.isSymbolicLink()) {
           if (isRealGitRepository(child)) found.push(child);
         } else if (entry.isFile() || entry.isSymbolicLink()) {
-          found.push(child);
+          if (nestedGitPointerIsDescentPoint(child, entry.isSymbolicLink(), roots)) found.push(child);
         }
         continue;
       }

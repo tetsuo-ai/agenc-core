@@ -402,7 +402,7 @@ export function getWritableRootsWithCwd(
     // sandbox refuses a planted hook/config/alternate there too. Missing
     // carve-outs inside it are watched by the created-path monitor, as for the
     // top-level narrowed `.git`.
-    const nestedGit = nestedGitFindings(root);
+    const nestedGit = nestedGitFindings(root, writableRoots);
     const nestedRepoGitDirs = nestedGit.descentPoints;
     const nestedGitCarveouts = nestedGit.repoDirs.flatMap((gitDir) =>
       gitNarrowedReadOnlyCarveouts(gitDir),
@@ -846,7 +846,62 @@ interface NestedGitFindings {
    */
   readonly pointerFiles: string[];
 }
-export function nestedGitFindings(root: string): NestedGitFindings {
+/**
+ * Whether a nested `.git` pointer (a gitfile or a symlink) can carry planted
+ * code. Its target is read (the `gitdir:` line of a gitfile, or the link of a
+ * symlink), resolved against the pointer's own directory and then to a
+ * physical path, so an alternate spelling cannot pass as outside. A target
+ * inside a protected git surface of a writable root (`<root>/.git/worktrees/...`
+ * or `<root>/.git/modules/...`, which the sandbox keeps read-only) or outside
+ * every writable root is beyond what a confined command can write, so the
+ * pointer is benign: this is how a linked worktree (including AgenC's own
+ * `.agenc-worktrees/<slug>`) and a submodule record their `.git`, and a host
+ * process may add one while a command runs. Any other target is writable data
+ * a command could fill with a hook or config, so the pointer is a descent
+ * point. An unreadable, malformed or unresolvable pointer is a descent point
+ * (fail closed). Must match the monitor's / the policy's copy exactly.
+ */
+function nestedGitPointerIsDescentPoint(pointer: string, isLink: boolean, roots: readonly string[]): boolean {
+  let target: string;
+  try {
+    if (isLink) {
+      target = path.resolve(path.dirname(pointer), fs.readlinkSync(pointer));
+    } else {
+      const fd = fs.openSync(pointer, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      try {
+        const buffer = Buffer.alloc(4096);
+        const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        const line = buffer.subarray(0, read).toString("utf8").split(/\r?\n/u)[0] ?? "";
+        const match = /^gitdir:\s*(.+?)\s*$/u.exec(line);
+        if (match === null) return true;
+        target = path.resolve(path.dirname(pointer), match[1]!);
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+    target = fs.realpathSync(target);
+  } catch {
+    return true;
+  }
+  const within = (child: string, parent: string): boolean =>
+    child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : `${parent}${path.sep}`);
+  let insideAnyRoot = false;
+  for (const root of roots) {
+    let resolvedRoot: string;
+    try {
+      resolvedRoot = fs.realpathSync(root);
+    } catch {
+      resolvedRoot = path.resolve(root);
+    }
+    if (!within(target, resolvedRoot)) continue;
+    insideAnyRoot = true;
+    for (const surface of ["worktrees", "modules"]) {
+      if (within(target, path.join(resolvedRoot, ".git", surface))) return false;
+    }
+  }
+  return insideAnyRoot;
+}
+export function nestedGitFindings(root: string, roots: readonly string[] = [root]): NestedGitFindings {
   const start = normalizePathForPolicy(root);
   const topLevelGit = path.join(start, GIT_METADATA_DIR_NAME);
   const repoDirs: string[] = [];
@@ -874,7 +929,9 @@ export function nestedGitFindings(root: string): NestedGitFindings {
         if (entry.isDirectory() && !entry.isSymbolicLink()) {
           if (gitDirectoryIsRepository(child)) { repoDirs.push(child); descentPoints.push(child); }
         } else if (entry.isFile() || entry.isSymbolicLink()) {
-          descentPoints.push(child);
+          if (nestedGitPointerIsDescentPoint(child, entry.isSymbolicLink(), roots)) descentPoints.push(child);
+          // Every gitfile is bound read-only, benign or not: a benign one (an
+          // absorbed submodule, a worktree) must not be redirected either.
           if (entry.isFile()) pointerFiles.push(child);
         }
         continue;
