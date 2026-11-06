@@ -840,9 +840,9 @@ interface NestedGitFindings {
   readonly repoDirs: string[];
   readonly descentPoints: string[];
   /**
-   * Every nested `.git` that is a regular file (a gitfile pointer), whatever it
-   * points at. Each is bound read-only so a shell command cannot rewrite it in
-   * place, as the top-level gitfile already is.
+   * Nested gitfile pointers that are descent points (they point at writable
+   * workspace data, or do not resolve). Each is bound read-only so a shell
+   * command cannot rewrite it in place, as the top-level gitfile already is.
    */
   readonly pointerFiles: string[];
 }
@@ -929,10 +929,16 @@ export function nestedGitFindings(root: string, roots: readonly string[] = [root
         if (entry.isDirectory() && !entry.isSymbolicLink()) {
           if (gitDirectoryIsRepository(child)) { repoDirs.push(child); descentPoints.push(child); }
         } else if (entry.isFile() || entry.isSymbolicLink()) {
-          if (nestedGitPointerIsDescentPoint(child, entry.isSymbolicLink(), roots)) descentPoints.push(child);
-          // Every gitfile is bound read-only, benign or not: a benign one (an
-          // absorbed submodule, a worktree) must not be redirected either.
-          if (entry.isFile()) pointerFiles.push(child);
+          const descent = nestedGitPointerIsDescentPoint(child, entry.isSymbolicLink(), roots);
+          if (descent) descentPoints.push(child);
+          // Bind a gitfile read-only when it is itself a descent point (it points
+          // at writable data, or does not resolve). A benign gitfile (a linked
+          // worktree, including AgenC's own, or an absorbed submodule, pointing
+          // into the protected .git/worktrees or .git/modules) stays writable:
+          // AgenC must still be able to remove its own worktrees, and a rewrite
+          // of one to a writable target makes it a new descent point that the
+          // stop scan removes, failing the command.
+          if (entry.isFile() && descent) pointerFiles.push(child);
         }
         continue;
       }

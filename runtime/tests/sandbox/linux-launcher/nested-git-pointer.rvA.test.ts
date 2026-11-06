@@ -46,3 +46,20 @@ it("P4 an existing nested gitfile pointer is a read-only carve-out for the shell
   const root = getWritableRootsWithCwd(policy(), ws, base).find((r) => r.root === ws);
   expect(root?.readOnlySubpaths ?? [], "readOnlySubpaths").toContain(join(ws, "sub", ".git"));
 });
+
+it("P5 an absorbed submodule gitfile redirected to writable data during the run is flagged and removed", () => {
+  // A real absorbed submodule: sub/.git points into the protected .git/modules/sub.
+  // It is benign, so it stays writable (AgenC must be able to remove worktrees),
+  // but a redirect to a gitdir the command made becomes a new descent point.
+  gitdir(join(ws, ".git"));
+  gitdir(join(ws, ".git", "modules", "sub"));
+  fs.mkdirSync(join(ws, "sub"));
+  fs.writeFileSync(join(ws, "sub", ".git"), "gitdir: ../.git/modules/sub\n");
+  const root = getWritableRootsWithCwd(policy(), ws, base).find((r) => r.root === ws);
+  expect(root?.readOnlySubpaths ?? [], "a benign gitfile is not bound read-only").not.toContain(join(ws, "sub", ".git"));
+  const monitor = monitorFor();
+  gitdir(join(ws, "planted"));
+  fs.writeFileSync(join(ws, "sub", ".git"), "gitdir: ../planted\n");
+  expect(monitor.stop(), "violation for a submodule pointer redirected to writable data").toBe(true);
+  expect(fs.existsSync(join(ws, "sub", ".git"))).toBe(false);
+});
