@@ -50,6 +50,25 @@ describe("requestsHelpers", () => {
     "I do not need the docs, but use two helpers for the tests.",
     // English request in other text (review note N2).
     "Por favor use two sub-agents para esto",
+    // Re-review R2: a negation does not reach across "and" before a base-form verb or across a spaced dash, and
+    // polite openers are requests.
+    "Stop doing it yourself and use two helpers.",
+    "Stop reading the files yourself and spawn two helpers.",
+    "Skip the manual review and use two sub-agents to check the PR.",
+    "Don't touch the tests and use two sub-agents to fix the source.",
+    "Do not change files and use two helpers to read alpha.txt and beta.txt.",
+    "Don't modify anything - just use two helpers to read the files.",
+    "Don't modify anything \u2014 just use two helpers to read the files.",
+    "Don't modify anything \u2013 just use two helpers to read the files.",
+    "Would it be possible to use two helpers for this?",
+    "Could we use sub-agents for the review?",
+    "Don't edit files and bring in two helpers to check them.",
+    // The accepted tradeoff of R2: after "and" a base-form verb starts a new instruction.
+    "I don't want you to edit files and use sub-agents.",
+    "Please don't edit files and use sub-agents to review them.",
+    // Every match counts, and each sentence is read on its own (re-review T1).
+    "Please avoid using sub-agents for the docs, but use sub-agents for the tests.",
+    "Do not change files. Use two helpers to read alpha.txt and beta.txt.",
   ])("asks for helpers: %s", (text) => {
     expect(requestsHelpers(text)).toBe(true);
   });
@@ -114,6 +133,9 @@ describe("requestsHelpers", () => {
     "Offload the date parsing to a helper.",
     "Hand off the parsing to a helper so the handler stays short.",
     "Process the files concurrently using a helper that limits the pool size.",
+    // Re-review R2: a cue left before an aside, and a gerund after "and" that the negation still governs.
+    "Avoid, if possible, spawning sub-agents.",
+    "Avoid editing files and using sub-agents.",
     // Other languages (review note N2).
     "Agrega una funcion helper para las fechas.",
     "Usa un helper para parsear la fecha.",
@@ -126,6 +148,17 @@ describe("requestsHelpers", () => {
     expect(requestsHelpers(null)).toBe(false);
   });
 
+  test("every match counts: an opt-out for one part does not cancel a request for another", () => {
+    expect(requestsHelpers("Please avoid using sub-agents for the docs.")).toBe(false);
+    expect(requestsHelpers("Please avoid using sub-agents for the docs, but use sub-agents for the tests.")).toBe(true);
+  });
+
+  test("each sentence is read on its own: a negation in one sentence does not reach the next", () => {
+    expect(requestsHelpers("Do not change files and do not use two helpers.")).toBe(false);
+    expect(requestsHelpers("Do not change files. Use two helpers to read alpha.txt and beta.txt.")).toBe(true);
+    expect(requestsHelpers(GATE_SCENARIO_4)).toBe(true);
+  });
+
   // The docs say the check reads English: these requests are not detected (review note N2).
   test.each([
     "Usa dos sub-agentes para revisar la API y la TUI.",
@@ -134,6 +167,30 @@ describe("requestsHelpers", () => {
     "Verwende zwei Subagenten fuer die Pruefung.",
   ])("reads English only: %s", (text) => {
     expect(requestsHelpers(text)).toBe(false);
+  });
+});
+
+// It runs synchronously on every Light root turn's text in the daemon. Every match of every pattern is checked, so the
+// look-back for a negation is bounded: unbounded, 1 MB of "avoid using sub-agents, " took 30 s (re-review R1).
+describe("requestsHelpers on large inputs", () => {
+  const MB = 1 << 20;
+  const repeat = (unit: string, size: number) => unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+  test.each([
+    ["avoid using sub-agents, ", false],
+    ["avoid using sub-agents ", false],
+    ["instead of spawn agents ", false],
+    ["The agent reads the file. ", false],
+    ["Add a helper function, keep the helpers small; the agent SDK. ", false],
+    ["The parser reads the file. It keeps the rows in order; the writer flushes them. ", false],
+  ])("1 MB of %j takes well under 100 ms", (unit, expected) => {
+    const text = repeat(unit, MB);
+    let best = Number.POSITIVE_INFINITY;
+    for (let run = 0; run < 3; run += 1) {
+      const start = performance.now();
+      expect(requestsHelpers(text)).toBe(expected);
+      best = Math.min(best, performance.now() - start);
+    }
+    expect(best).toBeLessThan(100);
   });
 });
 

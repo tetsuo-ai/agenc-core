@@ -93,6 +93,10 @@ const HELPER_REQUEST_RES: readonly RegExp[] = [
   // "in parallel with helpers", "concurrently using sub-agents"
   new RegExp(String.raw`\b(?:in\s+parallel|concurrently|simultaneously|at\s+the\s+same\s+time)\s+(?:using|with|via|through|by)\s+(?:(?:${HELPER_COUNT}\s+)?${HELPER_QUALIFIER}${HELPER_SPECIFIC_NOUN}|(?:${HELPER_PLURAL_COUNT}\s+)?${HELPER_QUALIFIER}(?:helpers|agents))\b${HELPER_NOT_CODE}`, "giu"),
 ];
+// Every pattern and every enumerated label needs one of these words, so a text or a sentence without them is
+// skipped at once; and a pattern is first tried with test(), which does not copy it as matchAll does.
+const HELPER_WORD_RE = /helper|agent/iu;
+const HELPER_REQUEST_TESTS: readonly RegExp[] = HELPER_REQUEST_RES.map((pattern) => new RegExp(pattern.source, "iu"));
 // "Helper one: ...", "Agent 2: ..." on their own lines; two different labels make a request.
 const ENUMERATED_HELPER_RE =
   /^[ \t]*(?:[-*+][ \t]+)?(?:helper|sub[ -]?agent|agent)[ \t]+(one|two|three|four|five|six|[1-9])[ \t]*[:.)-]/gimu;
@@ -223,25 +227,38 @@ export function routeSwarmTask(userInput: string | null): SwarmRoutingDecision {
 }
 
 // A negation cue before the match, in its own part of the sentence: "Please avoid using sub-agents", "Instead of
-// spawning sub-agents, read both files yourself". Parts end at commas, colons and "but", "so" or "then", so "Instead
-// of reading them yourself, spawn two helpers" still asks.
+// spawning sub-agents, read both files yourself". Parts end at commas, colons, spaced dashes and "but", "so" or
+// "then", so "Instead of reading them yourself, spawn two helpers" still asks. Before a base-form verb "and" ends a
+// part too ("Don't touch the tests and use two sub-agents"); before a gerund the negation still governs it ("Avoid
+// editing files and using sub-agents").
 const HELPER_NEGATION_RE = /\b(?:not|never|no|without|avoid|avoiding|instead\s+of|rather\s+than|stop|skip)\b|n['’]t\b/iu;
-const HELPER_PART_BOUNDARY_RE = /[,:]|\b(?:but|so|then)\b/iu;
-// A "not" left before an aside still governs the verb after it: "You should not, in this case, spawn helpers".
-const HELPER_DANGLING_NEGATION_RE = /(?:\b(?:not|never)|n['’]t)\s*$/iu;
+const HELPER_PART_BOUNDARY_RE = /[,:]|\s[-\u2013\u2014]\s|\b(?:but|so|then)\b/iu;
+const HELPER_PART_BOUNDARY_AND_RE = /[,:]|\s[-\u2013\u2014]\s|\b(?:but|so|then|and)\b/iu;
+const HELPER_GERUND_RE = /^(?!bring\b)\w+ing\b/iu;
+// A cue left before an aside still governs the verb after it: "You should not, in this case, spawn helpers", "Avoid,
+// if possible, spawning sub-agents".
+const HELPER_DANGLING_NEGATION_RE = /(?:\b(?:not|never|avoid|without|instead\s+of|rather\s+than)|n['’]t)\s*$/iu;
 // "Using sub-agents would be overkill here, just read the file."
 const HELPER_NEEDLESS_RE = /\b(?:overkill|unnecessary|not\s+(?:needed|necessary))\b/iu;
 // Questions about the feature ask for an answer, not for helpers: "How do I use sub-agents in AgenC?". Requests
-// phrased as questions ("Can you", "Could you", "Would you") still count.
+// phrased as questions ("Can you", "Could you", "Could we", "Would you", "Would it be possible") still count.
 const HELPER_QUESTION_RE =
-  /^(?:(?:so|and|but|ok|okay|also)[, ]+)?(?:how|what|why|when|where|which|who|whether|does|do|did|is|are|should\s+(?:i|we)|can\s+(?:i|we)|could\s+(?:i|we)|would\s+it)\b/iu;
+  /^(?:(?:so|and|but|ok|okay|also)[, ]+)?(?:how|what|why|when|where|which|who|whether|does|do|did|is|are|should\s+(?:i|we)|can\s+(?:i|we)|could\s+i)\b/iu;
+// How far before a match a negation cue may sit. Every match of every pattern is checked, so an unbounded look-back
+// made a long sentence of rejected matches quadratic: 1 MB of "avoid using sub-agents, " took 30 s, synchronously in
+// the daemon. 200 characters is longer than any sentence part needs.
+const HELPER_NEGATION_LOOKBACK = 200;
 
 function helperRequestInClause(clause: string): boolean {
+  if (!HELPER_WORD_RE.test(clause)) return false;
   if (/\?\s*$/u.test(clause) && HELPER_QUESTION_RE.test(clause)) return false;
   if (HELPER_NEEDLESS_RE.test(clause)) return false;
-  for (const pattern of HELPER_REQUEST_RES) {
+  for (const [index, pattern] of HELPER_REQUEST_RES.entries()) {
+    if (!HELPER_REQUEST_TESTS[index]?.test(clause)) continue;
     for (const match of clause.matchAll(pattern)) {
-      const parts = clause.slice(0, match.index).split(HELPER_PART_BOUNDARY_RE);
+      const at = match.index ?? 0;
+      const boundary = HELPER_GERUND_RE.test(match[0].trim()) ? HELPER_PART_BOUNDARY_RE : HELPER_PART_BOUNDARY_AND_RE;
+      const parts = clause.slice(Math.max(0, at - HELPER_NEGATION_LOOKBACK), at).split(boundary);
       if (HELPER_NEGATION_RE.test(parts.at(-1) ?? "")) continue;
       if (parts.slice(0, -1).some((part) => HELPER_DANGLING_NEGATION_RE.test(part))) continue;
       return true;
@@ -261,6 +278,7 @@ function helperRequestInClause(clause: string): boolean {
  * prerequisites.
  */
 export function requestsHelpers(userInput: string | null): boolean {
+  if (!HELPER_WORD_RE.test(userInput ?? "")) return false;
   const unquoted = (userInput ?? "").replace(QUOTED_OR_CODE_RE, " ");
   const input = normalizedInput(unquoted);
   if (input.length === 0 || EXPLICIT_NO_DELEGATION_RE.test(input)) return false;
