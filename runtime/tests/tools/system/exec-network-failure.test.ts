@@ -46,6 +46,18 @@ describe("network-disabled command failure guidance", () => {
       runtimeSandbox: { ...sandbox, permissionProfile: { ...sandbox.permissionProfile, network: "enabled" } } })).toBeNull();
   });
 
+  test("still explains a failed lookup when local binding is enabled", () => {
+    // [sandbox.network] allowLocalBinding = true, which the bind notices recommend, only lets a command listen on
+    // loopback: outbound traffic stays disabled, so the lookup failure is still the sandbox's.
+    for (const network of [{ allowLocalBinding: true }, {}]) {
+      expect(notice({ runtimeSandbox: { ...sandbox, network } })).toContain("network access was disabled");
+      expect(notice({ runtimeSandbox: { ...sandbox, network }, escalationAvailable: true }))
+        .toContain('retry it once with sandbox_permissions="require_escalated"');
+      expect(notice({ runtimeSandbox: { ...sandbox, network }, output: "000", exitCode: 6, command: "curl -s https://example.com" }))
+        .toContain("network access was disabled");
+    }
+  });
+
   test("does not diagnose successful, live, unsandboxed or unrelated command output", () => {
     for (const exitCode of [0, null]) expect(notice({ exitCode })).toBeNull();
     expect(notice({ runtimeSandbox: undefined })).toBeNull();
@@ -61,7 +73,10 @@ describe("network-disabled command failure guidance", () => {
     }
     expect(notice({ runtimeSandbox: { ...sandbox, additionalPermissions: { network: { enabled: true } } } })).toBeNull();
     expect(notice({ runtimeSandbox: { ...sandbox, enforceManagedNetwork: true } })).toBeNull();
-    expect(notice({ runtimeSandbox: { ...sandbox, network: {} as never } })).toBeNull();
+    // A proxy or allowed Unix sockets can carry the traffic, so their failure is not the sandbox's.
+    expect(notice({ runtimeSandbox: { ...sandbox, network: { env: { HTTPS_PROXY: "http://127.0.0.1:3128" } } } })).toBeNull();
+    expect(notice({ runtimeSandbox: { ...sandbox, network: { allowUnixSockets: ["/run/proxy.sock"] } } })).toBeNull();
+    expect(notice({ runtimeSandbox: { ...sandbox, network: { allowAllUnixSockets: true } } })).toBeNull();
     expect(notice({ runtimeSandbox: { ...sandbox, preference: "auto" } })).toBeNull();
   });
 });

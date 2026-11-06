@@ -1,3 +1,4 @@
+import { networkConfigRoutesTraffic } from "../../sandbox/engine/policy.js";
 import { effectivePermissionProfile } from "../../sandbox/engine/policy-transforms.js";
 import type { UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
 import type { SandboxEscalationGrant } from "./exec-sandbox-denial.js";
@@ -33,7 +34,8 @@ export function execNetworkFailureNotice(params: {
   if (
     params.exitCode === null || params.exitCode === 0 ||
     sandbox === undefined || (sandbox.preference ?? "require") !== "require" ||
-    sandbox.network !== undefined || sandbox.enforceManagedNetwork === true ||
+    // A proxy or allowed Unix sockets may answer or fail the lookup themselves; local binding alone does not.
+    networkConfigRoutesTraffic(sandbox.network) || sandbox.enforceManagedNetwork === true ||
     effectivePermissionProfile(sandbox.permissionProfile, sandbox.additionalPermissions).network !== "disabled" ||
     !(LOOKUP_FAILURE.test(params.output) || silentClientNetworkFailure(params.command, params.exitCode))
   ) return null;
