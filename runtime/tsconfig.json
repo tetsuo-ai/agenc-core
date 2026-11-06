@@ -369,7 +369,6 @@
     "src/utils/hooks/hooksConfigManager.ts",
     "src/utils/hooks/skillImprovement.ts",
     "src/utils/logoV2Utils.ts",
-    "src/utils/messageFilters.ts",
     "src/utils/messages/mappers.ts",
     "src/utils/messages/systemInit.ts",
     "src/utils/model/deprecation.ts",

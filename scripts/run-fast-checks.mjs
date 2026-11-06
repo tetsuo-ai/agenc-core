@@ -204,6 +204,12 @@ export function deletedRuntimeFallbackPlan(runtimeInputs, {
         repoPath: "runtime/tests/hermetic-test-discovery.test.ts",
       });
     }
+    if (/^runtime\/src\/types\/generated\//u.test(file)) {
+      candidates.push({
+        kind: "file",
+        repoPath: "runtime/tests/sdk-package/sdk-generated-types-script.test.ts",
+      });
+    }
     if (file === "runtime/build.config.ts") {
       candidates.push(
         { kind: "file", repoPath: "runtime/tests/zpurgec-build-resolution.test.ts" },
