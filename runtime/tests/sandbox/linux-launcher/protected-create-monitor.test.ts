@@ -372,15 +372,19 @@ describe.runIf(process.platform === "linux")("plans that leave protected paths u
   it("keeps a git workspace on the session sandbox with its narrowed .git carve-outs watched", () => {
     const f = fixture();
     fs.mkdirSync(f.target);
-    fs.mkdirSync(path.join(f.cwd, ".git"));
+    // A real repository (HEAD + objects, as git init writes): only a real
+    // repository is narrowed, so its missing surface carve-outs are watched.
+    fs.mkdirSync(path.join(f.cwd, ".git", "objects"), { recursive: true });
+    fs.writeFileSync(path.join(f.cwd, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const before = fs.readdirSync(path.join(f.cwd, ".git")).sort();
     expect(prepareDirectBwrapV3Plan(f)).toBeUndefined();
     const plan = consumeDirectBwrapPlan(prepareSessionBwrapPlan(f)!);
     try {
       const gitDir = fs.realpathSync(path.join(f.cwd, ".git"));
       expect(plan.sessionSandbox?.protectedCreateTargets).toEqual(
         expect.arrayContaining([path.join(gitDir, "hooks"), path.join(gitDir, "config"), path.join(gitDir, "commondir")]));
-      // Planning creates nothing inside the repository's .git.
-      expect(fs.readdirSync(gitDir)).toEqual([]);
+      // Planning creates nothing new inside the repository's .git.
+      expect(fs.readdirSync(gitDir).sort()).toEqual(before);
     } finally { plan.dispose(); }
   });
 });

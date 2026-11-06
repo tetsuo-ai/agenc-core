@@ -13,8 +13,10 @@ describe('bounded git status subprocess', () => {
     invoke.mockResolvedValueOnce({ stdout });
     expect(await probeGitStatus('/session/workspace')).toMatchObject({ branch: 'main' });
     expect(invoke).toHaveBeenLastCalledWith('git', [
-      '-c', 'core.fsmonitor=false', '--no-optional-locks', 'status',
+      '-c', 'core.fsmonitor=false', '-c', 'protocol.ext.allow=never',
+      '--no-optional-locks', 'status',
       '--porcelain=v2', '--branch', '-z', '--untracked-files=all',
+      '--ignore-submodules=all',
     ], expect.objectContaining({
       cwd: '/session/workspace', timeout: 1000, encoding: 'utf8',
       env: expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' }),
