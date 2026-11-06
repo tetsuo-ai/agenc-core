@@ -407,6 +407,11 @@ export class UnifiedExecError extends Error {
     | "tty_unavailable_in_contained_operation"
     | "missing_command"
     | "unknown_process"
+    /**
+     * The session already exited and its exit was reported; the message says
+     * how it ended and what it printed last. Not a failure of the call.
+     */
+    | "session_exited"
     | "stdin_closed"
     | "write_stdin"
     /** The write itself failed after bytes may have reached the process. */

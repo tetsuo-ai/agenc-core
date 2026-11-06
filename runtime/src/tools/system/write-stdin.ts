@@ -81,6 +81,20 @@ function errorResult(error: unknown): ToolResult {
   if (error instanceof UnifiedExecUnavailableError) {
     return execUnavailableToolResult(error, "tool:system.write-stdin:exec-unavailable");
   }
+  if (error instanceof UnifiedExecError && error.code === "session_exited") {
+    // Not a failure: the session ended earlier and the message says how. As
+    // an ordinary result a stale poll never feeds the repeat refusal; its text
+    // never changes, so a model that keeps polling is still stopped by the
+    // behavioral backstop.
+    return {
+      content: error.message,
+      metadata: { sessionExited: true },
+      effectDisposition: confirmedNoEffectDisposition(
+        "tool:system.write-stdin:session-exited",
+        error.message,
+      ),
+    };
+  }
   const message = error instanceof Error ? error.message : String(error);
   return {
     content: safeStringify({
