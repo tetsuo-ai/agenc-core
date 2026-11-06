@@ -115,6 +115,7 @@ import {
 import {
   CONTEXT_IMAGE_BUDGET_ENV,
   boundContextImagesForProvider,
+  contextImageShownBefore,
   rememberPreparedContextImages,
   rememberSentContextImages,
   resolveContextImageBudgetBytes,
@@ -870,6 +871,7 @@ function projectSamplingImages(
     offeredImages,
     imageBudgetBytes,
     imageProvider,
+    contextImageShownBefore(session),
   );
   if (boundedImages.omitted > 0) {
     state.messagesForQuery = boundedImages.messages;
@@ -2599,7 +2601,7 @@ async function assertSeedUserPromptFits(
   const visible = withholdImagesForModel(seedMessages, imagePolicy, rejectedImagesFor(session, imagePolicy.route));
   const bounded = boundContextImagesForProvider(visible.messages, resolveContextImageBudgetBytes(
     session.services.userShell?.childEnvironment ?? process.env,
-  ), ctx.modelProviderId ?? session.services.provider.name);
+  ), ctx.modelProviderId ?? session.services.provider.name, contextImageShownBefore(session));
   state.messagesForQuery = withholdUndecodableToolImages(bounded.messages).messages;
   const request = buildSamplingRequestContract(state, session, ctx);
   const model = skillInvocationRequestModel(session, ctx) ??

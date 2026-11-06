@@ -1765,10 +1765,13 @@ function createShrinkCounter(params: {
       model: params.model,
       ...(calibrationScope ? { calibrationScope } : {}),
       ...(endpointIdentity !== undefined ? { endpointIdentity } : {}),
+      // Only an evicted image's note depends on what requests showed; the
+      // measurement counts the longer one on both sides, as before.
       messages: boundContextImagesForProvider(
         messages.map(toLlmMessage),
         params.imageBudgetBytes,
         params.providerName,
+        () => true,
       ).messages,
       options: baseOptions,
       contextWindowTokens: contextWindow,

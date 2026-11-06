@@ -36,7 +36,7 @@ test("unseen image recovery names only images this process prepared after its la
   expect(unseenImageSourcesRemovedByCompaction(session, messages, messages.slice(0, 2)))
     .toEqual(['"/work/current.png"']);
   // A budget notice still counts as unseen; an undecodable image does not.
-  const budgetNotice = admitContextImageBytes(messages, 1);
+  const budgetNotice = admitContextImageBytes(messages, 1, () => true);
   rememberPreparedContextImages(session, messages, budgetNotice.messages, budgetNotice.messages);
   expect(unseenImageSourcesRemovedByCompaction(session, messages, [])).toEqual(['"/work/current.png"']);
   const undecodable = messages.map(message => message.toolCallId === "read-2"
