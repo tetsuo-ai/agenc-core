@@ -164,6 +164,19 @@ export interface NetworkProxyConfig {
   readonly allowAllUnixSockets?: boolean;
 }
 
+/**
+ * Whether a sandbox network config can carry a command's traffic itself: an
+ * environment with entries (a proxy) or allowed Unix sockets. Local binding
+ * only lets a command listen on loopback, so a config with nothing else leaves
+ * outbound traffic as the permission profile sets it: a network-disabled
+ * command is still offline, as the notices that recommend allowLocalBinding
+ * assume.
+ */
+export function networkConfigRoutesTraffic(network: NetworkProxyConfig | undefined): boolean {
+  return network !== undefined && (Object.keys(network.env ?? {}).length > 0 ||
+    (network.allowUnixSockets?.length ?? 0) > 0 || network.allowAllUnixSockets === true);
+}
+
 export class SandboxTransformError extends Error {
   constructor(
     readonly code:

@@ -20,7 +20,7 @@ import {
 import { basename, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { SandboxManager, type SandboxType } from "../sandbox/engine/index.js";
+import { networkConfigRoutesTraffic, SandboxManager, type SandboxType } from "../sandbox/engine/index.js";
 import {
   approximateTokenCount,
   maxCharsForTokens,
@@ -2500,7 +2500,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
                 params.env,
                 permissions,
                 params.runtimeSandbox.additionalPermissions,
-                params.runtimeSandbox.network !== undefined || params.runtimeSandbox.enforceManagedNetwork === true,
+                // Local binding alone carries no traffic: the command stays offline.
+                networkConfigRoutesTraffic(params.runtimeSandbox.network) ||
+                  params.runtimeSandbox.enforceManagedNetwork === true,
               ),
               permissions,
               params.runtimeSandbox.additionalPermissions,
