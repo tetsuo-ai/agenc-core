@@ -696,10 +696,11 @@ function truncateInline(value: string, limit = 140): string {
 }
 
 /**
- * Like {@link truncateInline} but without the `~` home-path shortening: the
- * call row of an executable shell input (a command, or write_stdin chars)
- * shows the same real paths the approval card shows, so the two never read as
- * different commands.
+ * Like {@link truncateInline} but without the `~` home-path shortening, for
+ * the `write_stdin` call row only: a quoted `~` in typed input names a
+ * different path than the literal the card shows, so the transcript row shows
+ * the same real text the approval card shows. The command rows (exec_command,
+ * system.bash, Bash) keep the `~` shortening from #3141.
  */
 function truncateInlineVerbatim(value: string, limit = 140): string {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -715,7 +716,7 @@ function contentLengthSummary(value: unknown): string | null {
 function commandFromExecInput(record: Record<string, unknown>): string | null {
   const command = record.command ?? record.cmd;
   return typeof command === "string" && command.trim().length > 0
-    ? truncateInlineVerbatim(command)
+    ? truncateInline(command)
     : null;
 }
 
@@ -893,7 +894,7 @@ function toolUseSummaryForInput(name: string, input: unknown): string {
   // The second spelling is a display-only persisted-transcript reader; live
   // tool creation and dispatch use system.bash exclusively.
   if ((name === "system.bash" || name === "Bash") && typeof record.command === "string") {
-    return truncateInlineVerbatim(record.command);
+    return truncateInline(record.command);
   }
   // write_stdin types executable input into a running session: the card shows
   // its chars as a shell command with real paths, so the call row does too.
