@@ -193,12 +193,14 @@ describe("model-entry fold of an Edit-shaped MultiEdit call", () => {
     ).toEqual(validateToolArgs(edit.inputSchema, input));
   });
 
-  test("the production registry keeps the fold on MultiEdit and nowhere else", () => {
+  test("the production registry keeps the Edit-shape fold on MultiEdit only", () => {
     const registry = buildToolRegistry({ workspaceRoot: root });
     const reshaping = registry.tools
       .filter((tool) => tool.reshapeModelArgs !== undefined)
       .map((tool) => tool.name);
-    expect(reshaping).toEqual(["MultiEdit"]);
+    // exec_command and write_stdin carry the sandbox_permissions fold
+    // (tests/tools/system/sandbox-permission-values.test.ts).
+    expect([...reshaping].sort()).toEqual(["MultiEdit", "exec_command", "write_stdin"]);
   });
 
   test("the fold replaces only the model's keys on the execution copy", () => {

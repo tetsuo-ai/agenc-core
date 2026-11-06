@@ -25,7 +25,12 @@
  * explanation telling the model to change approach. The first refusal lets
  * the turn continue, because an unattended session can only act on that
  * advice by sampling again; a second refusal of the same call means the
- * advice did not land, and the turn ends after the batch.
+ * advice did not land, and the turn ends after the batch. Only failures and
+ * refusals since the turn's last real progress count: a result that could
+ * change the failing call's outcome, such as a file change, a shell command
+ * that is not read-only or stdin input that reached a session (see
+ * `lastProgressIndex`). A test rerun after a real code change runs again; a
+ * retry between reads is still refused.
  *
  * @module
  */
@@ -37,6 +42,7 @@ import type {
   TurnState,
 } from "../session/turn-state.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
+import { classifyReadOnlyShellIntent } from "../permissions/read-only-shell-intent.js";
 import { emitWarning } from "../session/event-log.js";
 import { stableStringify } from "../utils/stableStringify.js";
 
@@ -196,21 +202,84 @@ function completedRecordKey(record: CompletedToolResultRecord): string {
 }
 
 /**
+ * Tools whose successful result changed files. An edit that would change
+ * nothing is refused as an error, so it never counts.
+ */
+const FILE_CHANGING_TOOLS: ReadonlySet<string> = new Set([
+  "apply_patch",
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "NotebookEdit",
+]);
+
+/**
+ * The identity of a successful result that could change the outcome of a call
+ * that keeps failing, or undefined: a file change, an exec_command that
+ * classifyReadOnlyShellIntent does not classify as read-only, or write_stdin
+ * input that reached a live session and is not a read-only command line.
+ * Reads (FileRead, `cat`, `ls`, `grep`), polls, and input the exited-session
+ * answer did not send change nothing the failing call depends on.
+ */
+function progressKey(record: CompletedToolResultRecord): string | undefined {
+  if (record.isError) return undefined;
+  if (FILE_CHANGING_TOOLS.has(record.toolName)) return completedRecordKey(record);
+  if (record.toolName !== "exec_command" && record.toolName !== "write_stdin") return undefined;
+  if (record.metadata?.sessionExited === true) return undefined;
+  let line: unknown;
+  try {
+    const parsed = JSON.parse(record.arguments) as Record<string, unknown> | null;
+    line = record.toolName === "exec_command" ? parsed?.cmd : parsed?.chars;
+  } catch {
+    return undefined;
+  }
+  if (typeof line !== "string" || line.length === 0) return undefined;
+  return classifyReadOnlyShellIntent(line).allowed ? undefined : completedRecordKey(record);
+}
+
+/**
+ * Position in `completedToolResults` of the turn's last real progress, or -1:
+ * the first success of a result that could change a failing call's outcome
+ * ({@link progressKey}). Failures and refusals of a repeated call count only
+ * after that point, so a test rerun after a real code change runs instead of
+ * being refused as an error that "is not going to change". The same edit or
+ * command again is not new progress, and nothing read-only is progress at
+ * all, so a loop that only looks busy is still refused and then stopped as on
+ * 0.19.30: in the fix31s review (2026-11-06), a new `cat` between retries of
+ * one failing `npm start` reset a first version of this rule 40 times. The
+ * stale polls of tb4h music-harmony never count: an exited session's answer
+ * is not a failure.
+ */
+export function lastProgressIndex(state: TurnState): number {
+  const seen = new Set<string>();
+  let last = -1;
+  for (const [index, record] of state.completedToolResults.entries()) {
+    const key = progressKey(record);
+    if (key === undefined || seen.has(key)) continue;
+    seen.add(key);
+    last = index;
+  }
+  return last;
+}
+
+/**
  * How many times this exact call (same tool, same canonical arguments) has
- * failed in a row with the same error result earlier in this turn, read
- * from the turn's completed results. A success or a different error for the
- * same call resets the run; the synthetic refusal records this module
- * writes are skipped so they never stand in for the original error.
+ * failed in a row with the same error result since the turn's last real
+ * progress, read from the turn's completed results. A success or a different
+ * error for the same call resets the run; the synthetic refusal records this
+ * module writes are skipped so they never stand in for the original error.
  */
 export function identicalFailureRun(
   state: TurnState,
   call: LLMToolCall,
 ): { readonly count: number; readonly lastError: string } {
   const key = canonicalCallKey(call);
+  const since = lastProgressIndex(state);
   let count = 0;
   let lastError = "";
   let lastSignature = "";
-  for (const record of state.completedToolResults) {
+  for (const [index, record] of state.completedToolResults.entries()) {
+    if (index <= since) continue;
     if (record.metadata?.[REPEATED_FAILURE_BLOCKED_METADATA_KEY] === true) {
       continue;
     }
@@ -265,7 +334,8 @@ function blockedCallMessage(
 
 function lastFailureIsNonRetryable(state: TurnState, call: LLMToolCall): boolean {
   const key = canonicalCallKey(call);
-  for (let index = state.completedToolResults.length - 1; index >= 0; index -= 1) {
+  const since = lastProgressIndex(state);
+  for (let index = state.completedToolResults.length - 1; index > since; index -= 1) {
     const record = state.completedToolResults[index]!;
     if (completedRecordKey(record) !== key) continue;
     if (record.metadata?.[REPEATED_FAILURE_BLOCKED_METADATA_KEY] === true) continue;
@@ -284,12 +354,15 @@ function lastFailureIsNonRetryable(state: TurnState, call: LLMToolCall): boolean
  * repeats the same failing call twice would otherwise consume the
  * opportunity inside the batch that created it, before the model could read
  * anything. A refusal without a recorded sample predates this turn's
- * batch (a resumed turn, a legacy record) and counts as earlier.
+ * batch (a resumed turn, a legacy record) and counts as earlier. A refusal
+ * before the turn's last real progress does not count: the model acted on it.
  */
 function refusedInEarlierSample(state: TurnState, call: LLMToolCall): boolean {
   const key = canonicalCallKey(call);
   const currentSample = state.modelSampleOrdinal;
-  for (const record of state.completedToolResults) {
+  const since = lastProgressIndex(state);
+  for (const [index, record] of state.completedToolResults.entries()) {
+    if (index <= since) continue;
     if (record.metadata?.[REPEATED_FAILURE_BLOCKED_METADATA_KEY] !== true) {
       continue;
     }

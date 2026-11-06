@@ -27,6 +27,7 @@ import type {
   TurnState,
 } from "./turn-state.js";
 import type { LLMUsage } from "../llm/types.js";
+import { exitedSessionMessage } from "../../src/unified-exec/exited-sessions.js";
 
 // ── Minimal fixtures ────────────────────────────────────────────────
 
@@ -639,5 +640,26 @@ describe("C1 — record + evaluate are synchronous (return non-thenables)", () =
       "function",
     );
     expect(d.kind).toBe("none");
+  });
+});
+
+
+// ── C1: stale polls of an exited session (tb4h music-harmony) ────────
+
+describe("C1: a model that keeps polling an exited session is still stopped", () => {
+  test("the identical plain-words answer trips the no-progress backstop at default thresholds", () => {
+    // 0.19.31 answers such a poll as an ordinary result, so the repeat refusal
+    // never sees it; the backstop's identical-result ladder still ends a loop.
+    const answer = exitedSessionMessage(28, { exitCode: 0, finalOutput: "music21 10.5.2" }, "poll");
+    const poll = '{"session_id":28,"chars":"","yield_time_ms":1000,"max_output_tokens":100}';
+    const steps = Array.from({ length: 12 }, (_, i) => {
+      const id = `poll-${i}`;
+      return {
+        assistant: mkAssistant([{ id, name: "write_stdin", arguments: poll }]),
+        results: [mkCompleted(id, "write_stdin", answer)],
+      };
+    });
+    const decision = feedSteps(mkState(), cfg(), steps);
+    expect(decision.kind).toBe("terminate");
   });
 });

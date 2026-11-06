@@ -54,6 +54,12 @@ import {
 } from "./process-ownership.js";
 import { buildScrubbedSpawnEnv } from "./scrub-env.js";
 import {
+  exitedSessionMessage,
+  finalOutputTail,
+  MAX_EXITED_SESSIONS,
+  type ExitedSession,
+} from "./exited-sessions.js";
+import {
   loadPty as loadRequiredPty,
   type IPty,
   type PtyModule,
@@ -828,6 +834,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private nextProcessId = 1;
   private readonly processes = new Map<number, ProcessEntry>();
   private readonly completedBackgroundProcesses = new Map<string, UnifiedExecBackgroundProcess>();
+  /**
+   * How each session this manager released after its exit ended, by session
+   * id (ids are never reused). A later poll or write gets the exit status and
+   * the final output in plain words instead of `Unknown process id`: in tb4h
+   * music-harmony (2026-11-06) a model polled an exited session three times,
+   * got that error each time, and a repeat refusal of the same poll later
+   * ended its turn.
+   */
+  private readonly exitedSessions = new Map<number, ExitedSession>();
   private sandboxAuthorityGeneration = 0;
   private sandboxAuthorityQuiesced = false;
   /** The first cleanup failure since admission last opened; set means closed. */
@@ -1345,6 +1360,16 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       bindingState.lifetime === entry.ownerLifetime;
     if (!collectingClosedOutput) this.assertOwnerAdmission(request.ownerId, request.ownerBinding);
     if (!entry) {
+      const exited = this.exitedSessions.get(request.session_id);
+      if (
+        exited !== undefined &&
+        isProcessOwnedBy({ entryOwnerId: exited.ownerId, requestOwnerId: request.ownerId })
+      ) {
+        throw new UnifiedExecError(
+          "session_exited",
+          exitedSessionMessage(request.session_id, exited, input.length > 0 ? "write" : "poll"),
+        );
+      }
       throw new UnifiedExecError(
         "unknown_process",
         `Unknown process id ${request.session_id}`,
@@ -1374,17 +1399,25 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       );
     }
     if (input.length > 0) {
+      if (entry.exitState !== null) {
+        // The input cannot reach an exited process. Its unread output is still
+        // buffered: hand it over with the exit status instead of dropping it.
+        const remaining = await this.collect(entry, {
+          yieldMs: MIN_YIELD_TIME_MS,
+          signal: request.__abortSignal,
+          maxOutputTokens: request.max_output_tokens,
+        });
+        const exited = this.rememberExitedSession(entry, remaining.output);
+        this.releaseProcessId(entry.processId);
+        throw new UnifiedExecError(
+          "session_exited",
+          exitedSessionMessage(request.session_id, exited, "write", remaining.output),
+        );
+      }
       if (!entry.tty) {
         throw new UnifiedExecError(
           "stdin_closed",
           "This session cannot receive input. Stop it with kill_process and this session_id, poll output with write_stdin and empty chars, or rerun with tty=true if the command needs input.",
-        );
-      }
-      if (entry.exitState !== null) {
-        this.releaseProcessId(entry.processId);
-        throw new UnifiedExecError(
-          "unknown_process",
-          `Unknown process id ${request.session_id}`,
         );
       }
       try {
@@ -1415,6 +1448,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       sandboxApplied: entry.runtimeSandbox !== undefined,
     };
     if (entry.exitState !== null) {
+      this.rememberExitedSession(entry, collected.output);
       this.releaseProcessId(entry.processId);
       return collected;
     }
@@ -2062,6 +2096,24 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     return this.nextProcessId++;
   }
 
+  /** Record how an exited session ended, for a later poll or write (see `exitedSessions`). */
+  private rememberExitedSession(entry: ProcessEntry, finalOutput: string | undefined): ExitedSession {
+    const signal = entry.exitState?.signal;
+    const exited: ExitedSession = {
+      exitCode: entry.exitState?.exitCode ?? null,
+      ...(signal !== undefined && signal !== null ? { signal } : {}),
+      ...(entry.ownerId !== undefined ? { ownerId: entry.ownerId } : {}),
+      ...(finalOutput !== undefined ? { finalOutput: finalOutputTail(finalOutput) } : {}),
+    };
+    this.exitedSessions.set(entry.processId, exited);
+    while (this.exitedSessions.size > MAX_EXITED_SESSIONS) {
+      const oldest = this.exitedSessions.keys().next().value;
+      if (oldest === undefined) break;
+      this.exitedSessions.delete(oldest);
+    }
+    return exited;
+  }
+
   private releaseProcessId(processId: number): void {
     const entry = this.processes.get(processId);
     if (entry?.backgrounded && entry.exitState !== null) {
@@ -2092,8 +2144,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const exitedOldestFirst = [...this.processes.entries()]
       .filter(([, entry]) => entry.exitState !== null)
       .sort((a, b) => a[1].startedAt - b[1].startedAt);
-    for (const [processId] of exitedOldestFirst) {
+    for (const [processId, entry] of exitedOldestFirst) {
       if (this.processes.size < this.maxProcesses) break;
+      // Its output was never read; a later poll still learns how it ended.
+      this.rememberExitedSession(entry, undefined);
       this.releaseProcessId(processId);
     }
   }
