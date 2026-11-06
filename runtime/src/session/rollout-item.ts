@@ -65,6 +65,13 @@ export interface SessionMemoryExtractionState {
  */
 export interface SessionStateUpdate {
   readonly promptCache?: import("./prompt-cache-state.js").PromptCacheState | null;
+  /**
+   * Native DeepSeek Light's switch to the full core schemas, written once when
+   * it happens (prompt-cache-state.ts coreCatalogSwitchItem), apart from the
+   * prompt cache state that is saved only at turn end and only below the
+   * recovery line limit.
+   */
+  readonly coreCatalog?: "expanded";
   readonly agentTask?: SessionAgentTask;
   readonly memoryExtraction?: SessionMemoryExtractionState;
   readonly userStop?: {
