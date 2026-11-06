@@ -144,6 +144,25 @@ describe("requestsHelpers", () => {
     expect(requestsHelpers(text)).toBe(false);
   });
 
+  // fx31 re-review: a removed span must not join the words on either side of it.
+  test("the words around a code span or a quote do not join into a request", () => {
+    expect(requestsHelpers("Use `--no` sub-agents flag when you run the tests.")).toBe(false);
+    expect(requestsHelpers('Use "--no" sub-agents flag when you run the tests.')).toBe(false);
+    // A request next to a code span still counts.
+    expect(requestsHelpers("Use two sub-agents to run `npm test` and `npm run lint`.")).toBe(true);
+  });
+
+  // fx31 re-review 2: an opt-out right before a code span or a quote still declines, as on 0.19.30.
+  test.each([
+    "Earlier you asked me to use two sub-agents. Do not use sub-agents `at all`.",
+    'Earlier you asked me to use two sub-agents. Do not use sub-agents "at all".',
+    "Use two sub-agents for the API review. Do not use sub-agents `elsewhere`.",
+    "Spawn two helpers to read the files, but do not delegate `the summary`.",
+    "Do not use helpers `here`; use two sub-agents for the docs.",
+  ])("an opt-out followed by a code span or a quote still wins: %s", (prompt) => {
+    expect(requestsHelpers(prompt)).toBe(false);
+  });
+
   test("treats missing input as no request", () => {
     expect(requestsHelpers(null)).toBe(false);
   });
