@@ -1277,6 +1277,15 @@ export async function assembleSystemPrompt(
           lightUsesDeepSeekPrompt(envInfoInputs.provider, envInfoInputs.model),
           lightUsesDeepSeekWorkRules(envInfoInputs.provider, envInfoInputs.model),
           lightUsesDeepSeekWrite(envInfoInputs.provider, envInfoInputs.model),
+          // A tool policy can remove an editor (disabled_tools or a session
+          // tool policy); the head then does not name it. A child on its
+          // parent's provider and model reuses the parent's head
+          // (agents/run-agent.ts refreshChildBaseInstructions), so only a
+          // child on another model gets a head built from its own tools.
+          {
+            write: opts.enabledToolNames?.has("Write") ?? true,
+            applyPatch: opts.enabledToolNames?.has("apply_patch") ?? true,
+          },
         ),
         lightBudgetSystem(),
         lightBudgetActions(),

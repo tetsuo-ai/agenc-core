@@ -1572,12 +1572,16 @@ export function buildToolRegistry(
       const leanGrep = searchVisible && !discoveredToolNames.has("Grep");
       const leanSearch = !stableCore && !discoveredToolNames.has(SYSTEM_SEARCH_TOOLS_NAME);
       const leanRead = !stableCore && searchVisible && !discoveredToolNames.has("FileRead");
+      // Native Flash's Write points to apply_patch for partial changes; a tool
+      // policy without apply_patch gets the Light Write that Edit sessions use.
+      const writeWithApplyPatch = lightUsesDeepSeekWrite(identity.provider, identity.model) &&
+        router.getSpecs().some((spec) => spec.tool.name === "apply_patch" && spec.unavailable !== true);
       const presentBuiltin = (spec: ConfiguredToolSpec): LLMTool => {
         const tool = toolToLLMTool(spec.tool);
         if (spec.tool.metadata?.source !== "builtin") return tool;
         if (options.lightMode === true) {
           return lightPresentation(tool, { leanExec, leanSearch, leanRead, lightSession: true,
-            writeWithApplyPatch: lightUsesDeepSeekWrite(identity.provider, identity.model),
+            writeWithApplyPatch,
             glmServerChecks: describesServerChecks() });
         }
         // Standard sessions with the default deferral send compact wording for
