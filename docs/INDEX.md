@@ -3,7 +3,7 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.19.30**; embedding SDK
+Version in tree: **runtime / launcher 0.19.31**; embedding SDK
 **0.3.0**. Default provider **grok**; fresh-config session and direct-provider
 default **grok-4.6**. OpenRouter's default remains
 **`x-ai/grok-4.5`** (see [providers.md](reference/providers.md)).
@@ -99,6 +99,7 @@ history; the linked pages below are current product truth.
 
 | Doc | Summary |
 | --- | --- |
+| [releases/0.19.31.md](releases/0.19.31.md) | AgenC 0.19.31: native DeepSeek sessions that keep their cached prefix across a resume, a restart and a compaction, screenshots kept through compaction, helper requests no longer read inside code or quotes, default sandbox_permissions spellings that run, refusals of repeated calls that count only since real progress, and nested .git files and links handled in the sandbox on Linux and macOS |
 | [releases/0.19.30.md](releases/0.19.30.md) | AgenC 0.19.30: a compact first tool list for native DeepSeek Light that keeps long tasks cached, evicted images marked as already shown, Light requests for helpers that spawn them, spawn_agent found by agent searches, Light instructions that follow the tool policy, and apply_patch overlap errors that name the hunks |
 | [releases/0.19.29.md](releases/0.19.29.md) | AgenC 0.19.29: prompt caches that hold through long sessions, images normalized once and admitted in order, Write and out-of-order patch hunks for native DeepSeek Flash in Light, lexical memory recall where the selector cannot run, and helper requests checked before admission |
 | [releases/0.19.28.md](releases/0.19.28.md) | AgenC 0.19.28: tracked background commands, withdrawn input forms, isolated child tool and token-count state, retained update results, and faster Linux new-file writes |
@@ -164,7 +165,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.19.30) |
+| [`../README.md`](../README.md) | Product README (0.19.31) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |
