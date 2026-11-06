@@ -153,6 +153,38 @@ describe("protected-create targets in the warm session sandbox", () => {
     expect(fs.existsSync(path.join(work, ".git", "hooks", "pre-commit"))).toBe(false);
     expect(fs.readFileSync(path.join(work, ".git", "config"), "utf8")).toBe(config);
   });
+
+  it("protects a standalone nested repository's surface on the per-command route", async () => {
+    // A nested repo (git init sub) is not a submodule under .git/modules; host
+    // git descending into its gitlink runs its hooks and config unsandboxed,
+    // so its execution surface is read-only like the top-level .git, while its
+    // inert data stays writable.
+    execFileSync("git", ["init", "-q", "-b", "main", path.join(work, "sub")], { stdio: "ignore" });
+    const nestedConfig = fs.readFileSync(path.join(work, "sub", ".git", "config"), "utf8");
+    const perCommand = { ...policy, persistentSession: false };
+    const ref = await run("printf 0000000000000000000000000000000000000000 > sub/.git/refs/heads/topic && printf wrote", { runtimeSandbox: perCommand });
+    expect(ref.stdout).toBe("wrote");
+    expect(ref.exitCode).toBe(0);
+    const hookWrite = await run("printf x > sub/.git/hooks/pre-commit 2>/dev/null && echo wrote || echo blocked", { runtimeSandbox: perCommand });
+    expect(hookWrite.stdout.trim()).toBe("blocked");
+    expect(fs.existsSync(path.join(work, "sub", ".git", "hooks", "pre-commit"))).toBe(false);
+    const configWrite = await run("printf '[core]\\n\\tfsmonitor = /evil' > sub/.git/config 2>/dev/null && echo wrote || echo blocked", { runtimeSandbox: perCommand });
+    expect(configWrite.stdout.trim()).toBe("blocked");
+    expect(fs.readFileSync(path.join(work, "sub", ".git", "config"), "utf8")).toBe(nestedConfig);
+  });
+
+  it("keeps a .git that is not a repository fully protected on the per-command route", async () => {
+    // An empty .git (no HEAD/objects) is not a repository, so it is not
+    // narrowed: it stays fully read-only, as a whole .git was before the
+    // narrowing. An inert write under it that a real repo would allow is
+    // blocked and leaves nothing on the host, so a confined command cannot
+    // seed a repository skeleton under a .git the user never created.
+    fs.mkdirSync(path.join(work, ".git"));
+    const perCommand = { ...policy, persistentSession: false };
+    const inert = await run("printf x > .git/new 2>/dev/null && echo wrote || echo blocked", { runtimeSandbox: perCommand });
+    expect(inert.stdout.trim()).toBe("blocked");
+    expect(fs.existsSync(path.join(work, ".git", "new"))).toBe(false);
+  });
 });
 
 describe("read-only commands that run side by side", () => {
