@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build, transform } from "esbuild";
+import { assertNoDuplicatePackages } from "./check-bundle-duplicates.mjs";
 import { verifyFreshStateSchemaSources } from "./fresh-state-schema-artifact.mjs";
 
 const require = createRequire(import.meta.url);
@@ -109,7 +110,8 @@ async function runBundle(config) {
   };
 
   config.esbuildOptions?.(options);
-  await build(options);
+  const bundle = await build({ ...options, metafile: true });
+  assertNoDuplicatePackages(bundle.metafile);
   // No shared application chunks in the resident client graph. The ordinary
   // entry remains available as a dynamic fallback before session admission.
   const micro = await build({
