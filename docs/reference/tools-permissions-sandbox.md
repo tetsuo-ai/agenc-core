@@ -679,10 +679,12 @@ without starting a model turn. Use `--persist user` to retain a rule in
 rules. Persisted add/remove operations also refresh the live rule sources before
 reporting success, without selecting a different model or effort. A matching
 deny wins over allow rules in every mode, including bypass. A whole-tool ask
-rule (for example `ImagineEdit`) still asks about every call, but the tool's
-own check runs first: a deny it reaches, such as a `FileRead` deny on the image
-the tool would send, is returned as a deny, and a protected-path check keeps
-its reason, so its card offers that one call only.
+rule (for example `ImagineEdit`), and a PreToolUse hook that answers ask, still
+ask about every call, but the tool's own check runs first on every path: a deny
+it reaches, such as a `FileRead` deny on the image the tool would send, is
+returned as a deny, and a safety check (a protected path) keeps its reason, so
+its card offers that one call only whether the ask came from the rule, the hook,
+or both.
 Shell deny and ask rules with command content are checked before any approval
 prompt, including exact commands, wildcard/prefix patterns, compound commands
 and shell wrappers. Transparent launchers such as `env`, `command`, `nice`,
@@ -773,7 +775,16 @@ dangling links included, against each protected entry where it really is on
 disk (a `.git/hooks` linked to another folder), and for a file with other
 hard links, against those links too. A write that reaches a protected entry
 this way gets the same refusal and run-without-sandbox question as a write
-naming it. Each file tool call is also bound to the files it was checked
+naming it. A standalone nested repository (`sub/.git`, not a `.git/modules`
+submodule) is protected the same way: its execution and redirection surface is
+read-only so a later host-side git descending into it through a gitlink cannot
+run a planted hook, config key or alternates redirect. Narrowing applies only to
+a real repository (a `.git` with `HEAD` and an `objects` directory); a `.git`
+that is not a repository stays fully read-only, so a confined command cannot
+leave a repository skeleton under a `.git` the workspace never initialized.
+AgenC's own git status refresh in the footer no longer descends into submodules,
+so a submodule's own state is not shown there and its hooks never run from the
+refresh. Each file tool call is also bound to the files it was checked
 against before any approval prompt: if a link on its path is pointed
 elsewhere before it runs, the tool changes, reads or sends nothing and says
 to run the call again.

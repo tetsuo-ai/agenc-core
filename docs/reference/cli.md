@@ -944,8 +944,14 @@ Without a target, `list` reads the current workspace's persisted rules. With
 `--session` or `--agent`, it also lists the target's live pending requests,
 separately from granted permissions. JSON responses add `pendingRequests`;
 each entry includes the request ID, approval owner run, requesting session,
-tool, and available input or review details. Plain output includes once-only
-approval and denial commands. A pending request is not a grant.
+tool, available input or review details, and a `permissions` list naming what
+the request asks for (`tool.use`, plus `run_without_sandbox`, `mcp_no_fs_writes`
+or `single_call` when they apply). Plain output adds a `permissions [...]` line
+and a `session grant covers ...` line that says what approving for the session
+would cover (every call of an MCP tool, this file, this exact action, or this
+call only for a safety check); `agenc run` prints the same for a run's pending
+requests. Scripts that parse this text may need an update. A pending request is
+not a grant.
 
 `--scope once` approves only that request. Broader scopes require an explicit
 operator choice. Use the listed owner run ID for `--session` when approving or
