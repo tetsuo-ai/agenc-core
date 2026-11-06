@@ -20,6 +20,8 @@ export interface DirectBwrapHandoff {
      * scans for a nested repository created or promoted during a command.
      */
     readonly nestedGitScanRoots?: readonly string[];
+    /** Nested repositories present at plan time: the monitor's start baseline. */
+    readonly nestedGitBaseline?: readonly string[];
   };
   /** Fixed trusted installed artifact, absent on the legacy V2 handoff. */
   readonly namespaceInitArtifact?: string;
@@ -34,6 +36,8 @@ export interface DirectBwrapHandoff {
    * scans for a nested repository created or promoted during the command.
    */
   readonly nestedGitScanRoots?: readonly string[];
+  /** Nested repositories present at plan time: the monitor's start baseline. */
+  readonly nestedGitBaseline?: readonly string[];
   readonly sourceFd: number | undefined;
   readonly isCurrent: () => boolean;
   readonly dispose: () => void;

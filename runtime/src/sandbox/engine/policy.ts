@@ -97,6 +97,14 @@ export interface WritableRoot {
   readonly readOnlySubpaths: readonly string[];
   readonly protectedMetadataNames?: readonly string[];
   readonly reservedReadOnlyPaths?: readonly string[];
+  /**
+   * Real `.git` directories of standalone nested repositories found under this
+   * root when the plan was built (the same bounded scan that produced the
+   * nested carve-outs). The created-path monitor reuses this as its start
+   * baseline so it does not walk the tree a second time at command start; it
+   * walks once more only in stop() to find a repository created during the run.
+   */
+  readonly nestedRepoGitDirs?: readonly string[];
 }
 
 export interface SandboxCommand {
@@ -394,7 +402,8 @@ export function getWritableRootsWithCwd(
     // sandbox refuses a planted hook/config/alternate there too. Missing
     // carve-outs inside it are watched by the created-path monitor, as for the
     // top-level narrowed `.git`.
-    const nestedGitCarveouts = nestedGitMetadataDirs(root).flatMap((gitDir) =>
+    const nestedRepoGitDirs = nestedGitMetadataDirs(root);
+    const nestedGitCarveouts = nestedRepoGitDirs.flatMap((gitDir) =>
       gitNarrowedReadOnlyCarveouts(gitDir),
     );
     const readOnlySubpaths = dedupPaths([
@@ -406,6 +415,7 @@ export function getWritableRootsWithCwd(
     return {
       root,
       readOnlySubpaths,
+      ...(nestedRepoGitDirs.length > 0 ? { nestedRepoGitDirs } : {}),
       ...(reservedReadOnlyPaths.length > 0 ? { reservedReadOnlyPaths } : {}),
       protectedMetadataNames: protectedMetadataNamesForWritableRoot(
         policy,

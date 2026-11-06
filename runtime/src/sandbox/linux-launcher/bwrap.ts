@@ -64,6 +64,13 @@ export interface BwrapCommandArgs {
    * carve out ahead of time. Empty for a full-disk-write policy.
    */
   readonly nestedGitScanRoots: readonly string[];
+  /**
+   * The real nested repositories present under the writable roots when the
+   * plan was built. The created-path monitor uses this as its start baseline,
+   * so the per-command walk happens once here (in the plan) and once in the
+   * monitor's stop(), not four times.
+   */
+  readonly nestedGitBaseline: readonly string[];
 }
 
 const MAX_UNREADABLE_GLOB_MATCHES = 4096;
@@ -121,10 +128,23 @@ export function createBwrapCommandArgs(
     }
   }
   if (fullWrite && options.networkMode === "full-access" && options.seccompFd === undefined) {
-    return { args: [...command], usesBubblewrap: false, protectedCreateTargets: [], nestedGitScanRoots: [] };
+    return { args: [...command], usesBubblewrap: false, protectedCreateTargets: [], nestedGitScanRoots: [], nestedGitBaseline: [] };
   }
   const protectedCreateTargets: string[] = [];
 
+  // One writable-roots computation per command (its bounded nested-repository
+  // scan is the single walk "at start"): reused for the filesystem mounts, the
+  // monitor's scan roots, and the monitor's start baseline.
+  const writableRoots = fullWrite
+    ? []
+    : getWritableRootsWithCwd(fileSystemSandboxPolicy, sandboxPolicyCwd, options.sessionTempRoot);
+  const canonical = (target: string): string => {
+    try {
+      return canonicalAuthorityPath(target);
+    } catch {
+      return target;
+    }
+  };
   const args = fullWrite
     ? createBwrapFlagsFullFilesystem(command, commandCwd, options)
     : createBwrapFlags(
@@ -134,21 +154,16 @@ export function createBwrapCommandArgs(
         commandCwd,
         options,
         protectedCreateTargets,
+        writableRoots,
       );
   return {
     args,
     usesBubblewrap: true,
     protectedCreateTargets,
-    nestedGitScanRoots: fullWrite
-      ? []
-      : getWritableRootsWithCwd(fileSystemSandboxPolicy, sandboxPolicyCwd, options.sessionTempRoot)
-          .map((root) => {
-            try {
-              return canonicalAuthorityPath(root.root);
-            } catch {
-              return root.root;
-            }
-          }),
+    nestedGitScanRoots: writableRoots.map((root) => canonical(root.root)),
+    nestedGitBaseline: writableRoots.flatMap((root) =>
+      (root.nestedRepoGitDirs ?? []).map(canonical),
+    ),
   };
 }
 
@@ -201,6 +216,7 @@ function createBwrapFlags(
   commandCwd: string,
   options: BwrapOptions,
   protectedCreateTargets: string[],
+  writableRoots: readonly WritableRoot[],
 ): string[] {
   const filesystem = createFilesystemArgs(
     fileSystemSandboxPolicy,
@@ -208,6 +224,7 @@ function createBwrapFlags(
     commandCwd,
     options,
     protectedCreateTargets,
+    writableRoots,
   );
   const args = [
     "--new-session",
@@ -262,13 +279,9 @@ function createFilesystemArgs(
   commandCwd: string,
   options: BwrapOptions,
   protectedCreateTargets: string[],
+  writableRoots: readonly WritableRoot[],
 ): { readonly args: string[]; readonly commandCwd: string } {
   const args: string[] = [];
-  const writableRoots = getWritableRootsWithCwd(
-    policy,
-    sandboxPolicyCwd,
-    options.sessionTempRoot,
-  );
   assertAliasedCarveouts(policy, writableRoots, sandboxPolicyCwd, options.sessionTempRoot);
   if (
     options.inheritedReadOnlyCwd === true &&

@@ -32,6 +32,7 @@ export interface ProtectedCreateMonitor {
 export function startProtectedCreateMonitor(
   targets: readonly string[],
   nestedGitScanRoots: readonly string[] = [],
+  nestedGitBaseline?: readonly string[],
 ): ProtectedCreateMonitor {
   if (targets.length === 0 && nestedGitScanRoots.length === 0) {
     return { stop() { return false; } };
@@ -56,12 +57,29 @@ export function startProtectedCreateMonitor(
       return path.resolve(root);
     }
   });
-  const baseline = new Set<string>();
-  for (const root of scanRoots) {
+  // The baseline is the real nested repositories present when the command
+  // starts. The bubblewrap/Landlock plan already walked the tree to build its
+  // carve-outs, so when it passes that set here the monitor does NOT walk at
+  // start: the per-command walks are one in the plan and one in stop(). When
+  // no baseline is supplied (e.g. a plan that did not compute it), fall back
+  // to walking once here.
+  const canonicalBaseline = (entry: string): string => {
     try {
-      for (const nested of nestedRealGitRepos(root)) baseline.add(nested);
+      return fs.realpathSync(entry);
     } catch {
-      violation = true;
+      return path.resolve(entry);
+    }
+  };
+  const baseline = new Set<string>();
+  if (nestedGitBaseline !== undefined) {
+    for (const nested of nestedGitBaseline) baseline.add(canonicalBaseline(nested));
+  } else {
+    for (const root of scanRoots) {
+      try {
+        for (const nested of nestedRealGitRepos(root)) baseline.add(nested);
+      } catch {
+        violation = true;
+      }
     }
   }
   const scanNestedRepos = () => {

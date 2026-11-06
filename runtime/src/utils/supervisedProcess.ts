@@ -877,6 +877,7 @@ export function spawnContainedProcess(
                 : startProtectedCreateMonitor(
                     handoff.protectedCreateTargets ?? [],
                     handoff.nestedGitScanRoots ?? [],
+                    handoff.nestedGitBaseline,
                   );
               try {
                 const child = spawnLinuxSubreaperContainedProcess(program, args, options, {

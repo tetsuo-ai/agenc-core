@@ -212,7 +212,8 @@ function preparePlan(input: DirectBwrapInput, namespaceInit: boolean, session = 
         policyPaths: [...policyPaths, ...(permissions.fileSystem.reservedReadOnlyPaths ?? []),
           options.sandboxPolicyCwd, options.commandCwd, options.sessionTempRoot],
         protectedCreateTargets: [...bwrap.protectedCreateTargets],
-        nestedGitScanRoots: [...bwrap.nestedGitScanRoots] };
+        nestedGitScanRoots: [...bwrap.nestedGitScanRoots],
+        nestedGitBaseline: [...bwrap.nestedGitBaseline] };
     }
     const serialize = namespaceInit ? serializeProcessBrokerV3Payload : serializeProcessBrokerV2Payload;
     const payload = serialize({ program: launcher.program, args: sessionSandbox?.args ?? bwrap.args,
@@ -224,7 +225,8 @@ function preparePlan(input: DirectBwrapInput, namespaceInit: boolean, session = 
       ...(sessionSandbox === undefined && bwrap.protectedCreateTargets.length !== 0
         ? { protectedCreateTargets: [...bwrap.protectedCreateTargets] } : {}),
       ...(sessionSandbox === undefined && bwrap.nestedGitScanRoots.length !== 0
-        ? { nestedGitScanRoots: [...bwrap.nestedGitScanRoots] } : {}),
+        ? { nestedGitScanRoots: [...bwrap.nestedGitScanRoots],
+            nestedGitBaseline: [...bwrap.nestedGitBaseline] } : {}),
       ...(artifact === undefined ? {} : { namespaceInitArtifact: artifact.target }), sourceFd: source?.fd, isCurrent,
       dispose: () => ownedSource?.dispose() });
     source = undefined;

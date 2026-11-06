@@ -266,6 +266,7 @@ async function runLinuxSandboxOptions(
     const protectedMonitor = startProtectedCreateMonitor(
       bwrapArgs.protectedCreateTargets,
       bwrapArgs.nestedGitScanRoots,
+      bwrapArgs.nestedGitBaseline,
     );
     const spawned = spawnBubblewrap(launcher, finalArgs, {
       cwd: hostCommandCwd,
