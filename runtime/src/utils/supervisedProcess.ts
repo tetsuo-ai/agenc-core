@@ -871,8 +871,14 @@ export function spawnContainedProcess(
               // Missing protected paths this launch leaves unmounted: watch
               // them from before the command starts until its owner stops the
               // monitor after the whole process tree is gone.
-              const monitor = handoff.protectedCreateTargets === undefined
-                ? undefined : startProtectedCreateMonitor(handoff.protectedCreateTargets);
+              const monitor = (handoff.protectedCreateTargets === undefined &&
+                (handoff.nestedGitScanRoots === undefined || handoff.nestedGitScanRoots.length === 0))
+                ? undefined
+                : startProtectedCreateMonitor(
+                    handoff.protectedCreateTargets ?? [],
+                    handoff.nestedGitScanRoots ?? [],
+                    handoff.nestedGitBaseline,
+                  );
               try {
                 const child = spawnLinuxSubreaperContainedProcess(program, args, options, {
                   ...handoff, brokerPath, brokerContext,

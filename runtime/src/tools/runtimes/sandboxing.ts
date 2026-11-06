@@ -9,6 +9,7 @@ import {
   canWriteRuntimeOwnedPathWithCwd,
   permissionProfileFromRuntimePermissions,
   physicalWritePathWithCwd,
+  protectedEntryReachedByWrite,
   restrictedFileSystemPolicy,
   unrestrictedFileSystemPolicy,
   type FileSystemSandboxEntry,
@@ -50,7 +51,8 @@ import { resolveRuntimePathTarget } from "./paths.js";
 import { analyzeShellRuntimeAccess } from "./shell.js";
 import { isSessionCronMemoryMutation } from "./session-cron.js";
 import { cronLockAuthorityRoots, overlapsCronAuthority, protectCronAuthority } from "../../sandbox/cron-authority-protection.js";
-import { canonicalAuthorityPath, desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
+import { canonicalAuthorityPath, desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority, writeLandingAuthorityPath } from "../../sandbox/desktop-authority-protection.js";
+import { boundTargetFor } from "../bound-targets.js";
 import { protectAgencHomeUnderWritableRoot, sandboxAgencHome } from "../../sandbox/agenc-home-protection.js";
 import { daemonSocketAuthorityRoots, protectDaemonSocket } from "../../sandbox/daemon-socket-protection.js";
 import { routineRunOptions } from "../../session/runtime-options.js";
@@ -617,7 +619,26 @@ function enforceRuntimeSandboxAttemptChecks(
     ) {
       continue;
     }
-    const reached = physicalWritePathWithCwd(profile.fileSystem, target, cwd, sessionTempRoot);
+    // The file this call was checked against before any prompt, when the
+    // dispatcher bound one: the tool changes that file or nothing, so this
+    // check is about the same file.
+    const bound = boundTargetFor(input.args, path.resolve(cwd, target));
+    const checked = bound?.canonical ?? target;
+    // Following the links on the path can refuse a loop (more than the link
+    // limit, or a cycle) with ELOOP. That is a fail-closed refusal, so turn
+    // it into the sandbox's own clean denial rather than letting an
+    // unclassified error escape the gate.
+    let reached: string;
+    let landing: string;
+    try {
+      reached = physicalWritePathWithCwd(profile.fileSystem, checked, cwd, sessionTempRoot);
+      landing = writeLandingAuthorityPath(path.resolve(cwd, checked));
+    } catch (error) {
+      throw new SandboxDeniedError(
+        `sandbox workspace_write could not resolve where ${target} leads: ${error instanceof Error ? error.message : String(error)}`,
+        { denial: "filesystem", target, policy },
+      );
+    }
     if (
       reached !== target &&
       !canWritePathWithCwd(profile.fileSystem, reached, cwd, sessionTempRoot)
@@ -627,6 +648,17 @@ function enforceRuntimeSandboxAttemptChecks(
         {
           denial: "filesystem",
           target: reached,
+          policy,
+        },
+      );
+    }
+    const protectedEntry = protectedEntryReachedByWrite(profile.fileSystem, landing, cwd, sessionTempRoot);
+    if (protectedEntry !== undefined) {
+      throw new SandboxDeniedError(
+        `sandbox workspace_write blocked write to ${landing}: it changes ${protectedEntry} under another name (reached through ${target})`,
+        {
+          denial: "filesystem",
+          target: landing,
           policy,
         },
       );

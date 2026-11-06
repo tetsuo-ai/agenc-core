@@ -10,6 +10,16 @@ export class WorkspacePathIdentityChangedError extends WorkspaceMutationError {
   }
 }
 
+export class WorkspaceTargetChangedSinceCheckError extends WorkspaceMutationError {
+  constructor(path: string) {
+    super(
+      "PATH_IDENTITY_CHANGED",
+      `${path} is not the file this call was checked against: it changed after the check (for example a link was pointed elsewhere); no filesystem mutation was authorized. Run the call again.`,
+    );
+    this.name = "WorkspaceTargetChangedSinceCheckError";
+  }
+}
+
 export class WorkspaceFileMutationPreEffectConflictError extends WorkspaceMutationError {
   constructor(path: string) {
     super(

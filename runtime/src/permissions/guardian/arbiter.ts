@@ -23,13 +23,12 @@ import type {
   BlockedRequestObserver,
   NetworkPolicyDecider,
 } from "../../sandbox/network-policy.js";
-import {
-  RUN_WITHOUT_SANDBOX_PERMISSION,
-  type AvailableApprovalDecision,
-  type NetworkApprovalContext,
-  type ParsedApprovalCommand,
+import type {
+  AvailableApprovalDecision,
+  NetworkApprovalContext,
+  ParsedApprovalCommand,
 } from "../../sandbox/escalation/approvals.js";
-import { MCP_NO_FS_WRITES_PERMISSION } from "../../tools/runtimes/mcp-filesystem-approval.js";
+import { approvalRequestPermissions } from "../approval-request-permissions.js";
 import type {
   ExecPolicyAmendment,
   NetworkPolicyAmendment,
@@ -55,7 +54,7 @@ import {
   reviewDecisionIsAllow,
   type ReviewDecision,
 } from "../review-decision.js";
-import { getPathsForPermissionCheck } from "../path-validation.js";
+import { fileGrantTargets } from "../../tools/bound-targets.js";
 import { getAskRuleForTool, getDenyRuleForTool } from "../rules.js";
 import { hookDispatcherApprovalSource } from "../tool-approval.js";
 import type {
@@ -263,7 +262,10 @@ export interface ApprovalCtx {
   /**
    * The permission layer asked because of a safety check: a protected path
    * or an ambiguous path shape. A person answers each such call; a session
-   * grant neither answers nor records it.
+   * grant neither answers nor records it. The journaled request lists the
+   * `single_call` permission for it, from which daemon clients set this
+   * flag to say on the card that approving for the session covers this
+   * call only.
    */
   readonly safetyCheck?: boolean;
   /**
@@ -757,13 +759,7 @@ function beginDurableApprovalJournal(
             ? { crossProvider: input as unknown as import("../../app-server/protocol/index.js").CrossProviderSpawnDisclosure }
             : {}),
           turnId: opts.ctx.turnId,
-          permissions: opts.ctx.approvalKind === "cross_provider_spawn"
-            ? ["cross_provider_spawn"]
-            : [
-                "tool.use",
-                ...(opts.ctx.runsWithoutSandbox === true ? [RUN_WITHOUT_SANDBOX_PERMISSION] : []),
-                ...(opts.ctx.mcpFilesystemApproval !== undefined ? [MCP_NO_FS_WRITES_PERMISSION] : []),
-              ],
+          permissions: approvalRequestPermissions(opts.ctx),
           ...(opts.ctx.retryReason !== undefined
             ? { reason: opts.ctx.retryReason }
             : {}),
@@ -940,12 +936,17 @@ export async function arbitratePermissionMode(
         : {}),
     }));
   if (merged) {
-    // SEC-02: PreToolUse `allow` means "skip the human prompt", not "skip deny
-    // floors". Whole-tool settings deny/ask are already re-checked inside
-    // mergeHookPermissionDecision; content rules, unattended denylist, and
-    // tool safetyCheck still run through the evaluator when available.
+    // SEC-02: a PreToolUse `allow` means "skip the human prompt", not "skip
+    // deny floors"; a PreToolUse `ask` means "a person decides", not "let an
+    // ordinary card answer a call the tool's own check would refuse or must
+    // hold open for a safety reason". Whole-tool settings deny/ask are already
+    // re-checked inside mergeHookPermissionDecision; for a hook allow OR ask,
+    // the tool's own deny, its safetyCheck and its required interaction still
+    // run through the evaluator when available, so a path deny stays a deny
+    // and a protected-path call keeps its single-call status whatever the hook
+    // said.
     if (
-      merged.behavior === "allow" &&
+      (merged.behavior === "allow" || merged.behavior === "ask") &&
       opts.includeEvaluator !== false &&
       canUseTool &&
       permissionContext
@@ -989,20 +990,25 @@ export async function arbitratePermissionMode(
           mergedDecision: merged,
         };
       }
-      return {
-        kind: "allow",
-        args:
-          floorDecision.behavior === "allow" || floorDecision.behavior === "ask"
-            ? (floorDecision.updatedInput ?? merged.args ?? opts.args)
-            : (merged.args ?? opts.args),
-        source: "pre-tool-use-hook",
-        reasonCode: hookPermissionReasonCode("allow", merged.decisionReason),
-        ...(merged.message !== undefined ? { message: merged.message } : {}),
-        ...(merged.decisionReason !== undefined
-          ? { decisionReason: merged.decisionReason }
-          : {}),
-        mergedDecision: merged,
-      };
+      // The floor did not refuse or require a person: the hook's own verdict
+      // stands. An allow skips the prompt; an ask still shows its card, but
+      // now only after the floor had its say.
+      if (merged.behavior === "allow") {
+        return {
+          kind: "allow",
+          args:
+            floorDecision.behavior === "allow" || floorDecision.behavior === "ask"
+              ? (floorDecision.updatedInput ?? merged.args ?? opts.args)
+              : (merged.args ?? opts.args),
+          source: "pre-tool-use-hook",
+          reasonCode: hookPermissionReasonCode("allow", merged.decisionReason),
+          ...(merged.message !== undefined ? { message: merged.message } : {}),
+          ...(merged.decisionReason !== undefined
+            ? { decisionReason: merged.decisionReason }
+            : {}),
+          mergedDecision: merged,
+        };
+      }
     }
     return {
       kind: merged.behavior,
@@ -1467,10 +1473,11 @@ function buildApprovalCacheKeys(
     // text is the operation, not its permission scope. Retain other options,
     // cwd and execution policies so a grant cannot authorize another action.
     // The file is the one the path reaches through its links when asked: a
-    // link re-pointed at another file (a git hook) asks again.
+    // link re-pointed at another file (a git hook) asks again. Its name is
+    // kept byte for byte: two POSIX names that normalize alike are two files.
     const filePath = resolvePath(cwd, args.file_path);
     scopedArgs = { ...args, file_path: filePath };
-    resolvedTargets = getPathsForPermissionCheck(filePath);
+    resolvedTargets = fileGrantTargets(filePath);
     if (tool.name === "Write") delete scopedArgs.content;
     else {
       delete scopedArgs.old_string;

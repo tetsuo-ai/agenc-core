@@ -289,6 +289,16 @@ export interface Tool {
     context: ToolEvaluatorContext,
   ) => PermissionResult | Promise<PermissionResult>;
   /**
+   * The files this call reads or changes, observed the way the tool itself
+   * resolves its arguments. The dispatcher calls it before any approval
+   * prompt and binds the call to the answer (tools/bound-targets.ts); the
+   * tool refuses its effect when the file it reaches is no longer the one
+   * observed. Must be synchronous and side-effect free.
+   */
+  readonly observeTargets?: (
+    args: Readonly<Record<string, unknown>>,
+  ) => readonly import("./bound-targets.js").ObservedFileTarget[];
+  /**
    * AgenC behavior: how this tool should respond to a user
    * 'interrupt' abort (typed message mid-turn). `'cancel'` → the
    * executor synthesizes a `user_interrupted` terminal result and

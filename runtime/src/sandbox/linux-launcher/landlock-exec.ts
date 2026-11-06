@@ -91,6 +91,12 @@ export type LandlockPlan =
        * a run that creates one fails.
        */
       readonly protectedCreateTargets: readonly string[];
+      /**
+       * Physical writable roots the protected-create monitor scans for a
+       * nested repository created or promoted to a real repository during the
+       * run (the Landlock plan, like the bubblewrap plan, is fixed at launch).
+       */
+      readonly nestedGitScanRoots: readonly string[];
     }
   | { readonly kind: "refused"; readonly reason: string };
 
@@ -112,6 +118,22 @@ function existingWritableAncestor(root: string, subpath: string): string | null 
     ancestor = path.dirname(ancestor);
   }
   return null;
+}
+
+/**
+ * A watched target spelled under its writable root's physical path. The
+ * created-path monitor walks to a target without following any link, so a
+ * workspace reached through a link is resolved here, once, before the
+ * command starts; a link below the root still fails the command.
+ */
+function physicalTarget(root: string, target: string): string {
+  let physicalRoot: string;
+  try {
+    physicalRoot = fs.realpathSync.native(root);
+  } catch {
+    return path.resolve(target);
+  }
+  return path.join(physicalRoot, path.relative(path.resolve(root), path.resolve(target)));
 }
 
 function underNeverGranted(target: string): boolean {
@@ -215,7 +237,7 @@ export function planLandlockConfinement(input: LandlockPlanInput): LandlockPlan 
             `writable directory, which an allow-list cannot express: ${writableAncestor}`,
         };
       }
-      protectedCreateTargets.push(subpath);
+      protectedCreateTargets.push(physicalTarget(root.root, subpath));
     }
     for (const name of root.protectedMetadataNames ?? []) {
       const target = path.join(root.root, name);
@@ -227,7 +249,7 @@ export function planLandlockConfinement(input: LandlockPlanInput): LandlockPlan 
             `an allow-list cannot express: ${target}`,
         };
       }
-      protectedCreateTargets.push(target);
+      protectedCreateTargets.push(physicalTarget(root.root, target));
     }
   }
 
@@ -295,5 +317,6 @@ export function planLandlockConfinement(input: LandlockPlanInput): LandlockPlan 
     readOnly: compact(readOnly),
     readWrite: compact(readWrite),
     protectedCreateTargets: [...new Set(protectedCreateTargets)],
+    nestedGitScanRoots: [...new Set(readWrite)],
   };
 }

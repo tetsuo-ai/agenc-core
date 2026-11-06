@@ -562,6 +562,7 @@ describe("Linux sandbox launcher", () => {
     fs.mkdirSync(path.join(root, ".git", "refs", "heads"), { recursive: true });
     fs.mkdirSync(path.join(root, ".git", "objects", "info"), { recursive: true });
     fs.writeFileSync(path.join(root, ".git", "config"), "[core]\n");
+    fs.writeFileSync(path.join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
     const secret = path.join(root, "token.secret");
     const otherSecret = path.join(root, "other.token");
     fs.writeFileSync(secret, "sensitive");
@@ -1074,6 +1075,7 @@ describe("Linux sandbox launcher", () => {
     fs.mkdirSync(path.join(workspace, ".git"), { recursive: true });
     fs.writeFileSync(path.join(workspace, ".git", "config"), "[core]\n");
     fs.writeFileSync(path.join(workspace, ".git", "HEAD"), "ref: refs/heads/main\n");
+    fs.mkdirSync(path.join(workspace, ".git", "objects"), { recursive: true });
     const bin = path.join(workspace, "bin"); fs.mkdirSync(bin);
     const fakeBwrap = path.join(bin, "bwrap");
     const createTarget = path.join(workspace, rel);

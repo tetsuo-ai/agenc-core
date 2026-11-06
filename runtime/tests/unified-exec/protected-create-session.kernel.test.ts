@@ -124,6 +124,87 @@ describe("protected-create targets in the warm session sandbox", () => {
     expect(created.exitCode).toBe(1);
     expect(fs.existsSync(path.join(work, ".agenc"))).toBe(false);
   });
+
+  it("narrows a real .git on the per-command route: inert writes land, its surface stays protected", async () => {
+    // A real repository is narrowed (#3172): refs, objects, index, HEAD and other inert data under
+    // .git are writable, while the execution and redirection surface (hooks, config, info, modules,
+    // worktrees, commondir, objects/info, ...) stays read-only. This is the per-command route
+    // (persistentSession false); the warm-session route is covered by "keeps git work ...".
+    execFileSync("git", ["init", "-q", "-b", "main", work], { stdio: "ignore" });
+    const config = fs.readFileSync(path.join(work, ".git", "config"), "utf8");
+    const perCommand = { ...policy, persistentSession: false };
+    // Ordinary inert data under .git is writable.
+    const ref = await run("printf 0000000000000000000000000000000000000000 > .git/refs/heads/topic && printf wrote", { runtimeSandbox: perCommand });
+    expect(ref.stdout).toBe("wrote");
+    expect(ref.exitCode).toBe(0);
+    expect(fs.existsSync(path.join(work, ".git", "refs", "heads", "topic"))).toBe(true);
+    // A missing surface entry created during a command is removed and the clean exit fails.
+    const modules = await run("mkdir .git/modules && printf ran", { runtimeSandbox: perCommand });
+    expect(modules.stdout).toBe("ran");
+    expect(modules.exitCode).toBe(1);
+    expect(fs.existsSync(path.join(work, ".git", "modules"))).toBe(false);
+    const commondir = await run("printf ../elsewhere > .git/commondir; printf done", { runtimeSandbox: perCommand });
+    expect(commondir.stdout).toBe("done");
+    expect(commondir.exitCode).toBe(1);
+    expect(fs.existsSync(path.join(work, ".git", "commondir"))).toBe(false);
+    // An existing surface entry stays read-only.
+    const hookWrite = await run("printf x > .git/hooks/pre-commit 2>/dev/null && echo wrote || echo blocked", { runtimeSandbox: perCommand });
+    expect(hookWrite.stdout.trim()).toBe("blocked");
+    expect(fs.existsSync(path.join(work, ".git", "hooks", "pre-commit"))).toBe(false);
+    expect(fs.readFileSync(path.join(work, ".git", "config"), "utf8")).toBe(config);
+  });
+
+  it("protects a standalone nested repository's surface on the per-command route", async () => {
+    // A nested repo (git init sub) is not a submodule under .git/modules; host
+    // git descending into its gitlink runs its hooks and config unsandboxed,
+    // so its execution surface is read-only like the top-level .git, while its
+    // inert data stays writable.
+    execFileSync("git", ["init", "-q", "-b", "main", path.join(work, "sub")], { stdio: "ignore" });
+    const nestedConfig = fs.readFileSync(path.join(work, "sub", ".git", "config"), "utf8");
+    const perCommand = { ...policy, persistentSession: false };
+    const ref = await run("printf 0000000000000000000000000000000000000000 > sub/.git/refs/heads/topic && printf wrote", { runtimeSandbox: perCommand });
+    expect(ref.stdout).toBe("wrote");
+    expect(ref.exitCode).toBe(0);
+    const hookWrite = await run("printf x > sub/.git/hooks/pre-commit 2>/dev/null && echo wrote || echo blocked", { runtimeSandbox: perCommand });
+    expect(hookWrite.stdout.trim()).toBe("blocked");
+    expect(fs.existsSync(path.join(work, "sub", ".git", "hooks", "pre-commit"))).toBe(false);
+    const configWrite = await run("printf '[core]\\n\\tfsmonitor = /evil' > sub/.git/config 2>/dev/null && echo wrote || echo blocked", { runtimeSandbox: perCommand });
+    expect(configWrite.stdout.trim()).toBe("blocked");
+    expect(fs.readFileSync(path.join(work, "sub", ".git", "config"), "utf8")).toBe(nestedConfig);
+  });
+
+  it("keeps a .git that is not a repository fully protected on the per-command route", async () => {
+    // An empty .git (no HEAD/objects) is not a repository, so it is not
+    // narrowed: it stays fully read-only, as a whole .git was before the
+    // narrowing. An inert write under it that a real repo would allow is
+    // blocked and leaves nothing on the host, so a confined command cannot
+    // seed a repository skeleton under a .git the user never created.
+    fs.mkdirSync(path.join(work, ".git"));
+    const perCommand = { ...policy, persistentSession: false };
+    const inert = await run("printf x > .git/new 2>/dev/null && echo wrote || echo blocked", { runtimeSandbox: perCommand });
+    expect(inert.stdout.trim()).toBe("blocked");
+    expect(fs.existsSync(path.join(work, ".git", "new"))).toBe(false);
+  });
+
+  it("fails the command and removes a nested repository assembled during the run", async () => {
+    // At launch `sub` does not exist, so the fixed plan carves out nothing for
+    // it and the shell can write freely under `sub/.git`. The command then
+    // assembles a real nested repository (HEAD + objects) carrying a planted
+    // fsmonitor, which a later host-side git descending through its gitlink
+    // would run. The created-path monitor scans the writable root, finds the
+    // new real nested repository that was not there at the start, removes it
+    // and fails the command.
+    const perCommand = { ...policy, persistentSession: false };
+    const assemble = await run(
+      "mkdir -p sub/.git/objects && " +
+      "printf 'ref: refs/heads/main\n' > sub/.git/HEAD && " +
+      "printf '[core]\n\tfsmonitor = /tmp/evil\n' > sub/.git/config && printf ran",
+      { runtimeSandbox: perCommand },
+    );
+    expect(assemble.stdout).toBe("ran");
+    expect(assemble.exitCode).not.toBe(0);
+    expect(fs.existsSync(path.join(work, "sub", ".git")), "the new nested repo is removed").toBe(false);
+  });
 });
 
 describe("read-only commands that run side by side", () => {

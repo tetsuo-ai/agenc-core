@@ -21,15 +21,22 @@ import { makeToolUseMessage } from "./synthetic-assistant-message.js";
 import type { AgenCBridgeSession } from "./session-types.js";
 import { createSessionAppStateBridge } from "./session-app-state.js";
 import type { AppState } from "./state/AppState.js";
-import { approvalInputText } from "./approval-input-text.js";
+import { approvalInputIsShell, approvalInputText } from "./approval-input-text.js";
 import { abbreviateHomePaths } from "../utils/home-path-display.js";
-import { fileEditTargetPath } from "../tools/system/file-edit-target.js";
-import { Box, useInput, type Key } from "./ink.js";
+import { sessionGrantScope } from "../permissions/session-grant-scope.js";
+import { Box, Text, useInput, type Key } from "./ink.js";
 import type { InputEvent } from "./ink/events/input-event.js";
 import { useRegisterKeybindingContext } from "./keybindings/KeybindingContext.js";
 import { useInputCapture, useKeybindings } from "./keybindings/useKeybinding.js";
 import { useRegisterOverlay } from "./context/overlayContext.js";
-import { ApprovalCard, DiffInline, Popup, type ApprovalDiffPreview } from "./components/v2/primitives.js";
+import {
+  APPROVAL_COMMAND_SPARE_COLS,
+  ApprovalCard,
+  approvalCommandRows,
+  DiffInline,
+  Popup,
+  type ApprovalDiffPreview,
+} from "./components/v2/primitives.js";
 import { useTerminalSize } from "./hooks/useTerminalSize.js";
 import { useModalOrTerminalSize } from "./context/modalContext.js";
 import { buildEditDiffPreview } from "./edit-diff-preview.js";
@@ -538,34 +545,8 @@ function approvalNote(opts: {
     : `${opts.question} ${opts.writePreviewWarning}`;
 }
 
-/** Live shell/command tool names whose approval input IS a runnable command. */
-const SHELL_COMMAND_TOOL_NAMES: ReadonlySet<string> = new Set([
-  "system.bash",
-  "exec_command",
-  "Run",
-]);
-
-/**
- * Whether the approval `command` string is a real SHELL command (so it earns the
- * `$ ` prompt glyph), vs a non-shell input such as a Write/Edit `file_path` where
- * a `$ ` would misread as runnable and duplicate the diff header's path. Decided
- * from the tool name (the known shell tools) OR — for any other tool — from the
- * input actually carrying a `command`/`cmd` key (the same signal
- * `approvalInputText` uses to render a command rather than a bare path/field).
- */
-function approvalCommandIsShell(
-  toolUseConfirm: ProjectedToolUseConfirm,
-): boolean {
-  if (SHELL_COMMAND_TOOL_NAMES.has(toolUseConfirm.tool.name)) return true;
-  const input = toolUseConfirm.input;
-  if (input !== null && typeof input === "object" && !Array.isArray(input)) {
-    const record = input as Record<string, unknown>;
-    if (typeof record.command === "string" || typeof record.cmd === "string") {
-      return true;
-    }
-  }
-  return false;
-}
+/** Columns the full command view loses to its popup's border and body padding. */
+const FULL_COMMAND_VIEW_CHROME_COLS = 6;
 
 function AgenCApprovalOverlay({
   request,
@@ -578,7 +559,11 @@ function AgenCApprovalOverlay({
   readonly onDismiss?: () => void;
   readonly composerDraft?: ApprovalComposerDraft;
 }) {
-  const command = approvalInputText(toolUseConfirm.input, { prettyJson: true });
+  const command = approvalInputText(toolUseConfirm.input, { prettyJson: true, toolName: toolUseConfirm.tool.name });
+  const shownCommand = command.length > 0 ? command : toolUseConfirm.description;
+  // A `$ ` prompt glyph marks a real shell command, never a file tool's path,
+  // where it would misread as runnable and repeat the diff header's path.
+  const commandIsShell = approvalInputIsShell(toolUseConfirm.tool.name, toolUseConfirm.input);
   const fileWritePreview = request.ctx.fileWritePreview;
   const writePreviewUnavailable = toolUseConfirm.tool.name === "Write" &&
     (fileWritePreview === undefined || fileWritePreview.kind === "unavailable");
@@ -622,10 +607,18 @@ function AgenCApprovalOverlay({
   const diffChordRef = useRef(false);
   const [diffOffset, setDiffOffset] = useState(0);
   const viewport = useModalOrTerminalSize(useTerminalSize());
+  // ctrl+w d shows the whole input in a pager: a file change's diff, or else
+  // the whole shell command, which the card may show only part of.
+  const fullCommandRows = useMemo(
+    () => diffPreview === undefined && commandIsShell
+      ? approvalCommandRows(shownCommand, viewport.columns - FULL_COMMAND_VIEW_CHROME_COLS - APPROVAL_COMMAND_SPARE_COLS)
+      : undefined,
+    [diffPreview, commandIsShell, shownCommand, viewport.columns],
+  );
   const diffPageRows = Math.max(1, viewport.rows - 16);
-  const maxDiffOffset = Math.max(0, (diffPreview?.lines.length ?? 0) - diffPageRows);
+  const maxDiffOffset = Math.max(0, (diffPreview?.lines.length ?? fullCommandRows?.length ?? 0) - diffPageRows);
   const handleDiffInput = useCallback((input: string, key: Key, event: InputEvent): boolean => {
-    if (diffPreview === undefined) return false;
+    if (diffPreview === undefined && fullCommandRows === undefined) return false;
     if (key.ctrl && input === "w") {
       diffChordRef.current = true;
       event.stopImmediatePropagation();
@@ -653,7 +646,7 @@ function AgenCApprovalOverlay({
     else if (key.pageDown || (key.ctrl && input === "d")) setDiffOffset(value => Math.min(maxDiffOffset, value + diffPageRows));
     else if (key.pageUp || (key.ctrl && input === "u")) setDiffOffset(value => Math.max(0, value - diffPageRows));
     return true;
-  }, [diffPreview, diffPageRows, maxDiffOffset]);
+  }, [diffPreview, fullCommandRows, diffPageRows, maxDiffOffset]);
   const risk = classifyApprovalRisk({
     request,
     toolName: toolUseConfirm.tool.name,
@@ -827,9 +820,18 @@ function AgenCApprovalOverlay({
       <DiffInline file={diffPreview.file} stats={diffPreview.stats} op={diffPreview.op} lines={diffPreview.lines.slice(diffOffset, diffOffset + diffPageRows)} />
     </Popup>;
   }
+  if (fullDiffVisible && fullCommandRows !== undefined) {
+    // Every character of the command, as the shell gets it; the pager's keys
+    // never answer the request.
+    return <Popup title="FULL APPROVAL COMMAND" status={`${diffOffset + 1}-${Math.min(diffOffset + diffPageRows, fullCommandRows.length)} of ${fullCommandRows.length}`} footer={[{ keyName: "↑↓", label: "scroll" }, { keyName: "PgUp/PgDn", label: "page" }, { keyName: "esc / ↵", label: "back to approval" }]}>
+      <Box flexDirection="column">
+        {fullCommandRows.slice(diffOffset, diffOffset + diffPageRows).map((row, index) => (
+          <Text key={diffOffset + index} color="text2" wrap="truncate-end">{row}</Text>
+        ))}
+      </Box>
+    </Popup>;
+  }
   const name = toolLabel(toolUseConfirm);
-  const shownCommand = command.length > 0 ? command : toolUseConfirm.description;
-  const commandIsShell = approvalCommandIsShell(toolUseConfirm);
   // The separate question asked after the sandbox refused an approved call:
   // its title and summary say so, because the reason text below is the first
   // row a short terminal drops.
@@ -842,6 +844,16 @@ function AgenCApprovalOverlay({
         : risk === "medium"
           ? "medium-risk approval"
           : "needs approval";
+  // Say what a session grant covers: the approval cache keys an MCP tool
+  // approved without filesystem-write targets on the tool alone, and never
+  // answers or records a call a safety check asked about.
+  const sessionScope = sessionGrantScope({
+    toolName: toolUseConfirm.tool.name,
+    toolLabel: name,
+    input: request.input,
+    coversAllCalls: request.ctx.sessionGrantCoversAllCalls === true || request.ctx.mcpFilesystemApproval !== undefined,
+    singleCall: request.ctx.safetyCheck === true,
+  });
   return (
     <Box flexDirection="column" gap={1}>
       <ApprovalCard
@@ -854,6 +866,7 @@ function AgenCApprovalOverlay({
         // =, so a shortened command could read as a different command.
         command={commandIsShell ? shownCommand : abbreviateHomePaths(shownCommand)}
         commandIsShell={commandIsShell}
+        commandFullView={fullCommandRows !== undefined}
         confirmLabel={draftFocused ? "tab to review" : destructive ? `type ${requiredWord}` : "enter"}
         facts={[
           { label: "tool", value: name },
@@ -891,14 +904,8 @@ function AgenCApprovalOverlay({
         cancelLabel="stop turn"
         draftText={composerDraft?.text}
         draftFocused={draftFocused}
-        // Say what a session grant covers: the approval cache keys an MCP
-        // tool approved without filesystem-write targets on the tool alone.
-        sessionScope={request.ctx.sessionGrantCoversAllCalls === true || request.ctx.mcpFilesystemApproval !== undefined
-          ? `every ${name} call, any arguments`
-          : (toolUseConfirm.tool.name === "Write" || toolUseConfirm.tool.name === "Edit") &&
-            fileEditTargetPath(request.input) !== undefined
-            ? `${name} this file only`
-            : "this exact action only"}
+        sessionScope={sessionScope.long}
+        sessionScopeShort={sessionScope.short}
       />
     </Box>
   );

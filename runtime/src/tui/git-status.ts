@@ -47,8 +47,16 @@ export function probeGitStatus(cwd: string): Promise<GitStatus | null> {
   const result = probeTail.then(async () => {
     try {
       const { stdout } = await execFileAsync('git', [
-        '-c', 'core.fsmonitor=false', '--no-optional-locks',
+        // This runs on the host, outside the sandbox, in a workspace the agent
+        // may have written. Do not descend into a nested/submodule repository:
+        // a descent would run that repo's own hooks, fsmonitor and clean/smudge
+        // filters unsandboxed (-c core.fsmonitor=false does not propagate into
+        // a submodule subprocess). protocol.ext.allow=never blocks an ext::
+        // remote running a command during any incidental fetch.
+        '-c', 'core.fsmonitor=false', '-c', 'protocol.ext.allow=never',
+        '--no-optional-locks',
         'status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all',
+        '--ignore-submodules=all',
       ], {
         cwd, encoding: 'utf8', timeout: 1000,
         env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },

@@ -338,6 +338,31 @@ export async function checkRuleBasedPermissions(
     });
   }
 
+  // 1c (run below, or first for 1b). Tool implementation check.
+  const checkTool = async (): Promise<PermissionResult> => {
+    if (typeof tool.checkPermissions !== "function") {
+      return {
+        behavior: "passthrough" as const,
+        message: createPermissionRequestMessage(tool.name),
+      };
+    }
+    try {
+      const maybe = tool.checkPermissions(input, context);
+      return maybe && typeof (maybe as Promise<PermissionResult>).then === "function"
+        ? await (maybe as Promise<PermissionResult>)
+        : (maybe as PermissionResult);
+    } catch (e) {
+      if (isAbortError(e)) throw e;
+      // Any other throw → fall back to passthrough. AgenC logs
+      // these; we surface them via the context's onDecision hook for
+      // now. No crash: permission failures are always recoverable.
+      return {
+        behavior: "passthrough" as const,
+        message: createPermissionRequestMessage(tool.name),
+      };
+    }
+  };
+
   // 1b. Whole-tool ask rule. Bash sandbox fallthrough: when sandboxing
   // is enabled and the Bash input would run inside the sandbox, skip
   // the ask short-circuit so tool.checkPermissions can auto-allow.
@@ -354,6 +379,15 @@ export async function checkRuleBasedPermissions(
       context.shouldUseSandbox(input) === true;
 
     if (!canSandboxAutoAllow) {
+      // The rule asks about every call, but never in place of a stricter
+      // answer from the tool's own check: a deny it reaches (a FileRead deny
+      // on a file the tool reads) stands, and so does a safety-check ask,
+      // whose reason makes a person answer each such call.
+      const checked = await checkTool();
+      if (checked.behavior === "deny") return checked as PermissionDenyDecision;
+      if (checked.behavior === "ask" && checked.decisionReason?.type === "safetyCheck") {
+        return checked as PermissionAskDecision;
+      }
       return Object.freeze({
         behavior: "ask" as const,
         message: createPermissionRequestMessage(tool.name),
@@ -364,28 +398,7 @@ export async function checkRuleBasedPermissions(
   }
 
   // 1c. Tool implementation check.
-  let toolResult: PermissionResult = {
-    behavior: "passthrough" as const,
-    message: createPermissionRequestMessage(tool.name),
-  };
-  if (typeof tool.checkPermissions === "function") {
-    try {
-      const maybe = tool.checkPermissions(input, context);
-      toolResult =
-        maybe && typeof (maybe as Promise<PermissionResult>).then === "function"
-          ? await (maybe as Promise<PermissionResult>)
-          : (maybe as PermissionResult);
-    } catch (e) {
-      if (isAbortError(e)) throw e;
-      // Any other throw → fall back to passthrough. AgenC logs
-      // these; we surface them via the context's onDecision hook for
-      // now. No crash: permission failures are always recoverable.
-      toolResult = {
-        behavior: "passthrough" as const,
-        message: createPermissionRequestMessage(tool.name),
-      };
-    }
-  }
+  const toolResult: PermissionResult = await checkTool();
 
   // 1d. Tool implementation explicit deny.
   if (toolResult.behavior === "deny") {

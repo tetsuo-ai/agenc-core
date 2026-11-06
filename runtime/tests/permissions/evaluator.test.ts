@@ -195,6 +195,44 @@ describe("hasPermissionsToUseTool — step 1a deny rule", () => {
 });
 
 describe("hasPermissionsToUseTool — step 1b ask rule", () => {
+  it("keeps the tool's own deny under a whole-tool ask rule", async () => {
+    const tool = makeTool({
+      name: "ImagineEdit",
+      checkPermissions: () => ({
+        behavior: "deny" as const,
+        message: "Permission to read private/id.png has been denied.",
+        decisionReason: { type: "rule" as const, rule: { source: "session", ruleBehavior: "deny", ruleValue: { toolName: "FileRead", ruleContent: "private/**" } } },
+      } as PermissionResult),
+    });
+    const { context } = buildHarness({ askRules: [{ toolName: "ImagineEdit" }] });
+    const result = await hasPermissionsToUseToolInner(tool, { image: "private/id.png" }, context);
+    expect(result).toMatchObject({ behavior: "deny", message: "Permission to read private/id.png has been denied." });
+  });
+
+  it("keeps a safety-check reason under a whole-tool ask rule", async () => {
+    const tool = makeTool({
+      name: "Write",
+      checkPermissions: () => ({
+        behavior: "ask" as const,
+        message: "protected",
+        decisionReason: { type: "safetyCheck" as const, reason: "protected path", classifierApprovable: false },
+      }),
+    });
+    const { context } = buildHarness({ askRules: [{ toolName: "Write" }] });
+    const result = await hasPermissionsToUseToolInner(tool, { file_path: ".git/hooks/pre-commit" }, context);
+    expect(result).toMatchObject({ behavior: "ask", decisionReason: { type: "safetyCheck" } });
+  });
+
+  it("asks for the rule when the tool's own check would allow", async () => {
+    const tool = makeTool({
+      name: "Write",
+      checkPermissions: () => ({ behavior: "allow" as const, updatedInput: {} }),
+    });
+    const { context } = buildHarness({ askRules: [{ toolName: "Write" }] });
+    const result = await hasPermissionsToUseToolInner(tool, { file_path: "notes.txt" }, context);
+    expect(result).toMatchObject({ behavior: "ask", decisionReason: { type: "rule" } });
+  });
+
   it("returns ask for a whole-tool ask rule", async () => {
     const { context } = buildHarness({
       askRules: [{ toolName: "system.bash" }],

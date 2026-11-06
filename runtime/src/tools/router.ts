@@ -129,6 +129,7 @@ import {
   readToolRuntimeContext,
   type ToolRuntimeAttemptContext,
 } from "./runtimes/context.js";
+import { observeBoundTargets, withBoundTargets } from "./bound-targets.js";
 import {
   approvalRootForDispatch,
   filesystemRootsForDispatch,
@@ -632,6 +633,9 @@ export class ToolRouter {
         nameDisplay(invocation.toolName),
         executionArgs,
       );
+      // Also before any prompt: the files this call reads or changes, so the
+      // tool acts only on the ones it was checked against.
+      const boundTargets = observeBoundTargets(spec.tool, executionArgs);
       const effectiveApprovalPolicy = permissionAlreadyAllowed
         ? "never"
         : forcedApprovalReason !== undefined
@@ -719,7 +723,7 @@ export class ToolRouter {
           directDispatchAttempt += 1;
           const executionPreflight = preflightToolCall(spec.tool, executionArgs, invocation);
           if (executionPreflight !== null) return executionPreflight;
-          const dispatchArgs = filesystemRootsForDispatch(
+          const dispatchArgs = withBoundTargets(filesystemRootsForDispatch(
             nameDisplay(invocation.toolName),
             executionArgs,
             {
@@ -728,7 +732,7 @@ export class ToolRouter {
               sandboxMode: sandbox,
               session: invocation.session,
             },
-          );
+          ), boundTargets);
           const dispatchPayload =
             dispatchArgs === executionArgs
               ? executionPayload
@@ -1155,6 +1159,9 @@ export class ToolRouter {
     if (approvalPreflight !== null) return approvalPreflight;
     // Fixed before any prompt: an approval grants this root and no other.
     const approvalRoot = approvalRootForDispatch(toolCall.name, executionArgs);
+    // Also before any prompt: the files this call reads or changes, so the
+    // tool acts only on the ones it was checked against.
+    const boundTargets = observeBoundTargets(spec.tool, executionArgs);
     const executionPayload = buildPayloadForArgs(routed.payload, executionArgs);
     const executionInvocation: ToolInvocation = {
       ...invocation,
@@ -1310,7 +1317,7 @@ export class ToolRouter {
           orchestrateDispatchAttempt += 1;
           const executionPreflight = preflightToolCall(spec.tool, executionArgs, invocation, opts);
           if (executionPreflight !== null) return executionPreflight;
-          const dispatchArgs = filesystemRootsForDispatch(
+          const dispatchArgs = withBoundTargets(filesystemRootsForDispatch(
             toolCall.name,
             executionArgs,
             {
@@ -1319,7 +1326,7 @@ export class ToolRouter {
               sandboxMode: sandbox,
               session: opts.session,
             },
-          );
+          ), boundTargets);
           const dispatchPayload =
             dispatchArgs === executionArgs
               ? executionPayload

@@ -1,4 +1,5 @@
 import type { JsonObject } from "../app-server/protocol/index.js";
+import { permissionsSingleCall } from "../permissions/approval-request-permissions.js";
 import { permissionsRunWithoutSandbox } from "../sandbox/escalation/approvals.js";
 import { permissionsMcpNoFsWrites } from "../tools/runtimes/mcp-filesystem-approval.js";
 import type { ApprovalCtx } from "../tools/orchestrator.js";
@@ -62,6 +63,11 @@ export function buildDaemonApprovalCtx(
     // arguments; the card's session choice must not read as this call only.
     ...(permissionsMcpNoFsWrites(payload.permissions)
       ? { sessionGrantCoversAllCalls: true }
+      : {}),
+    // A safety check asked: no session grant answers or records the call,
+    // so the card's session choice must read as this call only.
+    ...(permissionsSingleCall(payload.permissions)
+      ? { safetyCheck: true }
       : {}),
     ...(typeof payload.planContent === "string"
       ? { planContent: payload.planContent }

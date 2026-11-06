@@ -933,6 +933,25 @@ export async function checkRuleBasedPermissions(
     }
   }
 
+  // 1c. Tool-specific permission check (e.g. bash subcommand rules). Run
+  // first so a whole-tool ask rule never returns before the tool's own deny
+  // or safety reason, matching permissions/evaluator.ts.
+  const checkTool = async (): Promise<PermissionResult> => {
+    try {
+      const parsedInput = tool.inputSchema.parse(input)
+      return await tool.checkPermissions(parsedInput, context)
+    } catch (e) {
+      if (e instanceof AbortError || e instanceof APIUserAbortError) {
+        throw e
+      }
+      logError(e)
+      return {
+        behavior: 'passthrough',
+        message: createPermissionRequestMessage(tool.name),
+      }
+    }
+  }
+
   // 1b. Entire tool has an ask rule
   const askRule = getAskRuleForTool(appState.toolPermissionContext, tool)
   if (askRule) {
@@ -943,6 +962,14 @@ export async function checkRuleBasedPermissions(
       shouldUseSandbox(input)
 
     if (!canSandboxAutoAllow) {
+      const checked = await checkTool()
+      if (checked?.behavior === 'deny') return checked
+      if (
+        checked?.behavior === 'ask' &&
+        checked.decisionReason?.type === 'safetyCheck'
+      ) {
+        return checked
+      }
       return {
         behavior: 'ask',
         decisionReason: {
@@ -955,20 +982,7 @@ export async function checkRuleBasedPermissions(
     // Fall through to let tool.checkPermissions handle command-specific rules
   }
 
-  // 1c. Tool-specific permission check (e.g. bash subcommand rules)
-  let toolPermissionResult: PermissionResult = {
-    behavior: 'passthrough',
-    message: createPermissionRequestMessage(tool.name),
-  }
-  try {
-    const parsedInput = tool.inputSchema.parse(input)
-    toolPermissionResult = await tool.checkPermissions(parsedInput, context)
-  } catch (e) {
-    if (e instanceof AbortError || e instanceof APIUserAbortError) {
-      throw e
-    }
-    logError(e)
-  }
+  const toolPermissionResult: PermissionResult = await checkTool()
 
   // 1d. Tool implementation denied (catches bash subcommand denies wrapped
   // in subcommandResults — no need to inspect decisionReason.type)
@@ -1025,6 +1039,25 @@ async function hasPermissionsToUseToolInner(
     }
   }
 
+  // 1c (run below, or first for 1b). Ask the tool implementation for a
+  // permission result. Overridden unless tool input schema is not valid
+  const checkTool = async (): Promise<PermissionResult> => {
+    try {
+      const parsedInput = tool.inputSchema.parse(input)
+      return await tool.checkPermissions(parsedInput, context)
+    } catch (e) {
+      // Rethrow abort errors so they propagate properly
+      if (e instanceof AbortError || e instanceof APIUserAbortError) {
+        throw e
+      }
+      logError(e)
+      return {
+        behavior: 'passthrough',
+        message: createPermissionRequestMessage(tool.name),
+      }
+    }
+  }
+
   // 1b. Check if the entire tool should always ask for permission
   const askRule = getAskRuleForTool(appState.toolPermissionContext, tool)
   if (askRule) {
@@ -1038,6 +1071,17 @@ async function hasPermissionsToUseToolInner(
       shouldUseSandbox(input)
 
     if (!canSandboxAutoAllow) {
+      // The rule asks about every call, but never in place of a stricter
+      // answer from the tool's own check: its deny stands, and so does a
+      // safety-check ask, whose reason makes a person answer each such call.
+      const checked = await checkTool()
+      if (checked?.behavior === 'deny') return checked
+      if (
+        checked?.behavior === 'ask' &&
+        checked.decisionReason?.type === 'safetyCheck'
+      ) {
+        return checked
+      }
       return {
         behavior: 'ask',
         decisionReason: {
@@ -1051,21 +1095,7 @@ async function hasPermissionsToUseToolInner(
   }
 
   // 1c. Ask the tool implementation for a permission result
-  // Overridden unless tool input schema is not valid
-  let toolPermissionResult: PermissionResult = {
-    behavior: 'passthrough',
-    message: createPermissionRequestMessage(tool.name),
-  }
-  try {
-    const parsedInput = tool.inputSchema.parse(input)
-    toolPermissionResult = await tool.checkPermissions(parsedInput, context)
-  } catch (e) {
-    // Rethrow abort errors so they propagate properly
-    if (e instanceof AbortError || e instanceof APIUserAbortError) {
-      throw e
-    }
-    logError(e)
-  }
+  const toolPermissionResult: PermissionResult = await checkTool()
 
   // 1d. Tool implementation denied permission
   if (toolPermissionResult?.behavior === 'deny') {

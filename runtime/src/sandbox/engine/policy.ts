@@ -13,7 +13,7 @@ import type { BoundReadOnlyCwdCapability } from "../bound-readonly-cwd.js";
 
 import fs from "node:fs";
 import path from "node:path";
-import { canonicalAuthorityPath, isWithinAuthorityPath } from "../desktop-authority-protection.js";
+import { canonicalAuthorityPath, isWithinAuthorityPath, writeLandingAuthorityPath } from "../desktop-authority-protection.js";
 
 import { PROTECTED_METADATA_PATH_NAMES } from "./constants.js";
 export {
@@ -97,6 +97,14 @@ export interface WritableRoot {
   readonly readOnlySubpaths: readonly string[];
   readonly protectedMetadataNames?: readonly string[];
   readonly reservedReadOnlyPaths?: readonly string[];
+  /**
+   * Real `.git` directories of standalone nested repositories found under this
+   * root when the plan was built (the same bounded scan that produced the
+   * nested carve-outs). The created-path monitor reuses this as its start
+   * baseline so it does not walk the tree a second time at command start; it
+   * walks once more only in stop() to find a repository created during the run.
+   */
+  readonly nestedRepoGitDirs?: readonly string[];
 }
 
 export interface SandboxCommand {
@@ -385,18 +393,29 @@ export function getWritableRootsWithCwd(
       // `.git` is never narrowed; `.agenc`/`.agents` pass through unchanged.
       .flatMap((candidate) =>
         path.basename(candidate) === GIT_METADATA_DIR_NAME &&
-        isExistingDirectory(candidate)
+        gitDirectoryIsRepository(candidate)
           ? gitNarrowedReadOnlyCarveouts(candidate)
           : [candidate],
       );
+    // A standalone nested repository's `.git` (not a `.git/modules` submodule)
+    // is ordinary writable data; narrow each one's execution surface so the
+    // sandbox refuses a planted hook/config/alternate there too. Missing
+    // carve-outs inside it are watched by the created-path monitor, as for the
+    // top-level narrowed `.git`.
+    const nestedRepoGitDirs = nestedGitMetadataDirs(root);
+    const nestedGitCarveouts = nestedRepoGitDirs.flatMap((gitDir) =>
+      gitNarrowedReadOnlyCarveouts(gitDir),
+    );
     const readOnlySubpaths = dedupPaths([
       ...defaultCarveouts,
       ...explicitCarveouts,
+      ...nestedGitCarveouts,
       ...reservedReadOnlyPaths,
     ]);
     return {
       root,
       readOnlySubpaths,
+      ...(nestedRepoGitDirs.length > 0 ? { nestedRepoGitDirs } : {}),
       ...(reservedReadOnlyPaths.length > 0 ? { reservedReadOnlyPaths } : {}),
       protectedMetadataNames: protectedMetadataNamesForWritableRoot(
         policy,
@@ -526,7 +545,7 @@ export function physicalWritePathWithCwd(
   cwd: string,
   sessionTempRoot: string,
 ): string {
-  const physical = canonicalAuthorityPath(resolvePathAgainstBase(target, cwd));
+  const physical = writeLandingAuthorityPath(resolvePathAgainstBase(target, cwd));
   let holder: { readonly root: string; readonly physicalRoot: string } | undefined;
   for (const entry of resolvedEntriesWithCwd(policy, cwd, sessionTempRoot)) {
     if (!canWriteAccess(entry.access)) continue;
@@ -539,6 +558,91 @@ export function physicalWritePathWithCwd(
   return holder === undefined
     ? physical
     : path.join(holder.root, path.relative(holder.physicalRoot, physical));
+}
+
+/** Entries walked when looking for another name of a hard-linked file. */
+const MAX_PROTECTED_LINK_SCAN_ENTRIES = 20_000;
+
+/**
+ * The read-only carve-out or protected metadata of a writable root that a
+ * native write landing at the physical place `landing` changes under another
+ * name, or undefined. A carve-out counts where it really is on disk (a
+ * `.git/hooks` linked to a folder of another name), and a file with other
+ * hard links counts when one of them is inside a carve-out: the bytes it
+ * writes are that file's bytes. A scan that cannot finish counts as reached.
+ */
+export function protectedEntryReachedByWrite(
+  policy: FileSystemSandboxPolicy,
+  landing: string,
+  cwd: string,
+  sessionTempRoot: string,
+): string | undefined {
+  const protectedEntries: { readonly entry: string; readonly physical: string }[] = [];
+  for (const root of getWritableRootsWithCwd(policy, cwd, sessionTempRoot)) {
+    let physicalRoot: string;
+    try {
+      physicalRoot = canonicalAuthorityPath(root.root);
+    } catch {
+      continue;
+    }
+    // Reserved authority paths keep their own checks, by their own spelling.
+    const reserved = new Set(root.reservedReadOnlyPaths ?? []);
+    for (const entry of [
+      ...root.readOnlySubpaths.filter((subpath) => !reserved.has(subpath)),
+      ...(root.protectedMetadataNames ?? []).map((name) => path.join(root.root, name)),
+    ]) {
+      let physical: string;
+      try {
+        physical = canonicalAuthorityPath(entry);
+      } catch {
+        continue;
+      }
+      // An entry that leads to its writable root, or above it, cannot make
+      // that whole root read-only: the root is writable.
+      if (isWithinAuthorityPath(physicalRoot, physical)) continue;
+      protectedEntries.push({ entry, physical });
+    }
+  }
+  for (const { entry, physical } of protectedEntries) {
+    if (isWithinAuthorityPath(landing, physical)) return entry;
+  }
+  let file: fs.Stats;
+  try {
+    file = fs.lstatSync(landing);
+  } catch {
+    return undefined;
+  }
+  if (!file.isFile() || file.nlink < 2) return undefined;
+  const budget = { remaining: MAX_PROTECTED_LINK_SCAN_ENTRIES };
+  for (const { entry, physical } of protectedEntries) {
+    const found = holdsFile(physical, file, budget);
+    if (found !== false) return entry;
+  }
+  return undefined;
+}
+
+/** Whether `entry` is, or holds without following links, the file `file`; "unknown" past the budget. */
+function holdsFile(entry: string, file: fs.Stats, budget: { remaining: number }): boolean | "unknown" {
+  if (--budget.remaining < 0) return "unknown";
+  let stats: fs.Stats;
+  try {
+    stats = fs.lstatSync(entry);
+  } catch {
+    return false;
+  }
+  if (stats.isFile()) return stats.dev === file.dev && stats.ino === file.ino;
+  if (!stats.isDirectory()) return false;
+  let names: string[];
+  try {
+    names = fs.readdirSync(entry);
+  } catch {
+    return "unknown";
+  }
+  for (const name of names) {
+    const found = holdsFile(path.join(entry, name), file, budget);
+    if (found !== false) return found;
+  }
+  return false;
 }
 
 /** Containment in the writable roots, minus reserved read-only paths. */
@@ -668,6 +772,30 @@ function isExistingDirectory(target: string): boolean {
 }
 
 /**
+ * Whether `target` is a real git repository directory, not just a `.git`
+ * name. Narrowing (inert `.git` data writable, execution surface read-only)
+ * applies only here. A `.git` that is not a repository -- the empty
+ * placeholder the sandbox mounts for a missing protected-metadata name, or
+ * any non-repository directory -- stays fully read-only, as a whole `.git`
+ * was before the narrowing, so a confined command cannot leave a repository
+ * skeleton (refs, objects, HEAD) in a directory the user never initialized.
+ * `git init` always writes `HEAD` and an `objects` directory, so a real
+ * repository keeps working; an empty `.git` has neither and cannot bootstrap
+ * them while it is fully read-only.
+ */
+function gitDirectoryIsRepository(target: string): boolean {
+  if (!isExistingDirectory(target)) return false;
+  try {
+    return (
+      fs.lstatSync(path.join(target, "HEAD")).isFile() &&
+      fs.lstatSync(path.join(target, "objects")).isDirectory()
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The protected (read-only) carve-outs inside a narrowed `.git` directory.
  * Every one that exists is mounted read-only; every one that is missing is
  * watched by the launcher's created-path monitor (detect, remove, fail the
@@ -681,6 +809,52 @@ function gitNarrowedReadOnlyCarveouts(gitMetadataPath: string): string[] {
   return [...GIT_PROTECTED_TOP_LEVEL_ENTRIES, ...GIT_PROTECTED_NESTED_ENTRIES].map(
     (entry) => path.join(normalized, ...entry.split("/")),
   );
+}
+
+/** Bounds for the nested-`.git` scan, in the spirit of the glob-scan bounds. */
+const NESTED_GIT_SCAN_MAX_DEPTH = 8;
+const NESTED_GIT_SCAN_MAX_DIRS = 4096;
+
+/**
+ * Real `.git` directories of standalone nested repositories under `root`,
+ * excluding the root's own top-level `.git` (handled separately). A later
+ * host-side git command that descends into a gitlinked nested repo runs that
+ * repo's hooks and executable config, unsandboxed, so the nested repo's
+ * execution surface is narrowed read-only the same way the top-level one is.
+ * The scan never follows a symlink and never descends into a `.git`; it is
+ * bounded in depth and in directories visited so it cannot walk a huge tree.
+ */
+function nestedGitMetadataDirs(root: string): string[] {
+  const start = normalizePathForPolicy(root);
+  const found: string[] = [];
+  let visited = 0;
+  const walk = (dir: string, depth: number): void => {
+    if (depth > NESTED_GIT_SCAN_MAX_DEPTH || visited >= NESTED_GIT_SCAN_MAX_DIRS) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    visited += 1;
+    for (const entry of entries) {
+      if (visited >= NESTED_GIT_SCAN_MAX_DIRS) return;
+      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+      const child = path.join(dir, entry.name);
+      if (entry.name === GIT_METADATA_DIR_NAME) {
+        // A `.git` directory, not the root's own: a nested repository. Record
+        // it when it is a real repository, and do not descend into it (its
+        // contents are git data).
+        if (child !== path.join(start, GIT_METADATA_DIR_NAME) && gitDirectoryIsRepository(child)) {
+          found.push(child);
+        }
+        continue;
+      }
+      walk(child, depth + 1);
+    }
+  };
+  walk(start, 0);
+  return found;
 }
 
 
@@ -715,7 +889,7 @@ function gitMetadataDirWriteAllowed(
   target: string,
 ): boolean {
   if (path.basename(gitMetadataPath) !== GIT_METADATA_DIR_NAME) return false;
-  if (!isExistingDirectory(gitMetadataPath)) return false;
+  if (!gitDirectoryIsRepository(gitMetadataPath)) return false;
   const lexicalRoot = normalizePathForPolicy(gitMetadataPath);
   const lexicalTarget = normalizePathForPolicy(target);
   const physicalRoot = canonicalAuthorityPath(gitMetadataPath);
@@ -906,7 +1080,8 @@ function metadataChildOfWritableRoot(
     if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative)) {
       continue;
     }
-    const [firstComponent] = relative.split(path.sep);
+    const components = relative.split(path.sep);
+    const [firstComponent] = components;
     if (
       firstComponent &&
       PROTECTED_METADATA_PATH_NAMES.includes(
@@ -914,6 +1089,18 @@ function metadataChildOfWritableRoot(
       )
     ) {
       return path.join(entry.path, firstComponent);
+    }
+    // A `.git` at any depth below the writable root (a standalone nested
+    // repository, not a registered submodule under `<root>/.git/modules`) is
+    // protected by name, the same way as the top-level `.git`: absent, a
+    // non-repository, a gitfile or a symlink, it is fully protected, so it
+    // cannot be created or assembled into a repository with a planted hook or
+    // config; once it is a real repository it is narrowed, so only its
+    // execution/redirection surface stays read-only and its inert data
+    // (refs, objects, index) remains writable through gitMetadataDirWriteAllowed.
+    const gitIndex = components.indexOf(GIT_METADATA_DIR_NAME);
+    if (gitIndex > 0) {
+      return path.join(entry.path, ...components.slice(0, gitIndex + 1));
     }
   }
   return null;

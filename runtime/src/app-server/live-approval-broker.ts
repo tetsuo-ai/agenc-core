@@ -30,6 +30,7 @@ import { isUndeliverableApproval } from "./approval-delivery.js";
 import type { BackgroundAgentDaemonEvent } from "./background-agent-runner/shared.js";
 import { AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY, type PendingToolApproval, type JsonObject } from "./protocol/index.js";
 import { requestApproval } from "../permissions/guardian/arbiter.js";
+import { approvalRequestPermissions } from "../permissions/approval-request-permissions.js";
 import { assertCrossProviderAllowed, crossProviderConsentFromSettings, crossProviderDenialKey, fundsStopFromRolloutItems, type CrossProviderConsentService, type CrossProviderSpawnDisclosure, type CrossProviderConsentOutcome } from "../agents/cross-provider.js";
 import { getSessionGoal } from "../goal/session-goal.js";
 import type { SubagentFundsNoticeEvent } from "../session/event-log.js";
@@ -687,6 +688,9 @@ export class LiveApprovalBroker {
             : {}),
           toolName: ctx.toolName,
           turnId: ctx.turnId,
+          // The list the journaled request carries: a client that lists the
+          // request says what a session grant covers, as the live card does.
+          permissions: approvalRequestPermissions(ctx),
           ...(approvalInput(ctx) !== undefined ? { input: approvalInput(ctx) } : {}),
           ...(ctx.retryReason !== undefined ? { reason: ctx.retryReason } : {}),
           ...(ctx.planContent !== undefined ? { planContent: ctx.planContent } : {}),

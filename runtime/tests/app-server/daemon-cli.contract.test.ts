@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   fstatSync,
   mkdirSync,
@@ -46,7 +47,11 @@ import {
 } from "../session/runtime-options.js";
 import type { PendingProviderSwitch, Session } from "../session/session.js";
 import { createAgenCJsonLineDaemonRequestClient } from "./agent-cli.js";
-import { AGENC_DAEMON_PROTOCOL_VERSION, type JsonObject } from "./protocol/index.js";
+import {
+  AGENC_DAEMON_PROTOCOL_VERSION,
+  AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
+  type JsonObject,
+} from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
@@ -110,6 +115,7 @@ import {
   stopMarker,
   writePairFile,
 } from "../../src/bin/remote-state.js";
+import { McpHttpSseServerTransport } from "../../src/mcp-server/http-sse.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { ConfigStore } from "../config/store.js";
@@ -4411,6 +4417,222 @@ token_cap = 123
     }
   }, 90_000);
 
+  it("does not start while remote control is off and a phone pairing cannot be revoked", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    const remote = captureRemoteCliRuntimeContext({ AGENC_HOME: agencHome });
+    writePairFile(remote, {
+      pairingId: "legacy-pairing",
+      hostSecret: "legacy-secret",
+      machineName: "fixture",
+      relayUrl: "wss://relay.invalid",
+      backendUrl: "https://backend.invalid",
+      createdAt: "2026-11-01T00:00:00.000Z",
+    });
+    // In a read-only folder neither the stop marker nor pair.json can change.
+    chmodSync(join(agencHome, "remote"), 0o500);
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    let settled = false;
+    try {
+      const started = await waitForPid(pidPath, DAEMON_MILESTONE_BUDGET_MS, {
+        running,
+        stderrText: io.stderrText,
+      }).then(() => true, () => false);
+      expect(started, io.stderrText()).toBe(false);
+      await expect(running).resolves.toBe(1);
+      settled = true;
+      expect(io.stderrText()).toContain("the phone remote pairing could not be revoked");
+      expect(existsSync(pairPath(remote))).toBe(true);
+    } finally {
+      chmodSync(join(agencHome, "remote"), 0o700);
+      if (!settled) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it("stops when a reload turns remote control off and a phone pairing cannot be revoked", async () => {
+    const agencHome = await tempAgencHome();
+    await writeFile(
+      join(agencHome, "config.toml"),
+      "config_version = 2\n\n[remote_control]\nenabled = true\n",
+    );
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    const remote = captureRemoteCliRuntimeContext({ AGENC_HOME: agencHome });
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    let legacy: WebSocket | undefined;
+    let settled = false;
+    try {
+      await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
+      const webSocketUrl = await waitForDaemonWebSocketUrl(
+        io,
+        LOADED_DAEMON_MILESTONE_BUDGET_MS,
+        { running, stderrText: io.stderrText },
+      );
+      // A connector started before remote_control.enabled existed: the
+      // daemon cookie and no bridge flag, so the owner gate never applies.
+      const authCookie = (await readFile(cookiePath, "utf8")).trim();
+      legacy = new WebSocket(webSocketUrl);
+      await once(legacy, "open");
+      legacy.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: "legacy",
+        method: "initialize",
+        params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION }, authCookie, capabilities: {} },
+      }));
+      await expect(readWebSocketMessage(legacy)).resolves.toMatchObject({
+        id: "legacy",
+        result: { type: "initialized" },
+      });
+      writePairFile(remote, {
+        pairingId: "legacy-pairing",
+        hostSecret: "legacy-secret",
+        machineName: "fixture",
+        relayUrl: "wss://relay.invalid",
+        backendUrl: "https://backend.invalid",
+        createdAt: "2026-11-01T00:00:00.000Z",
+      });
+      chmodSync(join(agencHome, "remote"), 0o500);
+      await writeFile(join(agencHome, "config.toml"), "config_version = 2\n");
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.not.toBe(0);
+      await expect(running).resolves.toBe(1);
+      settled = true;
+      expect(io.stderrText()).toContain("the phone remote pairing could not be revoked");
+      await Promise.race([waitForWebSocketClose(legacy), delay(2_000)]);
+      expect(legacy.readyState).toBe(WebSocket.CLOSED);
+    } finally {
+      chmodSync(join(agencHome, "remote"), 0o700);
+      legacy?.terminate();
+      if (!settled) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it("review B: stops when a reload turns remote control off, cannot revoke the pairing and its MCP change then fails", async () => {
+    const agencHome = await tempAgencHome();
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-rvb-mcp-"));
+    const workspaceA = join(workspaceRoot, "workspace-a");
+    const workspaceB = join(workspaceRoot, "workspace-b");
+    await Promise.all([mkdir(workspaceA), mkdir(workspaceB)]);
+    const port = await availableLoopbackPort();
+    const mcpServer = (workspace: string) =>
+      `\n[mcp.server]\nenabled = true\ntransport = "sse"\nhost = "127.0.0.1"\nport = ${port}\nworkspace = ${JSON.stringify(workspace)}\n`;
+    await writeFile(
+      join(agencHome, "config.toml"),
+      `config_version = 2\n\n[remote_control]\nenabled = true\n${mcpServer(workspaceA)}`,
+    );
+    const host = createHost(agencHome);
+    host.env[AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV] = String(LOADED_DAEMON_REQUEST_TIMEOUT_MS);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    const remote = captureRemoteCliRuntimeContext({ AGENC_HOME: agencHome });
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    const replace = vi.spyOn(McpHttpSseServerTransport.prototype, "replaceServerFactory");
+    let legacy: WebSocket | undefined;
+    let settled = false;
+    const answerTo = (socket: WebSocket, id: string) => new Promise<Record<string, unknown>>((resolve) => {
+      const onMessage = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (message.id !== id) return;
+        socket.off("message", onMessage);
+        resolve(message);
+      };
+      socket.on("message", onMessage);
+    });
+    try {
+      await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
+      const webSocketUrl = await waitForDaemonWebSocketUrl(
+        io,
+        LOADED_DAEMON_MILESTONE_BUDGET_MS,
+        { running, stderrText: io.stderrText },
+      );
+      // A connector started before remote_control.enabled existed: the
+      // daemon cookie and no bridge flag.
+      const authCookie = (await readFile(cookiePath, "utf8")).trim();
+      legacy = new WebSocket(webSocketUrl);
+      await once(legacy, "open");
+      const initialized = answerTo(legacy, "legacy");
+      legacy.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: "legacy",
+        method: "initialize",
+        params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION }, authCookie, capabilities: {} },
+      }));
+      await expect(initialized).resolves.toMatchObject({ result: { type: "initialized" } });
+      writePairFile(remote, {
+        pairingId: "legacy-pairing",
+        hostSecret: "legacy-secret",
+        machineName: "fixture",
+        relayUrl: "wss://relay.invalid",
+        backendUrl: "https://backend.invalid",
+        createdAt: "2026-11-01T00:00:00.000Z",
+      });
+      chmodSync(join(agencHome, "remote"), 0o500);
+      // The same reload changes the MCP workspace, and applying that change
+      // fails after the revocation has already failed.
+      replace.mockImplementation(() => {
+        throw new Error("injected MCP workspace apply failure");
+      });
+      await writeFile(join(agencHome, "config.toml"), `config_version = 2\n${mcpServer(workspaceB)}`);
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.not.toBe(0);
+      expect(existsSync(pairPath(remote))).toBe(true);
+      const outcome = await Promise.race([running, delay(5_000).then(() => "still running" as const)]);
+      settled = outcome !== "still running";
+      if (!settled) {
+        // Remote control is off and the pairing is left, yet the cookie-only
+        // client is still served.
+        const after = answerTo(legacy, "after");
+        legacy.send(JSON.stringify({ jsonrpc: "2.0", id: "after", method: "session.list", params: {} }));
+        const answer = await Promise.race([after, delay(2_000).then(() => null)]);
+        expect(answer?.result, "a cookie-only client is served after the failed revocation").toBeUndefined();
+      }
+      expect(outcome).toBe(1);
+      expect(io.stderrText()).toContain("the phone remote pairing could not be revoked");
+    } finally {
+      replace.mockRestore();
+      chmodSync(join(agencHome, "remote"), 0o700);
+      legacy?.terminate();
+      if (!settled) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await Promise.all([
+        rm(agencHome, { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  }, 90_000);
+
   it("reload gives open sessions their new cross-provider settings and keeps the rest of their config", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
@@ -5942,6 +6164,94 @@ backend = "local"
       });
     } finally {
       for (const socket of sockets) socket.terminate();
+      signalProcess.emit("SIGTERM");
+      await running.catch(() => {});
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it("reload that turns remote control off closes a phone bridge that is still initializing", async () => {
+    const agencHome = await tempAgencHome();
+    await writeFile(
+      join(agencHome, "config.toml"),
+      "config_version = 2\n\n[remote_control]\nenabled = true\n",
+    );
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    // Hold the bridge's capability registration until the reload is done.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let reached!: () => void;
+    const registering = new Promise<void>((resolve) => { reached = resolve; });
+    const registered: string[] = [];
+    const removed: string[] = [];
+    const realRegister = AgenCDaemonClientMultiplexer.prototype.registerClient;
+    const realRemove = AgenCDaemonClientMultiplexer.prototype.removeClient;
+    vi.spyOn(AgenCDaemonClientMultiplexer.prototype, "registerClient").mockImplementation(
+      async function (this: AgenCDaemonClientMultiplexer, options) {
+        if (options.capabilities?.[AGENC_PENDING_APPROVALS_LIST_CAPABILITY] === true) {
+          reached();
+          await gate;
+          registered.push(options.clientId!);
+        }
+        return realRegister.call(this, options);
+      },
+    );
+    vi.spyOn(AgenCDaemonClientMultiplexer.prototype, "removeClient").mockImplementation(
+      async function (this: AgenCDaemonClientMultiplexer, clientId, deliveryKey) {
+        removed.push(clientId);
+        return realRemove.call(this, clientId, deliveryKey);
+      },
+    );
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    let bridge: WebSocket | undefined;
+    try {
+      await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
+      const webSocketUrl = await waitForDaemonWebSocketUrl(
+        io,
+        LOADED_DAEMON_MILESTONE_BUDGET_MS,
+        { running, stderrText: io.stderrText },
+      );
+      const authCookie = (await readFile(cookiePath, "utf8")).trim();
+      bridge = new WebSocket(webSocketUrl);
+      await once(bridge, "open");
+      const answers: Record<string, unknown>[] = [];
+      bridge.on("message", (data) => answers.push(JSON.parse(data.toString()) as Record<string, unknown>));
+      bridge.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: "bridge",
+        method: "initialize",
+        params: {
+          protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+          authCookie,
+          capabilities: { [AGENC_PENDING_APPROVALS_LIST_CAPABILITY]: true },
+          remoteControlBridge: true,
+        },
+      }));
+      await registering;
+
+      await writeFile(join(agencHome, "config.toml"), "config_version = 2\n");
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.toBe(0);
+      release();
+
+      await Promise.race([waitForWebSocketClose(bridge), delay(2_000)]);
+      expect(bridge.readyState).toBe(WebSocket.CLOSED);
+      expect(answers.some((answer) => (answer.result as { type?: string } | undefined)?.type === "initialized")).toBe(false);
+      // The registration that finished after the close was taken back.
+      expect(registered).toHaveLength(1);
+      await vi.waitFor(() => expect(removed).toEqual(expect.arrayContaining(registered)), { timeout: 2_000 });
+    } finally {
+      release();
+      bridge?.terminate();
       signalProcess.emit("SIGTERM");
       await running.catch(() => {});
       await rm(agencHome, { recursive: true, force: true });

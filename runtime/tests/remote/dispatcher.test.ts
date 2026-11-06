@@ -48,6 +48,24 @@ describe("Core browser dispatcher authority", () => {
     await expect(f.connection.dispatch(request("agent.list"))).resolves.toMatchObject({ error: { data: { code: "REMOTE_CONTROL_DISABLED" } } });
   });
 
+  it("drops a bridge that remote control was turned off for while it initialized", async () => {
+    let enabled = true;
+    const f = fixture(() => enabled);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    f.authenticate.mockImplementation(async (params: JsonObject) => { await gate; return params.authCookie === "fixture-cookie"; });
+    const pending = f.connection.dispatch(request("initialize", { ...f.initialize, remoteControlBridge: true }));
+    await vi.waitFor(() => expect(f.authenticate).toHaveBeenCalled());
+    // Marked before the first await, so a reload's sweep can find it.
+    expect(f.connection.remoteControlBridge).toBe(true);
+    enabled = false;
+    release();
+    await expect(pending).resolves.toMatchObject({ error: { data: { code: "REMOTE_CONTROL_DISABLED" } } });
+    expect(f.connection.initialized).toBe(false);
+    expect(f.connection.closed).toBe(true);
+    expect(f.connection.trackedClientIds).toEqual([]);
+  });
+
   it("measures legacy transcript replies after remote envelope escaping", async () => {
     const f = fixture();
     await f.browser.dispatch(request("initialize", { protocol: { version: "1.17.0" } }));

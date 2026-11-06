@@ -1534,6 +1534,84 @@ const APPROVAL_PREVIEW_LINE_CAP = 7
  * only `CONFIRMATION enter` in the facts row and no way to answer).
  */
 const APPROVAL_ESSENTIAL_BODY_ROWS = 6
+/**
+ * Columns an approval card's body loses to its chrome: the popup's border
+ * (2), the popup body's padding (4) and the card's own padding (2).
+ */
+const APPROVAL_CARD_CHROME_COLS = 8
+/** Columns an action row loses to the picker's left border and padding. */
+const APPROVAL_PICKER_CHROME_COLS = 2
+/** Width of `❯ 2  approve for session` and the two spaces before its scope. */
+const APPROVAL_SESSION_LABEL_COLS = 26
+/** Columns the session scope's full words need on the row, or it shows its short words. */
+const APPROVAL_SESSION_SCOPE_MIN_COLS = 22
+/** Most rows a shell command takes on the card; a longer one ends in a row naming the full view. */
+const APPROVAL_COMMAND_LINE_CAP = 8
+/**
+ * Columns left unused at the end of each command row, so a card drawn a
+ * little narrower than the terminal still shows every character of a row.
+ */
+export const APPROVAL_COMMAND_SPARE_COLS = 2
+
+/** `<U+XXXX>` for a code point, four hex digits or more, upper case. */
+function visibleCodepoint(cp: number): string {
+  return `<U+${cp.toString(16).toUpperCase().padStart(4, '0')}>`
+}
+
+/** Bidi overrides and other invisible format characters a card must not hide. */
+function isInvisibleFormatChar(cp: number): boolean {
+  return (
+    (cp >= 0x200b && cp <= 0x200f) || // zero-width space/joiners, LRM/RLM
+    (cp >= 0x202a && cp <= 0x202e) || // bidi embeddings and overrides
+    (cp >= 0x2066 && cp <= 0x2069) // bidi isolates
+  )
+}
+
+/**
+ * Every character of `text` in a visible form: a C0 control other than a
+ * line feed, or DEL, becomes caret notation (`^M` for a carriage return,
+ * `^[` for escape, `^?` for DEL), so an escape sequence is shown and never
+ * reaches the terminal to hide the text around it or conceal it; a C1
+ * control and an invisible bidi/format character become `<U+XXXX>`. A tab
+ * stays a tab (it is measured, not hidden) and a line feed is left for the
+ * row split. The card and its full view both pass their rows through this,
+ * so neither shows a shell input as something other than what will run.
+ */
+export function visibleControlChars(text: string): string {
+  let out = ''
+  for (const ch of text) {
+    const cp = ch.codePointAt(0)!
+    if (cp === 0x0a || cp === 0x09) {
+      out += ch
+    } else if (cp < 0x20 || cp === 0x7f) {
+      out += `^${String.fromCharCode(cp ^ 0x40)}`
+    } else if ((cp >= 0x80 && cp <= 0x9f) || isInvisibleFormatChar(cp)) {
+      out += visibleCodepoint(cp)
+    } else {
+      out += ch
+    }
+  }
+  return out
+}
+
+/**
+ * The rows a shell command takes `width` columns wide: each of its lines,
+ * wrapped, the first behind the `$ ` prompt glyph and the rest indented
+ * under it. Each line is made visible first ({@link visibleControlChars}),
+ * so a control character or escape sequence never drops or hides what
+ * follows it. The Enter that ends typed input adds no row. The card and its
+ * full command view both show these rows, so neither drops a character.
+ */
+export function approvalCommandRows(command: string, width: number): string[] {
+  const textWidth = Number.isFinite(width) ? Math.max(1, Math.trunc(width) - 2) : 78
+  const rows: string[] = []
+  for (const line of command.replace(/\r?\n$/u, '').split(/\r?\n/u)) {
+    for (const part of wrapText(visibleControlChars(line), textWidth, 'wrap').split('\n')) {
+      rows.push(`${rows.length === 0 ? '$' : ' '} ${part}`)
+    }
+  }
+  return rows
+}
 
 /**
  * Decide whether the approval popup can show its embedded `DiffInline` preview
@@ -1577,6 +1655,7 @@ export function ApprovalCard({
   summary,
   command,
   commandIsShell = true,
+  commandFullView = false,
   facts,
   note,
   diffPreview,
@@ -1589,6 +1668,7 @@ export function ApprovalCard({
   draftText,
   draftFocused = false,
   sessionScope = 'allow in this session',
+  sessionScopeShort,
   cancelLabel = 'cancel',
 }: {
   readonly risk: 'low' | 'high'
@@ -1606,6 +1686,11 @@ export function ApprovalCard({
    * command-card callers are unchanged.
    */
   readonly commandIsShell?: boolean
+  /**
+   * The caller shows the whole shell command on `ctrl+w d`. A command too
+   * long for the card then ends in a row that names that key.
+   */
+  readonly commandFullView?: boolean
   readonly facts: readonly { readonly label: string; readonly value: string; readonly color?: ThemeColor }[]
   readonly note?: string
   readonly confirmLabel: string
@@ -1621,7 +1706,13 @@ export function ApprovalCard({
   readonly typingWaiting?: boolean
   readonly draftText?: string
   readonly draftFocused?: boolean
+  /** What the session choice covers, shown after its label where the row has room. */
   readonly sessionScope?: string
+  /**
+   * The few words of `sessionScope` a short or narrow card keeps on the
+   * session row (such as "all calls"). They never give way to the label.
+   */
+  readonly sessionScopeShort?: string
   readonly cancelLabel?: string
 }): React.ReactNode {
   const variant: BadgeVariant = risk === 'high' ? 'error' : 'accent'
@@ -1651,6 +1742,15 @@ export function ApprovalCard({
   // Three short rows keep every decision visible when the terminal leaves
   // too little room for the summary, descriptions and keyboard legend.
   const compactActions = !requireTypedConfirmation && popupBodyRows < 6
+  const viewportColumns = Number.isFinite(viewport.columns)
+    ? Math.max(1, Math.trunc(viewport.columns))
+    : 80
+  // A short card drops the session choice's full words, and on a narrow one
+  // its label leaves too few columns for them: such a row shows the short
+  // words instead, after a label that gives way to them.
+  const pickerRowColumns = viewportColumns - APPROVAL_CARD_CHROME_COLS - APPROVAL_PICKER_CHROME_COLS
+  const sessionScopeIsShort = sessionScopeShort !== undefined &&
+    (compactActions || pickerRowColumns - APPROVAL_SESSION_LABEL_COLS < APPROVAL_SESSION_SCOPE_MIN_COLS)
   const showNote = note !== undefined && note.length > 0 && popupBodyRows >= 6
   // When the slot is extremely tight, drop the secondary facts grid so the
   // primary action legend + confirm row are never the ones clipped away.
@@ -1683,6 +1783,29 @@ export function ApprovalCard({
           ]
         : shown
   }
+  // A shell command shows in full where the card has room: each of its
+  // lines, wrapped. One that does not fit ends in a row saying how much is
+  // hidden and how to see all of it. The rows sit below the picker and stay
+  // within the rows the card has left, so the answer rows never leave it.
+  const commandRows = commandIsShell
+    ? approvalCommandRows(command, viewportColumns - APPROVAL_CARD_CHROME_COLS - APPROVAL_COMMAND_SPARE_COLS)
+    : []
+  const rowsAboveCommand =
+    (draftText !== undefined && (draftText.length > 0 || draftFocused) ? 2 : 0) +
+    (typingWaiting && !draftFocused && !compactActions ? 1 : 0) +
+    (compactActions ? 0 : 1) +
+    (requireTypedConfirmation ? 2 : 3) +
+    (!requireTypedConfirmation && !compactActions ? 3 : 0)
+  const commandRowBudget = Math.max(1, Math.min(APPROVAL_COMMAND_LINE_CAP, popupBodyRows - rowsAboveCommand))
+  const shownCommandRows = commandRows.length > commandRowBudget
+    ? commandRows.slice(0, commandRowBudget - 1)
+    : commandRows
+  const hiddenCommandRows = commandRows.length - shownCommandRows.length
+  const commandMarker = hiddenCommandRows === 0
+    ? undefined
+    : `${shownCommandRows.length === 0
+        ? `$ … ${hiddenCommandRows} lines`
+        : `… +${hiddenCommandRows} more lines`}${commandFullView ? ' · ctrl+w d full command' : ''}`
   return (
     <Popup
       title={title}
@@ -1765,6 +1888,24 @@ export function ApprovalCard({
               const selected = index === (selectedIndex ?? 0)
               const marker = selected ? '❯ ' : '  '
               const rowText = `${marker}${index + 1}  ${action.label}`
+              if (index === 1 && sessionScopeIsShort) {
+                // What the grant covers stays on the row: the label is cut
+                // first when the row is too narrow for both.
+                return (
+                  <Box key={action.label} flexDirection="row">
+                    <Box flexShrink={1} minWidth={0}>
+                      <ThemedText color={selected ? 'agenc' : 'text2'} bold={selected} wrap="truncate-end">
+                        {rowText}
+                      </ThemedText>
+                    </Box>
+                    <Box flexShrink={0}>
+                      <ThemedText color={selected ? 'agenc' : 'inactive'} bold={selected}>
+                        {` · ${sessionScopeShort}`}
+                      </ThemedText>
+                    </Box>
+                  </Box>
+                )
+              }
               const detailText = compactActions
                 ? (index === 2 ? ` · esc ${cancelLabel}` : '')
                 : `  ${index === 1 ? sessionScope : action.suffix}`
@@ -1789,14 +1930,24 @@ export function ApprovalCard({
           <Box marginTop={1} marginBottom={1} flexShrink={0}>
             <ThemedText color="inactive" wrap="truncate-end">
               1·2·3 choose   ↑↓ move   ⏎ confirm   esc {cancelLabel}{diffPreview !== undefined ? '   ctrl+w d full diff' : ''}
+              {commandMarker !== undefined && commandFullView ? '   ctrl+w d full command' : ''}
             </ThemedText>
           </Box>
         ) : null}
         {commandIsShell ? (
           // A real shell command (Run/Bash): show it behind the `$ ` prompt glyph.
-          <ThemedText color="text2" wrap="truncate-end">
-            $ {command}
-          </ThemedText>
+          <Box flexDirection="column" flexShrink={0}>
+            {shownCommandRows.map((row, index) => (
+              <ThemedText key={index} color="text2" wrap="truncate-end">
+                {row}
+              </ThemedText>
+            ))}
+            {commandMarker !== undefined ? (
+              <ThemedText color="inactive" wrap="truncate-end">
+                {commandMarker}
+              </ThemedText>
+            ) : null}
+          </Box>
         ) : showPreview || command.trim().length === 0 || command.trim() === '{}' ? null : (
           // A non-shell input (a Write/Edit file_path). Never prefix it with the
           // `$ ` shell-prompt marker — it would misread as a runnable command.
@@ -1806,7 +1957,7 @@ export function ApprovalCard({
           // Empty/`{}` inputs (EnterPlanMode and friends) render no line at all.
           // A long path loses its middle, never its file name.
           <ThemedText color="text2" wrap="truncate-middle">
-            {command}
+            {visibleControlChars(command)}
           </ThemedText>
         )}
         {showPreview && diffPreview !== undefined ? (

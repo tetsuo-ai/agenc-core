@@ -4404,6 +4404,13 @@ export interface PendingToolApproval extends JsonObject {
   readonly toolName: string;
   readonly input?: JsonObject;
   readonly turnId?: string;
+  /**
+   * What the request asks for, as its `event.permission_request` lists it:
+   * `tool.use`, plus `run_without_sandbox`, `mcp_no_fs_writes` or
+   * `single_call` when they apply. Clients say from it what a session grant
+   * covers. Absent from daemons that predate it.
+   */
+  readonly permissions?: readonly string[];
   readonly reason?: string;
   readonly planContent?: string;
   readonly planFilePath?: string;

@@ -4,6 +4,7 @@
  * price; anything outside the workspace, not an image, or not listed is
  * refused before any request.
  */
+import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -116,6 +117,17 @@ describe("ImagineEdit: Venice edits and upscales a workspace image", () => {
     expect(await decide({ image: "in.png", prompt: "x" })).toMatchObject({ behavior: "ask" });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it.skipIf(process.platform === "win32")("refuses a FIFO named like an image without waiting for a writer", async () => {
+    seed();
+    const root = await workspace();
+    execFileSync("mkfifo", [join(root, "pipe.png")]);
+    const fetchImpl = vi.fn();
+    const tool = createImagineEditTool({ workspaceRoot: root, env: ENV, fetchImpl: fetchImpl as unknown as typeof fetch, getSession: veniceSession() });
+    const result = await tool.execute({ image: "pipe.png", prompt: "x" });
+    expect(String(result.content)).toContain("regular file");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  }, 5_000);
 
   it("is not offered outside a Venice session", async () => {
     const root = await workspace();

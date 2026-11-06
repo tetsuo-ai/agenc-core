@@ -70,6 +70,7 @@ import { WorkspaceMutationError } from "../../workspace/mutation-error.js";
 import { type WorkspaceFileMutationTestHooks } from "../../workspace/file-mutation-transaction.js";
 import { describeWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence } from "../../workspace/file-mutation-evidence.js";
 import { executeWorkspaceFileMutation } from "../../workspace/lazy-file-mutation.js";
+import { boundTargetFor, observeFileTarget, type ObservedFileTarget } from "../bound-targets.js";
 
 export const FILE_EDIT_TOOL_NAME = "Edit";
 export const FILE_MULTI_EDIT_TOOL_NAME = "MultiEdit";
@@ -541,6 +542,8 @@ async function coordinateFileWrite(
     readonly afterText: string;
     readonly observedEncoding?: BufferEncoding;
     readonly testHooks?: WorkspaceFileMutationTestHooks;
+    /** The target the call was checked against (tools/bound-targets.ts). */
+    readonly expectedTarget?: ObservedFileTarget;
   },
   write: () => Promise<void>,
 ): Promise<ToolResult | null> {
@@ -548,6 +551,7 @@ async function coordinateFileWrite(
     path: input.absolutePath,
     afterText: input.afterText,
     write,
+    ...(input.expectedTarget !== undefined ? { expectedTarget: input.expectedTarget } : {}),
     decodeObserved: (content) =>
       content
         .toString(input.observedEncoding ?? "utf8")
@@ -902,6 +906,12 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       if ("error" in validated) return { code: "invalid_edit", message: validated.error };
       return unreadFilePreflight(args, [validated.file_path], config.allowedPaths[0] ?? process.cwd(), config.allowedPaths);
     },
+    observeTargets(input) {
+      const filePath = asNonEmptyString((input as EditArgs).file_path);
+      if (!filePath) return [];
+      const cwd = asNonEmptyString(input.cwd) ?? config.allowedPaths[0] ?? process.cwd();
+      return [observeFileTarget(isAbsolute(filePath) ? filePath : resolve(cwd, filePath))];
+    },
     checkPermissions(input, context) {
       const args = input as EditArgs;
       const filePath = asNonEmptyString(args.file_path);
@@ -952,6 +962,8 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       const candidatePath = isAbsolute(file_path)
         ? file_path
         : resolve(cwd, file_path);
+      // The file this call was checked against before any prompt.
+      const expectedTarget = boundTargetFor(rawArgs, candidatePath);
 
       // For nonexistent paths, safePath() canonicalizes the deepest
       // existing parent — so creation under an allowed root still
@@ -1019,6 +1031,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
               beforeText: "",
               afterText: new_string,
               testHooks: config,
+              ...(expectedTarget !== undefined ? { expectedTarget } : {}),
             },
             () => writeFileCreatingParents(absoluteFilePath, new_string),
           );
@@ -1138,6 +1151,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
               afterText: new_string,
               observedEncoding: snapshot.encoding,
               testHooks: config,
+              ...(expectedTarget !== undefined ? { expectedTarget } : {}),
             },
             () =>
               writeFilePreservingSnapshot(
@@ -1187,6 +1201,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
             afterText: updated,
             observedEncoding: snapshot.encoding,
             testHooks: config,
+            ...(expectedTarget !== undefined ? { expectedTarget } : {}),
           },
           () =>
             writeFilePreservingSnapshot(absoluteFilePath, updated, snapshot),
@@ -1294,6 +1309,13 @@ function createMultiEditTool(config: FileEditToolConfig, originalDisjoint: boole
       if ("error" in validated) return { code: "invalid_edit", message: validated.error };
       return unreadFilePreflight(args, [validated.file_path], config.allowedPaths[0] ?? process.cwd(), config.allowedPaths);
     },
+    observeTargets(input) {
+      const args = input as MultiEditArgs & { readonly path?: unknown };
+      const filePath = asNonEmptyString(originalDisjoint ? args.path : args.file_path);
+      if (!filePath) return [];
+      const cwd = asNonEmptyString(args.cwd) ?? config.allowedPaths[0] ?? process.cwd();
+      return [observeFileTarget(isAbsolute(filePath) ? filePath : resolve(cwd, filePath))];
+    },
     checkPermissions(input, context) {
       const args = input as MultiEditArgs & { readonly path?: unknown };
       // Authority depends on the target alone, as for Edit and Write: MultiEdit is
@@ -1365,6 +1387,8 @@ function createMultiEditTool(config: FileEditToolConfig, originalDisjoint: boole
       const candidatePath = isAbsolute(file_path)
         ? file_path
         : resolve(cwd, file_path);
+      // The file this call was checked against before any prompt.
+      const expectedTarget = boundTargetFor(rawArgs, candidatePath);
       const safe = await safePathAllowingSessionPlanFile(
         candidatePath,
         config.allowedPaths,
@@ -1423,6 +1447,7 @@ function createMultiEditTool(config: FileEditToolConfig, originalDisjoint: boole
               beforeText: "",
               afterText: firstEdit.new_string,
               testHooks: config,
+              ...(expectedTarget !== undefined ? { expectedTarget } : {}),
             },
             () =>
               writeFileCreatingParents(absoluteFilePath, firstEdit.new_string),
@@ -1536,6 +1561,7 @@ function createMultiEditTool(config: FileEditToolConfig, originalDisjoint: boole
               afterText: firstEdit.new_string,
               observedEncoding: snapshot.encoding,
               testHooks: config,
+              ...(expectedTarget !== undefined ? { expectedTarget } : {}),
             },
             () =>
               writeFilePreservingSnapshot(
@@ -1627,6 +1653,7 @@ function createMultiEditTool(config: FileEditToolConfig, originalDisjoint: boole
             afterText: updated,
             observedEncoding: snapshot.encoding,
             testHooks: config,
+            ...(expectedTarget !== undefined ? { expectedTarget } : {}),
           },
           () =>
             writeFilePreservingSnapshot(absoluteFilePath, updated, snapshot),

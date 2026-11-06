@@ -695,6 +695,19 @@ function truncateInline(value: string, limit = 140): string {
   return `${normalized.slice(0, limit - 1)}…`;
 }
 
+/**
+ * Like {@link truncateInline} but without the `~` home-path shortening, for
+ * the `write_stdin` call row only: a quoted `~` in typed input names a
+ * different path than the literal the card shows, so the transcript row shows
+ * the same real text the approval card shows. The command rows (exec_command,
+ * system.bash, Bash) keep the `~` shortening from #3141.
+ */
+function truncateInlineVerbatim(value: string, limit = 140): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= limit) return normalized;
+  return `${normalized.slice(0, limit - 1)}…`;
+}
+
 function contentLengthSummary(value: unknown): string | null {
   if (typeof value !== "string") return null;
   return `${value.length} ${value.length === 1 ? "char" : "chars"}`;
@@ -882,6 +895,11 @@ function toolUseSummaryForInput(name: string, input: unknown): string {
   // tool creation and dispatch use system.bash exclusively.
   if ((name === "system.bash" || name === "Bash") && typeof record.command === "string") {
     return truncateInline(record.command);
+  }
+  // write_stdin types executable input into a running session: the card shows
+  // its chars as a shell command with real paths, so the call row does too.
+  if (name === "write_stdin" && typeof record.chars === "string" && record.chars.trim().length > 0) {
+    return truncateInlineVerbatim(record.chars);
   }
   if (name === "TodoWrite" || name === "TodoRead") {
     const todos = todoSummaryForInput(record);

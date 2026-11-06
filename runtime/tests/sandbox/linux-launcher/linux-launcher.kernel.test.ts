@@ -504,6 +504,62 @@ test("keeps a narrowed .git and its objects directory from being moved aside and
   }
 });
 
+test("removes a watched .git carve-out without following a link swapped in for it", { timeout: 30_000 }, async () => {
+  expect(process.platform).toBe("linux");
+  const root = realpathSync(mkdtempSync(join("/var/tmp", "agenc-monitor-swap-kernel-")));
+  const project = join(root, "project");
+  const temporary = join(root, "temp");
+  const victim = join(root, "victim", ".git");
+  // A real repository (HEAD + objects) whose `modules` surface entry is
+  // missing: the created-path monitor watches `.git/modules`. The command
+  // creates it, then swaps it for a link to another repository's metadata.
+  mkdirSync(join(project, ".git", "objects"), { recursive: true });
+  writeFileSync(join(project, ".git", "HEAD"), "ref: refs/heads/main\n");
+  mkdirSync(temporary);
+  mkdirSync(join(victim, "info"), { recursive: true });
+  writeFileSync(join(victim, "info", "exclude"), "kept\n");
+  try {
+    const environment = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, AGENC_HOME: join(root, "home") };
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: project, env: environment,
+      sessionTempRoot: temporary, agencLinuxSandboxExe: launcherEntry });
+    expect(broker.status().kind).toBe("ready");
+    const result = await broker.prepareSpawn("tool", {
+      program: process.execPath,
+      args: ["--input-type=module", "--eval", `
+        import fs from 'node:fs';
+        const victim = process.argv[1];
+        const until = Date.now() + 400;
+        let swaps = 0;
+        while (Date.now() < until) {
+          try {
+            fs.mkdirSync('.git/modules/sub', { recursive: true });
+            fs.writeFileSync('.git/modules/sub/HEAD', 'planted');
+            fs.renameSync('.git/modules', '.git/modules.real');
+            fs.symlinkSync(victim, '.git/modules');
+            fs.unlinkSync('.git/modules');
+            fs.renameSync('.git/modules.real', '.git/modules');
+            swaps += 1;
+          } catch { break; }
+        }
+        try { fs.mkdirSync('.git/modules', { recursive: true }); } catch {}
+        process.stdout.write(String(swaps));
+      `, victim],
+      cwd: project, env: environment,
+    }).run(async command => spawnSync(command.program, [...command.args], {
+      cwd: command.cwd, env: command.env, encoding: "utf8", timeout: 10_000,
+    }));
+    expect(result.error).toBeUndefined();
+    expect(Number(result.stdout), result.stderr).toBeGreaterThan(0);
+    // Creating a watched carve-out fails the command, and the swap for a link
+    // never lets the host-side monitor delete the other repository's data.
+    expect(result.status).not.toBe(0);
+    expect(existsSync(join(project, ".git", "modules"))).toBe(false);
+    expect(readFileSync(join(victim, "info", "exclude"), "utf8")).toBe("kept\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test(
   "enforces the production Linux sandbox boundary with the real kernel",
   { timeout: 30_000 },
