@@ -777,6 +777,86 @@ export function forEachSessionRead(
   }
 }
 
+/** A file's on-disk state as `stat` reports it: identity, size and times. */
+export interface FileStatFingerprint {
+  readonly dev: number;
+  readonly ino: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+}
+
+export function fileStatFingerprint(stats: FileStatFingerprint): FileStatFingerprint {
+  return {
+    dev: stats.dev,
+    ino: stats.ino,
+    size: stats.size,
+    mtimeMs: stats.mtimeMs,
+    ctimeMs: stats.ctimeMs,
+  };
+}
+
+export function sameFileStat(
+  a: FileStatFingerprint | undefined,
+  b: FileStatFingerprint | undefined,
+): boolean {
+  return (
+    a !== undefined &&
+    b !== undefined &&
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.mtimeMs === b.mtimeMs &&
+    a.ctimeMs === b.ctimeMs
+  );
+}
+
+/**
+ * Files read this session that the session's own shell command changed: per
+ * file, the state it had when that command returned
+ * (`tools/system/own-shell-changes.ts`). The changed-files attachment producer
+ * reads it; it lives and is cleared with the session read state.
+ */
+const sessionOwnShellChanges = new Map<string, Map<string, FileStatFingerprint>>();
+
+export function recordOwnShellChange(
+  sessionId: string | undefined,
+  canonicalPath: string,
+  fingerprint: FileStatFingerprint,
+): void {
+  if (conversationReadScopeClosed()) return;
+  sessionId = resolveSessionReadId(sessionId);
+  if (!sessionId || sessionId.trim().length === 0) return;
+  if (sessionReadState.get(sessionId)?.has(canonicalPath) !== true) return;
+  let changes = sessionOwnShellChanges.get(sessionId);
+  if (changes === undefined) {
+    changes = new Map();
+    sessionOwnShellChanges.set(sessionId, changes);
+  }
+  changes.set(canonicalPath, fingerprint);
+}
+
+export function ownShellChangeOf(
+  sessionId: string | undefined,
+  canonicalPath: string,
+): FileStatFingerprint | undefined {
+  sessionId = resolveSessionReadId(sessionId);
+  if (!sessionId || sessionId.trim().length === 0) return undefined;
+  return sessionOwnShellChanges.get(sessionId)?.get(canonicalPath);
+}
+
+export function forgetOwnShellChange(
+  sessionId: string | undefined,
+  canonicalPath: string,
+): void {
+  sessionId = resolveSessionReadId(sessionId);
+  if (!sessionId || sessionId.trim().length === 0) return;
+  const changes = sessionOwnShellChanges.get(sessionId);
+  if (changes === undefined) return;
+  changes.delete(canonicalPath);
+  if (changes.size === 0) sessionOwnShellChanges.delete(sessionId);
+}
+
 /** Drop a single file's recorded snapshot. Used on ENOENT eviction. */
 export function dropSessionReadSnapshot(
   sessionId: string | undefined,
@@ -785,6 +865,7 @@ export function dropSessionReadSnapshot(
   sessionId = resolveSessionReadId(sessionId);
   if (!sessionId || sessionId.trim().length === 0) return;
   sessionReadState.get(sessionId)?.delete(canonicalPath);
+  forgetOwnShellChange(sessionId, canonicalPath);
   const scope = getCurrentRuntimeSession()?.fileReadScope;
   if (scope !== undefined) {
     workspaceReadState.get(scope)?.delete(
@@ -809,6 +890,7 @@ export function clearSessionReadState(
   sessionTempRoot: string,
 ): void {
   sessionReadState.delete(sessionId);
+  sessionOwnShellChanges.delete(sessionId);
   try {
     rmSync(resolveLocalHistorySessionDir(sessionId, sessionTempRoot), {
       recursive: true,
@@ -825,6 +907,7 @@ export function clearSessionReadState(
  */
 export function clearSessionReadCache(sessionId: string): void {
   sessionReadState.delete(sessionId);
+  sessionOwnShellChanges.delete(sessionId);
 }
 
 export interface SessionReadSnapshotExport {

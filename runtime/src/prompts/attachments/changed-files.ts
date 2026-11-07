@@ -12,6 +12,10 @@
  * After emitting, update the in-memory snapshot so subsequent turns do
  * not re-fire the same change.
  *
+ * A change the session's own shell command made, with nothing touching the
+ * file after it, updates the snapshot without an attachment, as the file
+ * tools' own writes do (`tools/system/own-shell-changes.ts`).
+ *
  * Files that disappear (ENOENT) are evicted from the read cache; other
  * stat failures (atomic-save races, EACCES churn, transient FS errors)
  * intentionally do NOT evict — that matches the AgenC regression
@@ -26,8 +30,12 @@ import { loadDiff } from "../../utils/lazy-runtime-packages.js";
 
 import {
   dropSessionReadSnapshot,
+  fileStatFingerprint,
   forEachSessionRead,
+  forgetOwnShellChange,
+  ownShellChangeOf,
   recordSessionRead,
+  sameFileStat,
 } from "../../tools/system/filesystem.js";
 import type {
   EditedImageFileAttachment,
@@ -190,8 +198,17 @@ export const changedFilesProducer: AttachmentProducer = async (opts) => {
         typeof entry.previousTimestamp === "number" &&
         st.mtimeMs <= entry.previousTimestamp
       ) {
+        forgetOwnShellChange(sessionId, entry.path);
         return;
       }
+      // The session's own shell command made this change and nothing has
+      // touched the file since (tools/system/own-shell-changes.ts). The model
+      // wrote that command and saw its output, as with its own file tools, so
+      // the view is refreshed without sending the file again.
+      const ownShellChange = sameFileStat(
+        fileStatFingerprint(st),
+        ownShellChangeOf(sessionId, entry.path),
+      );
 
       const ext = extname(entry.path).toLowerCase();
       const mediaType = IMAGE_MIME_BY_EXT[ext];
@@ -203,17 +220,20 @@ export const changedFilesProducer: AttachmentProducer = async (opts) => {
         } catch {
           return;
         }
-        out.push({
-          kind: "edited_image_file",
-          filename: entry.path,
-          content: bytes.toString("base64"),
-          mediaType,
-        });
+        if (!ownShellChange) {
+          out.push({
+            kind: "edited_image_file",
+            filename: entry.path,
+            content: bytes.toString("base64"),
+            mediaType,
+          });
+        }
         recordSessionRead(sessionId, entry.path, {
           rawContent: bytes.toString("base64"),
           timestamp: st.mtimeMs,
           viewKind: "full",
         });
+        forgetOwnShellChange(sessionId, entry.path);
         return;
       }
 
@@ -223,10 +243,11 @@ export const changedFilesProducer: AttachmentProducer = async (opts) => {
       } catch {
         return;
       }
-      const snippet = computeSnippet(entry.previousRaw, nextRaw);
+      const snippet = ownShellChange ? "" : computeSnippet(entry.previousRaw, nextRaw);
+      forgetOwnShellChange(sessionId, entry.path);
       if (snippet === "") {
-        // mtime bumped (touch) but content identical — refresh timestamp
-        // so we don't re-stat next turn.
+        // mtime bumped (touch) but content identical, or the session's own
+        // command changed it: refresh the view so we don't re-stat next turn.
         recordSessionRead(sessionId, entry.path, {
           rawContent: nextRaw,
           timestamp: st.mtimeMs,

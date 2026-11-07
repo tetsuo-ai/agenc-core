@@ -18,6 +18,7 @@ import {
 import { preflightSelfTermination, preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
 import { foldDefaultSandboxPermission } from "./sandbox-permission-values.js";
 import { recordSessionRead, resolveSessionId } from "./filesystem.js";
+import { trackOwnShellChanges } from "./own-shell-changes.js";
 import { isCompletePrintedOutput, rememberPrintedOutput, stableWorkspaceText } from "./printed-read-proof.js";
 import type { BashToolConfig } from "./types.js";
 import { UnifiedExecError, UnifiedExecUnavailableError } from "../../unified-exec/types.js";
@@ -1312,9 +1313,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             ? { observer: config.execObserver }
             : {}),
         };
-        const output = detach
-          ? await manager.startDetachedProcess!({ ...commonRequest, ...shellRequest })
-          : await manager.execCommand({
+        const output = await trackOwnShellChanges(args, () => detach
+          ? manager.startDetachedProcess!({ ...commonRequest, ...shellRequest })
+          : manager.execCommand({
               ...commonRequest,
               ...(inspection !== undefined
                 ? { directInvocation: inspection, workdir: inspection.cwd }
@@ -1330,7 +1331,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
                 : {}),
               ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
               ...(ownerId !== undefined ? { ownerId } : {}),
-            });
+            }));
         // Commands were paused after an unproven cleanup and this call found
         // that cleanup proven: say so once, with the output.
         const admissionResumed = manager.takeAdmissionResumedNotice?.();

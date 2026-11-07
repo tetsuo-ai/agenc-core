@@ -4,6 +4,7 @@ import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.
 import { shellWorkspaceMutationPermission } from "./shell-mutation-permission.js";
 import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
 import { foldDefaultSandboxPermission } from "./sandbox-permission-values.js";
+import { trackOwnShellChanges } from "./own-shell-changes.js";
 import { UnifiedExecError, UnifiedExecUnavailableError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import {
@@ -244,7 +245,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         const ownerId = processOwnerIdFromToolArgs(
           args as Record<string, unknown>,
         );
-        const output = await manager.writeStdin({
+        const output = await trackOwnShellChanges(args, () => manager.writeStdin({
           ...(execOwnerBindingFromToolArgs(args as Record<string, unknown>) !== undefined
             ? { ownerBinding: execOwnerBindingFromToolArgs(args as Record<string, unknown>) } : {}),
           session_id: sessionId,
@@ -264,7 +265,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
             : {}),
           ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
           ...(ownerId !== undefined ? { ownerId } : {}),
-        });
+        }));
         // gaphunt3 #4: mirror exec-command.ts so a signal-killed process
         // (exitCode === null, no process_id) is reported as an error instead
         // of a silent success. `process_id !== undefined` discriminates a
