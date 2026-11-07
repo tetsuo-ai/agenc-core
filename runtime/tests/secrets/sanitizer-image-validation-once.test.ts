@@ -39,4 +39,10 @@ test("one durable save checks each image once and keeps it", async () => {
   expect(counted.inspections).toBe(2);
   const item = parseRolloutLine(line.trim());
   expect(item?.type === "response_item" ? item.payload.content : undefined).toEqual(message.content);
+  // The verdicts belong to that save's objects, not to the body text: a later save of the same images in new
+  // objects checks them again, so nothing keeps an image body in memory after a save.
+  const again: LLMMessage = structuredClone(message);
+  counted.inspections = 0;
+  serializeRolloutItem({ type: "response_item", payload: llmMessageToDurableResponseItem(again) });
+  expect(counted.inspections).toBe(2);
 });

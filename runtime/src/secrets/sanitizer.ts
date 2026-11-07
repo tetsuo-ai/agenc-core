@@ -787,46 +787,36 @@ function validatedImageBody(
   const fields = value[holder];
   if (fields === null || typeof fields !== "object" || Array.isArray(fields)) return undefined;
   const record = fields as Record<string, unknown>;
-  if (typeof record.url === "string") {
-    const body = IMAGE_DATA_URL_BODY.exec(record.url)?.[1];
-    return body !== undefined && isCompleteImageBase64(body) ? { holder, field: "url" } : undefined;
-  }
-  if (holder === "source" && record.type === "base64" && typeof record.data === "string") {
-    return isCompleteImageBase64(record.data) ? { holder, field: "data" } : undefined;
-  }
-  return undefined;
+  const field = typeof record.url === "string" ? "url"
+    : holder === "source" && record.type === "base64" && typeof record.data === "string" ? "data" : undefined;
+  return field !== undefined && holderBodyValidates(record, field) ? { holder, field } : undefined;
 }
 
 const IMAGE_DATA_URL_BODY = /^data:image\/(?:png|jpeg|gif|webp);base64,([A-Za-z0-9+/]*={0,2})$/u;
 
-// The verdicts of the last few image bodies checked. One durable save redacts
-// each image several times (the response item, the carrier check and the
-// rollout line), and a body string keeps its verdict, so each image is decoded
-// and checked once. Bounded in entries and characters.
-const imageBodyVerdicts = new Map<string, boolean>();
-const IMAGE_BODY_VERDICT_ENTRIES = 8;
-const IMAGE_BODY_VERDICT_CHARS = 24 * 1024 * 1024;
-let imageBodyVerdictChars = 0;
+// The verdict for the body each image holder (an image block's image_url or
+// source object) carried when it was checked. One durable save redacts each
+// image several times (the response item, the carrier check and the rollout
+// line), and the first redaction's copy of an exempt holder inherits its
+// verdict, so a save checks each image once. The keys are the save's own
+// objects, held weakly: an entry ends with them, and no image body stays in
+// memory after the save.
+const imageBodyVerdicts = new WeakMap<object, { readonly text: string; readonly verdict: boolean }>();
+
+function holderBodyValidates(record: Record<string, unknown>, field: "url" | "data"): boolean {
+  const text = record[field] as string;
+  const known = imageBodyVerdicts.get(record);
+  if (known !== undefined && known.text === text) return known.verdict;
+  const body = field === "url" ? IMAGE_DATA_URL_BODY.exec(text)?.[1] : text;
+  const verdict = body !== undefined && isCompleteImageBase64(body);
+  imageBodyVerdicts.set(record, { text, verdict });
+  return verdict;
+}
 
 function isCompleteImageBase64(body: string): boolean {
-  const known = imageBodyVerdicts.get(body);
-  if (known !== undefined) return known;
-  let verdict = false;
-  if (body.length > 0 && body.length % 4 === 0) {
-    const bytes = Buffer.from(body, "base64");
-    verdict = bytes.toString("base64") === body && inspectImageBytes(bytes).ok && imageEndsAtEndMarker(bytes);
-  }
-  if (body.length <= IMAGE_BODY_VERDICT_CHARS) {
-    while (imageBodyVerdicts.size >= IMAGE_BODY_VERDICT_ENTRIES ||
-           (imageBodyVerdicts.size > 0 && imageBodyVerdictChars + body.length > IMAGE_BODY_VERDICT_CHARS)) {
-      const oldest = imageBodyVerdicts.keys().next().value as string;
-      imageBodyVerdicts.delete(oldest);
-      imageBodyVerdictChars -= oldest.length;
-    }
-    imageBodyVerdicts.set(body, verdict);
-    imageBodyVerdictChars += body.length;
-  }
-  return verdict;
+  if (body.length === 0 || body.length % 4 !== 0) return false;
+  const bytes = Buffer.from(body, "base64");
+  return bytes.toString("base64") === body && inspectImageBytes(bytes).ok && imageEndsAtEndMarker(bytes);
 }
 
 /**
@@ -846,7 +836,10 @@ function redactImageBodyHolder(
       continue;
     }
     const bodyStart = field === "url" ? nested.indexOf(",") + 1 : 0;
-    output[key] = redactString(nested.slice(0, bodyStart)) + redactString(nested.slice(bodyStart), false);
+    const text = redactString(nested.slice(0, bodyStart)) + redactString(nested.slice(bodyStart), false);
+    output[key] = text;
+    // The copy carries the same checked body when no rule changed it.
+    if (text === nested) imageBodyVerdicts.set(output, { text, verdict: true });
   }
   return output;
 }
