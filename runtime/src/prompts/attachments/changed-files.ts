@@ -174,18 +174,21 @@ function lineCount(text: string): number {
   return text.endsWith("\n") ? count : count + 1;
 }
 
-/** The notice for a file in a state a command of the session left, or undefined while it is being written. */
+/**
+ * The notice for a file in a state a command of the session left; "moved" when
+ * a write landed between the stat and the read; undefined when it cannot be read.
+ */
 async function ownShellChangeNotice(
   entry: PendingFile,
   now: FileStatFingerprint,
-): Promise<OwnShellChangeNoticeAttachment | undefined> {
+): Promise<OwnShellChangeNoticeAttachment | "moved" | undefined> {
   if (IMAGE_MIME_BY_EXT[extname(entry.path).toLowerCase()] !== undefined) {
     return { kind: "own_shell_change_notice", filename: entry.path, bytes: now.size };
   }
   let text: string;
   try {
     text = await readFile(entry.path, "utf8");
-    if (!sameFileStat(now, fileStatFingerprint(await stat(entry.path)))) return undefined;
+    if (!sameFileStat(now, fileStatFingerprint(await stat(entry.path)))) return "moved";
   } catch {
     return undefined;
   }
@@ -269,14 +272,18 @@ export const changedFilesProducer: AttachmentProducer = async (opts) => {
       // Write or Edit of the file asks for a read first.
       const state = fileViewStateOf(sessionId, entry.path);
       if (sameFileStat(now, state?.own)) {
-        if (!sameFileStat(now, state?.noticed)) {
-          const notice = await ownShellChangeNotice(entry, now);
+        const notice = sameFileStat(now, state?.noticed)
+          ? undefined
+          : await ownShellChangeNotice(entry, now);
+        if (notice !== "moved") {
           if (notice !== undefined) {
             out.push(notice);
             recordOwnShellChangeNoticed(sessionId, entry.path, now);
           }
+          return;
         }
-        return;
+        // A write landed between the stat and the notice's read: the file is no
+        // longer in the command's state, so it gets the diff below.
       }
 
       const ext = extname(entry.path).toLowerCase();

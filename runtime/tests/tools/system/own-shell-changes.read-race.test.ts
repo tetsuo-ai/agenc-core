@@ -118,3 +118,17 @@ test("after a write lands during the producer's read, the next command naming th
   expect(next).toHaveLength(1);
   expect(next[0]).toContain("4,D");
 });
+
+test("a write landing while the notice reads the file gets the diff in the same request", async () => {
+  const csv = join(root, "proof.csv");
+  await createFileWriteTool({ allowedPaths: [root] }).execute({ file_path: csv, content: "1,A\n", [SESSION_ID_ARG]: session });
+  await delay(20);
+  expect(await attachments()).toEqual([]);
+  await exec("printf '2,B\\n' >> proof.csv");
+  race.path = csv;
+  race.write = async () => writeFile(csv, `${await readFile(csv, "utf8")}9,USER\n`);
+  const snippets = await attachments();
+  expect(snippets).toHaveLength(1);
+  expect(snippets[0]).toContain("2,B");
+  expect(snippets[0]).toContain("9,USER");
+});
