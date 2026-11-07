@@ -355,13 +355,23 @@ export function resolveSpecialPath(
   }
 }
 
-export function getWritableRootsWithCwd(
+/**
+ * The resolved entries, the writable entries and the deduplicated writable
+ * root paths of `policy` for `cwd`: the part of getWritableRootsWithCwd that
+ * decides which roots are writable, before any per-root carve-out or the
+ * nested-repository scan.
+ */
+function writableRootSelection(
   policy: FileSystemSandboxPolicy,
   cwd: string,
   sessionTempRoot: string,
-): WritableRoot[] {
-  if (policy.kind !== "restricted") return [];
-  if (hasFullDiskWriteAccess(policy)) return [];
+): {
+  readonly resolvedEntries: ResolvedFileSystemEntry[];
+  readonly writableEntries: string[];
+  readonly writableRoots: string[];
+} | null {
+  if (policy.kind !== "restricted") return null;
+  if (hasFullDiskWriteAccess(policy)) return null;
   const resolvedEntries = resolvedEntriesWithCwd(policy, cwd, sessionTempRoot);
   const writableEntries = resolvedEntries
     .filter((entry) => canWriteAccess(entry.access))
@@ -369,7 +379,42 @@ export function getWritableRootsWithCwd(
       canWritePathWithCwd(policy, entry.path, cwd, sessionTempRoot)
     )
     .map((entry) => entry.path);
-  const writableRoots = dedupPaths(writableEntries, true);
+  return { resolvedEntries, writableEntries, writableRoots: dedupPaths(writableEntries, true) };
+}
+
+/**
+ * The root paths getWritableRootsWithCwd returns, in the same order, without
+ * computing their read-only carve-outs. That computation stats each root's
+ * metadata and walks the root for nested repositories, and it runs for every
+ * tool call, so a caller that only asks whether some writable root contains
+ * a path (the AgenC home protection) uses this instead.
+ */
+export function getWritableRootPathsWithCwd(
+  policy: FileSystemSandboxPolicy,
+  cwd: string,
+  sessionTempRoot: string,
+): string[] {
+  return writableRootSelection(policy, cwd, sessionTempRoot)?.writableRoots ?? [];
+}
+
+/**
+ * The writable roots of `policy` for `cwd`, each with its read-only carve-outs.
+ * `nestedRepositoryScan: false` leaves out the scan for nested repositories:
+ * the roots, their default and explicit carve-outs, reservations and protected
+ * metadata names are the same, but no nested repository's surface or nested
+ * `.git` pointer is listed and `nestedRepoGitDirs` is absent. Only the runtime
+ * check's policy kind (compatibilitySandboxPolicyKindForPermissionProfile)
+ * turns it off; a caller that reads the carve-outs must keep the scan.
+ */
+export function getWritableRootsWithCwd(
+  policy: FileSystemSandboxPolicy,
+  cwd: string,
+  sessionTempRoot: string,
+  options: { readonly nestedRepositoryScan?: boolean } = {},
+): WritableRoot[] {
+  const selection = writableRootSelection(policy, cwd, sessionTempRoot);
+  if (selection === null) return [];
+  const { resolvedEntries, writableEntries, writableRoots } = selection;
 
   return writableRoots.map((root) => {
     const reservedReadOnlyPaths = (policy.reservedReadOnlyPaths ?? []).filter(
@@ -415,7 +460,9 @@ export function getWritableRootsWithCwd(
     // sandbox refuses a planted hook/config/alternate there too. Missing
     // carve-outs inside it are watched by the created-path monitor, as for the
     // top-level narrowed `.git`.
-    const nestedGit = nestedGitFindings(root, writableRoots);
+    const nestedGit = options.nestedRepositoryScan === false
+      ? { repoDirs: [], descentPoints: [], pointerFiles: [] }
+      : nestedGitFindings(root, writableRoots);
     const nestedRepoGitDirs = nestedGit.descentPoints;
     const nestedGitCarveouts = nestedGit.repoDirs.flatMap((gitDir) =>
       gitNarrowedReadOnlyCarveouts(gitDir),
@@ -932,8 +979,14 @@ export function nestedGitFindings(root: string, roots: readonly string[] = [root
     visited += 1;
     for (const entry of entries) {
       if (visited >= NESTED_GIT_SCAN_MAX_DIRS) return;
+      const isGitEntry = entry.name === GIT_METADATA_DIR_NAME;
+      // Only a `.git` entry or a real directory to descend into matters.
+      // Skip every other entry before building its path: a writable root
+      // (the workspace, /tmp with the compile cache) holds far more files
+      // than directories, and this walk runs for every tool call.
+      if (!isGitEntry && (entry.isSymbolicLink() || !entry.isDirectory())) continue;
       const child = path.join(dir, entry.name);
-      if (entry.name === GIT_METADATA_DIR_NAME) {
+      if (isGitEntry) {
         // A `.git` that is not the root's own. A real repository directory is
         // narrowed and never descended into. A `.git` pointer (a gitfile or a
         // symlink) is a descent redirect, not inert data, so it is a descent
@@ -955,7 +1008,6 @@ export function nestedGitFindings(root: string, roots: readonly string[] = [root
         }
         continue;
       }
-      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
       walk(child, depth + 1);
     }
   };

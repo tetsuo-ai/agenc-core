@@ -1148,10 +1148,14 @@ cookies, or plugin storage writable to a confined child.
 
 `protectAgencHomeUnderWritableRoot`
 (`runtime/src/sandbox/agenc-home-protection.ts`) adds the canonical home to
-`reservedReadOnlyPaths` through `protectDesktopAuthority`. Detection walks
-`getWritableRootsWithCwd` on the **granted** profile (`grantedProfile`), so a
+`reservedReadOnlyPaths` through `protectDesktopAuthority`. Detection checks
+the writable roots of the **granted** profile (`grantedProfile`), so a
 per-command extra write root that contains home still reserves it without
-widening the base profile. `sandboxAgencHome` canonicalizes the bound
+widening the base profile. It reads only the root paths
+(`getWritableRootPathsWithCwd`, the same roots `getWritableRootsWithCwd`
+lists): their read-only carve-outs and the nested-repository scan are
+computed where a sandbox is built, not again for this check on every tool
+call. `sandboxAgencHome` canonicalizes the bound
 session home (`configStore.homeContext.path`) and prefers it over the
 environment, including symlink aliases.
 

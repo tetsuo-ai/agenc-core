@@ -272,7 +272,37 @@ export function compatibilitySandboxPolicyForPermissionProfile(
       networkPolicy,
       cwd,
       sessionTempRoot,
+      true,
     );
+}
+
+/**
+ * The kind of the policy compatibilitySandboxPolicyForPermissionProfile
+ * returns, from the same inputs, without scanning the writable roots for
+ * nested repositories: the kind never depends on a carve-out. Every other part
+ * of the computation runs as there, so an error it raises is raised here too.
+ * Only the kind leaves this function, so no caller can read a policy that is
+ * missing the nested repositories' surfaces.
+ */
+export function compatibilitySandboxPolicyKindForPermissionProfile(
+  permissions: PermissionProfile,
+  fileSystemPolicy: FileSystemSandboxPolicy,
+  networkPolicy: NetworkSandboxPolicy,
+  cwd: string,
+  sessionTempRoot: string,
+): CompatibilitySandboxPolicy["kind"] {
+  return (permissionProfileToCompatibilitySandboxPolicy(
+    permissions,
+    cwd,
+    sessionTempRoot,
+  ) ??
+    compatibilityWorkspaceWritePolicy(
+      fileSystemPolicy,
+      networkPolicy,
+      cwd,
+      sessionTempRoot,
+      false,
+    )).kind;
 }
 
 function permissionProfileToCompatibilitySandboxPolicy(
@@ -397,11 +427,13 @@ function compatibilityWorkspaceWritePolicy(
   networkPolicy: NetworkSandboxPolicy,
   cwd: string,
   sessionTempRoot: string,
+  nestedRepositoryScan: boolean,
 ): CompatibilitySandboxPolicy {
   const writableRoots = getWritableRootsWithCwd(
     fileSystemPolicy,
     cwd,
     sessionTempRoot,
+    { nestedRepositoryScan },
   );
   const tmpdir = sessionTempRoot;
   const tmpdirWritable =
