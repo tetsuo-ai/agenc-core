@@ -36,6 +36,9 @@ beforeEach(() => {
   fs.writeFileSync(join(workspace, "vendor", "lib", ".git", "HEAD"), "ref: refs/heads/main\n");
   fs.mkdirSync(join(workspace, "pkg"), { recursive: true });
   fs.writeFileSync(join(workspace, "pkg", ".git"), "gitdir: ../unresolvable\n");
+  // A `.git` symlink to writable workspace data: a descent point, never bound read-only.
+  fs.mkdirSync(join(workspace, "linked"), { recursive: true });
+  fs.symlinkSync(join(workspace, "vendor", "lib", ".git"), join(workspace, "linked", ".git"));
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -60,9 +63,11 @@ describe("nested-repository walk cost", () => {
     expect(calls.filter((args) => args.at(-1) === "linked-src")).toEqual([]);
     expect(findings.repoDirs).toEqual([path.join(workspace, "vendor", "lib", ".git")]);
     expect([...findings.descentPoints].sort()).toEqual([
+      path.join(workspace, "linked", ".git"),
       path.join(workspace, "pkg", ".git"),
       path.join(workspace, "vendor", "lib", ".git"),
     ]);
+    // Only the gitfile is bound read-only; the symlink is a descent point only.
     expect(findings.pointerFiles).toEqual([path.join(workspace, "pkg", ".git")]);
   });
 
@@ -71,9 +76,11 @@ describe("nested-repository walk cost", () => {
     const byRoot = new Map(roots.map((root) => [root.root, root]));
     const ws = byRoot.get(workspace)!;
     expect(ws.nestedRepoGitDirs?.sort()).toEqual([
+      path.join(workspace, "linked", ".git"),
       path.join(workspace, "pkg", ".git"),
       path.join(workspace, "vendor", "lib", ".git"),
     ]);
+    expect(ws.readOnlySubpaths).not.toContain(path.join(workspace, "linked", ".git"));
     // The nested repository's surface and the descent-point gitfile stay read-only.
     expect(ws.readOnlySubpaths).toContain(path.join(workspace, "vendor", "lib", ".git", "hooks"));
     expect(ws.readOnlySubpaths).toContain(path.join(workspace, "vendor", "lib", ".git", "config"));
