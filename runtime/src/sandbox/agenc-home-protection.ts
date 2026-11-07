@@ -1,5 +1,5 @@
 import { resolveHomeContext } from "../config/home.js";
-import { getWritableRootsWithCwd, type PermissionProfile } from "./engine/policy.js";
+import { getWritableRootPathsWithCwd, type PermissionProfile } from "./engine/policy.js";
 import {
   canonicalAuthorityPath,
   isWithinAuthorityPath,
@@ -15,8 +15,11 @@ export function protectAgencHomeUnderWritableRoot(
   grantedProfile: PermissionProfile = profile,
 ): PermissionProfile {
   const canonicalHome = canonicalAuthorityPath(home);
-  const containsHome = getWritableRootsWithCwd(grantedProfile.fileSystem, cwd, sessionTempRoot)
-    .some(({ root }) => isWithinAuthorityPath(canonicalHome, canonicalAuthorityPath(root)));
+  // Only the writable root paths decide this, so their read-only carve-outs
+  // (and the nested-repository walk behind them) are not computed here: this
+  // runs for every tool call.
+  const containsHome = getWritableRootPathsWithCwd(grantedProfile.fileSystem, cwd, sessionTempRoot)
+    .some((root) => isWithinAuthorityPath(canonicalHome, canonicalAuthorityPath(root)));
   // A separately authorized child, such as a plugin's private data directory,
   // does not grant the rest of home. Preserve that narrower authority.
   return containsHome ? protectDesktopAuthority(profile, canonicalHome) : profile;
