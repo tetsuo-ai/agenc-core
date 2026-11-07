@@ -428,7 +428,7 @@ test("a command's own change is announced once per state, without its contents",
   const first = await allAttachments();
   expect(first).toEqual([{ kind: "own_shell_change_notice", filename: csv, bytes: 12, lines: 3, linesSinceSeen: 2 }]);
   const text = JSON.stringify(attachmentsToMessages(first));
-  expect(text).toContain("was changed by your command: 3 lines (+2 lines since you last saw it), 12 bytes. Its contents were not sent; read it before you edit it.");
+  expect(text).toContain("Now 3 lines (+2 lines since you last saw it), 12 bytes. Its contents were not sent; read it before you edit it.");
   expect(text).not.toContain("2,B");
   expect(await allAttachments()).toEqual([]);
   await exec("printf '4,D\\n' >> proof.csv");
