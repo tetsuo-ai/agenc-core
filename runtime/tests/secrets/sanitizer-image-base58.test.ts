@@ -127,3 +127,23 @@ describe("only the body of a data URL with an image media type skips the rule", 
     }
   });
 });
+
+// sec-rv1 item 2: Buffer decoding skips whitespace, reads "-" and "_" as base64url and stops at "=", so only the
+// round trip (re-encoding gives back the exact body) keeps text after a complete image out of the exemption.
+describe("a body that is not canonical base64 of the image keeps the rule", () => {
+  const image = body(syntheticPng(false));
+  test.each(["\n", " ", "-", "_", "="])("a key after the image behind %j", (separator) => {
+    const keyed = `${image}${separator}${BASE58_SECRET_KEY}0`;
+    const tail = keyed.padEnd(Math.ceil(keyed.length / 4) * 4, "0");
+    const blocks = [
+      { type: "image", source: { type: "base64", media_type: "image/png", data: tail } },
+      { type: "image", source: { url: `data:image/png;base64,${tail}` } },
+      imageUrlBlock(`data:image/png;base64,${tail}`),
+    ];
+    for (const block of blocks) {
+      const redacted = JSON.stringify(redactSecretsInValue(block));
+      expect(redacted).not.toContain(BASE58_SECRET_KEY);
+      expect(redacted).toContain(REDACTED_SECRET);
+    }
+  });
+});
