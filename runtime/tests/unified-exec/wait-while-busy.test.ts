@@ -148,6 +148,56 @@ describe("waits that continue while the command is busy", () => {
     expect(Date.now() - started).toBeLessThan(9_000);
   }, 40_000);
 
+  it("never holds a tty session: its exec and its polls keep their yield", async () => {
+    const processes = manager();
+    const started = Date.now();
+    const tty = await processes.execCommand({ cmd: busyFor(15), tty: true, yield_time_ms: 300, waitWhileBusy: true });
+    expect(tty.session_id).toEqual(expect.any(Number));
+    expect(Date.now() - started).toBeLessThan(3_000);
+    const pollStarted = Date.now();
+    const polled = await processes.writeStdin({
+      session_id: tty.session_id!, chars: "", yield_time_ms: 5_000, waitWhileBusy: true,
+    });
+    expect(polled.session_id).toBe(tty.session_id);
+    expect(polled.output).not.toContain("done");
+    expect(Date.now() - pollStarted).toBeLessThan(9_000);
+  }, 40_000);
+
+  it("ends within a second of an interrupt with the real 5 s check interval", async () => {
+    // The default manager: the busy wait sleeps 5 s between checks.
+    const processes = new UnifiedExecProcessManager();
+    managers.push(processes);
+    const controller = new AbortController();
+    let abortedAt = 0;
+    setTimeout(() => { abortedAt = Date.now(); controller.abort(); }, 2_000);
+    const result = await processes.execCommand({
+      cmd: busyFor(30), yield_time_ms: 300, waitWhileBusy: true, __abortSignal: controller.signal,
+    });
+    expect(abortedAt).toBeGreaterThan(0);
+    expect(Date.now() - abortedAt).toBeLessThan(1_000);
+    expect(result.session_id).toBeUndefined();
+    expect(processes.listOwnedProcesses().filter((view) => view.status === "running")).toEqual([]);
+  }, 40_000);
+
+  it("ends a poll's busy wait within a second of an interrupt with the real 5 s check interval", async () => {
+    // A poll's interrupt reaches the wait only through its own signal: the
+    // command was started by an earlier call.
+    const processes = new UnifiedExecProcessManager();
+    managers.push(processes);
+    const busy = await processes.execCommand({ cmd: busyFor(40), yield_time_ms: 300 });
+    expect(busy.session_id).toEqual(expect.any(Number));
+    const controller = new AbortController();
+    let abortedAt = 0;
+    // The 5 s yield passes at about 5 s; the abort lands inside the first 5 s check step.
+    setTimeout(() => { abortedAt = Date.now(); controller.abort(); }, 7_500);
+    await processes.writeStdin({
+      session_id: busy.session_id!, chars: "", yield_time_ms: 5_000, waitWhileBusy: true,
+      __abortSignal: controller.signal,
+    });
+    expect(abortedAt).toBeGreaterThan(0);
+    expect(Date.now() - abortedAt).toBeLessThan(1_000);
+  }, 40_000);
+
   it("keeps an empty poll's yield without waitWhileBusy", async () => {
     const processes = manager();
     const busy = await processes.execCommand({ cmd: busyFor(12), yield_time_ms: 300 });
