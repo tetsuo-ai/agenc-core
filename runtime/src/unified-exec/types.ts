@@ -129,7 +129,7 @@ export interface UnifiedExecManagerOptions {
   /**
    * A wait that continues while the command is busy (`waitWhileBusy`) checks
    * its processes this often (default 5 s) and ends this long after the call
-   * started (default 300 s, the longest empty poll). Injectable for tests.
+   * started (default 240 s). Injectable for tests.
    */
   readonly busyWaitCheckMs?: number;
   readonly busyWaitMaxMs?: number;

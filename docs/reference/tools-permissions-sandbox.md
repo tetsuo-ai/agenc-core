@@ -283,7 +283,7 @@ yield of an empty `write_stdin` poll passes, and the command's own processes
 used at least a quarter of a CPU core since the previous check, the call keeps
 waiting, checking every 5 s, until the command exits, stops using CPU (a
 server waiting for requests, a `sleep`, a stalled script), its `timeoutMs`
-passes, or 300 s have passed since the call started. The result is then the
+passes, or 240 s have passed since the call started. The result is then the
 command's exit with all its output instead of a `session_id` the model would
 poll with another model call. An interrupt stops the wait as it stops a yield.
 Platforms without a process reader (Windows) keep the yield.

@@ -166,6 +166,15 @@ const BUSY_WAIT_CHECK_MS = 5_000;
  */
 const BUSY_WAIT_MIN_CPU_SHARE = 0.25;
 /**
+ * How long after the call started a wait that continues while its command is
+ * busy ends at the latest, leaving the command running as a session. Four
+ * minutes covered all but a few of the recorded captures and builds (most
+ * ran 30-190 s), and it keeps a provider's five-minute prompt cache warm for
+ * the next request unless the model took over a minute to produce this call;
+ * DeepSeek's disk cache is not affected either way.
+ */
+const BUSY_WAIT_MAX_MS = 240_000;
+/**
  * Live background sessions one owner may hold. Past it a timeout stops the
  * command again and a background start is refused: on a one-CPU container
  * every extra job slows the agent's own commands. Ordinary yields count
@@ -900,7 +909,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     ));
     this.quietProcessStateAfterMs = options.quietProcessStateAfterMs ?? QUIET_PROCESS_STATE_AFTER_MS;
     this.busyWaitCheckMs = Math.max(1, options.busyWaitCheckMs ?? BUSY_WAIT_CHECK_MS);
-    this.busyWaitMaxMs = options.busyWaitMaxMs ?? MAX_EMPTY_WRITE_YIELD_TIME_MS;
+    this.busyWaitMaxMs = options.busyWaitMaxMs ?? BUSY_WAIT_MAX_MS;
     this.env = options.env === undefined
       ? undefined
       : Object.freeze({ ...options.env });
