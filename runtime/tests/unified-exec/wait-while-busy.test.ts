@@ -135,6 +135,19 @@ describe("waits that continue while the command is busy", () => {
     expect(Date.now() - started).toBeLessThan(9_000);
   }, 40_000);
 
+  it("keeps the yield of polls of a session started in the background", async () => {
+    const processes = manager();
+    const job = await processes.execCommand({ cmd: busyFor(12), yield_time_ms: 300, startInBackground: true });
+    expect(job.session_id).toEqual(expect.any(Number));
+    const started = Date.now();
+    const polled = await processes.writeStdin({
+      session_id: job.session_id!, chars: "", yield_time_ms: 5_000, waitWhileBusy: true,
+    });
+    expect(polled.session_id).toBe(job.session_id);
+    expect(polled.output).not.toContain("done");
+    expect(Date.now() - started).toBeLessThan(9_000);
+  }, 40_000);
+
   it("keeps an empty poll's yield without waitWhileBusy", async () => {
     const processes = manager();
     const busy = await processes.execCommand({ cmd: busyFor(12), yield_time_ms: 300 });

@@ -22,6 +22,7 @@ import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import {
   confirmedNoEffectDisposition,
   execEscalationGrant,
+  LIGHT_DEFAULT_EXEC_YIELD_TIME_MS,
   runtimeSandboxForExec,
   SANDBOX_PERMISSION_INPUT_PROPERTIES,
 } from "./exec-command.js";
@@ -113,6 +114,21 @@ function errorResult(error: unknown): ToolResult {
       ? preWriteFailure(error, message)
       : {}),
   };
+}
+
+/**
+ * Whether this poll may keep waiting while the command is busy (process
+ * manager `waitWhileBusy`): a Light empty poll with no yield or one of at
+ * least exec_command's default. A session started with `background: true`
+ * keeps the yield of every poll (the manager knows how it started).
+ */
+function pollWaitsWhileBusy(
+  config: WriteStdinToolConfig | undefined,
+  chars: string,
+  requestedYield: number | undefined,
+): boolean {
+  if (chars.length > 0 || config?.lightMode !== true || config.waitWhileBusy?.() !== true) return false;
+  return requestedYield === undefined || requestedYield >= LIGHT_DEFAULT_EXEC_YIELD_TIME_MS;
 }
 
 function argumentErrorResult(message: string): ToolResult {
@@ -272,9 +288,10 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
           ...(ownerId !== undefined ? { ownerId } : {}),
           // An empty poll is a wait: while the command is still busy it waits
-          // for the exit instead of returning for another poll. Input keeps
-          // its yield.
-          ...(chars.length === 0 && config?.lightMode === true && config.waitWhileBusy?.() === true
+          // for the exit instead of returning for another poll. Input and a
+          // poll asking for a yield shorter than exec_command's default keep
+          // their yield, as exec_command does.
+          ...(pollWaitsWhileBusy(config, chars, asNumber(args.yield_time_ms))
             ? { waitWhileBusy: true }
             : {}),
         }));

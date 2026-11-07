@@ -218,7 +218,8 @@ export interface WriteStdinRequest extends ToolExecutionInjectedArgs {
   /**
    * An empty poll keeps waiting past its yield while the session's processes
    * are still using CPU, as {@link ExecCommandRequest.waitWhileBusy} does.
-   * Ignored for input writes and tty sessions.
+   * Ignored for input writes, tty sessions and sessions started in the
+   * background (`startInBackground`).
    */
   readonly waitWhileBusy?: boolean;
 }

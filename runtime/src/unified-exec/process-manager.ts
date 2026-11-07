@@ -488,6 +488,12 @@ interface ProcessEntry {
   processCheck?: SessionProcessCheck;
   /** The slot this background start holds until it is a live session. */
   backgroundReservation?: BackgroundStartReservation;
+  /**
+   * Started with `startInBackground` (exec_command `background: true`): the
+   * model asked for control back while it runs, so its polls keep their
+   * yield instead of waiting while it is busy.
+   */
+  startedInBackground?: boolean;
 }
 
 /** A background start's slot, held from admission until it is a live session or has failed. */
@@ -1156,6 +1162,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       sandboxAuthorityGeneration,
     });
     if (reservation !== undefined) entry.backgroundReservation = reservation;
+    if (request.startInBackground === true) entry.startedInBackground = true;
     const releaseWorkspaceOperation = retainCurrentWorkspaceOperation();
     void entry.exitPromise.then(
       releaseWorkspaceOperation,
@@ -1481,9 +1488,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
 
     // An empty poll that may continue while the command is busy measures the
-    // command's CPU from here. Input writes and tty sessions keep their yield.
+    // command's CPU from here. Input writes, tty sessions and sessions started
+    // in the background keep their yield.
     const busyWait = request.waitWhileBusy === true && input.length === 0 && !entry.tty &&
-      entry.exitState === null && !entry.stopRequested
+      entry.startedInBackground !== true && entry.exitState === null && !entry.stopRequested
       ? await this.busyWaitBaseline(entry)
       : undefined;
     const collected = {

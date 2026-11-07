@@ -76,11 +76,13 @@ describe("which Light waits continue while the command is busy", () => {
     expect(lastRequest(light.execCommand)).toMatchObject({ timeoutMs: 300_000, onTimeout: "background", waitWhileBusy: true });
     await light.poll({ session_id: 7, chars: "", yield_time_ms: 60_000 });
     expect(lastRequest(light.writeStdin)).toMatchObject({ session_id: 7, chars: "", waitWhileBusy: true });
+    await light.poll({ session_id: 7, chars: "", yield_time_ms: 30_000 });
+    expect(lastRequest(light.writeStdin)).toMatchObject({ yield_time_ms: 30_000, waitWhileBusy: true });
     await light.poll({ session_id: 7 });
     expect(lastRequest(light.writeStdin)).toMatchObject({ session_id: 7, waitWhileBusy: true });
   });
 
-  test("not a background start, a tty, a shorter explicit yield or input sent to a session", async () => {
+  test("not a background start, a tty, a shorter explicit yield, a short poll or input sent to a session", async () => {
     const light = registry(sessionWith(), true);
     await light.exec({ cmd: "npm run dev", background: true });
     expect(lastRequest(light.execCommand)).not.toHaveProperty("waitWhileBusy");
@@ -89,6 +91,12 @@ describe("which Light waits continue while the command is busy", () => {
     await light.exec({ cmd: "npm run dev", yield_time_ms: 5_000 });
     expect(lastRequest(light.execCommand)).not.toHaveProperty("waitWhileBusy");
     await light.poll({ session_id: 7, chars: "q\n" });
+    expect(lastRequest(light.writeStdin)).not.toHaveProperty("waitWhileBusy");
+    // A poll that asks for less than exec_command's default yield keeps it.
+    await light.poll({ session_id: 7, chars: "", yield_time_ms: 5_000 });
+    expect(lastRequest(light.writeStdin)).toMatchObject({ yield_time_ms: 5_000 });
+    expect(lastRequest(light.writeStdin)).not.toHaveProperty("waitWhileBusy");
+    await light.poll({ session_id: 7, chars: "", yield_time_ms: 29_999 });
     expect(lastRequest(light.writeStdin)).not.toHaveProperty("waitWhileBusy");
   });
 
