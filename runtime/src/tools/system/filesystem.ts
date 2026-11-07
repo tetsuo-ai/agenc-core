@@ -826,6 +826,8 @@ export function sameFileStat(
 export interface FileViewState {
   view?: FileStatFingerprint;
   own?: FileStatFingerprint;
+  /** The own state the model was last told about with a short notice. */
+  noticed?: FileStatFingerprint;
 }
 
 const sessionFileViewStates = new Map<string, Map<string, FileViewState>>();
@@ -865,6 +867,18 @@ export function recordFileViewState(
     return;
   }
   states.set(canonicalPath, { view });
+}
+
+export function recordOwnShellChangeNoticed(
+  sessionId: string | undefined,
+  canonicalPath: string,
+  noticed: FileStatFingerprint,
+): void {
+  if (conversationReadScopeClosed()) return;
+  const states = fileViewStates(sessionId, false);
+  const state = states?.get(canonicalPath);
+  if (state === undefined) return;
+  states!.set(canonicalPath, { ...state, noticed });
 }
 
 export function recordOwnShellChange(

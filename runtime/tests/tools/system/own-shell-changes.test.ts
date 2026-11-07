@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { createModelFacingTools } from "../../bin/model-facing-tools.js";
 import { changedFilesProducer } from "../../prompts/attachments/changed-files.js";
+import { attachmentsToMessages } from "../../prompts/attachments/messages.js";
 import type { GetAttachmentsOptions } from "../../prompts/attachments/orchestrator.js";
 import { createBashTool } from "./bash.js";
 import { createExecCommandTool } from "./exec-command.js";
@@ -110,7 +111,12 @@ function edit(file: string, oldString: string, newString: string, sessionId = se
   });
 }
 
-function attachments(sessionId = session) {
+/** What the model receives as file contents: every attachment except the short own-change notice. */
+async function attachments(sessionId = session) {
+  return (await allAttachments(sessionId)).filter((a) => a.kind !== "own_shell_change_notice");
+}
+
+function allAttachments(sessionId = session) {
   const opts: GetAttachmentsOptions = {
     sessionKey: { sessionId },
     userInput: null,
@@ -412,4 +418,22 @@ test("a command names a file when the file name appears in it as a whole word", 
   for (const [command, path, expected] of cases) {
     expect(commandNamesFile(command, path), `${command} / ${path}`).toBe(expected);
   }
+});
+
+test("a command's own change is announced once per state, without its contents", async () => {
+  const csv = join(root, "proof.csv");
+  await write(csv, "1,A\n");
+  expect(await allAttachments()).toEqual([]);
+  await exec("printf '2,B\\n3,C\\n' >> proof.csv");
+  const first = await allAttachments();
+  expect(first).toEqual([{ kind: "own_shell_change_notice", filename: csv, bytes: 12, lines: 3, linesSinceSeen: 2 }]);
+  const text = JSON.stringify(attachmentsToMessages(first));
+  expect(text).toContain("was changed by your command: 3 lines (+2 lines since you last saw it), 12 bytes. Its contents were not sent; read it before you edit it.");
+  expect(text).not.toContain("2,B");
+  expect(await allAttachments()).toEqual([]);
+  await exec("printf '4,D\\n' >> proof.csv");
+  expect(await allAttachments()).toEqual([
+    { kind: "own_shell_change_notice", filename: csv, bytes: 16, lines: 4, linesSinceSeen: 3 },
+  ]);
+  expect(await allAttachments()).toEqual([]);
 });

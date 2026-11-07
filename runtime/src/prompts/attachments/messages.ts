@@ -241,6 +241,18 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
         ),
       );
     }
+    case "own_shell_change_notice": {
+      const name = sanitizeSystemReminderContent(attachment.filename);
+      const size =
+        attachment.lines === undefined || attachment.linesSinceSeen === undefined
+          ? `${attachment.bytes} bytes`
+          : `${attachment.lines} lines (${attachment.linesSinceSeen === 0 ? "no change in line count" : `${attachment.linesSinceSeen > 0 ? "+" : ""}${attachment.linesSinceSeen} lines`} since you last saw it), ${attachment.bytes} bytes`;
+      return userContextMessage(
+        wrapSystemReminder(
+          `${name} was changed by your command: ${size}. Its contents were not sent; read it before you edit it.`,
+        ),
+      );
+    }
     case "edited_image_file": {
       // Image diffs are surfaced via the structured content path so
       // multimodal providers can render them. Text body carries a small
