@@ -1046,6 +1046,30 @@ describe("blockRepeatedFailingCall", () => {
       expect(blockRepeatedFailingCall(state, session, start)).toBeNull();
     });
 
+    // fix32s review rv1: after a command restarted a failing call once, a file change, a success of the call or a
+    // different error makes the next command able to restart it again.
+    test.each([
+      ["a different error", ["E1", "install a", "E1", "E2", "E1", "E1", "E1", "install b"]],
+      ["a success of the call", ["E1", "install a", "built", "E1", "E1", "E1", "install b"]],
+      ["a file change", ["E1", "install a", "E1", "edit", "E1", "E1", "E1", "install b"]],
+    ])("after %s, a command restarts the failing call again", (_label, steps) => {
+      const { session } = mkSessionStub();
+      const build = call("exec_command", { cmd: "npm run build" }, "b");
+      const error = (module: string) =>
+        `error TS2307: Cannot find module '${module}'.\n\n[exec exit_code=2 wall_time=0.4s tokens=12]`;
+      const records = steps.map((step, i) => {
+        const id = `s-${i}`;
+        if (step === "E1" || step === "E2") return completed({ ...build, id }, error(step === "E1" ? "a" : "b"), true);
+        if (step === "built") return completed({ ...build, id }, "built\n\n[exec exit_code=0]", false);
+        if (step === "edit") {
+          return completed(call("Edit", { file_path: "/w/a.ts", old_string: "a", new_string: "b" }, id),
+            "The file /w/a.ts has been updated successfully.", false);
+        }
+        return ran(`npm ${step}`, id);
+      });
+      expect(blockRepeatedFailingCall(mkState(records), session, build)).toBeNull();
+    });
+
     // Flt30-11 (lt30-1931-mpv-C-r1 on 0.19.30, requests 12 to 16): after the
     // last apply_patch, the same grep and node --check calls were refused for
     // sandbox_permissions "use_default" until the turn stopped. That value
