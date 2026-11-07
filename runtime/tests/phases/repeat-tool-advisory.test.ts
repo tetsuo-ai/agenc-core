@@ -545,6 +545,23 @@ describe("blockRepeatedFailingCall", () => {
         expect(failureSignature(noticed("0.2000"))).toContain("wall_time=0.5s");
       });
 
+      // fix32s review rv3: finding the last footer rescanned the rest of the output at every printed footer and
+      // notice, so 2.2 MiB of them took 8.4 s.
+      test("2 MiB of printed footers and notices are compared in one pass", { timeout: 60_000 }, () => {
+        const pair = "\n\n[exec exit_code=1 wall_time=0.1s tokens=3]\n\n[sandbox] copied line";
+        const output = `log${pair.repeat(Math.ceil((2 * 1024 * 1024) / pair.length))}`;
+        const result = (wallTime: string) => `${output}\n\n[exec exit_code=1 wall_time=${wallTime}s tokens=40]`;
+        let best = Number.POSITIVE_INFINITY;
+        for (let run = 0; run < 3 && best >= 1000; run += 1) {
+          const start = performance.now();
+          failureSignature(result("0.2000"));
+          best = Math.min(best, performance.now() - start);
+        }
+        expect(best).toBeLessThan(1000);
+        expect(failureSignature(result("0.2000"))).toBe(failureSignature(result("0.3000")));
+        expect(failureSignature(result("0.2000")).startsWith(output)).toBe(true);
+      });
+
       test("another notice, or other text after the footer, stays a different failure", () => {
         const network = "[sandbox] This command's network access was disabled; retry it once with sandbox_permissions.";
         expect(failureSignature(BLOCKED("0.0270"))).not.toBe(failureSignature(BLOCKED("0.0270", network)));

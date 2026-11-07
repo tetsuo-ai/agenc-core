@@ -187,14 +187,30 @@ const VOLATILE_RESULT_FIELDS =
  * write; the notice itself is compared verbatim. Without it, a repeat of a
  * sandbox-blocked failure differed only in its wall time and looked new. A
  * footer with no later footer is the real one: a footer and a notice printed
- * in the command's own output are output.
+ * in the command's own output are output. The pattern is applied from the
+ * last footer only ({@link lastFooterStart}).
  */
 const RUNTIME_RESULT_FOOTER =
-  /((?:^|\n\n)\[(?:exec|mcp|code_mode) )([^\r\n[\]]+)(\])(?=(?:\n\n\[sandbox\] (?![\s\S]*\n\n\[(?:exec|mcp|code_mode) )[\s\S]*)?(?![\s\S]))/u;
+  /^((?:\n\n)?\[(?:exec|mcp|code_mode) )([^\r\n[\]]+)(\])(?=(?:\n\n\[sandbox\] [\s\S]*)?(?![\s\S]))/u;
+
+const RUNTIME_FOOTER_STARTS = ["\n\n[exec ", "\n\n[mcp ", "\n\n[code_mode "] as const;
+
+/**
+ * Where the last runtime footer can start: the last footer after a blank
+ * line, or else the start of the text. A footer holds no newline, so no later
+ * footer starts inside it, and only the last one can be the real footer.
+ * Found once: a lookahead for "no later footer" rescanned the rest of the
+ * output at every footer and notice the command printed, and 2.2 MiB of them
+ * took 8.4 s (fix32s review rv3).
+ */
+function lastFooterStart(content: string): number {
+  return Math.max(0, ...RUNTIME_FOOTER_STARTS.map((start) => content.lastIndexOf(start)));
+}
 
 /** Elide volatile fields only in the final runtime footer, never the body. */
 export function failureSignature(content: string): string {
-  return content.replace(
+  const start = lastFooterStart(content);
+  return content.slice(0, start) + content.slice(start).replace(
     RUNTIME_RESULT_FOOTER,
     (_footer, prefix: string, fields: string, suffix: string) =>
       `${prefix}${fields.replace(VOLATILE_RESULT_FIELDS, "$1")}${suffix}`,
