@@ -449,6 +449,21 @@ describe.runIf(process.platform === "linux")("nested-repository scan", () => {
     expect(fs.existsSync(subGit)).toBe(false);
   });
 
+  it("catches at stop a nested .git symlink created during the run", () => {
+    // A `.git` symlink to writable workspace data is a descent redirect just
+    // like a gitfile: a later host-side git in `sub` would use the planted
+    // repository's hooks and config. The scan must reach the link itself.
+    const planted = path.join(root, "planted");
+    fs.mkdirSync(path.join(planted, "objects"), { recursive: true });
+    fs.writeFileSync(path.join(planted, "HEAD"), "ref: refs/heads/main\n");
+    fs.mkdirSync(path.join(root, "sub"));
+    const monitor = startProtectedCreateMonitor([], [root]);
+    fs.symlinkSync(planted, path.join(root, "sub", ".git"));
+    expect(monitor.stop()).toBe(true);
+    expect(fs.readdirSync(path.join(root, "sub"))).not.toContain(".git");
+    expect(movedAside(path.join(root, "sub"))).toHaveLength(1);
+  });
+
   it("keeps an agent worktree the host adds while a command runs", () => {
     // getOrCreateWorktree adds <root>/.agenc-worktrees/<slug>/.git pointing into
     // the protected <root>/.git/worktrees/<slug>: a pointer a confined command

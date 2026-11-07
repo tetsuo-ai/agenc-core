@@ -20,6 +20,7 @@ import {
 } from "../../sandbox/engine/index.js";
 import {
   compatibilitySandboxPolicyForPermissionProfile,
+  compatibilitySandboxPolicyKindForPermissionProfile,
 } from "../../sandbox/engine/manager.js";
 import {
   effectivePermissionProfile,
@@ -449,15 +450,30 @@ function enforceRuntimeSandboxAttemptChecks(
     );
   }
   const profile = permissionProfileForRuntimeContext(input.context, { cwd });
-  const policy = compatibilitySandboxPolicyForPermissionProfile(
+  // The checks below decide on the compatibility policy's kind alone. A
+  // refusal carries the whole policy, whose writable roots also list each
+  // nested repository's surface; scanning every writable root for those on
+  // each tool call cost more than many calls themselves, so that scan runs
+  // only when a refusal is raised (refusalPolicy, built from the same inputs).
+  // Only the kind is kept here, so no check can read a policy without it.
+  const policyKind = compatibilitySandboxPolicyKindForPermissionProfile(
     profile,
     profile.fileSystem,
     profile.network,
     cwd,
     sessionTempRoot,
   );
-  if (policy.kind === "danger_full_access" || policy.kind === "external_sandbox") {
-    if (toolMayMutate(input.tool)) enforceRemoteControlWritePaths(input.context, analyzeWrites(input.tool, input.args, cwd).targets, policy);
+  let builtRefusalPolicy: SandboxPolicy | undefined;
+  const refusalPolicy = (): SandboxPolicy =>
+    builtRefusalPolicy ??= compatibilitySandboxPolicyForPermissionProfile(
+      profile,
+      profile.fileSystem,
+      profile.network,
+      cwd,
+      sessionTempRoot,
+    );
+  if (policyKind === "danger_full_access" || policyKind === "external_sandbox") {
+    if (toolMayMutate(input.tool)) enforceRemoteControlWritePaths(input.context, analyzeWrites(input.tool, input.args, cwd).targets, refusalPolicy);
     return;
   }
   const shellAccess = analyzeShellRuntimeAccess(input.tool, input.args, cwd);
@@ -468,11 +484,11 @@ function enforceRuntimeSandboxAttemptChecks(
     !platformSandbox.available
   ) {
     throw new SandboxDeniedError(
-      `sandbox ${policy.kind} blocked ${input.tool.name} without platform sandbox context${platformSandbox.reason ? `: ${platformSandbox.reason}` : ""}`,
+      `sandbox ${policyKind} blocked ${input.tool.name} without platform sandbox context${platformSandbox.reason ? `: ${platformSandbox.reason}` : ""}`,
       {
         denial: "filesystem",
         target: input.tool.name,
-        policy,
+        policy: refusalPolicy(),
       },
     );
   }
@@ -481,17 +497,18 @@ function enforceRuntimeSandboxAttemptChecks(
     !platformSandbox.available
   ) {
     throw new SandboxDeniedError(
-      `sandbox ${policy.kind} could not verify shell execution envelope for ${input.tool.name}`,
+      `sandbox ${policyKind} could not verify shell execution envelope for ${input.tool.name}`,
       {
         denial: "filesystem",
         target: input.tool.name,
-        policy,
+        policy: refusalPolicy(),
       },
     );
   }
   enforceRuntimeReadSandboxAttempt(
     input,
-    policy,
+    policyKind,
+    refusalPolicy,
     cwd,
     profile.fileSystem,
     sessionTempRoot,
@@ -499,11 +516,11 @@ function enforceRuntimeSandboxAttemptChecks(
   if (input.tool.name === "write_stdin") {
     if (!platformSandbox.available) {
       throw new SandboxDeniedError(
-        `sandbox ${policy.kind} blocked write_stdin without platform sandbox context${platformSandbox.reason ? `: ${platformSandbox.reason}` : ""}`,
+        `sandbox ${policyKind} blocked write_stdin without platform sandbox context${platformSandbox.reason ? `: ${platformSandbox.reason}` : ""}`,
         {
           denial: "filesystem",
           target: input.tool.name,
-          policy,
+          policy: refusalPolicy(),
         },
       );
     }
@@ -519,18 +536,18 @@ function enforceRuntimeSandboxAttemptChecks(
   for (const target of writes.targets) {
     if (socketAuthorityRoots.some((root) => overlapsCronAuthority(target, root))) {
       throw new SandboxDeniedError("Daemon sockets are reserved for the native host", {
-        denial: "filesystem", target, policy,
+        denial: "filesystem", target, policy: refusalPolicy(),
       });
     }
     if (cronAuthorityRoots.some((root) => overlapsCronAuthority(target, root))) {
       throw new SandboxDeniedError("Cron locks are reserved for the native host", {
-        denial: "filesystem", target, policy,
+        denial: "filesystem", target, policy: refusalPolicy(),
       });
     }
-    enforceRemoteControlWritePaths(input.context, [target], policy);
+    enforceRemoteControlWritePaths(input.context, [target], refusalPolicy);
     if (overlapsDesktopAuthority(target, authorityRoot)) {
       throw new SandboxDeniedError("Desktop authority records are reserved for the native host", {
-        denial: "filesystem", target, policy,
+        denial: "filesystem", target, policy: refusalPolicy(),
       });
     }
   }
@@ -543,28 +560,28 @@ function enforceRuntimeSandboxAttemptChecks(
       throw new McpFilesystemApprovalRequiredError(mcpScope);
     }
     if (
-      policy.kind === "workspace_write" &&
+      policyKind === "workspace_write" &&
       canDeferIndeterminateWritesToPlatformSandbox(input, cwd)
     ) {
       return;
     }
     throw new SandboxDeniedError(
-      `sandbox ${policy.kind} could not verify write targets for ${input.tool.name}`,
+      `sandbox ${policyKind} could not verify write targets for ${input.tool.name}`,
       {
         denial: "filesystem",
         target: writes.targets[0] ?? input.tool.name,
-        policy,
+        policy: refusalPolicy(),
       },
     );
   }
-  if (policy.kind === "read_only") {
+  if (policyKind === "read_only") {
     if (writes.targets.length === 0 && writes.knownSafeWhenTargetless) return;
     throw new SandboxDeniedError(
       `sandbox read_only blocked write-capable operation ${input.tool.name}`,
       {
         denial: "filesystem",
         target: writes.targets[0] ?? input.tool.name,
-        policy,
+        policy: refusalPolicy(),
       },
     );
   }
@@ -601,7 +618,7 @@ function enforceRuntimeSandboxAttemptChecks(
         {
           denial: "filesystem",
           target,
-          policy,
+          policy: refusalPolicy(),
         },
       );
     }
@@ -636,7 +653,7 @@ function enforceRuntimeSandboxAttemptChecks(
     } catch (error) {
       throw new SandboxDeniedError(
         `sandbox workspace_write could not resolve where ${target} leads: ${error instanceof Error ? error.message : String(error)}`,
-        { denial: "filesystem", target, policy },
+        { denial: "filesystem", target, policy: refusalPolicy() },
       );
     }
     if (
@@ -648,7 +665,7 @@ function enforceRuntimeSandboxAttemptChecks(
         {
           denial: "filesystem",
           target: reached,
-          policy,
+          policy: refusalPolicy(),
         },
       );
     }
@@ -659,7 +676,7 @@ function enforceRuntimeSandboxAttemptChecks(
         {
           denial: "filesystem",
           target: landing,
-          policy,
+          policy: refusalPolicy(),
         },
       );
     }
@@ -681,9 +698,10 @@ function remoteControlWriteTarget(context: ToolRuntimeAttemptContext | undefined
   return targets.find(target => isRemoteControlAuthorityPath(target, { home: store?.homeContext?.path, managedRoot: store?.managedPaths?.root, includeAncestors: true }));
 }
 
-function enforceRemoteControlWritePaths(context: ToolRuntimeAttemptContext, targets: readonly string[], policy: SandboxPolicy): void {
+function enforceRemoteControlWritePaths(context: ToolRuntimeAttemptContext, targets: readonly string[], refusalPolicy: () => SandboxPolicy): void {
   const target = remoteControlWriteTarget(context, targets);
   if (target !== undefined) {
+    const policy = refusalPolicy();
     const message = policy.kind === "workspace_write"
       ? `sandbox workspace_write blocked write outside workspace: ${target}. ${REMOTE_OWNER_ONLY}`
       : REMOTE_OWNER_ONLY;
@@ -832,12 +850,13 @@ function shellEnvelopeRequiresPlatformSandbox(
 
 function enforceRuntimeReadSandboxAttempt(
   input: RuntimeSandboxEnforcementInput,
-  policy: SandboxPolicy,
+  policyKind: SandboxPolicy["kind"],
+  refusalPolicy: () => SandboxPolicy,
   cwd: string,
   fileSystemPolicy: EngineFileSystemSandboxPolicy,
   sessionTempRoot: string,
 ): void {
-  if (policy.kind !== "read_only") return;
+  if (policyKind !== "read_only") return;
   const shell = analyzeShellRuntimeAccess(input.tool, input.args, cwd);
   if (shell === null) return;
   if (shell.indeterminateRead) {
@@ -846,7 +865,7 @@ function enforceRuntimeReadSandboxAttempt(
       {
         denial: "filesystem",
         target: input.tool.name,
-        policy,
+        policy: refusalPolicy(),
       },
     );
   }
@@ -862,7 +881,7 @@ function enforceRuntimeReadSandboxAttempt(
       {
         denial: "filesystem",
         target,
-        policy,
+        policy: refusalPolicy(),
       },
     );
   }

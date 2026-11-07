@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import path, { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { restrictedFileSystemPolicy } from "../../../src/sandbox/engine/index.js";
 import { createBwrapCommandArgs } from "../../../src/sandbox/linux-launcher/bwrap.js";
@@ -59,6 +59,24 @@ describe("per-command nested-repository walk count", () => {
     // entry's own path with its parent resolved.
     expect(plan.nestedGitBaseline.map((entry) => entry.split("\u0000")[0]))
       .toContain(join(fs.realpathSync(join(workspace, "sub")), ".git"));
+  });
+
+  it("builds a path only for directories and .git entries in the monitor's scans", () => {
+    // Since 0.19.31 the scan built a path for every entry it listed, files
+    // included; a writable /tmp holds hundreds of compile-cache files, and the
+    // stop scan runs after every confined command.
+    for (let i = 0; i < 150; i += 1) fs.writeFileSync(join(workspace, `file-${i}.txt`), "");
+    fs.mkdirSync(join(workspace, "sub", ".git", "objects"), { recursive: true });
+    fs.writeFileSync(join(workspace, "sub", ".git", "HEAD"), "ref: refs/heads/main\n");
+    const joins = vi.spyOn(path, "join");
+    const monitor = startProtectedCreateMonitor([], [workspace]);
+    const violation = monitor.stop();
+    const calls = [...joins.mock.calls];
+    joins.mockRestore();
+    expect(calls.filter((args) => /^(?:file-\d+\.txt|index\.js)$/.test(String(args.at(-1))))).toEqual([]);
+    // The existing nested repository is in the start baseline and left alone.
+    expect(violation).toBe(false);
+    expect(fs.existsSync(join(workspace, "sub", ".git", "HEAD"))).toBe(true);
   });
 
   it("falls back to a start walk when no baseline is supplied", () => {

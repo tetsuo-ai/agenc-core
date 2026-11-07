@@ -120,7 +120,7 @@ import { redactDurableSecrets } from "../../session/provider-replay-redaction.js
 import { redactSecretsInValue } from "../../secrets/sanitizer.js";
 import { durableProviderReplay } from "../../session/message-history-conversion.js";
 import type { ProviderReasoningReplay } from "../../llm/types.js";
-import { omitAlteredBinaryCarriers } from "../../llm/content-conversion.js";
+import { omitAlteredBinaryCarriers, validatedBinaryCarrierBody } from "../../llm/content-conversion.js";
 
 const COMPACTION_UNKNOWN_MODEL = "unknown";
 const COMPACTION_DETAIL_DIGEST_DOMAIN = "agenc.compaction-failure.v1\0";
@@ -2062,7 +2062,7 @@ function createAuthoritativeSelectionMapper(
     const { content, omitted } = omitAlteredBinaryCarriers(
       message.content,
       message.content,
-      (body) => redactSecretsInValue(body) !== body,
+      (body, part) => validatedBinaryCarrierBody(redactSecretsInValue(part)) !== body,
     );
     return omitted
       ? ({ ...message, content } as RuntimeMessage)

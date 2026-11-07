@@ -625,7 +625,7 @@ function withoutAlteredBinaryCarriers(
   const { content, omitted } = omitAlteredBinaryCarriers(
     original.content,
     redacted.content,
-    (body) => redact(body) !== body,
+    (body, part) => validatedBinaryCarrierBody(redact(part)) !== body,
   );
   return omitted ? ({ ...redacted, content } as ResponseItem) : redacted;
 }

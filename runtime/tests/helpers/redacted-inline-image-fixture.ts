@@ -28,19 +28,29 @@ function pngChunk(type: string, data: Buffer): Buffer {
 }
 
 export function syntheticPng(withCollision: boolean): string {
+  return pngWithAncillaryBase64(withCollision ? `00${"A".repeat(80)}00` : undefined);
+}
+
+/**
+ * The same PNG with an ancillary chunk whose base64 reads as an AWS access key
+ * id between two slashes. Secret redaction still applies that rule to image
+ * data, so durable persistence omits this image.
+ */
+export function syntheticPngWithAccessKeyId(): string {
+  return pngWithAncillaryBase64("000/AKIAABCDEFGHIJKLMNOP/000");
+}
+
+/** `text` appears verbatim in the image's base64: the chunk data starts on a three-byte boundary. */
+function pngWithAncillaryBase64(text: string | undefined): string {
   const header = Buffer.alloc(13);
   header.writeUInt32BE(1, 0);
   header.writeUInt32BE(1, 4);
   header[8] = 8;
   header[9] = 6;
-  const collision = Buffer.concat([
-    Buffer.from([0]),
-    Buffer.from(`00${"A".repeat(80)}00`, "base64"),
-  ]);
   return `data:image/png;base64,${Buffer.concat([
     Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
     pngChunk("IHDR", header),
-    ...(withCollision ? [pngChunk("raNd", collision)] : []),
+    ...(text === undefined ? [] : [pngChunk("raNd", Buffer.concat([Buffer.from([0]), Buffer.from(text, "base64")]))]),
     pngChunk("IDAT", deflateSync(Buffer.from([0, 0, 0, 0, 255]))),
     pngChunk("IEND", Buffer.alloc(0)),
   ]).toString("base64")}`;

@@ -336,8 +336,13 @@ function nestedGitDescentPoints(root: string, roots: readonly string[] = [root])
     visited += 1;
     for (const entry of entries) {
       if (visited >= NESTED_GIT_SCAN_MAX_DIRS) return;
+      const isGitEntry = entry.name === ".git";
+      // Only a `.git` entry or a real directory to descend into matters; skip
+      // every other entry before building its path, as the policy's scan does
+      // (this stop scan runs after every confined command).
+      if (!isGitEntry && (entry.isSymbolicLink() || !entry.isDirectory())) continue;
       const child = path.join(dir, entry.name);
-      if (entry.name === ".git") {
+      if (isGitEntry) {
         // A nested `.git` a later host-side git could descend through: a real
         // repository directory, or a pointer (a gitfile or a symlink). Must
         // mirror the policy's nestedGitFindings descentPoints exactly so the
@@ -350,7 +355,6 @@ function nestedGitDescentPoints(root: string, roots: readonly string[] = [root])
         }
         continue;
       }
-      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
       walk(child, depth + 1);
     }
   };

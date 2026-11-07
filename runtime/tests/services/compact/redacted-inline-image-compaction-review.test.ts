@@ -9,7 +9,7 @@ import { RolloutStore } from "../../../src/session/rollout-store.js";
 import { toAgenCRuntimeMessages } from "../../../src/session/runtime-message-conversion.js";
 import { createToolResultIntegrity } from "../../../src/session/tool-result-integrity.js";
 import { createCompactionTransactionHarness } from "../../helpers/compaction-transaction-harness.js";
-import { isCanonicalBase64Image, syntheticPng } from "../../helpers/redacted-inline-image-fixture.js";
+import { isCanonicalBase64Image, syntheticPng, syntheticPngWithAccessKeyId } from "../../helpers/redacted-inline-image-fixture.js";
 
 function countBrokenImages(messages: readonly LLMMessage[]): number {
   return messages.reduce((count, message) => count + (Array.isArray(message.content)
@@ -23,7 +23,8 @@ describe("independent automatic compaction of durable inline images", () => {
     const imageContent: LLMMessage["content"] = [
       { type: "text", text: Array.from({ length: 400 }, (_, index) =>
         `synthetic screenshot result ${index}: measured item=${index};\n`).join("") },
-      { type: "image_url", image_url: { url: syntheticPng(collision) } },
+      // The durable record omits an image whose base64 a secret rule other than the base58 one matches.
+      { type: "image_url", image_url: { url: collision ? syntheticPngWithAccessKeyId() : syntheticPng(false) } },
     ];
     const wire: LLMMessage[] = [
       ...Array.from({ length: 18 }, (_, index): LLMMessage => ({

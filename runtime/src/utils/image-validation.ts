@@ -119,6 +119,86 @@ export function inspectImageBytes(bytes: Uint8Array): ImageInspection {
 }
 
 /**
+ * Whether a complete image (one inspectImageBytes accepts) ends with its own
+ * end marker: nothing follows the PNG IEND chunk, the JPEG end-of-image marker
+ * after the first scan header, the GIF trailer, or the size the WebP RIFF
+ * header declares. A decoder never reads bytes after that marker, so they can
+ * hold anything; callers that trust the image's bytes require this too.
+ */
+export function imageEndsAtEndMarker(bytes: Uint8Array): boolean {
+  const view = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  switch (detectInlineImageFormat(view)) {
+    case "png":
+      return pngEnd(view) === view.length;
+    case "jpeg":
+      return jpegEnd(view) === view.length;
+    case "gif":
+      return gifEnd(view) === view.length;
+    case "webp":
+      return view.length >= 12 && view.readUInt32LE(4) + 8 === view.length;
+    default:
+      return false;
+  }
+}
+
+/** The offset just past the first IEND chunk, or undefined. */
+function pngEnd(bytes: Buffer): number | undefined {
+  let offset = PNG_SIGNATURE.length;
+  while (offset + 8 <= bytes.length) {
+    const next = offset + 12 + bytes.readUInt32BE(offset);
+    if (next > bytes.length) return undefined;
+    if (ascii(bytes, offset + 4, offset + 8) === "IEND") return next;
+    offset = next;
+  }
+  return undefined;
+}
+
+/** The offset just past the first end-of-image marker after the first scan header, or undefined. */
+function jpegEnd(bytes: Buffer): number | undefined {
+  let offset = 2;
+  while (offset < bytes.length) {
+    if (bytes[offset] !== 0xff) return undefined;
+    while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
+    const marker = bytes[offset];
+    offset += 1;
+    if (marker === undefined || marker === 0xd9) return undefined;
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 2 > bytes.length) return undefined;
+    const segmentLength = bytes.readUInt16BE(offset);
+    if (segmentLength < 2 || offset + segmentLength > bytes.length) return undefined;
+    if (marker === 0xda) {
+      const end = bytes.indexOf(JPEG_END_OF_IMAGE, offset + segmentLength);
+      return end < 0 ? undefined : end + 2;
+    }
+    offset += segmentLength;
+  }
+  return undefined;
+}
+
+/** The offset just past the GIF trailer, or undefined (a GIF without its trailer has no end marker). */
+function gifEnd(bytes: Buffer): number | undefined {
+  if (bytes.length < 13) return undefined;
+  const packed = bytes[10]!;
+  let offset = 13 + (packed & 0x80 ? 3 * 2 ** ((packed & 0x07) + 1) : 0);
+  while (offset < bytes.length) {
+    const block = bytes[offset]!;
+    if (block === 0x3b) return offset + 1;
+    let next: number | undefined;
+    if (block === 0x21) {
+      next = offset + 2 > bytes.length ? undefined : skipGifSubBlocks(bytes, offset + 2);
+    } else if (block === 0x2c) {
+      if (offset + 10 > bytes.length) return undefined;
+      const imagePacked = bytes[offset + 9]!;
+      const data = offset + 10 + (imagePacked & 0x80 ? 3 * 2 ** ((imagePacked & 0x07) + 1) : 0);
+      next = data + 1 > bytes.length ? undefined : skipGifSubBlocks(bytes, data + 1);
+    }
+    if (next === undefined) return undefined;
+    offset = next;
+  }
+  return undefined;
+}
+
+/**
  * Whether a PNG carries bytes a still-image decoder never reads: APNG
  * animation chunks (acTL, fcTL, fdAT) anywhere before its end chunk, in any
  * order, or data after that end chunk. Nothing decodes those bytes, so such a
