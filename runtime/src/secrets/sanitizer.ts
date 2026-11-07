@@ -799,10 +799,34 @@ function validatedImageBody(
 
 const IMAGE_DATA_URL_BODY = /^data:image\/(?:png|jpeg|gif|webp);base64,([A-Za-z0-9+/]*={0,2})$/u;
 
+// The verdicts of the last few image bodies checked. One durable save redacts
+// each image several times (the response item, the carrier check and the
+// rollout line), and a body string keeps its verdict, so each image is decoded
+// and checked once. Bounded in entries and characters.
+const imageBodyVerdicts = new Map<string, boolean>();
+const IMAGE_BODY_VERDICT_ENTRIES = 8;
+const IMAGE_BODY_VERDICT_CHARS = 24 * 1024 * 1024;
+let imageBodyVerdictChars = 0;
+
 function isCompleteImageBase64(body: string): boolean {
-  if (body.length === 0 || body.length % 4 !== 0) return false;
-  const bytes = Buffer.from(body, "base64");
-  return bytes.toString("base64") === body && inspectImageBytes(bytes).ok && imageEndsAtEndMarker(bytes);
+  const known = imageBodyVerdicts.get(body);
+  if (known !== undefined) return known;
+  let verdict = false;
+  if (body.length > 0 && body.length % 4 === 0) {
+    const bytes = Buffer.from(body, "base64");
+    verdict = bytes.toString("base64") === body && inspectImageBytes(bytes).ok && imageEndsAtEndMarker(bytes);
+  }
+  if (body.length <= IMAGE_BODY_VERDICT_CHARS) {
+    while (imageBodyVerdicts.size >= IMAGE_BODY_VERDICT_ENTRIES ||
+           (imageBodyVerdicts.size > 0 && imageBodyVerdictChars + body.length > IMAGE_BODY_VERDICT_CHARS)) {
+      const oldest = imageBodyVerdicts.keys().next().value as string;
+      imageBodyVerdicts.delete(oldest);
+      imageBodyVerdictChars -= oldest.length;
+    }
+    imageBodyVerdicts.set(body, verdict);
+    imageBodyVerdictChars += body.length;
+  }
+  return verdict;
 }
 
 /**
