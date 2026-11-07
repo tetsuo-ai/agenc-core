@@ -154,11 +154,14 @@ export const OMITTED_BINARY_CARRIER_TEXT =
  * changed with a text omission. One rule, used by durable persistence and by
  * the compaction projection: if the two ever disagree about which carriers
  * survive, a caller message can no longer match its own canonical record.
+ * `alters` gets the carrier's body and the carrier part itself, so a
+ * redaction that treats an image block's body differently from other text
+ * (redactSecretsInValue) decides from the part.
  */
 export function omitAlteredBinaryCarriers(
   source: unknown,
   target: unknown,
-  alters: (body: string) => boolean,
+  alters: (body: string, part: unknown) => boolean,
 ): { readonly content: unknown; readonly omitted: boolean } {
   if (!Array.isArray(source) || !Array.isArray(target)) {
     return { content: target, omitted: false };
@@ -171,7 +174,7 @@ export function omitAlteredBinaryCarriers(
   // to the durable record.
   const kept = target.map((part, index) => {
     const body = validatedBinaryCarrierBody(source[index]);
-    if (body === null || !alters(body)) return part;
+    if (body === null || !alters(body, source[index])) return part;
     omitted = true;
     return { type: "text", text: OMITTED_BINARY_CARRIER_TEXT };
   });
