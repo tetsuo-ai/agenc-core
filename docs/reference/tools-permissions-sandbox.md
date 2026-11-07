@@ -291,7 +291,12 @@ request (a prompt queued for the conversation, or session mailbox input) ends
 the wait at once, with the command still running as a session, and so does
 the start of the deadline reserve of a run started with `--deadline`. An
 interrupt stops the wait as it stops a yield.
-Platforms without a process reader (Windows) keep the yield.
+Platforms without a process reader (Windows) keep the yield. A check that
+finds the command's root process gone waits up to a second for its exit, so
+the result is the exit rather than a session that has ended. With
+`AGENC_DIAGNOSTICS_FILE` set, every wait that went past its yield writes one
+`exec_busy_wait` line: how it ended, how long it held the call, and the CPU
+share measured at each check.
 `AGENC_EXEC_WAIT_WHILE_BUSY=0` in the session environment turns this off;
 Standard sessions never wait past the yield. On Linux
 the environment note of the system prompt adds one line with the cgroup CPU

@@ -96,6 +96,7 @@ import {
   type SessionProcessCheck,
 } from "./process-state.js";
 import { readOomKillCount } from "../utils/resource-limits.js";
+import { logForDiagnosticsNoPII } from "../utils/diagLogs.js";
 import { constants as osConstants } from "node:os";
 
 const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
@@ -505,13 +506,22 @@ interface BackgroundStartReservation {
 /**
  * Where a wait that may continue while its command is busy measures CPU from:
  * the command's processes and their CPU time when the wait started (none for
- * a command it just spawned), and when that was.
+ * a command it just spawned), and when that was (performance.now()).
  */
 interface BusyWaitStart {
+  readonly kind: "exec" | "poll";
   readonly baseline: SessionProcessCheck;
   readonly baselineAt: number;
   /** Ends the wait early with the command still running (`busyWaitWake`). */
   readonly wake?: () => BusyWaitWake;
+}
+
+/** How one busy wait went, for its diagnostics line. */
+interface BusyWaitTrace {
+  reason?: "exit" | "idle" | "cap" | "limit" | "stopped" | "woken" | "no_reader" | "root_gone";
+  wokenBy?: string;
+  /** CPU share in cores at each check, rounded to 0.01. */
+  readonly shares: number[];
 }
 
 /** An ended background session whose notice no result has carried yet. */
@@ -1129,6 +1139,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         : {}),
     });
     const startedAt = Date.now();
+    const spawnedAtMonotonic = performance.now();
     const callId = request.callId ?? `exec-${processId}`;
     const ownerId =
       typeof request.ownerId === "string" && request.ownerId.trim().length > 0
@@ -1219,8 +1230,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       ...(request.waitWhileBusy === true && !tty && request.startInBackground !== true
         ? {
             busyWait: {
+              kind: "exec" as const,
               baseline: { cpuSeconds: 0, members: new Map() },
-              baselineAt: startedAt,
+              baselineAt: spawnedAtMonotonic,
               ...(request.busyWaitWake !== undefined ? { wake: request.busyWaitWake } : {}),
             },
           }
@@ -2703,7 +2715,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   ): Promise<ExecCommandToolOutput> {
     let timedOut = true;
     const deadline = new AbortController();
-    const waitStartedAt = Date.now();
+    const waitStartedAt = performance.now();
     try {
       const waitSignal = options.signal === undefined
         ? deadline.signal
@@ -2848,7 +2860,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       const report = await checkSessionProcesses(entry.stored.process.pid, undefined);
       return report === undefined
         ? undefined
-        : { baseline: report.check, baselineAt: Date.now(), ...(wake !== undefined ? { wake } : {}) };
+        : {
+            kind: "poll",
+            baseline: report.check,
+            baselineAt: performance.now(),
+            ...(wake !== undefined ? { wake } : {}),
+          };
     } catch {
       return undefined;
     }
@@ -2879,11 +2896,26 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       readonly timeLimit: Promise<"limit"> | undefined;
     },
   ): Promise<"timeout" | "exit" | "limit"> {
+    const busyStartedAt = performance.now();
+    const trace: BusyWaitTrace = { shares: [] };
     const wake = start.wake?.();
     try {
-      return await this.waitWhileBusyChecks(entry, start, options, wake?.signal);
+      return await this.waitWhileBusyChecks(entry, start, options, wake?.signal, trace);
     } finally {
       wake?.dispose();
+      // One line per wait that went past its yield (AGENC_DIAGNOSTICS_FILE
+      // only): how it ended, how long it held the call, the CPU it measured.
+      if (trace.reason === "woken" && typeof wake?.signal.reason === "string") trace.wokenBy = wake.signal.reason;
+      const now = performance.now();
+      logForDiagnosticsNoPII("info", "exec_busy_wait", {
+        kind: start.kind,
+        end: trace.reason ?? "aborted",
+        ...(trace.wokenBy !== undefined ? { woken_by: trace.wokenBy } : {}),
+        busy_ms: Math.round(now - busyStartedAt),
+        wait_ms: Math.round(now - options.startedAt),
+        checks: trace.shares.length,
+        cpu_shares: trace.shares.slice(-64),
+      });
     }
   }
 
@@ -2896,19 +2928,29 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       readonly timeLimit: Promise<"limit"> | undefined;
     },
     wake: AbortSignal | undefined,
+    trace: BusyWaitTrace,
   ): Promise<"timeout" | "exit" | "limit"> {
     let baseline = start.baseline;
     let baselineAt = start.baselineAt;
+    const end = (
+      outcome: "timeout" | "exit" | "limit",
+      reason: NonNullable<BusyWaitTrace["reason"]>,
+    ): "timeout" | "exit" | "limit" => {
+      trace.reason = reason;
+      return outcome;
+    };
+    // Linux reads /proc and Darwin runs ps; elsewhere nothing measures CPU.
+    if (process.platform !== "linux" && process.platform !== "darwin") return end("timeout", "no_reader");
     // Queued input ends the wait as a yield does: the command keeps running.
     const woken = wake === undefined ? undefined : new Promise<"timeout">((resolveWoken) => {
       if (wake.aborted) resolveWoken("timeout");
       else wake.addEventListener("abort", () => resolveWoken("timeout"), { once: true });
     });
     for (;;) {
-      if (entry.exitState !== null) return "exit";
-      if (wake?.aborted === true) return "timeout";
-      if (entry.stopRequested || entry.hardTimeoutExpired === true) return "timeout";
-      if (Date.now() - options.startedAt >= this.busyWaitMaxMs) return "timeout";
+      if (entry.exitState !== null) return end("exit", "exit");
+      if (wake?.aborted === true) return end("timeout", "woken");
+      if (entry.stopRequested || entry.hardTimeoutExpired === true) return end("timeout", "stopped");
+      if (performance.now() - options.startedAt >= this.busyWaitMaxMs) return end("timeout", "cap");
       let report: Awaited<ReturnType<typeof checkSessionProcesses>>;
       try {
         report = await checkSessionProcesses(entry.stored.process.pid, baseline);
@@ -2917,25 +2959,35 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       }
       // An exit during the sample ends the wait as an exit; an abort during it
       // ends the wait the way it ends a yield (the timer rejects at once).
-      if (entry.exitState !== null) return "exit";
+      if (entry.exitState !== null) return end("exit", "exit");
       if (options.signal.aborted) await delay(0, undefined, { signal: options.signal });
-      const now = Date.now();
-      const seconds = Math.max(0.001, (now - baselineAt) / 1_000);
-      if (report?.cpuDeltaSeconds === undefined ||
-          report.cpuDeltaSeconds < BUSY_WAIT_MIN_CPU_SHARE * seconds) {
-        return "timeout";
+      if (report === undefined) {
+        // The session's root is gone: it has exited, and the exit event may
+        // be a moment behind. Wait for it briefly so the result is the exit,
+        // not a session that no longer runs.
+        const exited = await Promise.race([
+          entry.exitPromise.then(() => true),
+          delay(1_000, false, { signal: options.signal }),
+        ]);
+        return exited ? end("exit", "exit") : end("timeout", "root_gone");
       }
+      const now = performance.now();
+      const seconds = Math.max(0.001, (now - baselineAt) / 1_000);
+      const share = (report.cpuDeltaSeconds ?? 0) / seconds;
+      trace.shares.push(Math.round(share * 100) / 100);
+      if (report.cpuDeltaSeconds === undefined || share < BUSY_WAIT_MIN_CPU_SHARE) return end("timeout", "idle");
       baseline = report.check;
       baselineAt = now;
       const remaining = this.busyWaitMaxMs - (now - options.startedAt);
-      if (remaining <= 0) return "timeout";
+      if (remaining <= 0) return end("timeout", "cap");
       const outcome = await Promise.race([
         delay(Math.min(this.busyWaitCheckMs, remaining), "timeout" as const, { signal: options.signal }),
         entry.exitPromise.then(() => "exit" as const),
         ...(options.timeLimit === undefined ? [] : [options.timeLimit]),
         ...(woken === undefined ? [] : [woken]),
       ]);
-      if (outcome !== "timeout") return outcome;
+      if (outcome === "exit") return end("exit", "exit");
+      if (outcome === "limit") return end("limit", "limit");
     }
   }
 
