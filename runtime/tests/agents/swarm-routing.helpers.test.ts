@@ -163,6 +163,47 @@ describe("requestsHelpers", () => {
     expect(requestsHelpers(prompt)).toBe(false);
   });
 
+  // fx31 known limit: a double quote right after a digit is an inch mark, but it paired with the next double quote on
+  // its line as the start of a quotation.
+  test.each([
+    'Set the 5" display; use two helpers to check "beta.txt" and alpha.txt',
+    "He is 6'2\" tall; spawn two helpers to read \"alpha.txt\" and \"beta.txt\".",
+  ])("an inch mark does not hide the request after it: %s", (text) => {
+    expect(requestsHelpers(text)).toBe(true);
+  });
+
+  test.each([
+    'The 27" monitor guide says "use two helpers" for this setup.',
+    'Print the 5" label, then "use two helpers" stays a literal string in the config.',
+  ])("an inch mark does not leave the quotation after it unpaired: %s", (text) => {
+    expect(requestsHelpers(text)).toBe(false);
+  });
+
+  // fix32s review rv1 NIT 3: the 8 of the C++ prefix u8 is no inch mark; a dimension such as 2"x4" still is.
+  test.each([
+    'auto s = u8"use two helpers";',
+    'Explain why u8"use two helpers" prints garbage on Windows.',
+  ])("a u8 string literal is a quotation: %s", (text) => {
+    expect(requestsHelpers(text)).toBe(false);
+    expect(routeSwarmTask(text).signals).not.toContain("explicit_parallelism");
+  });
+
+  // fix32s review rv2: only u8 is a prefix; after u2 the quote is an inch mark like after any other digit.
+  test("a quote after a word such as u2 is an inch mark, not a u8 prefix", () => {
+    expect(requestsHelpers('Set u2" then use two helpers to read "a.txt" and b.txt')).toBe(true);
+    expect(requestsHelpers('The u2" key and "use two helpers" is a label.')).toBe(false);
+  });
+
+  test("the quotes of a dimension such as 2\"x4\" stay inch marks", () => {
+    expect(requestsHelpers('Cut the 2"x4" boards; the label says "use two helpers" only as an example.')).toBe(false);
+    expect(requestsHelpers('Cut the 2"x4" boards, then use two helpers to check "a.txt" and b.txt')).toBe(true);
+  });
+
+  test("a quotation that ends with a digit still ends there, and a lone inch mark hides nothing", () => {
+    expect(requestsHelpers('Explain "use 2 helpers" and "version 2" in the docs.')).toBe(false);
+    expect(requestsHelpers('Set the 5" display and use two helpers to check alpha.txt and beta.txt.')).toBe(true);
+  });
+
   test("treats missing input as no request", () => {
     expect(requestsHelpers(null)).toBe(false);
   });
@@ -254,6 +295,19 @@ describe("routeSwarmTask names helpers like agents and workers", () => {
     'Check "alpha.txt" and "beta.txt" in parallel.',
   ])("a pattern does not match across a removed span: %s", (prompt) => {
     const decision = routeSwarmTask(prompt);
+    expect(decision.signals).not.toContain("explicit_parallelism");
+    expect(decision.mode).toBe("sequential");
+  });
+
+  test("an inch mark does not hide the request after it", () => {
+    expect(routeSwarmTask('Set the 5" display; review api and tui in parallel using "beta.txt" as a guide.')).toMatchObject({
+      mode: "parallel",
+      signals: expect.arrayContaining(["explicit_parallelism"]),
+    });
+  });
+
+  test("an inch mark does not leave the quotation after it unpaired", () => {
+    const decision = routeSwarmTask('The 27" monitor docs say "review the api and the tui in parallel" for this.');
     expect(decision.signals).not.toContain("explicit_parallelism");
     expect(decision.mode).toBe("sequential");
   });

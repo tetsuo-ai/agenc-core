@@ -30,7 +30,9 @@
  * change the failing call's outcome, such as a file change, a shell command
  * that is not read-only or stdin input that reached a session (see
  * `lastProgressIndex`). A test rerun after a real code change runs again; a
- * retry between reads is still refused.
+ * retry between reads is still refused. A command or input restarts a failing
+ * call once per error: if the call then fails the same way, a later command
+ * does not restart it again (see `failureRunOf`).
  *
  * @module
  */
@@ -179,14 +181,36 @@ const VOLATILE_RESULT_FIELDS =
  * framing so application diagnostics containing the same field names stay
  * meaningful. Unknown or incomplete footer formats are compared verbatim.
  * The final lookahead requires the actual end, unlike `$`, which also
- * accepts a position before a trailing newline.
+ * accepts a position before a trailing newline. The one runtime text that
+ * may follow the footer is a `[sandbox]` notice after a blank line, which
+ * exec_command appends to a blocked local server, network access or .git
+ * write; the notice itself is compared verbatim. Without it, a repeat of a
+ * sandbox-blocked failure differed only in its wall time and looked new. A
+ * footer with no later footer is the real one: a footer and a notice printed
+ * in the command's own output are output. The pattern is applied from the
+ * last footer only ({@link lastFooterStart}).
  */
 const RUNTIME_RESULT_FOOTER =
-  /((?:^|\n\n)\[(?:exec|mcp|code_mode) )([^\r\n[\]]+)(\])(?![\s\S])/u;
+  /^((?:\n\n)?\[(?:exec|mcp|code_mode) )([^\r\n[\]]+)(\])(?=(?:\n\n\[sandbox\] [\s\S]*)?(?![\s\S]))/u;
+
+const RUNTIME_FOOTER_STARTS = ["\n\n[exec ", "\n\n[mcp ", "\n\n[code_mode "] as const;
+
+/**
+ * Where the last runtime footer can start: the last footer after a blank
+ * line, or else the start of the text. A footer holds no newline, so no later
+ * footer starts inside it, and only the last one can be the real footer.
+ * Found once: a lookahead for "no later footer" rescanned the rest of the
+ * output at every footer and notice the command printed, and 2.2 MiB of them
+ * took 8.4 s (fix32s review rv3).
+ */
+function lastFooterStart(content: string): number {
+  return Math.max(0, ...RUNTIME_FOOTER_STARTS.map((start) => content.lastIndexOf(start)));
+}
 
 /** Elide volatile fields only in the final runtime footer, never the body. */
 export function failureSignature(content: string): string {
-  return content.replace(
+  const start = lastFooterStart(content);
+  return content.slice(0, start) + content.slice(start).replace(
     RUNTIME_RESULT_FOOTER,
     (_footer, prefix: string, fields: string, suffix: string) =>
       `${prefix}${fields.replace(VOLATILE_RESULT_FIELDS, "$1")}${suffix}`,
@@ -241,7 +265,8 @@ function progressKey(record: CompletedToolResultRecord): string | undefined {
  * Position in `completedToolResults` of the turn's last real progress, or -1:
  * the first success of a result that could change a failing call's outcome
  * ({@link progressKey}). Failures and refusals of a repeated call count only
- * after that point, so a test rerun after a real code change runs instead of
+ * after that point ({@link failureRunOf} adds one limit for commands and
+ * input), so a test rerun after a real code change runs instead of
  * being refused as an error that "is not going to change". The same edit or
  * command again is not new progress, and nothing read-only is progress at
  * all, so a loop that only looks busy is still refused and then stopped as on
@@ -262,24 +287,51 @@ export function lastProgressIndex(state: TurnState): number {
   return last;
 }
 
+interface FailureRun {
+  /** Identical failures in a row since the call's last restart. */
+  readonly count: number;
+  readonly lastError: string;
+  /** Position of the call's last restart: its failures and refusals up to it do not count. */
+  readonly since: number;
+}
+
 /**
- * How many times this exact call (same tool, same canonical arguments) has
- * failed in a row with the same error result since the turn's last real
- * progress, read from the turn's completed results. A success or a different
- * error for the same call resets the run; the synthetic refusal records this
- * module writes are skipped so they never stand in for the original error.
+ * The run of identical failures of one exact call, read from the turn's
+ * completed results. Real progress ({@link progressKey}) restarts the run, with
+ * one limit: a command or stdin input restarts a failing call once per error.
+ * When the call fails the same way after such a restart, the command did not
+ * change its outcome, and a later command does not restart it again; a file
+ * change, a success of the call or a different error does. In the fix31s
+ * review, a new `touch f-N` between retries of one failing `npm start`
+ * restarted the run every cycle, and a new diagnostic command after each
+ * failure (`lsof -i :3001`, `python3 -c ...`, anything not read-only) kept the
+ * count from ever reaching the threshold. The same command again is no
+ * progress at all, so a new command each time now stops where the same
+ * command does.
  */
-export function identicalFailureRun(
-  state: TurnState,
-  call: LLMToolCall,
-): { readonly count: number; readonly lastError: string } {
+function failureRunOf(state: TurnState, call: LLMToolCall): FailureRun {
   const key = canonicalCallKey(call);
-  const since = lastProgressIndex(state);
+  const progressSeen = new Set<string>();
   let count = 0;
   let lastError = "";
   let lastSignature = "";
+  let since = -1;
+  // The error of the failure run a command or input already restarted.
+  let restartedByCommand: string | undefined;
   for (const [index, record] of state.completedToolResults.entries()) {
-    if (index <= since) continue;
+    const progress = progressKey(record);
+    if (progress !== undefined && !progressSeen.has(progress)) {
+      progressSeen.add(progress);
+      const fileChange = FILE_CHANGING_TOOLS.has(record.toolName);
+      if (fileChange || count === 0 || restartedByCommand !== lastSignature) {
+        if (fileChange) restartedByCommand = undefined;
+        else if (count > 0) restartedByCommand = lastSignature;
+        count = 0;
+        lastError = "";
+        lastSignature = "";
+        since = index;
+      }
+    }
     if (record.metadata?.[REPEATED_FAILURE_BLOCKED_METADATA_KEY] === true) {
       continue;
     }
@@ -288,6 +340,7 @@ export function identicalFailureRun(
       count = 0;
       lastError = "";
       lastSignature = "";
+      restartedByCommand = undefined;
       continue;
     }
     const signature = failureSignature(record.content);
@@ -296,10 +349,28 @@ export function identicalFailureRun(
     } else {
       count = 1;
     }
+    if (restartedByCommand !== undefined && signature !== restartedByCommand) {
+      restartedByCommand = undefined;
+    }
     // The model is shown the raw error; only the comparison is normalized.
     lastError = record.content;
     lastSignature = signature;
   }
+  return { count, lastError, since };
+}
+
+/**
+ * How many times this exact call (same tool, same canonical arguments) has
+ * failed in a row with the same error result since its last restart by real
+ * progress, read from the turn's completed results. A success or a different
+ * error for the same call resets the run; the synthetic refusal records this
+ * module writes are skipped so they never stand in for the original error.
+ */
+export function identicalFailureRun(
+  state: TurnState,
+  call: LLMToolCall,
+): { readonly count: number; readonly lastError: string } {
+  const { count, lastError } = failureRunOf(state, call);
   return { count, lastError };
 }
 
@@ -332,9 +403,8 @@ function blockedCallMessage(
   );
 }
 
-function lastFailureIsNonRetryable(state: TurnState, call: LLMToolCall): boolean {
+function lastFailureIsNonRetryable(state: TurnState, call: LLMToolCall, since: number): boolean {
   const key = canonicalCallKey(call);
-  const since = lastProgressIndex(state);
   for (let index = state.completedToolResults.length - 1; index > since; index -= 1) {
     const record = state.completedToolResults[index]!;
     if (completedRecordKey(record) !== key) continue;
@@ -355,12 +425,12 @@ function lastFailureIsNonRetryable(state: TurnState, call: LLMToolCall): boolean
  * opportunity inside the batch that created it, before the model could read
  * anything. A refusal without a recorded sample predates this turn's
  * batch (a resumed turn, a legacy record) and counts as earlier. A refusal
- * before the turn's last real progress does not count: the model acted on it.
+ * before the call's last restart by real progress does not count: the model
+ * acted on it ({@link failureRunOf}).
  */
-function refusedInEarlierSample(state: TurnState, call: LLMToolCall): boolean {
+function refusedInEarlierSample(state: TurnState, call: LLMToolCall, since: number): boolean {
   const key = canonicalCallKey(call);
   const currentSample = state.modelSampleOrdinal;
-  const since = lastProgressIndex(state);
   for (const [index, record] of state.completedToolResults.entries()) {
     if (index <= since) continue;
     if (record.metadata?.[REPEATED_FAILURE_BLOCKED_METADATA_KEY] !== true) {
@@ -404,8 +474,8 @@ export function isRepeatedFailingCall(
   state: TurnState,
   call: LLMToolCall,
 ): boolean {
-  const count = identicalFailureRun(state, call).count;
-  return count >= (lastFailureIsNonRetryable(state, call) ? 1 : REPEATED_FAILURE_BLOCK_THRESHOLD);
+  const { count, since } = failureRunOf(state, call);
+  return count >= (lastFailureIsNonRetryable(state, call, since) ? 1 : REPEATED_FAILURE_BLOCK_THRESHOLD);
 }
 
 /**
@@ -424,10 +494,10 @@ export function blockRepeatedFailingCall(
   session: Session,
   call: LLMToolCall,
 ): ToolDispatchResult | null {
-  const { count, lastError } = identicalFailureRun(state, call);
-  const nonRetryable = lastFailureIsNonRetryable(state, call);
+  const { count, lastError, since } = failureRunOf(state, call);
+  const nonRetryable = lastFailureIsNonRetryable(state, call, since);
   if (count < (nonRetryable ? 1 : REPEATED_FAILURE_BLOCK_THRESHOLD)) return null;
-  const endsTurn = refusedInEarlierSample(state, call);
+  const endsTurn = refusedInEarlierSample(state, call, since);
   const message = blockedCallMessage(call, count, lastError, endsTurn, nonRetryable);
   emitWarning(
     session.eventLog,

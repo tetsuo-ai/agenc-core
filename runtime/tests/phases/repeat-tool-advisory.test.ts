@@ -510,6 +510,68 @@ describe("blockRepeatedFailingCall", () => {
       expect(failureSignature(EPERM_BODY("0.2630"))).toContain("tokens=212");
     });
 
+    // exec_command appends its [sandbox] notices after the footer, so a sandbox-blocked failure ended in its notice and
+    // the footer's wall time made every repeat of it look new.
+    describe("a [sandbox] notice after the footer", () => {
+      const SERVER_NOTICE =
+        "[sandbox] The sandbox blocks local servers. Explain that you will start the preview and give its URL. " +
+        'Retry this command once with sandbox_permissions="require_escalated" and a plain-language justification.';
+      const BLOCKED = (wallTime: string, notice = SERVER_NOTICE) => `${EPERM_BODY(wallTime)}\n\n${notice}`;
+
+      test("does not keep the footer's wall time in the comparison", () => {
+        expect(failureSignature(BLOCKED("0.0270"))).toBe(failureSignature(BLOCKED("0.0030")));
+        expect(failureSignature(BLOCKED("0.0270"))).toContain(SERVER_NOTICE);
+        expect(failureSignature(BLOCKED("0.0270"))).toContain("exit_code=1");
+      });
+
+      test("a sandbox-blocked failure repeated three times is refused at the fourth attempt", () => {
+        const { session } = mkSessionStub();
+        const state = mkState(["0.0270", "0.0030", "0.0020"].map((wallTime, i) =>
+          completed(call("exec_command", npmStart(), `e-${i}`), BLOCKED(wallTime), true)));
+        const blocked = blockRepeatedFailingCall(state, session, call("exec_command", npmStart(), "e-3"));
+        expect(blocked?.metadata?.repeatedFailures).toBe(3);
+        expect(blocked?.preventContinuation).toBeUndefined();
+      });
+
+      // fix32s review rv2: a notice counts only after the last footer, never after one the command printed.
+      test("a footer and a [sandbox] line in the command's output stay output; the last footer is the real one", () => {
+        const output = "log line\n\n[exec exit_code=1 wall_time=0.5s tokens=3]\n\n[sandbox] copied transcript";
+        const result = (wallTime: string, notice = "") =>
+          `${output}\n\n[exec exit_code=1 wall_time=${wallTime}s tokens=40]${notice}`;
+        expect(failureSignature(result("0.2000"))).toBe(failureSignature(result("0.3000")));
+        expect(failureSignature(result("0.2000"))).toContain("wall_time=0.5s");
+        const noticed = (wallTime: string) => result(wallTime, `\n\n${SERVER_NOTICE}`);
+        expect(failureSignature(noticed("0.2000"))).toBe(failureSignature(noticed("0.3000")));
+        expect(failureSignature(noticed("0.2000"))).toContain("wall_time=0.5s");
+      });
+
+      // fix32s review rv3: finding the last footer rescanned the rest of the output at every printed footer and
+      // notice, so 2.2 MiB of them took 8.4 s.
+      test("2 MiB of printed footers and notices are compared in one pass", { timeout: 60_000 }, () => {
+        const pair = "\n\n[exec exit_code=1 wall_time=0.1s tokens=3]\n\n[sandbox] copied line";
+        const output = `log${pair.repeat(Math.ceil((2 * 1024 * 1024) / pair.length))}`;
+        const result = (wallTime: string) => `${output}\n\n[exec exit_code=1 wall_time=${wallTime}s tokens=40]`;
+        let best = Number.POSITIVE_INFINITY;
+        for (let run = 0; run < 3 && best >= 1000; run += 1) {
+          const start = performance.now();
+          failureSignature(result("0.2000"));
+          best = Math.min(best, performance.now() - start);
+        }
+        expect(best).toBeLessThan(1000);
+        expect(failureSignature(result("0.2000"))).toBe(failureSignature(result("0.3000")));
+        expect(failureSignature(result("0.2000")).startsWith(output)).toBe(true);
+      });
+
+      test("another notice, or other text after the footer, stays a different failure", () => {
+        const network = "[sandbox] This command's network access was disabled; retry it once with sandbox_permissions.";
+        expect(failureSignature(BLOCKED("0.0270"))).not.toBe(failureSignature(BLOCKED("0.0270", network)));
+        for (const after of ["More output", "[session 4 ended after 1.2s: exit 0]", "[sandboxed] app text"]) {
+          const content = `${EPERM_BODY("0.0270")}\n\n${after}`;
+          expect(failureSignature(content)).toBe(content);
+        }
+      });
+    });
+
     describe("runtime footer normalization boundaries", () => {
       test.each(["process_id", "session_id", "wall_time"])(
         "preserves changing %s in application errors, with and without a runtime footer",
@@ -939,6 +1001,102 @@ describe("blockRepeatedFailingCall", () => {
       );
       state.modelSampleOrdinal = 9;
       expect(blockRepeatedFailingCall(state, session, write)?.preventContinuation).toBe(true);
+    });
+
+    // fix31s review residual: a new state-changing command or new input between retries restarted the count every
+    // time, so a loop that did something new between retries was never stopped. A command or input now restarts a
+    // failing call once per error; a file change or a different error restarts it again.
+    const EPERM = "listen EPERM: operation not permitted 0.0.0.0:3000\n\n[exec exit_code=1 wall_time=0.2s tokens=12]";
+    const ran = (cmd: string, id: string) => completed(call("exec_command", { cmd }, id), "\n\n[exec exit_code=0]", false);
+
+    test("a retry loop with a new state-changing command between cycles is stopped like one with the same command", () => {
+      expect(attemptsUntilStop((c) => ran(`touch f-${c}`, `t-${c}`))).toBe(9);
+      expect(attemptsUntilStop((c) => ran(`python3 -c "print(${c})"`, `py-${c}`))).toBe(9);
+      expect(attemptsUntilStop((c) =>
+        completed(call("write_stdin", { session_id: 7, chars: `answer ${c}\n` }, `in-${c}`), "ok", false))).toBe(9);
+    });
+
+    /**
+     * One attempt of a failing `npm start`, then one other thing, as a model that checks something after each
+     * failure. Returns the attempt at which a refusal ended the turn, or Infinity after 40 attempts.
+     */
+    function alternatingAttemptsUntilStop(
+      between: (attempt: number) => CompletedToolResultRecord,
+      error: (attempt: number) => string = () => EPERM,
+    ): number {
+      const { session } = mkSessionStub();
+      const state = mkState([], 1);
+      for (let attempt = 1; attempt <= 40; attempt += 1) {
+        state.modelSampleOrdinal += 1;
+        const retry = call("exec_command", { cmd: "npm start" }, `a-${attempt}`);
+        const blocked = blockRepeatedFailingCall(state, session, retry);
+        if (blocked === null) {
+          state.completedToolResults.push(completed(retry, error(attempt), true));
+        } else {
+          state.completedToolResults.push(completed(retry, blocked.content, true, blocked.metadata));
+          if (blocked.preventContinuation === true) return attempt;
+        }
+        state.modelSampleOrdinal += 1;
+        state.completedToolResults.push(between(attempt));
+      }
+      return Number.POSITIVE_INFINITY;
+    }
+
+    test("a retry after each new diagnostic command is refused once the commands stop changing its error", () => {
+      expect(alternatingAttemptsUntilStop((n) => ran(`lsof -i :300${n}`, `l-${n}`))).toBe(6);
+      expect(alternatingAttemptsUntilStop((n) => ran(`ps aux | grep -c node-${n}`, `p-${n}`))).toBe(6);
+    });
+
+    test("a command that changes the failing call's error restarts its count each time", () => {
+      expect(alternatingAttemptsUntilStop((n) => ran(`npm install dep-${n}`, `i-${n}`),
+        (n) => `Error: Cannot find module 'dep-${n}'\n\n[exec exit_code=1 wall_time=0.3s tokens=9]`))
+        .toBe(Number.POSITIVE_INFINITY);
+    });
+
+    test("one command restarts a failing call, a second one for the same error does not, a file change does", () => {
+      const { session } = mkSessionStub();
+      const start = call("exec_command", { cmd: "npm start" }, "s");
+      const fail = (id: string) => completed({ ...start, id }, EPERM, true);
+      const state = mkState([fail("s-0"), fail("s-1"), fail("s-2"), ran("npm install", "i-0")], 4);
+      // The install may have fixed it, so the call runs again.
+      expect(blockRepeatedFailingCall(state, session, start)).toBeNull();
+      state.completedToolResults.push(fail("s-3"), fail("s-4"), fail("s-5"), ran("npm ci", "i-1"));
+      state.modelSampleOrdinal = 8;
+      // It failed the same way three more times: another command does not restart it.
+      const refused = blockRepeatedFailingCall(state, session, start);
+      expect(refused).not.toBeNull();
+      expect(refused?.preventContinuation).toBeUndefined();
+      state.completedToolResults.push(
+        completed({ ...start, id: "s-r" }, refused!.content, true, refused!.metadata),
+        completed(call("apply_patch", { input: "*** Begin Patch\n*** Update File: server.js" }, "p"),
+          "Success. Updated the following files:\nM server.js", false),
+      );
+      state.modelSampleOrdinal = 9;
+      expect(blockRepeatedFailingCall(state, session, start)).toBeNull();
+    });
+
+    // fix32s review rv1: after a command restarted a failing call once, a file change, a success of the call or a
+    // different error makes the next command able to restart it again.
+    test.each([
+      ["a different error", ["E1", "install a", "E1", "E2", "E1", "E1", "E1", "install b"]],
+      ["a success of the call", ["E1", "install a", "built", "E1", "E1", "E1", "install b"]],
+      ["a file change", ["E1", "install a", "E1", "edit", "E1", "E1", "E1", "install b"]],
+    ])("after %s, a command restarts the failing call again", (_label, steps) => {
+      const { session } = mkSessionStub();
+      const build = call("exec_command", { cmd: "npm run build" }, "b");
+      const error = (module: string) =>
+        `error TS2307: Cannot find module '${module}'.\n\n[exec exit_code=2 wall_time=0.4s tokens=12]`;
+      const records = steps.map((step, i) => {
+        const id = `s-${i}`;
+        if (step === "E1" || step === "E2") return completed({ ...build, id }, error(step === "E1" ? "a" : "b"), true);
+        if (step === "built") return completed({ ...build, id }, "built\n\n[exec exit_code=0]", false);
+        if (step === "edit") {
+          return completed(call("Edit", { file_path: "/w/a.ts", old_string: "a", new_string: "b" }, id),
+            "The file /w/a.ts has been updated successfully.", false);
+        }
+        return ran(`npm ${step}`, id);
+      });
+      expect(blockRepeatedFailingCall(mkState(records), session, build)).toBeNull();
     });
 
     // Flt30-11 (lt30-1931-mpv-C-r1 on 0.19.30, requests 12 to 16): after the
