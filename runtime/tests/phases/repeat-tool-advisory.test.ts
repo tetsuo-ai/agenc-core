@@ -510,6 +510,39 @@ describe("blockRepeatedFailingCall", () => {
       expect(failureSignature(EPERM_BODY("0.2630"))).toContain("tokens=212");
     });
 
+    // exec_command appends its [sandbox] notices after the footer, so a sandbox-blocked failure ended in its notice and
+    // the footer's wall time made every repeat of it look new.
+    describe("a [sandbox] notice after the footer", () => {
+      const SERVER_NOTICE =
+        "[sandbox] The sandbox blocks local servers. Explain that you will start the preview and give its URL. " +
+        'Retry this command once with sandbox_permissions="require_escalated" and a plain-language justification.';
+      const BLOCKED = (wallTime: string, notice = SERVER_NOTICE) => `${EPERM_BODY(wallTime)}\n\n${notice}`;
+
+      test("does not keep the footer's wall time in the comparison", () => {
+        expect(failureSignature(BLOCKED("0.0270"))).toBe(failureSignature(BLOCKED("0.0030")));
+        expect(failureSignature(BLOCKED("0.0270"))).toContain(SERVER_NOTICE);
+        expect(failureSignature(BLOCKED("0.0270"))).toContain("exit_code=1");
+      });
+
+      test("a sandbox-blocked failure repeated three times is refused at the fourth attempt", () => {
+        const { session } = mkSessionStub();
+        const state = mkState(["0.0270", "0.0030", "0.0020"].map((wallTime, i) =>
+          completed(call("exec_command", npmStart(), `e-${i}`), BLOCKED(wallTime), true)));
+        const blocked = blockRepeatedFailingCall(state, session, call("exec_command", npmStart(), "e-3"));
+        expect(blocked?.metadata?.repeatedFailures).toBe(3);
+        expect(blocked?.preventContinuation).toBeUndefined();
+      });
+
+      test("another notice, or other text after the footer, stays a different failure", () => {
+        const network = "[sandbox] This command's network access was disabled; retry it once with sandbox_permissions.";
+        expect(failureSignature(BLOCKED("0.0270"))).not.toBe(failureSignature(BLOCKED("0.0270", network)));
+        for (const after of ["More output", "[session 4 ended after 1.2s: exit 0]", "[sandboxed] app text"]) {
+          const content = `${EPERM_BODY("0.0270")}\n\n${after}`;
+          expect(failureSignature(content)).toBe(content);
+        }
+      });
+    });
+
     describe("runtime footer normalization boundaries", () => {
       test.each(["process_id", "session_id", "wall_time"])(
         "preserves changing %s in application errors, with and without a runtime footer",

@@ -181,10 +181,14 @@ const VOLATILE_RESULT_FIELDS =
  * framing so application diagnostics containing the same field names stay
  * meaningful. Unknown or incomplete footer formats are compared verbatim.
  * The final lookahead requires the actual end, unlike `$`, which also
- * accepts a position before a trailing newline.
+ * accepts a position before a trailing newline. The one runtime text that
+ * may follow the footer is a `[sandbox]` notice after a blank line, which
+ * exec_command appends to a blocked local server, network access or .git
+ * write; the notice itself is compared verbatim. Without it, a repeat of a
+ * sandbox-blocked failure differed only in its wall time and looked new.
  */
 const RUNTIME_RESULT_FOOTER =
-  /((?:^|\n\n)\[(?:exec|mcp|code_mode) )([^\r\n[\]]+)(\])(?![\s\S])/u;
+  /((?:^|\n\n)\[(?:exec|mcp|code_mode) )([^\r\n[\]]+)(\])(?=(?:\n\n\[sandbox\] [\s\S]*)?(?![\s\S]))/u;
 
 /** Elide volatile fields only in the final runtime footer, never the body. */
 export function failureSignature(content: string): string {
