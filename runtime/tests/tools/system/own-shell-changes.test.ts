@@ -246,6 +246,25 @@ test("P7: a command naming b/index.ts does not credit a change to a/index.ts", a
   expect((out[0] as { snippet: string }).snippet).toContain("a = 2");
 }, 20_000);
 
+test("P6: a user edit during a command that names the file only to read it is announced as a change during the command", async () => {
+  const notes = join(root, "notes.txt");
+  await write(notes, "one\n");
+  expect(await allAttachments()).toEqual([]);
+  const running = exec("sleep 1; wc -l notes.txt");
+  await delay(300);
+  await outsideAppend(notes, "added by the user");
+  expect(String((await running).content)).toContain("notes.txt");
+  const out = await allAttachments();
+  expect(out).toEqual([expect.objectContaining({ kind: "own_shell_change_notice", filename: notes })]);
+  const text = JSON.stringify(attachmentsToMessages(out));
+  expect(text).toContain("A file you read changed while a command of yours that names it was running");
+  expect(text).not.toContain("changed by your command");
+  // The edit is not lost: the model must read the file before writing it.
+  const overwrite = await write(notes, "one\ntwo\n");
+  expect(overwrite.isError).toBe(true);
+  expect(await readFile(notes, "utf8")).toBe("one\nadded by the user\n");
+});
+
 test("P1: after a command copies other bytes over a read file, a Write from the old view is refused", async () => {
   const app = join(root, "app.js");
   await writeFile(join(root, "upstream.js"), "export const a = 1;\nexport const b = 2;\n");
