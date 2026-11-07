@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -188,7 +188,7 @@ test("two of the session's commands naming the file before the next request send
   await write(file, "# notes\n");
   expect(await attachments()).toEqual([]);
   await exec("printf 'one\\n' >> notes.md");
-  await exec("python3 -c \"import pathlib; p=pathlib.Path('notes.md'); p.write_text(p.read_text().replace('one', 'uno'))\"");
+  await exec("sed -i 's/one/uno/' notes.md");
   expect(await readFile(file, "utf8")).toBe("# notes\nuno\n");
   expect(await attachments()).toEqual([]);
 });
@@ -460,24 +460,97 @@ test("a PowerShell command naming the file is the session's own too", async () =
   expect(await attachments()).toEqual([]);
 });
 
-test("a command names the paths its words and quoted strings resolve to in its directory", () => {
+test("a command names the paths its whole shell words resolve to in its real directory", () => {
   const cases: Array<[string, string, boolean]> = [
-    ["printf '2,B\\n' >> proof.csv", "/w/proof.csv", true],
-    ["printf x>>proof.csv", "/w/proof.csv", true],
-    ["cat ./data/proof.csv | wc -l", "/w/data/proof.csv", true],
-    ["python3 - <<'PY'\np = Path('src/durable-service.mjs')\nPY", "/w/src/durable-service.mjs", true],
-    ["cat \"my notes.md\"", "/w/my notes.md", true],
-    ["cat /w/abs/file.txt", "/w/abs/file.txt", true],
-    ["cat b/index.ts", "/w/a/index.ts", false],
-    ["cp proof.csv.bak backup", "/w/proof.csv", false],
-    ["cat xproof.csv", "/w/proof.csv", false],
-    ["sleep 1; echo done", "/w/proof.csv", false],
-    ["node scripts/capture.mjs", "/w/shots/hero.png", false],
-    ["cd sub && cat f.txt", "/w/sub/f.txt", false],
+    ["printf '2,B\\n' >> proof.csv", "proof.csv", true],
+    ["printf x>>proof.csv", "proof.csv", true],
+    ["cat ./data/proof.csv | wc -l", "data/proof.csv", true],
+    ["python3 - <<'PY'\np = Path('src/durable-service.mjs')\nPY", "src/durable-service.mjs", true],
+    ["cat \"my notes.md\"", "my notes.md", true],
+    ["cat b/index.ts", "a/index.ts", false],
+    ["cp proof.csv.bak backup", "proof.csv", false],
+    ["cat xproof.csv", "proof.csv", false],
+    ["sleep 1; echo done", "proof.csv", false],
+    ["node scripts/capture.mjs", "shots/hero.png", false],
+    ["cd sub && cat f.txt", "f.txt", false],
+    ["pushd sub; cat f.txt; popd", "f.txt", false],
+    ["cat sub\\notes.txt", "notes.txt", false],
+    ["cat my\\ notes.md", "notes.md", false],
+    ["cat {VERSION,NOTES}.md", "VERSION", false],
+    ["cat $DIR/proof.csv", "proof.csv", false],
+    ["cat *.csv", "proof.csv", false],
+    ["cat ~/proof.csv", "proof.csv", false],
+    ["# cat proof.csv", "proof.csv", false],
   ];
   for (const [command, path, expected] of cases) {
-    expect(commandNamedPaths(command, "/w").has(path), `${command} / ${path}`).toBe(expected);
+    expect(commandNamedPaths(command, root).has(join(root, path)), `${command} / ${path}`).toBe(expected);
   }
+  expect(commandNamedPaths(`cat ${join(root, "abs.txt")}`, "/nonexistent").size).toBe(0);
+});
+
+/** Run `command` and append a line to `file` from outside while it runs. */
+async function outsideEditDuring(command: string, file: string, extra: Record<string, unknown> = {}) {
+  const running = exec(command, extra);
+  await delay(300);
+  await outsideAppend(file, "added by the user");
+  return running;
+}
+
+test("M1: a command that changes directory credits nothing", async () => {
+  const notes = join(root, "notes.txt");
+  await mkdir(join(root, "sub"));
+  await writeFile(join(root, "sub/notes.txt"), "sub\n");
+  await write(notes, "top\n");
+  expect(await allAttachments()).toEqual([]);
+  await outsideEditDuring("cd sub && sleep 1 && cat notes.txt", notes);
+  expect(await allAttachments()).toEqual([expect.objectContaining({ kind: "edited_text_file", filename: notes })]);
+});
+
+test("M2: input to a shell that changed directory credits nothing", async () => {
+  const notes = join(root, "notes.txt");
+  await mkdir(join(root, "sub"));
+  await writeFile(join(root, "sub/notes.txt"), "sub\n");
+  await write(notes, "top\n");
+  expect(await allAttachments()).toEqual([]);
+  const started = await exec("bash --noprofile --norc", { tty: true, yield_time_ms: 500 });
+  const sessionId = (started.codeModeResult as { session_id?: number }).session_id;
+  expect(sessionId, String(started.content)).toEqual(expect.any(Number));
+  const tool = bindExplicitDangerBoundary(createWriteStdinTool({ cwd: root, allowedPaths: [root], lightMode: true, unifiedExecManager: manager }));
+  await tool.execute(shellArgs("write_stdin", { session_id: sessionId, chars: "cd sub\n", yield_time_ms: 500 }));
+  const typing = tool.execute(shellArgs("write_stdin", {
+    session_id: sessionId, chars: "sleep 1; cat notes.txt; echo shown\n", yield_time_ms: 3_000,
+  }));
+  await delay(400);
+  await outsideAppend(notes, "added by the user");
+  expect(String((await typing).content)).toContain("shown");
+  expect(await allAttachments()).toEqual([expect.objectContaining({ kind: "edited_text_file", filename: notes })]);
+}, 20_000);
+
+test("M3: a path piece with a backslash names nothing", async () => {
+  const notes = join(root, "notes.txt");
+  await write(notes, "top\n");
+  expect(await allAttachments()).toEqual([]);
+  await outsideEditDuring("sleep 1; cat sub\\notes.txt 2>/dev/null; true", notes);
+  expect(await allAttachments()).toEqual([expect.objectContaining({ kind: "edited_text_file", filename: notes })]);
+});
+
+test("M4: a brace expansion names nothing", async () => {
+  const version = join(root, "VERSION");
+  await write(version, "1.0\n");
+  expect(await allAttachments()).toEqual([]);
+  await outsideEditDuring("sleep 1; cat {VERSION,NOTES}.md 2>/dev/null; true", version);
+  expect(await allAttachments()).toEqual([expect.objectContaining({ kind: "edited_text_file", filename: version })]);
+});
+
+test("M5: paths resolve against the real working directory, not a symlink's parent", async () => {
+  await mkdir(join(root, "deep/sub"), { recursive: true });
+  await symlink(join(root, "deep/sub"), join(root, "link"));
+  await writeFile(join(root, "deep/x.txt"), "deep\n");
+  const top = join(root, "x.txt");
+  await write(top, "top\n");
+  expect(await allAttachments()).toEqual([]);
+  await outsideEditDuring("sleep 1; cat ../x.txt", top, { workdir: join(root, "link") });
+  expect(await allAttachments()).toEqual([expect.objectContaining({ kind: "edited_text_file", filename: top })]);
 });
 
 test("a command's own change is announced once per state, without its contents", async () => {

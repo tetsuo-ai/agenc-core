@@ -53,36 +53,118 @@ export interface ShellCommandScope {
   readonly runtimeSandbox: UnifiedExecRuntimeSandbox | undefined;
 }
 
-/** Runs of characters a path can hold, between shell and code punctuation. */
-const PATH_RUN = /[^\s'"`;&|<>(){}[\],:=$\\*?!]+/gu;
-/** Quoted strings, whose contents may be a path with spaces or other separators. */
-const QUOTED = /'([^']*)'|"((?:[^"\\]|\\.)*)"/gu;
+/** Commands that move a shell to another directory: relative paths after one cannot be resolved here. */
+const DIRECTORY_CHANGES: ReadonlySet<string> = new Set([
+  "cd", "pushd", "popd", "chdir", "set-location", "sl", "push-location", "pop-location",
+]);
+
+interface ShellWord {
+  readonly text: string;
+  /** The word may expand (variable, command substitution, glob, braces, `~`) or holds a backslash. */
+  readonly unresolvable: boolean;
+}
+
+const OPERATOR = /[;&|<>()]/u;
+const GLOB = /[*?[\]{}]/u;
 
 /**
- * The paths a command names: every path-shaped word and every quoted string,
- * resolved against the command's directory. A path spelled through a variable,
- * a glob, `~` or a `cd` earlier in the command is not resolved and names nothing.
+ * The words of a command text as a POSIX shell splits them (whitespace and
+ * operators outside quotes separate words; quotes are removed; `#` starts a
+ * comment at a word start). Heredoc bodies are split the same way, which keeps
+ * a quoted path inside a script a word of its own.
  */
-export function commandNamedPaths(command: string, cwd: string): Set<string> {
-  const words = new Set<string>();
-  for (const match of command.matchAll(PATH_RUN)) words.add(match[0]);
-  for (const match of command.matchAll(QUOTED)) {
-    const quoted = match[1] ?? match[2];
-    if (quoted !== undefined && quoted.length > 0) words.add(quoted);
-  }
-  const bases = new Set([cwd]);
-  try {
-    bases.add(realpathSync(cwd));
-  } catch {
-    // The directory alone.
-  }
-  const paths = new Set<string>();
-  for (const word of words) {
-    if (isAbsolute(word)) {
-      paths.add(resolve(word));
+export function shellWords(text: string, platform: NodeJS.Platform = process.platform): ShellWord[] {
+  const words: ShellWord[] = [];
+  let word = "";
+  let started = false;
+  let unresolvable = false;
+  const end = (): void => {
+    if (started) words.push({ text: word, unresolvable });
+    word = "";
+    started = false;
+    unresolvable = false;
+  };
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]!;
+    if (/\s/u.test(char) || OPERATOR.test(char)) {
+      end();
       continue;
     }
-    for (const base of bases) paths.add(resolve(base, word));
+    if (char === "#" && !started) {
+      const newline = text.indexOf("\n", index);
+      index = newline < 0 ? text.length : newline;
+      continue;
+    }
+    started = true;
+    if (char === "'") {
+      const close = text.indexOf("'", index + 1);
+      const quoted = text.slice(index + 1, close < 0 ? text.length : close);
+      if (quoted.includes("\\")) unresolvable = true;
+      word += quoted;
+      index = close < 0 ? text.length : close;
+      continue;
+    }
+    if (char === "\"") {
+      let close = index + 1;
+      while (close < text.length && text[close] !== "\"") {
+        if (text[close] === "\\") {
+          unresolvable = true;
+          close += 1;
+        } else if (text[close] === "$" || text[close] === "`") {
+          unresolvable = true;
+        }
+        close += 1;
+      }
+      word += text.slice(index + 1, Math.min(close, text.length));
+      index = close;
+      continue;
+    }
+    if (char === "\\") {
+      // A path piece with a backslash names nothing on POSIX, where it escapes
+      // the next character (kept in the same word) instead of separating names.
+      word += char;
+      if (platform !== "win32") {
+        unresolvable = true;
+        if (index + 1 < text.length) {
+          index += 1;
+          word += text[index];
+        }
+      }
+      continue;
+    }
+    if (char === "$" || char === "`" || GLOB.test(char) || (char === "~" && word.length === 0)) {
+      unresolvable = true;
+    }
+    word += char;
+  }
+  end();
+  return words;
+}
+
+/** Whether a command (or a shell's input) may move the shell to another directory. */
+export function changesDirectory(command: string): boolean {
+  return /chdir/iu.test(command) ||
+    shellWords(command).some((word) => DIRECTORY_CHANGES.has(word.text.toLowerCase()));
+}
+
+/**
+ * The paths a command names: each whole shell word that is a plain path (no
+ * expansion, no backslash on POSIX), resolved against the real working
+ * directory. A command that may change directory names nothing, and so does a
+ * command whose working directory cannot be resolved.
+ */
+export function commandNamedPaths(command: string, cwd: string): Set<string> {
+  const paths = new Set<string>();
+  if (command.length === 0 || changesDirectory(command)) return paths;
+  let base: string;
+  try {
+    base = realpathSync(cwd);
+  } catch {
+    return paths;
+  }
+  for (const word of shellWords(command)) {
+    if (word.unresolvable || word.text.length === 0) continue;
+    paths.add(isAbsolute(word.text) ? resolve(word.text) : resolve(base, word.text));
   }
   return paths;
 }
@@ -186,6 +268,8 @@ export async function trackOwnShellChanges<T>(
  * session id; bounded, oldest dropped first.
  */
 const shellSessions = new Map<string, ShellCommandScope>();
+/** Exec sessions whose shell may have changed directory since it started: their input names nothing. */
+const movedShellSessions = new Set<string>();
 const MAX_SHELL_SESSIONS = 512;
 
 function shellSessionKey(args: Record<string, unknown>, execSessionId: number): string | undefined {
@@ -203,10 +287,13 @@ export function rememberShellSession(
   if (key === undefined) return;
   shellSessions.delete(key);
   shellSessions.set(key, scope);
+  if (changesDirectory(scope.command)) movedShellSessions.add(key);
+  else movedShellSessions.delete(key);
   while (shellSessions.size > MAX_SHELL_SESSIONS) {
     const oldest = shellSessions.keys().next().value;
     if (oldest === undefined) break;
     shellSessions.delete(oldest);
+    movedShellSessions.delete(oldest);
   }
 }
 
@@ -214,7 +301,9 @@ export function rememberShellSession(
  * The scope of a write_stdin call: only the input it sends, so a poll credits
  * no file (the process's own command was credited for its first window), and
  * input that names a path is resolved in the process's directory and sandbox.
- * An unknown process gets the poll's directory and sandbox.
+ * Input to a process this session did not start here, or to a shell that may
+ * have changed directory (its command or any input so far could move it),
+ * names nothing.
  */
 export function polledShellScope(
   args: Record<string, unknown>,
@@ -225,8 +314,10 @@ export function polledShellScope(
 ): ShellCommandScope {
   const key = shellSessionKey(args, execSessionId);
   const process = key === undefined ? undefined : shellSessions.get(key);
+  if (key !== undefined && process !== undefined && changesDirectory(input)) movedShellSessions.add(key);
+  const directoryKnown = key !== undefined && process !== undefined && !movedShellSessions.has(key);
   return {
-    command: input,
+    command: directoryKnown ? input : "",
     cwd: process?.cwd ?? pollCwd,
     runtimeSandbox: process === undefined ? pollSandbox : process.runtimeSandbox,
   };
