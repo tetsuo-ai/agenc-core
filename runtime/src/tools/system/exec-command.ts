@@ -120,6 +120,11 @@ export interface ExecCommandToolConfig extends BashToolConfig {
    * session.
    */
   readonly hardTimeout?: () => boolean;
+  /**
+   * Whether a Light command still using CPU at the end of its yield keeps
+   * the call waiting (`AGENC_EXEC_WAIT_WHILE_BUSY`, tools/system/exec-wait-mode.ts).
+   */
+  readonly waitWhileBusy?: () => boolean;
 }
 
 /**
@@ -151,6 +156,26 @@ const PLAIN_INTERACTIVE_SHELL_RE =
  * with another model call. Explicit yields, tty and detached processes keep their own windows.
  */
 export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
+
+/**
+ * Whether a Light command still using CPU when its yield passes keeps this
+ * call waiting until it exits or stops using CPU, bounded (process manager
+ * `waitWhileBusy`), instead of returning a session_id the model polls with
+ * another model call. Only a foreground, non-tty command whose yield is the
+ * default or longer: `background: true`, tty, detach and a shorter explicit
+ * yield ask for control back early. Off with `AGENC_EXEC_WAIT_WHILE_BUSY=0`
+ * and in Standard sessions.
+ */
+function waitsWhileBusy(
+  config: ExecCommandToolConfig | undefined,
+  args: Readonly<Record<string, unknown>>,
+  launch: { readonly background: boolean; readonly tty: boolean | undefined },
+): boolean {
+  if (config?.lightMode !== true || config.waitWhileBusy?.() !== true) return false;
+  if (launch.background || launch.tty === true || args.detach === true) return false;
+  const requestedYield = asNumber(args.yield_time_ms);
+  return requestedYield === undefined || requestedYield >= LIGHT_DEFAULT_EXEC_YIELD_TIME_MS;
+}
 
 /**
  * How long `background: true` waits before returning the session: long
@@ -1333,6 +1358,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
                 ? { timeoutMs, onTimeout: config?.hardTimeout?.() === true ? "kill" as const : "background" as const }
                 : {}),
               ...(background ? { startInBackground: true } : {}),
+              ...(waitsWhileBusy(config, args, { background, tty })
+                ? { waitWhileBusy: true }
+                : {}),
               ...(args.__onProgress !== undefined
                 ? { __onProgress: args.__onProgress }
                 : {}),

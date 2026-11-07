@@ -152,6 +152,20 @@ const PTY_ARGV0_EXECVE_SCRIPT =
  */
 const QUIET_PROCESS_STATE_AFTER_MS = 60_000;
 /**
+ * A wait that may continue while its command is busy (`waitWhileBusy`)
+ * checks the command's processes this often after the yield passes. A
+ * command that exits ends the wait at once, so the step only bounds how late
+ * a command that stopped working is noticed.
+ */
+const BUSY_WAIT_CHECK_MS = 5_000;
+/**
+ * CPU share, in cores, that counts as still working since the previous check.
+ * Headless Chromium captures, builds and test runs used one to two cores in
+ * the recorded MPV and Superyat runs; a server waiting for requests, a
+ * `sleep` or a command waiting on the network uses close to none.
+ */
+const BUSY_WAIT_MIN_CPU_SHARE = 0.25;
+/**
  * Live background sessions one owner may hold. Past it a timeout stops the
  * command again and a background start is refused: on a one-CPU container
  * every extra job slows the agent's own commands. Ordinary yields count
@@ -470,6 +484,16 @@ interface ProcessEntry {
 /** A background start's slot, held from admission until it is a live session or has failed. */
 interface BackgroundStartReservation {
   readonly ownerId: string | undefined;
+}
+
+/**
+ * Where a wait that may continue while its command is busy measures CPU from:
+ * the command's processes and their CPU time when the wait started (none for
+ * a command it just spawned), and when that was.
+ */
+interface BusyWaitStart {
+  readonly baseline: SessionProcessCheck;
+  readonly baselineAt: number;
 }
 
 /** An ended background session whose notice no result has carried yet. */
@@ -793,6 +817,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly sessionSandboxesInUse = new Set<SessionSandbox>();
   private readonly maxBackgroundSessions: number;
   private readonly quietProcessStateAfterMs: number;
+  private readonly busyWaitCheckMs: number;
+  private readonly busyWaitMaxMs: number;
   /** Background starts admitted and not yet live sessions (see execCommand). */
   private readonly backgroundStartReservations = new Set<BackgroundStartReservation>();
   private pendingEndNotices: PendingEndNotice[] = [];
@@ -873,6 +899,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       options.maxBackgroundSessions ?? DEFAULT_MAX_BACKGROUND_SESSIONS,
     ));
     this.quietProcessStateAfterMs = options.quietProcessStateAfterMs ?? QUIET_PROCESS_STATE_AFTER_MS;
+    this.busyWaitCheckMs = Math.max(1, options.busyWaitCheckMs ?? BUSY_WAIT_CHECK_MS);
+    this.busyWaitMaxMs = options.busyWaitMaxMs ?? MAX_EMPTY_WRITE_YIELD_TIME_MS;
     this.env = options.env === undefined
       ? undefined
       : Object.freeze({ ...options.env });
@@ -1167,6 +1195,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       signal: request.__abortSignal,
       maxOutputTokens: request.max_output_tokens,
       onProgress: request.__onProgress,
+      // Every process of a new command started after the spawn: the CPU it
+      // used up to the yield all counts.
+      ...(request.waitWhileBusy === true && !tty && request.startInBackground !== true
+        ? { busyWait: { baseline: { cpuSeconds: 0, members: new Map() }, baselineAt: startedAt } }
+        : {}),
     });
     request.observer?.onEnd?.({
       callId,
@@ -1438,12 +1471,19 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       }
     }
 
+    // An empty poll that may continue while the command is busy measures the
+    // command's CPU from here. Input writes and tty sessions keep their yield.
+    const busyWait = request.waitWhileBusy === true && input.length === 0 && !entry.tty &&
+      entry.exitState === null && !entry.stopRequested
+      ? await this.busyWaitBaseline(entry)
+      : undefined;
     const collected = {
       ...await this.collect(entry, {
         yieldMs: clampWriteYield(request.yield_time_ms, input),
         signal: request.__abortSignal,
         maxOutputTokens: request.max_output_tokens,
         onProgress: request.__onProgress,
+        ...(busyWait !== undefined ? { busyWait } : {}),
       }),
       sandboxApplied: entry.runtimeSandbox !== undefined,
     };
@@ -2631,26 +2671,35 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       readonly signal?: AbortSignal;
       readonly maxOutputTokens?: number;
       readonly onProgress?: (event: UnifiedExecProgressEvent) => void;
+      /** Keep waiting past the yield while the command is busy (`waitWhileBusy`). */
+      readonly busyWait?: BusyWaitStart;
     },
   ): Promise<ExecCommandToolOutput> {
     let timedOut = true;
     const deadline = new AbortController();
+    const waitStartedAt = Date.now();
     try {
-      const timeout = delay(options.yieldMs, "timeout" as const, {
-        signal: options.signal === undefined
-          ? deadline.signal
-          : AbortSignal.any([options.signal, deadline.signal]),
-      });
+      const waitSignal = options.signal === undefined
+        ? deadline.signal
+        : AbortSignal.any([options.signal, deadline.signal]);
+      const timeout = delay(options.yieldMs, "timeout" as const, { signal: waitSignal });
       // A background time limit that passes during this wait ends it now,
       // the way the old kill did, but the command keeps running.
       const timeLimit = entry.timeLimit?.reachedAt === undefined
         ? entry.timeLimit?.reached
         : undefined;
-      const outcome = await Promise.race([
+      let outcome = await Promise.race([
         timeout,
         entry.exitPromise.then(() => "exit" as const),
         ...(timeLimit === undefined ? [] : [timeLimit]),
       ]);
+      if (outcome === "timeout" && options.busyWait !== undefined) {
+        outcome = await this.waitWhileBusy(entry, options.busyWait, {
+          startedAt: waitStartedAt,
+          signal: waitSignal,
+          timeLimit,
+        });
+      }
       if (
         outcome === "timeout" &&
         entry.hardTimeoutExpired === true &&
@@ -2756,6 +2805,81 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       return { line: formatSessionProcessReport(report, quietMs), check: report.check };
     } catch {
       return undefined;
+    }
+  }
+
+  /**
+   * The start of an empty poll that may continue while its command is busy:
+   * the session's processes and CPU now. Undefined where this platform has no
+   * process reader or the session's root is gone; the poll then keeps its
+   * yield.
+   */
+  private async busyWaitBaseline(entry: ProcessEntry): Promise<BusyWaitStart | undefined> {
+    try {
+      const report = await checkSessionProcesses(entry.stored.process.pid, undefined);
+      return report === undefined ? undefined : { baseline: report.check, baselineAt: Date.now() };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The yield of a `waitWhileBusy` call passed with the command still
+   * running. A model that gets a session_id back almost always spends its next
+   * call, with the whole conversation resent, polling it (238 of 256
+   * still-running results in nine recorded MPV and Superyat runs; one was
+   * stopped, the rest left running while the model worked on). So while the
+   * command's processes keep using CPU (at least {@link BUSY_WAIT_MIN_CPU_SHARE}
+   * of a core since the previous check: a build, a test run, a headless
+   * browser capture), keep waiting, one check every `busyWaitCheckMs`, until
+   * it exits, stops using CPU (a server waiting for requests, a `sleep`, a
+   * stalled script), its time limit passes, a stop is requested, or
+   * `busyWaitMaxMs` has passed since the call started. The caller's abort
+   * signal ends the wait as it ends the yield. Returns how the wait ended, as
+   * the yield's race does: "timeout" leaves the command running as a session.
+   * Observation only: nothing here signals or adopts a process.
+   */
+  private async waitWhileBusy(
+    entry: ProcessEntry,
+    start: BusyWaitStart,
+    options: {
+      readonly startedAt: number;
+      readonly signal: AbortSignal;
+      readonly timeLimit: Promise<"limit"> | undefined;
+    },
+  ): Promise<"timeout" | "exit" | "limit"> {
+    let baseline = start.baseline;
+    let baselineAt = start.baselineAt;
+    for (;;) {
+      if (entry.exitState !== null) return "exit";
+      if (entry.stopRequested || entry.hardTimeoutExpired === true) return "timeout";
+      if (Date.now() - options.startedAt >= this.busyWaitMaxMs) return "timeout";
+      let report: Awaited<ReturnType<typeof checkSessionProcesses>>;
+      try {
+        report = await checkSessionProcesses(entry.stored.process.pid, baseline);
+      } catch {
+        report = undefined;
+      }
+      // An exit during the sample ends the wait as an exit; an abort during it
+      // ends the wait the way it ends a yield (the timer rejects at once).
+      if (entry.exitState !== null) return "exit";
+      if (options.signal.aborted) await delay(0, undefined, { signal: options.signal });
+      const now = Date.now();
+      const seconds = Math.max(0.001, (now - baselineAt) / 1_000);
+      if (report?.cpuDeltaSeconds === undefined ||
+          report.cpuDeltaSeconds < BUSY_WAIT_MIN_CPU_SHARE * seconds) {
+        return "timeout";
+      }
+      baseline = report.check;
+      baselineAt = now;
+      const remaining = this.busyWaitMaxMs - (now - options.startedAt);
+      if (remaining <= 0) return "timeout";
+      const outcome = await Promise.race([
+        delay(Math.min(this.busyWaitCheckMs, remaining), "timeout" as const, { signal: options.signal }),
+        entry.exitPromise.then(() => "exit" as const),
+        ...(options.timeLimit === undefined ? [] : [options.timeLimit]),
+      ]);
+      if (outcome !== "timeout") return outcome;
     }
   }
 

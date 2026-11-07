@@ -275,7 +275,20 @@ that has printed nothing for a minute adds one line with its processes' state
 and CPU time, the CPU used since the previous check and the members that
 exited since then (Linux `/proc`, macOS `ps`; nothing on Windows). The line
 names the command's own processes only: AgenC's process broker, bubblewrap
-and session sandbox executor around the command are left out. On Linux
+and session sandbox executor around the command are left out. In Light
+sessions a wait does not end at its yield while the command is clearly still
+working: when an `exec_command` yield passes (the default 30 s or a longer
+explicit `yield_time_ms`; not `background: true`, `tty` or `detach`), or the
+yield of an empty `write_stdin` poll passes, and the command's own processes
+used at least a quarter of a CPU core since the previous check, the call keeps
+waiting, checking every 5 s, until the command exits, stops using CPU (a
+server waiting for requests, a `sleep`, a stalled script), its `timeoutMs`
+passes, or 300 s have passed since the call started. The result is then the
+command's exit with all its output instead of a `session_id` the model would
+poll with another model call. An interrupt stops the wait as it stops a yield.
+Platforms without a process reader (Windows) keep the yield.
+`AGENC_EXEC_WAIT_WHILE_BUSY=0` in the session environment turns this off;
+Standard sessions never wait past the yield. On Linux
 the environment note of the system prompt adds one line with the cgroup CPU
 quota and memory limit (cgroup v2 `cpu.max` and `memory.max` on the process's
 cgroup path, or the v1 controllers) when one is stricter than what `nproc` and

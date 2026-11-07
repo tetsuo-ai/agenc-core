@@ -45,6 +45,12 @@ export interface WriteStdinToolConfig {
    * schema on the next request.
    */
   readonly onEscalationAdvised?: () => void;
+  /**
+   * Whether a Light empty poll keeps waiting past its yield while the
+   * session's command is still using CPU (`AGENC_EXEC_WAIT_WHILE_BUSY`,
+   * tools/system/exec-wait-mode.ts; process manager `waitWhileBusy`).
+   */
+  readonly waitWhileBusy?: () => boolean;
 }
 
 function asString(value: unknown): string | undefined {
@@ -265,6 +271,12 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
             : {}),
           ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
           ...(ownerId !== undefined ? { ownerId } : {}),
+          // An empty poll is a wait: while the command is still busy it waits
+          // for the exit instead of returning for another poll. Input keeps
+          // its yield.
+          ...(chars.length === 0 && config?.lightMode === true && config.waitWhileBusy?.() === true
+            ? { waitWhileBusy: true }
+            : {}),
         }));
         // gaphunt3 #4: mirror exec-command.ts so a signal-killed process
         // (exitCode === null, no process_id) is reported as an error instead
