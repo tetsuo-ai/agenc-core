@@ -1,15 +1,19 @@
 import { afterEach, expect, test } from "vitest";
+import { BootstrapRolloutRecorderFacade } from "../../src/bin/bootstrap-services.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import type { LLMMessage, LLMResponse } from "../../src/llm/types.js";
-import { recordInitialHistoryOnResume } from "../../src/session/agent-task-lifecycle.js";
+import { compactConversation } from "../../src/services/compact/compact.js";
+import { maybePrewarmAgentTaskRegistration, recordInitialHistoryOnResume } from "../../src/session/agent-task-lifecycle.js";
 import { bindExecutionAdmissionJournal } from "../../src/session/execution-admission-journal.js";
 import { shutdownSessionLifecycle } from "../../src/session/lifecycle.js";
+import { persistMemoryExtractionState } from "../../src/session/memory-extraction-state.js";
 import { responseItemToLlmMessage } from "../../src/session/message-history-conversion.js";
 import type { RolloutItem } from "../../src/session/rollout-item.js";
 import { reconstructFromRollout } from "../../src/session/rollout-reconstruction.js";
 import { RolloutStore } from "../../src/session/rollout-store.js";
 import { runTurn } from "../../src/session/run-turn.js";
 import type { Session } from "../../src/session/session.js";
+import { FileThreadStore } from "../../src/thread-store/store.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
 import { drain, mkCtx, mkSession } from "../fixtures.js";
 import {
@@ -347,5 +351,163 @@ test("a session stuck on 0.19.31 compacts again after a restart", async () => {
     resumedKernel?.close();
     resumedStore?.close();
     harness?.close();
+  }
+});
+
+type SwitchingRegistry = ReturnType<typeof switchingRegistry>;
+interface Writer {
+  readonly name: string;
+  /** Before the turn. */
+  setup?(session: Session, harness: CompactionTransactionHarness): void;
+  /** While the compaction attempt is open. */
+  write(session: Session, registry: SwitchingRegistry): Promise<void> | void;
+  /** The line it wrote. */
+  line(item: RolloutItem): boolean;
+  teardown?(): void;
+}
+
+let threadStore: FileThreadStore | undefined;
+function attachRecorder(session: Session, harness: CompactionTransactionHarness): void {
+  const recorder = new BootstrapRolloutRecorderFacade();
+  recorder.attach(harness.store);
+  Object.assign(session.services, { rollout: recorder });
+}
+
+const writers: readonly Writer[] = [
+  {
+    // The switch happens inside the attempt, so the conversation's first
+    // switch line comes from the attempt's own admission session.
+    name: "the conversation's first switch line",
+    write: (_session, registry) => { registry.expandCoreCatalog(); },
+    line: (item) => item.type === "session_state" && item.payload.coreCatalog === "expanded",
+  },
+  {
+    // A client Stop (background-agent-runner.ts interruptAgentTurn) marks the
+    // session before it aborts the turn.
+    name: "a user stop",
+    write: (session) => { session.markStoppedByUser(); },
+    line: (item) => item.type === "session_state" && item.payload.userStop?.stopped === true,
+  },
+  {
+    name: "an agent task registration",
+    setup: (session, harness) => {
+      attachRecorder(session, harness);
+      Object.assign(session.services, { agentIdentityManager: {
+        registerTask: async () => ({ agentRuntimeId: "runtime-1", taskId: "task-1",
+          registeredAt: "2026-11-07T00:00:00.000Z" }),
+        taskMatchesCurrentIdentity: async () => true,
+      } });
+    },
+    write: (session) => maybePrewarmAgentTaskRegistration(session),
+    line: (item) => item.type === "session_state" && item.payload.agentTask !== undefined,
+  },
+  {
+    name: "a memory extraction cadence",
+    setup: attachRecorder,
+    write: (session) => persistMemoryExtractionState(session, {
+      memoryRoot: "/memory", processedVisibleCount: 3, turnsSinceLastExtraction: 1 }),
+    line: (item) => item.type === "session_state" && item.payload.memoryExtraction !== undefined,
+  },
+  {
+    // The thread store records a memory mode change in the live rollout.
+    name: "a thread memory mode",
+    setup: (_session, harness) => {
+      threadStore = new FileThreadStore({ agencHome: harness.store.store.agencHome, cwd: harness.store.store.cwd });
+      threadStore.createThread({ threadId: "conv-test", rolloutStore: harness.store });
+    },
+    write: () => {
+      threadStore!.updateThreadMetadata({ threadId: "conv-test", patch: { memoryMode: "disabled" },
+        includeArchived: false });
+    },
+    line: (item) => item.type === "session_meta" && item.payload.memoryMode === "disabled",
+    teardown: () => { threadStore?.close(); threadStore = undefined; },
+  },
+];
+
+test.each(writers)("$name written while an automatic compaction is open follows its terminal record", async (writer) => {
+  const { source, modelInfo } = scenario();
+  const registry = switchingRegistry();
+  let harness: CompactionTransactionHarness | undefined;
+  let session: Session | undefined;
+  let samples = 0;
+  let written = false;
+  try {
+    harness = createCompactionTransactionHarness(source, {
+      sessionId: "conv-test", contextWindowTokens: 64_000, maxOutputTokens: 512,
+      compactionMode: "automatic",
+      chat: async (messages) => {
+        if (isCompactionRequest(messages)) {
+          if (!written) {
+            written = true;
+            await writer.write(session!, registry);
+          }
+          modelInfo.autoCompactTokenLimit = 100_000;
+          return response(SUMMARY, undefined, 128, 128);
+        }
+        samples += 1;
+        if (samples === 1) {
+          modelInfo.autoCompactTokenLimit = 1;
+          return response("read first", "read-1");
+        }
+        return response("turn complete");
+      },
+    });
+    const live = liveSession(harness, source, modelInfo, registry);
+    session = live.session;
+    writer.setup?.(session, harness);
+
+    await drain(runTurn(session, mkCtx({ modelInfo }), "read then finish"));
+    const items = harness.store.readAll();
+    const commit = items.findIndex((item) => item.type === "compaction_committed");
+    const lines = items.flatMap((item, index) => writer.line(item) ? [index] : []);
+    expect({ written, committed: commits(items), failed: failures(items), inside: linesInsideOpenAttempts(items),
+      lines: lines.length, afterCommit: lines.every((index) => index > commit) })
+      .toEqual({ written: true, committed: 1, failed: [], inside: [], lines: 1, afterCommit: true });
+  } finally {
+    writer.teardown?.();
+    await session?.shutdown().catch(() => undefined);
+    harness?.close();
+  }
+});
+
+test("a line held for an attempt that never ends is written when the store closes", async () => {
+  // The process stops inside the attempt: reopening closes the attempt as
+  // interrupted, and the held line is in the rollout.
+  const { source } = scenario();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const harness = createCompactionTransactionHarness(source, {
+    chat: async () => {
+      entered.resolve();
+      await release.promise;
+      throw new DOMException("stopped", "AbortError");
+    },
+  });
+  const pending = compactConversation(source, harness.context).catch(() => undefined);
+  try {
+    await entered.promise;
+    harness.store.appendRollout({ type: "session_state", payload: { userStop: { stopped: true, generation: 1 } } },
+      { durable: true });
+    const open = harness.store.readAll();
+    expect(open.filter((item) => item.type === "compaction_intent")).toHaveLength(1);
+    expect(open.some((item) => item.type === "session_state")).toBe(false);
+    const cwd = harness.store.store.cwd;
+    harness.store.close();
+    const reopened = new RolloutStore({ cwd, sessionId: harness.store.sessionId, agencVersion: "0.13.0",
+      sessionTempRoot: cwd, autoStartScheduler: false, resume: true });
+    try {
+      reopened.open({ sessionId: harness.store.sessionId, timestamp: new Date().toISOString(), cwd,
+        originator: "held-line-test", agencVersion: "0.13.0", model: "grok-4.5", modelProvider: "grok" });
+      const items = reopened.readAll();
+      expect(items.filter((item) => item.type === "session_state" && item.payload.userStop?.stopped === true))
+        .toHaveLength(1);
+      expect(failures(items)).toEqual(["recovery_interrupted"]);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    release.resolve();
+    await pending;
+    harness.close();
   }
 });
