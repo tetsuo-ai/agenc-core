@@ -837,6 +837,12 @@ export class RolloutStore {
    * without one (its lease is released) or the store closes.
    */
   private compactionWindowAttemptId: string | undefined;
+  /**
+   * Attempts that ended without a terminal record and could not be closed when
+   * their lease was released (the state database or the rollout still failed).
+   * The next compaction tries again before it takes its source provenance.
+   */
+  private readonly unfinishedCompactionAttempts = new Set<string>();
   private readonly linesAfterCompactionWindow: {
     readonly item: RolloutItem;
     readonly opts: AppendOptions;
@@ -1087,14 +1093,35 @@ export class RolloutStore {
         "compaction already in progress",
       ), signal);
     const bind = (lease: CompactionTransactionLease): CompactionTransactionLease => {
+      // An earlier attempt that could not be closed when it ended is closed
+      // now, under this lease, before this attempt takes source provenance.
+      for (const unfinished of [...this.unfinishedCompactionAttempts]) {
+        try {
+          this.closeUnfinishedCompactionAttempt(unfinished);
+          this.unfinishedCompactionAttempts.delete(unfinished);
+        } catch {
+          // Still failing: this attempt goes ahead and reports its own outcome.
+        }
+      }
       const ownership = { release: () => { lease.release(); }, committed: false };
       this.compactionOwnership.set(attemptId, ownership);
       return { release: () => {
         if (this.compactionOwnership.get(attemptId) !== ownership) return;
-        // The transaction has ended. An attempt that wrote its intent but no
-        // committed or failed record (its intent could not be bound, or its
-        // failure record could not be written) never will: close its window
-        // so the lines it held are written now, not only when the store closes.
+        // The transaction has ended. An attempt that did not commit and left
+        // its pin preparing or bound (its intent could not be bound, or its
+        // failure could not be recorded) never will. Close it as
+        // reconciliation on open does, while this lease still excludes other
+        // compactions, so a later compaction does not take its pin as source
+        // provenance and fail until a restart.
+        if (!ownership.committed && !this.durablyCommittedCompactionsAwaitingReconstruction.has(attemptId)) {
+          try {
+            this.closeUnfinishedCompactionAttempt(attemptId);
+          } catch {
+            this.unfinishedCompactionAttempts.add(attemptId);
+          }
+        }
+        // Its window closes in any case, so the lines it held are written now,
+        // not only when the store closes.
         if (this.compactionWindowAttemptId === attemptId) {
           this.compactionWindowAttemptId = undefined;
           this.appendLinesAfterCompactionWindowBestEffort();
@@ -1107,6 +1134,34 @@ export class RolloutStore {
       } };
     };
     return acquired instanceof Promise ? acquired.then(bind) : bind(acquired);
+  }
+
+  /**
+   * Close an attempt whose transaction ended without a committed or failed
+   * record, as reconciliation on open closes one it finds: a pin with its
+   * intent in the rollout is bound and gets a recovery_interrupted failure
+   * record and failure guard entry; a pin whose intent never reached the
+   * rollout is released. Either way it leaves the preparing state, which a
+   * later compaction would take as source provenance it cannot reference.
+   * Throws when the state database or the rollout still fails.
+   */
+  private closeUnfinishedCompactionAttempt(attemptId: string): void {
+    const pin = this.compactionRetentionRepo.get(attemptId);
+    if (pin === undefined || (pin.state !== "preparing" && pin.state !== "intent_bound")) return;
+    this.store.syncCanonicalTail();
+    const scan = this.canonicalScanner.scan(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
+      expectedRunId: this.sessionId,
+      expectedEpoch: this.runEpoch,
+      maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
+      nowMilliseconds: this.nowMilliseconds,
+      compactionSourceDigestDomain: COMPACTION_SOURCE_DIGEST_DOMAIN,
+      additionalSourceLines: pin.activeHistoryRefs.map((ref) => ref.first_sequence),
+    });
+    const attempt = scan.attempts.get(attemptId);
+    // A commit on disk is the projection reconstruction's to finish, never this.
+    if (attempt?.records.some((record) => record.item.type === "compaction_committed") === true) return;
+    this.reconcileCompactionPin(pin, attempt, scan);
   }
 
   withCanonicalBackgroundWork<T>(work: () => T | Promise<T>): Promise<T> {

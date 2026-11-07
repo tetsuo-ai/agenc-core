@@ -70,23 +70,58 @@ function harnessWriting(inside: () => void, reply: () => LLMResponse = () => SUM
   return harness;
 }
 
-test("an attempt that ends without a terminal record closes its window when its lease is released", async () => {
+const ioError = () => Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
+const failureReasons = (items: readonly RolloutItem[]) =>
+  items.flatMap((item) => item.type === "compaction_failed" ? [item.payload.reason] : []);
+
+test("an attempt whose intent could not be bound is closed when its lease is released, and the next compaction commits", async () => {
   harness = createCompactionTransactionHarness(SOURCE);
   // The intent and its payload are in the rollout, then binding the intent in
-  // the retention database fails: no committed or failed record follows.
-  vi.spyOn(retentionRepo(harness), "bindIntent").mockImplementationOnce(() => {
-    throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
-  });
+  // the retention database fails: the transaction writes no committed or
+  // failed record and its pin stays preparing.
+  vi.spyOn(retentionRepo(harness), "bindIntent").mockImplementationOnce(() => { throw ioError(); });
+  await expect(compactConversation(SOURCE, harness.context)).rejects.toThrow();
+  // Closed as reconciliation on open closes it: bound, then a failure record.
+  const ended = harness.store.readAll();
+  expect(ended.filter((item) => item.type === "compaction_intent")).toHaveLength(1);
+  expect(failureReasons(ended)).toEqual(["recovery_interrupted"]);
+  expect(ended.some((item) => item.type === "compaction_committed")).toBe(false);
+
+  // A user stop after the attempt ended reaches the rollout at once.
+  harness.store.appendRollout(heldLine(1), { durable: true });
+  expect(harness.store.readAll().filter(isHeldLine(1))).toHaveLength(1);
+
+  // A later compaction does not take the unfinished attempt as its source
+  // provenance ("is no longer referenceable"): it commits without a restart.
+  const result = await compactConversation(SOURCE, harness.context);
+  expect(result.transaction?.committed).toBeDefined();
+  expect(harness.store.readAll().filter((item) => item.type === "compaction_committed")).toHaveLength(1);
+});
+
+test("an attempt that cannot be closed when it ends keeps no window open and is closed before the next compaction", async () => {
+  harness = createCompactionTransactionHarness(SOURCE);
+  // The bind fails in the transaction and again when its lease is released.
+  vi.spyOn(retentionRepo(harness), "bindIntent")
+    .mockImplementationOnce(() => { throw ioError(); })
+    .mockImplementationOnce(() => { throw ioError(); });
   await expect(compactConversation(SOURCE, harness.context)).rejects.toThrow();
   const ended = harness.store.readAll();
   expect(ended.filter((item) => item.type === "compaction_intent")).toHaveLength(1);
   expect(ended.some((item) => item.type === "compaction_committed" || item.type === "compaction_failed"))
     .toBe(false);
-
-  // A user stop after the attempt ended reaches the rollout at once instead of
-  // waiting in memory until the store closes.
-  harness.store.appendRollout(heldLine(1), { durable: true });
-  expect(harness.store.readAll().filter(isHeldLine(1))).toHaveLength(1);
+  // Its window is closed anyway: a user stop after it reaches the rollout at
+  // once instead of waiting in memory until the store closes.
+  harness.store.appendRollout(heldLine(5), { durable: true });
+  expect(harness.store.readAll().filter(isHeldLine(5))).toHaveLength(1);
+  // The next compaction closes it first, then commits.
+  const result = await compactConversation(SOURCE, harness.context);
+  expect(result.transaction?.committed).toBeDefined();
+  const items = harness.store.readAll();
+  expect(failureReasons(items)).toEqual(["recovery_interrupted"]);
+  const closed = items.findIndex((item) => item.type === "compaction_failed");
+  const nextIntent = items.findIndex((item, index) => index > 0 && item.type === "compaction_intent" &&
+    item.payload.attempt_id !== (ended.find((e) => e.type === "compaction_intent") as { payload: { attempt_id: string } }).payload.attempt_id);
+  expect(closed).toBeLessThan(nextIntent);
 });
 
 test("a held line is written right after the committed record, before the commit's projection", async () => {
