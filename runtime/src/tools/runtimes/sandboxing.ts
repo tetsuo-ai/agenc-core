@@ -449,15 +449,30 @@ function enforceRuntimeSandboxAttemptChecks(
     );
   }
   const profile = permissionProfileForRuntimeContext(input.context, { cwd });
+  // The checks below decide on this policy's kind alone. A refusal carries
+  // the whole policy, whose writable roots also list each nested
+  // repository's surface; scanning every writable root for those on each
+  // tool call cost more than many calls themselves, so that scan runs only
+  // when a refusal is raised (refusalPolicy, built from the same inputs).
   const policy = compatibilitySandboxPolicyForPermissionProfile(
     profile,
     profile.fileSystem,
     profile.network,
     cwd,
     sessionTempRoot,
+    { nestedRepositoryScan: false },
   );
+  let builtRefusalPolicy: SandboxPolicy | undefined;
+  const refusalPolicy = (): SandboxPolicy =>
+    builtRefusalPolicy ??= compatibilitySandboxPolicyForPermissionProfile(
+      profile,
+      profile.fileSystem,
+      profile.network,
+      cwd,
+      sessionTempRoot,
+    );
   if (policy.kind === "danger_full_access" || policy.kind === "external_sandbox") {
-    if (toolMayMutate(input.tool)) enforceRemoteControlWritePaths(input.context, analyzeWrites(input.tool, input.args, cwd).targets, policy);
+    if (toolMayMutate(input.tool)) enforceRemoteControlWritePaths(input.context, analyzeWrites(input.tool, input.args, cwd).targets, refusalPolicy);
     return;
   }
   const shellAccess = analyzeShellRuntimeAccess(input.tool, input.args, cwd);
@@ -472,7 +487,7 @@ function enforceRuntimeSandboxAttemptChecks(
       {
         denial: "filesystem",
         target: input.tool.name,
-        policy,
+        policy: refusalPolicy(),
       },
     );
   }
@@ -485,13 +500,14 @@ function enforceRuntimeSandboxAttemptChecks(
       {
         denial: "filesystem",
         target: input.tool.name,
-        policy,
+        policy: refusalPolicy(),
       },
     );
   }
   enforceRuntimeReadSandboxAttempt(
     input,
     policy,
+    refusalPolicy,
     cwd,
     profile.fileSystem,
     sessionTempRoot,
@@ -503,7 +519,7 @@ function enforceRuntimeSandboxAttemptChecks(
         {
           denial: "filesystem",
           target: input.tool.name,
-          policy,
+          policy: refusalPolicy(),
         },
       );
     }
@@ -519,18 +535,18 @@ function enforceRuntimeSandboxAttemptChecks(
   for (const target of writes.targets) {
     if (socketAuthorityRoots.some((root) => overlapsCronAuthority(target, root))) {
       throw new SandboxDeniedError("Daemon sockets are reserved for the native host", {
-        denial: "filesystem", target, policy,
+        denial: "filesystem", target, policy: refusalPolicy(),
       });
     }
     if (cronAuthorityRoots.some((root) => overlapsCronAuthority(target, root))) {
       throw new SandboxDeniedError("Cron locks are reserved for the native host", {
-        denial: "filesystem", target, policy,
+        denial: "filesystem", target, policy: refusalPolicy(),
       });
     }
-    enforceRemoteControlWritePaths(input.context, [target], policy);
+    enforceRemoteControlWritePaths(input.context, [target], refusalPolicy);
     if (overlapsDesktopAuthority(target, authorityRoot)) {
       throw new SandboxDeniedError("Desktop authority records are reserved for the native host", {
-        denial: "filesystem", target, policy,
+        denial: "filesystem", target, policy: refusalPolicy(),
       });
     }
   }
@@ -553,7 +569,7 @@ function enforceRuntimeSandboxAttemptChecks(
       {
         denial: "filesystem",
         target: writes.targets[0] ?? input.tool.name,
-        policy,
+        policy: refusalPolicy(),
       },
     );
   }
@@ -564,7 +580,7 @@ function enforceRuntimeSandboxAttemptChecks(
       {
         denial: "filesystem",
         target: writes.targets[0] ?? input.tool.name,
-        policy,
+        policy: refusalPolicy(),
       },
     );
   }
@@ -601,7 +617,7 @@ function enforceRuntimeSandboxAttemptChecks(
         {
           denial: "filesystem",
           target,
-          policy,
+          policy: refusalPolicy(),
         },
       );
     }
@@ -636,7 +652,7 @@ function enforceRuntimeSandboxAttemptChecks(
     } catch (error) {
       throw new SandboxDeniedError(
         `sandbox workspace_write could not resolve where ${target} leads: ${error instanceof Error ? error.message : String(error)}`,
-        { denial: "filesystem", target, policy },
+        { denial: "filesystem", target, policy: refusalPolicy() },
       );
     }
     if (
@@ -648,7 +664,7 @@ function enforceRuntimeSandboxAttemptChecks(
         {
           denial: "filesystem",
           target: reached,
-          policy,
+          policy: refusalPolicy(),
         },
       );
     }
@@ -659,7 +675,7 @@ function enforceRuntimeSandboxAttemptChecks(
         {
           denial: "filesystem",
           target: landing,
-          policy,
+          policy: refusalPolicy(),
         },
       );
     }
@@ -681,9 +697,10 @@ function remoteControlWriteTarget(context: ToolRuntimeAttemptContext | undefined
   return targets.find(target => isRemoteControlAuthorityPath(target, { home: store?.homeContext?.path, managedRoot: store?.managedPaths?.root, includeAncestors: true }));
 }
 
-function enforceRemoteControlWritePaths(context: ToolRuntimeAttemptContext, targets: readonly string[], policy: SandboxPolicy): void {
+function enforceRemoteControlWritePaths(context: ToolRuntimeAttemptContext, targets: readonly string[], refusalPolicy: () => SandboxPolicy): void {
   const target = remoteControlWriteTarget(context, targets);
   if (target !== undefined) {
+    const policy = refusalPolicy();
     const message = policy.kind === "workspace_write"
       ? `sandbox workspace_write blocked write outside workspace: ${target}. ${REMOTE_OWNER_ONLY}`
       : REMOTE_OWNER_ONLY;
@@ -833,6 +850,7 @@ function shellEnvelopeRequiresPlatformSandbox(
 function enforceRuntimeReadSandboxAttempt(
   input: RuntimeSandboxEnforcementInput,
   policy: SandboxPolicy,
+  refusalPolicy: () => SandboxPolicy,
   cwd: string,
   fileSystemPolicy: EngineFileSystemSandboxPolicy,
   sessionTempRoot: string,
@@ -846,7 +864,7 @@ function enforceRuntimeReadSandboxAttempt(
       {
         denial: "filesystem",
         target: input.tool.name,
-        policy,
+        policy: refusalPolicy(),
       },
     );
   }
@@ -862,7 +880,7 @@ function enforceRuntimeReadSandboxAttempt(
       {
         denial: "filesystem",
         target,
-        policy,
+        policy: refusalPolicy(),
       },
     );
   }

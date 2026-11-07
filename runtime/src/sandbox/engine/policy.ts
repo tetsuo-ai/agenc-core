@@ -397,10 +397,22 @@ export function getWritableRootPathsWithCwd(
   return writableRootSelection(policy, cwd, sessionTempRoot)?.writableRoots ?? [];
 }
 
+export interface WritableRootsOptions {
+  /**
+   * Scan each root for nested repositories (the default). Without the scan the
+   * roots, their default and explicit carve-outs, reservations and protected
+   * metadata names are the same, but no nested repository's surface or nested
+   * `.git` pointer is listed and `nestedRepoGitDirs` is absent. Only a caller
+   * that reads none of the carve-outs may turn it off.
+   */
+  readonly nestedRepositoryScan?: boolean;
+}
+
 export function getWritableRootsWithCwd(
   policy: FileSystemSandboxPolicy,
   cwd: string,
   sessionTempRoot: string,
+  options: WritableRootsOptions = {},
 ): WritableRoot[] {
   const selection = writableRootSelection(policy, cwd, sessionTempRoot);
   if (selection === null) return [];
@@ -450,7 +462,9 @@ export function getWritableRootsWithCwd(
     // sandbox refuses a planted hook/config/alternate there too. Missing
     // carve-outs inside it are watched by the created-path monitor, as for the
     // top-level narrowed `.git`.
-    const nestedGit = nestedGitFindings(root, writableRoots);
+    const nestedGit = options.nestedRepositoryScan === false
+      ? { repoDirs: [], descentPoints: [], pointerFiles: [] }
+      : nestedGitFindings(root, writableRoots);
     const nestedRepoGitDirs = nestedGit.descentPoints;
     const nestedGitCarveouts = nestedGit.repoDirs.flatMap((gitDir) =>
       gitNarrowedReadOnlyCarveouts(gitDir),

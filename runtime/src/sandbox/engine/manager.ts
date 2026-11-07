@@ -28,6 +28,7 @@ import {
   type SandboxType,
   type SandboxablePreference,
   type WindowsSandboxLevel,
+  type WritableRootsOptions,
 } from "./index.js";
 import {
   effectivePermissionProfile,
@@ -261,6 +262,7 @@ export function compatibilitySandboxPolicyForPermissionProfile(
   networkPolicy: NetworkSandboxPolicy,
   cwd: string,
   sessionTempRoot: string,
+  options: WritableRootsOptions = {},
 ): CompatibilitySandboxPolicy {
   return permissionProfileToCompatibilitySandboxPolicy(
     permissions,
@@ -272,6 +274,7 @@ export function compatibilitySandboxPolicyForPermissionProfile(
       networkPolicy,
       cwd,
       sessionTempRoot,
+      options,
     );
 }
 
@@ -397,11 +400,13 @@ function compatibilityWorkspaceWritePolicy(
   networkPolicy: NetworkSandboxPolicy,
   cwd: string,
   sessionTempRoot: string,
+  options: WritableRootsOptions,
 ): CompatibilitySandboxPolicy {
   const writableRoots = getWritableRootsWithCwd(
     fileSystemPolicy,
     cwd,
     sessionTempRoot,
+    options,
   );
   const tmpdir = sessionTempRoot;
   const tmpdirWritable =
