@@ -188,6 +188,12 @@ describe("requestsHelpers", () => {
     expect(routeSwarmTask(text).signals).not.toContain("explicit_parallelism");
   });
 
+  // fix32s review rv2: only u8 is a prefix; after u2 the quote is an inch mark like after any other digit.
+  test("a quote after a word such as u2 is an inch mark, not a u8 prefix", () => {
+    expect(requestsHelpers('Set u2" then use two helpers to read "a.txt" and b.txt')).toBe(true);
+    expect(requestsHelpers('The u2" key and "use two helpers" is a label.')).toBe(false);
+  });
+
   test("the quotes of a dimension such as 2\"x4\" stay inch marks", () => {
     expect(requestsHelpers('Cut the 2"x4" boards; the label says "use two helpers" only as an example.')).toBe(false);
     expect(requestsHelpers('Cut the 2"x4" boards, then use two helpers to check "a.txt" and b.txt')).toBe(true);
