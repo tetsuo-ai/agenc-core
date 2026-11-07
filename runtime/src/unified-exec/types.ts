@@ -135,6 +135,17 @@ export interface UnifiedExecManagerOptions {
   readonly busyWaitMaxMs?: number;
 }
 
+/**
+ * Ends one busy wait early, with the command still running: `signal` aborts
+ * (its reason says why) when the turn has input for the model or must wrap
+ * up. Started when a wait goes past its yield; `dispose` is called when the
+ * wait ends, however it ends.
+ */
+export interface BusyWaitWake {
+  readonly signal: AbortSignal;
+  dispose(): void;
+}
+
 export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
   readonly ownerBinding?: UnifiedExecOwnerBinding;
   readonly directInvocation?: ReadOnlyInspectionInvocation;
@@ -178,6 +189,8 @@ export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
    * starts. See `UnifiedExecProcessManager.waitWhileBusy`.
    */
   readonly waitWhileBusy?: boolean;
+  /** Starts what may end that busy wait early (queued input). */
+  readonly busyWaitWake?: () => BusyWaitWake;
   readonly observer?: UnifiedExecObserver;
   readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
   /** Conversation/agent owner id for multi-agent process isolation (TOOL-01). */
@@ -222,6 +235,8 @@ export interface WriteStdinRequest extends ToolExecutionInjectedArgs {
    * background (`startInBackground`).
    */
   readonly waitWhileBusy?: boolean;
+  /** Starts what may end that busy wait early (queued input). */
+  readonly busyWaitWake?: () => BusyWaitWake;
 }
 
 export interface TerminateProcessRequest {

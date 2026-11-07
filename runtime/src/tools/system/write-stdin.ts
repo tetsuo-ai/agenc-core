@@ -20,6 +20,7 @@ import {
 } from "./exec-result-format.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import {
+  busyWaitWakeArg,
   confirmedNoEffectDisposition,
   execEscalationGrant,
   LIGHT_DEFAULT_EXEC_YIELD_TIME_MS,
@@ -292,7 +293,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           // poll asking for a yield shorter than exec_command's default keep
           // their yield, as exec_command does.
           ...(pollWaitsWhileBusy(config, chars, asNumber(args.yield_time_ms))
-            ? { waitWhileBusy: true }
+            ? { waitWhileBusy: true, ...busyWaitWakeArg(args) }
             : {}),
         }));
         // gaphunt3 #4: mirror exec-command.ts so a signal-killed process

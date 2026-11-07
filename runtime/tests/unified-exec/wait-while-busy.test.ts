@@ -198,6 +198,48 @@ describe("waits that continue while the command is busy", () => {
     expect(Date.now() - abortedAt).toBeLessThan(1_000);
   }, 40_000);
 
+  it("ends early when its wake fires, with the command still running", async () => {
+    const processes = manager();
+    const controller = new AbortController();
+    let disposed = 0;
+    setTimeout(() => controller.abort("input"), 1_500);
+    const started = Date.now();
+    const result = await processes.execCommand({
+      cmd: busyFor(15), yield_time_ms: 300, waitWhileBusy: true,
+      busyWaitWake: () => ({ signal: controller.signal, dispose: () => { disposed += 1; } }),
+    });
+    const waited = Date.now() - started;
+    expect(result.session_id).toEqual(expect.any(Number));
+    expect(result.output).not.toContain("done");
+    expect(waited).toBeGreaterThanOrEqual(1_400);
+    expect(waited).toBeLessThan(5_000);
+    expect(disposed).toBe(1);
+    expect(processes.listOwnedProcesses().map((view) => [view.sessionId, view.status]))
+      .toContainEqual([result.session_id, "running"]);
+  }, 30_000);
+
+  it("does not start when its wake has already fired, and a poll's wake works the same", async () => {
+    const processes = manager();
+    const fired = new AbortController();
+    fired.abort("input");
+    const started = Date.now();
+    const result = await processes.execCommand({
+      cmd: busyFor(15), yield_time_ms: 300, waitWhileBusy: true,
+      busyWaitWake: () => ({ signal: fired.signal, dispose: () => {} }),
+    });
+    expect(result.session_id).toEqual(expect.any(Number));
+    expect(Date.now() - started).toBeLessThan(3_000);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort("input"), 7_000);
+    const pollStarted = Date.now();
+    const polled = await processes.writeStdin({
+      session_id: result.session_id!, chars: "", yield_time_ms: 5_000, waitWhileBusy: true,
+      busyWaitWake: () => ({ signal: controller.signal, dispose: () => {} }),
+    });
+    expect(polled.session_id).toBe(result.session_id);
+    expect(Date.now() - pollStarted).toBeLessThan(9_500);
+  }, 40_000);
+
   it("keeps an empty poll's yield without waitWhileBusy", async () => {
     const processes = manager();
     const busy = await processes.execCommand({ cmd: busyFor(12), yield_time_ms: 300 });

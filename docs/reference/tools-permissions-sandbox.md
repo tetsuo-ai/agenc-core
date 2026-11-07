@@ -286,7 +286,10 @@ waiting, checking every 5 s, until the command exits, stops using CPU (a
 server waiting for requests, a `sleep`, a stalled script), its `timeoutMs`
 passes, or 240 s have passed since the call started. The result is then the
 command's exit with all its output instead of a `session_id` the model would
-poll with another model call. An interrupt stops the wait as it stops a yield.
+poll with another model call. Input the turn would give the model at its next
+request (a prompt queued for the conversation, or session mailbox input) ends
+the wait at once, with the command still running as a session. An interrupt
+stops the wait as it stops a yield.
 Platforms without a process reader (Windows) keep the yield.
 `AGENC_EXEC_WAIT_WHILE_BUSY=0` in the session environment turns this off;
 Standard sessions never wait past the yield. On Linux

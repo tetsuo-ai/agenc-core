@@ -5,6 +5,9 @@ import { EXEC_WAIT_WHILE_BUSY_ENV, execWaitWhileBusyEnabled } from "../../../src
 import type { Session } from "../../../src/session/session.js";
 import type { ExecCommandToolOutput, UnifiedExecProcessManagerLike } from "../../../src/unified-exec/types.js";
 import { withExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+import { busyWaitWakeFor } from "../../../src/tools/system/exec-wait-wake.js";
+import { attachToolRuntimeContext } from "../../../src/tools/runtimes/context.js";
+import { enqueue, enqueuePendingNotification, resetCommandQueueForTesting } from "../../../src/utils/messageQueueManager.js";
 
 // wait33: in the Superyat run on 0.19.32, 45 model calls only polled a
 // running command (16.6M of 98.4M input tokens). A Light exec_command or
@@ -107,6 +110,110 @@ describe("which Light waits continue while the command is busy", () => {
       expect(lastRequest(built.execCommand)).not.toHaveProperty("waitWhileBusy");
       await built.poll({ session_id: 7, chars: "" });
       expect(lastRequest(built.writeStdin)).not.toHaveProperty("waitWhileBusy");
+    }
+  });
+});
+
+describe("what ends a busy wait early", () => {
+  const owner = (conversationId: string) => ({ kind: "session" as const, conversationId });
+  const mailbox = () => {
+    let changed: (value: boolean) => void = () => {};
+    return {
+      waitForMailboxChange: vi.fn((_ms: number, _ownership: unknown, signal?: AbortSignal) =>
+        new Promise<boolean>((resolve) => {
+          changed = resolve;
+          signal?.addEventListener("abort", () => resolve(false), { once: true });
+        })),
+      arrive: () => changed(true),
+    };
+  };
+
+  test("a prompt queued for this conversation, delivered after the tool phase", () => {
+    resetCommandQueueForTesting();
+    try {
+      const wake = busyWaitWakeFor({ conversationId: "conv-1", ...mailbox() })!();
+      enqueue({ value: "other chat", mode: "prompt", queueOwner: owner("conv-2") });
+      enqueuePendingNotification({ value: "<task-notification/>", mode: "task-notification", queueOwner: owner("conv-1") });
+      enqueue({ value: "/compact", mode: "prompt", queueOwner: owner("conv-1") });
+      expect(wake.signal.aborted).toBe(false);
+      enqueue({ value: "stop and use port 4000 instead", mode: "prompt", queueOwner: owner("conv-1") });
+      expect(wake.signal.aborted).toBe(true);
+      expect(wake.signal.reason).toBe("input");
+      wake.dispose();
+    } finally {
+      resetCommandQueueForTesting();
+    }
+  });
+
+  test("a prompt already queued when the wait starts, and input in the session mailbox", async () => {
+    resetCommandQueueForTesting();
+    try {
+      enqueue({ value: "change of plan", mode: "prompt", queueOwner: owner("conv-1") });
+      expect(busyWaitWakeFor({ conversationId: "conv-1" })!().signal.aborted).toBe(true);
+      resetCommandQueueForTesting();
+      const box = mailbox();
+      const wake = busyWaitWakeFor({ conversationId: "conv-1", ...box })!();
+      expect(box.waitForMailboxChange).toHaveBeenCalledTimes(1);
+      expect(wake.signal.aborted).toBe(false);
+      box.arrive();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(wake.signal.aborted).toBe(true);
+      wake.dispose();
+      expect(busyWaitWakeFor(undefined)).toBeUndefined();
+    } finally {
+      resetCommandQueueForTesting();
+    }
+  });
+
+  test("disposing stops watching the queue and the mailbox", () => {
+    resetCommandQueueForTesting();
+    try {
+      const box = mailbox();
+      const wake = busyWaitWakeFor({ conversationId: "conv-1", ...box })!();
+      wake.dispose();
+      const watchSignal = box.waitForMailboxChange.mock.calls[0]![2] as AbortSignal;
+      expect(watchSignal.aborted).toBe(true);
+      enqueue({ value: "late", mode: "prompt", queueOwner: owner("conv-1") });
+      expect(wake.signal.aborted).toBe(false);
+    } finally {
+      resetCommandQueueForTesting();
+    }
+  });
+
+  /** A dispatched call: the runtime attaches the invoking session. */
+  function dispatched(args: Record<string, unknown>, toolName: string): Record<string, unknown> {
+    attachToolRuntimeContext(args, {
+      callId: "call-wake", toolName, runtimeKind: "function", classification: "exclusive",
+      supportsParallelToolCalls: false, source: { type: "model" }, submittedAtMs: 0, approvalPolicy: "never",
+      requestedSandboxMode: "danger_full_access", sandboxMode: "danger_full_access", approvalResolved: true,
+      rawArgs: "{}",
+      invocation: {
+        session: { conversationId: "conv-1", services: { runtimeOptions: {} } },
+        payload: { kind: "function", arguments: "{}" },
+        turn: { subId: "turn-wake", cwd: "/tmp" },
+      },
+    } as never);
+    return args;
+  }
+
+  test("Light exec and poll requests that wait while busy carry it, for the invoking session", async () => {
+    resetCommandQueueForTesting();
+    try {
+      const light = registry(sessionWith(), true);
+      await light.exec(dispatched({ cmd: "npm run build" }, "exec_command"));
+      const wake = lastRequest(light.execCommand).busyWaitWake as () => { signal: AbortSignal; dispose(): void };
+      expect(wake).toEqual(expect.any(Function));
+      const started = wake();
+      enqueue({ value: "use the staging config", mode: "prompt", queueOwner: owner("conv-1") });
+      expect(started.signal.aborted).toBe(true);
+      started.dispose();
+      await light.poll(dispatched({ session_id: 7, chars: "", yield_time_ms: 60_000 }, "write_stdin"));
+      expect(lastRequest(light.writeStdin)).toHaveProperty("busyWaitWake");
+      await light.exec(dispatched({ cmd: "npm run dev", background: true }, "exec_command"));
+      expect(lastRequest(light.execCommand)).not.toHaveProperty("busyWaitWake");
+    } finally {
+      resetCommandQueueForTesting();
     }
   });
 });

@@ -29,6 +29,7 @@ import {
 } from "./exec-unavailable.js";
 import { execCommandRunsConcurrently } from "../read-only-shell-concurrency.js";
 import type {
+  BusyWaitWake,
   ExecCommandToolOutput,
   UnifiedExecProcessManagerLike,
   UnifiedExecRuntimeSandbox,
@@ -66,7 +67,8 @@ import {
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import { nonEmptyString as asString } from "../../utils/stringUtils.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
-import { readToolRuntimeContext } from "../runtimes/context.js";
+import { readInvokingSession, readToolRuntimeContext } from "../runtimes/context.js";
+import { busyWaitWakeFor } from "./exec-wait-wake.js";
 import { localServerGuidance } from "./local-server-guidance.js";
 import { execProcessNamespaceNotice } from "./exec-process-namespace.js";
 import { execNetworkFailureNotice } from "./exec-network-failure.js";
@@ -166,6 +168,14 @@ export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
  * yield ask for control back early. Off with `AGENC_EXEC_WAIT_WHILE_BUSY=0`
  * and in Standard sessions.
  */
+/** What ends this call's busy wait early: input queued for its session (tools/system/exec-wait-wake.ts). */
+export function busyWaitWakeArg(
+  args: Readonly<Record<string, unknown>>,
+): { readonly busyWaitWake?: () => BusyWaitWake } {
+  const wake = busyWaitWakeFor(readInvokingSession(args));
+  return wake === undefined ? {} : { busyWaitWake: wake };
+}
+
 function waitsWhileBusy(
   config: ExecCommandToolConfig | undefined,
   args: Readonly<Record<string, unknown>>,
@@ -1359,7 +1369,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
                 : {}),
               ...(background ? { startInBackground: true } : {}),
               ...(waitsWhileBusy(config, args, { background, tty })
-                ? { waitWhileBusy: true }
+                ? { waitWhileBusy: true, ...busyWaitWakeArg(args) }
                 : {}),
               ...(args.__onProgress !== undefined
                 ? { __onProgress: args.__onProgress }

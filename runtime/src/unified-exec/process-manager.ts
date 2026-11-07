@@ -27,6 +27,7 @@ import {
   truncateHeadTailTogether,
 } from "./head-tail-buffer.js";
 import {
+  type BusyWaitWake,
   type DetachedProcessRequest,
   type ExecCommandRequest,
   type ExecCommandToolOutput,
@@ -509,6 +510,8 @@ interface BackgroundStartReservation {
 interface BusyWaitStart {
   readonly baseline: SessionProcessCheck;
   readonly baselineAt: number;
+  /** Ends the wait early with the command still running (`busyWaitWake`). */
+  readonly wake?: () => BusyWaitWake;
 }
 
 /** An ended background session whose notice no result has carried yet. */
@@ -1214,7 +1217,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       // Every process of a new command started after the spawn: the CPU it
       // used up to the yield all counts.
       ...(request.waitWhileBusy === true && !tty && request.startInBackground !== true
-        ? { busyWait: { baseline: { cpuSeconds: 0, members: new Map() }, baselineAt: startedAt } }
+        ? {
+            busyWait: {
+              baseline: { cpuSeconds: 0, members: new Map() },
+              baselineAt: startedAt,
+              ...(request.busyWaitWake !== undefined ? { wake: request.busyWaitWake } : {}),
+            },
+          }
         : {}),
     });
     request.observer?.onEnd?.({
@@ -1492,7 +1501,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     // in the background keep their yield.
     const busyWait = request.waitWhileBusy === true && input.length === 0 && !entry.tty &&
       entry.startedInBackground !== true && entry.exitState === null && !entry.stopRequested
-      ? await this.busyWaitBaseline(entry)
+      ? await this.busyWaitBaseline(entry, request.busyWaitWake)
       : undefined;
     const collected = {
       ...await this.collect(entry, {
@@ -2831,10 +2840,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
    * process reader or the session's root is gone; the poll then keeps its
    * yield.
    */
-  private async busyWaitBaseline(entry: ProcessEntry): Promise<BusyWaitStart | undefined> {
+  private async busyWaitBaseline(
+    entry: ProcessEntry,
+    wake: (() => BusyWaitWake) | undefined,
+  ): Promise<BusyWaitStart | undefined> {
     try {
       const report = await checkSessionProcesses(entry.stored.process.pid, undefined);
-      return report === undefined ? undefined : { baseline: report.check, baselineAt: Date.now() };
+      return report === undefined
+        ? undefined
+        : { baseline: report.check, baselineAt: Date.now(), ...(wake !== undefined ? { wake } : {}) };
     } catch {
       return undefined;
     }
@@ -2865,10 +2879,34 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       readonly timeLimit: Promise<"limit"> | undefined;
     },
   ): Promise<"timeout" | "exit" | "limit"> {
+    const wake = start.wake?.();
+    try {
+      return await this.waitWhileBusyChecks(entry, start, options, wake?.signal);
+    } finally {
+      wake?.dispose();
+    }
+  }
+
+  private async waitWhileBusyChecks(
+    entry: ProcessEntry,
+    start: BusyWaitStart,
+    options: {
+      readonly startedAt: number;
+      readonly signal: AbortSignal;
+      readonly timeLimit: Promise<"limit"> | undefined;
+    },
+    wake: AbortSignal | undefined,
+  ): Promise<"timeout" | "exit" | "limit"> {
     let baseline = start.baseline;
     let baselineAt = start.baselineAt;
+    // Queued input ends the wait as a yield does: the command keeps running.
+    const woken = wake === undefined ? undefined : new Promise<"timeout">((resolveWoken) => {
+      if (wake.aborted) resolveWoken("timeout");
+      else wake.addEventListener("abort", () => resolveWoken("timeout"), { once: true });
+    });
     for (;;) {
       if (entry.exitState !== null) return "exit";
+      if (wake?.aborted === true) return "timeout";
       if (entry.stopRequested || entry.hardTimeoutExpired === true) return "timeout";
       if (Date.now() - options.startedAt >= this.busyWaitMaxMs) return "timeout";
       let report: Awaited<ReturnType<typeof checkSessionProcesses>>;
@@ -2895,6 +2933,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         delay(Math.min(this.busyWaitCheckMs, remaining), "timeout" as const, { signal: options.signal }),
         entry.exitPromise.then(() => "exit" as const),
         ...(options.timeLimit === undefined ? [] : [options.timeLimit]),
+        ...(woken === undefined ? [] : [woken]),
       ]);
       if (outcome !== "timeout") return outcome;
     }
