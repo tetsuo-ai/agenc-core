@@ -102,8 +102,9 @@ const ENUMERATED_HELPER_RE =
   /^[ \t]*(?:[-*+][ \t]+)?(?:helper|sub[ -]?agent|agent)[ \t]+(one|two|three|four|five|six|[1-9])[ \t]*[:.)-]/gimu;
 // Code, quoted lines and double-quoted text are examples, not requests. A double quote right after a digit is an inch
 // mark ("the 5" display"), not the start of a quotation: read as one, it hid the words up to the next double quote on
-// its line and left the quotation after it unpaired, so the words of that quotation were read as a request.
-const QUOTED_OR_CODE_RE = /```[\s\S]*?(?:```|(?![\s\S]))|~~~[\s\S]*?(?:~~~|(?![\s\S]))|`[^`\n]*`|^[ \t]*>.*$|(?<!\d)"[^"\n]*"|“[^”\n]*”/gmu;
+// its line and left the quotation after it unpaired, so the words of that quotation were read as a request. The 8 of
+// the C++ prefix u8 (u8"text") is the one digit that starts a quotation; a dimension such as 2"x4" stays inch marks.
+const QUOTED_OR_CODE_RE = /```[\s\S]*?(?:```|(?![\s\S]))|~~~[\s\S]*?(?:~~~|(?![\s\S]))|`[^`\n]*`|^[ \t]*>.*$|(?<!(?<!\bu)\d)"[^"\n]*"|“[^”\n]*”/gmu;
 // What a removed span becomes: neither a word nor a space, so no pattern joins the words on either side of it
 // ("Run `npm test` in parallel", "Use `--no` sub-agents flag").
 const REMOVED_SPAN = " | ";

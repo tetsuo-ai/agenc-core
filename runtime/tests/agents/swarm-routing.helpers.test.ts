@@ -179,6 +179,20 @@ describe("requestsHelpers", () => {
     expect(requestsHelpers(text)).toBe(false);
   });
 
+  // fix32s review rv1 NIT 3: the 8 of the C++ prefix u8 is no inch mark; a dimension such as 2"x4" still is.
+  test.each([
+    'auto s = u8"use two helpers";',
+    'Explain why u8"use two helpers" prints garbage on Windows.',
+  ])("a u8 string literal is a quotation: %s", (text) => {
+    expect(requestsHelpers(text)).toBe(false);
+    expect(routeSwarmTask(text).signals).not.toContain("explicit_parallelism");
+  });
+
+  test("the quotes of a dimension such as 2\"x4\" stay inch marks", () => {
+    expect(requestsHelpers('Cut the 2"x4" boards; the label says "use two helpers" only as an example.')).toBe(false);
+    expect(requestsHelpers('Cut the 2"x4" boards, then use two helpers to check "a.txt" and b.txt')).toBe(true);
+  });
+
   test("a quotation that ends with a digit still ends there, and a lone inch mark hides nothing", () => {
     expect(requestsHelpers('Explain "use 2 helpers" and "version 2" in the docs.')).toBe(false);
     expect(requestsHelpers('Set the 5" display and use two helpers to check alpha.txt and beta.txt.')).toBe(true);
