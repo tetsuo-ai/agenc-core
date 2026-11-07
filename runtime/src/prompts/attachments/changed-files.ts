@@ -12,6 +12,10 @@
  * After emitting, update the in-memory snapshot so subsequent turns do
  * not re-fire the same change.
  *
+ * A file still in the state a command of the session left after naming it
+ * gets one short notice instead of its contents, and its snapshot stays on the bytes the model last saw
+ * (`tools/system/own-shell-changes.ts`).
+ *
  * Files that disappear (ENOENT) are evicted from the read cache; other
  * stat failures (atomic-save races, EACCES churn, transient FS errors)
  * intentionally do NOT evict — that matches the AgenC regression
@@ -26,12 +30,19 @@ import { loadDiff } from "../../utils/lazy-runtime-packages.js";
 
 import {
   dropSessionReadSnapshot,
+  fileStatFingerprint,
+  fileViewStateOf,
   forEachSessionRead,
+  recordFileViewState,
+  recordOwnShellChangeNoticed,
   recordSessionRead,
+  sameFileStat,
+  type FileStatFingerprint,
 } from "../../tools/system/filesystem.js";
 import type {
   EditedImageFileAttachment,
   EditedTextFileAttachment,
+  OwnShellChangeNoticeAttachment,
 } from "./types.js";
 import type {
   AttachmentProducer,
@@ -132,6 +143,65 @@ function computeSnippet(before: string, after: string): string {
   return `${kept}\n\n... [snippet truncated] ...`;
 }
 
+/**
+ * After the view moved to the bytes just read and sent: remember the file's
+ * state as the view's only if nothing wrote the file between the stat and the
+ * read, so a command is never credited from a state whose bytes no request
+ * carried.
+ */
+async function recordSentState(
+  sessionId: string,
+  path: string,
+  beforeRead: FileStatFingerprint,
+): Promise<void> {
+  let afterRead: FileStatFingerprint | undefined;
+  try {
+    afterRead = fileStatFingerprint(await stat(path));
+  } catch {
+    afterRead = undefined;
+  }
+  recordFileViewState(
+    sessionId,
+    path,
+    sameFileStat(beforeRead, afterRead) ? beforeRead : undefined,
+  );
+}
+
+function lineCount(text: string): number {
+  if (text.length === 0) return 0;
+  let count = 0;
+  for (let index = text.indexOf("\n"); index >= 0; index = text.indexOf("\n", index + 1)) count += 1;
+  return text.endsWith("\n") ? count : count + 1;
+}
+
+/**
+ * The notice for a file in a state a command of the session left; "moved" when
+ * a write landed between the stat and the read; undefined when it cannot be read.
+ */
+async function ownShellChangeNotice(
+  entry: PendingFile,
+  now: FileStatFingerprint,
+): Promise<OwnShellChangeNoticeAttachment | "moved" | undefined> {
+  if (IMAGE_MIME_BY_EXT[extname(entry.path).toLowerCase()] !== undefined) {
+    return { kind: "own_shell_change_notice", filename: entry.path, bytes: now.size };
+  }
+  let text: string;
+  try {
+    text = await readFile(entry.path, "utf8");
+    if (!sameFileStat(now, fileStatFingerprint(await stat(entry.path)))) return "moved";
+  } catch {
+    return undefined;
+  }
+  const lines = lineCount(text);
+  return {
+    kind: "own_shell_change_notice",
+    filename: entry.path,
+    bytes: now.size,
+    lines,
+    linesSinceSeen: lines - lineCount(entry.previousRaw),
+  };
+}
+
 /** ENOENT type guard. */
 function isENOENT(err: unknown): boolean {
   return (
@@ -172,7 +242,7 @@ export const changedFilesProducer: AttachmentProducer = async (opts) => {
   });
   if (pending.length === 0) return [];
 
-  const out: Array<EditedTextFileAttachment | EditedImageFileAttachment> = [];
+  const out: Array<EditedTextFileAttachment | EditedImageFileAttachment | OwnShellChangeNoticeAttachment> = [];
 
   await Promise.all(
     pending.map(async (entry) => {
@@ -186,11 +256,34 @@ export const changedFilesProducer: AttachmentProducer = async (opts) => {
         }
         return;
       }
+      const now = fileStatFingerprint(st);
       if (
         typeof entry.previousTimestamp === "number" &&
         st.mtimeMs <= entry.previousTimestamp
       ) {
+        // Unchanged since the session's view: remember the state it matches.
+        recordFileViewState(sessionId, entry.path, now);
         return;
+      }
+      // Exactly the state a command of the session left after naming this file
+      // (tools/system/own-shell-changes.ts): the model wrote that command and saw
+      // its output. Its contents are not sent, only a short notice once per
+      // state, and the session's view stays on the bytes the model last saw, so a
+      // Write or Edit of the file asks for a read first.
+      const state = fileViewStateOf(sessionId, entry.path);
+      if (sameFileStat(now, state?.own)) {
+        const notice = sameFileStat(now, state?.noticed)
+          ? undefined
+          : await ownShellChangeNotice(entry, now);
+        if (notice !== "moved") {
+          if (notice !== undefined) {
+            out.push(notice);
+            recordOwnShellChangeNoticed(sessionId, entry.path, now);
+          }
+          return;
+        }
+        // A write landed between the stat and the notice's read: the file is no
+        // longer in the command's state, so it gets the diff below.
       }
 
       const ext = extname(entry.path).toLowerCase();
@@ -214,6 +307,7 @@ export const changedFilesProducer: AttachmentProducer = async (opts) => {
           timestamp: st.mtimeMs,
           viewKind: "full",
         });
+        await recordSentState(sessionId, entry.path, now);
         return;
       }
 
@@ -232,6 +326,7 @@ export const changedFilesProducer: AttachmentProducer = async (opts) => {
           timestamp: st.mtimeMs,
           viewKind: "full",
         });
+        await recordSentState(sessionId, entry.path, now);
         return;
       }
       out.push({
@@ -244,6 +339,7 @@ export const changedFilesProducer: AttachmentProducer = async (opts) => {
         timestamp: st.mtimeMs,
         viewKind: "full",
       });
+      await recordSentState(sessionId, entry.path, now);
     }),
   );
 

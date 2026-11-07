@@ -56,6 +56,8 @@ import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { resolveSessionTempRoot } from "../../session/runtime-options.js";
 import { wrapCommandForShell } from "../../utils/shell/commandExecution.js";
 import { readShellWrapperCode } from "../../utils/shell/wrapper-options.js";
+import { trackOwnShellChanges, type ShellCommandScope } from "./own-shell-changes.js";
+import { runtimeSandboxForExec } from "./exec-command.js";
 
 const SHELL_WRAPPER_COMMANDS = new Set([
   "bash",
@@ -1157,6 +1159,19 @@ export function createBashTool(config?: BashToolConfig): Tool {
       const useSpawnedWrapperMode =
         !useShellMode &&
         SHELL_WRAPPER_COMMANDS.has(basename(command).toLowerCase());
+      // The command text and the sandbox it runs in, for the changed-files
+      // attachment (own-shell-changes.ts). Without a sandbox to check, no file is
+      // credited to the command.
+      let ownShellScope: ShellCommandScope;
+      try {
+        ownShellScope = {
+          command: useShellMode ? shellCommand : [command, ...execArgs].join(" "),
+          cwd,
+          runtimeSandbox: inspection?.runtimeSandbox ?? runtimeSandboxForExec(rawArgs, defaultCwd),
+        };
+      } catch {
+        ownShellScope = { command: "", cwd, runtimeSandbox: undefined };
+      }
 
       /** TOOL-03: wrap final spawn program/args when platform isolation is required. */
       const withSandbox = (
@@ -1321,7 +1336,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
           return Promise.resolve(emitEnd(sandboxed.error));
         }
         return observeEnd(
-          runSpawnedCommand({
+          trackOwnShellChanges(rawArgs, ownShellScope, () => runSpawnedCommand({
             spawnCommand: sandboxed.spawnCommand,
             cwd,
             timeout,
@@ -1335,7 +1350,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
             cleanupDirectory: scriptArtifact.directory,
             ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
             ...(onProgress !== undefined ? { onProgress } : {}),
-          }),
+          })),
         );
       }
 
@@ -1343,7 +1358,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
         const sandboxed = withSandbox(execCommand, execArgs);
         if (!sandboxed.ok) return Promise.resolve(emitEnd(sandboxed.error));
         return observeEnd(
-          runSpawnedCommand({
+          trackOwnShellChanges(rawArgs, ownShellScope, () => runSpawnedCommand({
             spawnCommand: sandboxed.spawnCommand,
             cwd,
             timeout,
@@ -1356,7 +1371,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
             shellMode: false,
             ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
             ...(onProgress !== undefined ? { onProgress } : {}),
-          }),
+          })),
         );
       }
 
@@ -1365,7 +1380,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
         return Promise.resolve(emitEnd(sandboxedDirect.error));
       }
       return observeEnd(
-        runSpawnedCommand({
+        trackOwnShellChanges(rawArgs, ownShellScope, () => runSpawnedCommand({
           spawnCommand: sandboxedDirect.spawnCommand,
           ...(inspection !== undefined ? { inspection } : {}),
           cwd,
@@ -1379,7 +1394,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
           shellMode: false,
           ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
           ...(onProgress !== undefined ? { onProgress } : {}),
-        }),
+        })),
       );
     },
   };

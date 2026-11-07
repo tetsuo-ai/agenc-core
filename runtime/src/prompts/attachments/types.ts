@@ -282,6 +282,19 @@ export interface EditedImageFileAttachment {
 }
 
 /**
+ * A read file that a command of the session changed and named: a short notice
+ * in place of its contents (`prompts/attachments/changed-files.ts`). `lines`
+ * and `linesSinceSeen` are absent for an image.
+ */
+export interface OwnShellChangeNoticeAttachment {
+  readonly kind: "own_shell_change_notice";
+  readonly filename: string;
+  readonly bytes: number;
+  readonly lines?: number;
+  readonly linesSinceSeen?: number;
+}
+
+/**
  * `@agent-<type>` mention extracted from user input.
  * Source: upstream attachment donor `attachments.ts:1967-1994`.
  */
@@ -416,6 +429,7 @@ export type Attachment =
   | McpInstructionsDeltaAttachment
   | EditedTextFileAttachment
   | EditedImageFileAttachment
+  | OwnShellChangeNoticeAttachment
   | AgentMentionAttachment
   | FileMentionContextAttachment
   | ImageMentionContextAttachment
