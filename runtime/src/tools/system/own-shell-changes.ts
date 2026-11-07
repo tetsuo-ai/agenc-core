@@ -48,15 +48,18 @@ export interface ShellCommandScope {
 }
 
 const NAME_CHARS = "A-Za-z0-9._-";
+const NAME_ONLY = new RegExp(`^[${NAME_CHARS}]+$`, "u");
+const NON_NAME = new RegExp(`[^${NAME_CHARS}]+`, "u");
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-/** The command text names the file: its file name appears as a whole word. */
-export function commandNamesFile(command: string, path: string): boolean {
+/** Whether a command text names a file: the file name appears in it as a whole word. */
+export function commandNamesFile(command: string, path: string, words?: ReadonlySet<string>): boolean {
   const name = basename(path);
   if (name.length === 0 || command.length === 0) return false;
+  if (NAME_ONLY.test(name)) return (words ?? new Set(command.split(NON_NAME))).has(name);
   return new RegExp(
     `(?:^|[^${NAME_CHARS}])${escapeRegExp(name)}(?:$|[^${NAME_CHARS}])`,
     "u",
@@ -99,10 +102,12 @@ async function creditableFiles(
   scope: ShellCommandScope,
 ): Promise<Map<string, FileStatFingerprint>> {
   const named: Array<{ readonly path: string; readonly bytes: number }> = [];
+  if (scope.command.length === 0) return new Map();
+  const words = new Set(scope.command.split(NON_NAME));
   forEachSessionRead(sessionId, (path, snapshot) => {
     // The producer's own selection: full views that carry their raw bytes.
     if (typeof snapshot.rawContent !== "string" || snapshot.isPartialView === true) return;
-    if (!commandNamesFile(scope.command, path) || !sandboxMayWrite(scope.runtimeSandbox, path)) return;
+    if (!commandNamesFile(scope.command, path, words) || !sandboxMayWrite(scope.runtimeSandbox, path)) return;
     named.push({ path, bytes: Buffer.byteLength(snapshot.rawContent, "utf8") });
   });
   const inView = new Map<string, FileStatFingerprint>();

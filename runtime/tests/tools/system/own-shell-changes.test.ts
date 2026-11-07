@@ -19,6 +19,7 @@ import {
   recordSessionRead,
   SESSION_ID_ARG,
 } from "./filesystem.js";
+import { commandNamesFile } from "./own-shell-changes.js";
 import { createWriteStdinTool } from "./write-stdin.js";
 import { attachToolRuntimeContext } from "../runtimes/context.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
@@ -395,4 +396,20 @@ test("a PowerShell command naming the file is the session's own too", async () =
   }
   expect(await readFile(csv, "utf8")).toBe("1,A\n2,B\n");
   expect(await attachments()).toEqual([]);
+});
+
+test("a command names a file when the file name appears in it as a whole word", () => {
+  const cases: Array<[string, string, boolean]> = [
+    ["printf '2,B\\n' >> proof.csv", "/w/proof.csv", true],
+    ["cat ./data/proof.csv | wc -l", "/w/data/proof.csv", true],
+    ["python3 - <<'PY'\np = Path('src/durable-service.mjs')\nPY", "/w/src/durable-service.mjs", true],
+    ["cat \"my notes.md\"", "/w/my notes.md", true],
+    ["cp proof.csv.bak backup", "/w/proof.csv", false],
+    ["cat xproof.csv", "/w/proof.csv", false],
+    ["sleep 1; echo done", "/w/proof.csv", false],
+    ["node scripts/capture.mjs", "/w/shots/hero.png", false],
+  ];
+  for (const [command, path, expected] of cases) {
+    expect(commandNamesFile(command, path), `${command} / ${path}`).toBe(expected);
+  }
 });
