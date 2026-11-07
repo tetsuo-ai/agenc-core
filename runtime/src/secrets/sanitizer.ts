@@ -10,6 +10,8 @@
  *     sanitizer behavior for logs, transcripts, hook output, and traces.
  */
 
+import { inspectImageBytes } from "../utils/image-validation.js";
+
 export const REDACTED_SECRET = "[REDACTED_SECRET]";
 
 // Canonical BIP39 English wordlist (2048 words) from bitcoin/bips bip-0039.
@@ -514,6 +516,13 @@ function redactIntegerListKeyMaterial(input: string): string {
   return output + input.slice(copiedUpTo);
 }
 
+// Solana / ed25519 secret keys exported as base58 are an unbroken run of
+// ~87-88 base58 chars (no 0, O, I, l). Public keys are only ~32-44 chars,
+// so a long base58 run is a strong wallet-secret signal on its own. The
+// boundaries reject runs that are part of a longer identifier.
+const BASE58_WALLET_KEY_PATTERN =
+  /(?<![1-9A-HJ-NP-Za-km-z])[1-9A-HJ-NP-Za-km-z]{80,90}(?![1-9A-HJ-NP-Za-km-z])/g;
+
 const SECRET_PATTERNS: ReadonlyArray<{
   readonly pattern: RegExp;
   readonly replacement: string;
@@ -590,11 +599,7 @@ const SECRET_PATTERNS: ReadonlyArray<{
     replacement: REDACTED_SECRET,
   },
   {
-    // Solana / ed25519 secret keys exported as base58 are an unbroken run of
-    // ~87-88 base58 chars (no 0, O, I, l). Public keys are only ~32-44 chars,
-    // so a long base58 run is a strong wallet-secret signal on its own. The
-    // boundaries reject runs that are part of a longer identifier.
-    pattern: /(?<![1-9A-HJ-NP-Za-km-z])[1-9A-HJ-NP-Za-km-z]{80,90}(?![1-9A-HJ-NP-Za-km-z])/g,
+    pattern: BASE58_WALLET_KEY_PATTERN,
     replacement: REDACTED_SECRET,
   },
   // Bracketed integer lists (Solana `id.json`-style byte arrays) are not a
@@ -636,8 +641,14 @@ export type RedactableJson =
 
 /** Redacts common API keys, access tokens, bearer tokens, JWTs, and secret assignments. */
 export function redactSecrets(input: string): string {
+  return redactSecretsWithRules(input, true);
+}
+
+/** Every rule of redactSecrets; the base58 wallet-key rule only when `base58WalletKeys` is true. */
+function redactSecretsWithRules(input: string, base58WalletKeys: boolean): string {
   let redacted = input;
   for (const { pattern, replacement } of SECRET_PATTERNS) {
+    if (!base58WalletKeys && pattern === BASE58_WALLET_KEY_PATTERN) continue;
     redacted = redacted.replace(pattern, replacement);
   }
   redacted = redactIntegerListKeyMaterial(redacted);
@@ -737,8 +748,63 @@ function redactValue(
 
   const output: Record<string, unknown> = {};
   contextSeen.set(value, output);
+  const imageBody = sensitive ? undefined : validatedImageBody(value as Record<string, unknown>);
   for (const [key, nested] of Object.entries(value)) {
-    output[key] = redactValue(nested, seen, redactString, sensitive || isSensitiveKey(key));
+    output[key] = imageBody !== undefined && key === imageBody.holder
+      ? redactImageBodyHolder(nested as Record<string, unknown>, imageBody.field, seen, redactString)
+      : redactValue(nested, seen, redactString, sensitive || isSensitiveKey(key));
+  }
+  return output;
+}
+
+/**
+ * Where an image content block keeps its base64 body, when that body is
+ * canonical base64 of a complete PNG, JPEG, GIF or WebP image (inspectImageBytes,
+ * the check the image path uses): `image_url.url` or `source.url` as a data URL,
+ * or `source.data`. Only that body skips the base58 wallet-key rule. Base64 does
+ * not carry a key's base58 text verbatim unless it was crafted to, while the rule
+ * matched a base58 run in almost every real screenshot, so durable persistence
+ * dropped the screenshots. Every other rule still applies to the body, and every
+ * rule applies to the block's other fields and to any body that does not validate.
+ */
+function validatedImageBody(
+  value: Record<string, unknown>,
+): { readonly holder: string; readonly field: string } | undefined {
+  const holder = value.type === "image_url" ? "image_url" : value.type === "image" ? "source" : undefined;
+  if (holder === undefined) return undefined;
+  const fields = value[holder];
+  if (fields === null || typeof fields !== "object" || Array.isArray(fields)) return undefined;
+  const record = fields as Record<string, unknown>;
+  if (typeof record.url === "string") {
+    const body = IMAGE_DATA_URL_BODY.exec(record.url)?.[1];
+    return body !== undefined && isCompleteImageBase64(body) ? { holder, field: "url" } : undefined;
+  }
+  if (holder === "source" && record.type === "base64" && typeof record.data === "string") {
+    return isCompleteImageBase64(record.data) ? { holder, field: "data" } : undefined;
+  }
+  return undefined;
+}
+
+const IMAGE_DATA_URL_BODY = /^data:[^;,]+;base64,([A-Za-z0-9+/]*={0,2})$/u;
+
+function isCompleteImageBase64(body: string): boolean {
+  if (body.length === 0 || body.length % 4 !== 0) return false;
+  const bytes = Buffer.from(body, "base64");
+  return bytes.toString("base64") === body && inspectImageBytes(bytes).ok;
+}
+
+/** The fields of an image block's `image_url` or `source`: the validated body without the base58 rule, the rest as usual. */
+function redactImageBodyHolder(
+  holder: Record<string, unknown>,
+  field: string,
+  seen: ReturnType<typeof createRedactionSeen>,
+  redactString: (input: string) => string,
+): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(holder)) {
+    output[key] = key === field && typeof nested === "string"
+      ? redactSecretsWithRules(nested, false)
+      : redactValue(nested, seen, redactString, isSensitiveKey(key));
   }
   return output;
 }

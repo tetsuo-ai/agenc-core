@@ -4,7 +4,7 @@ import { OMITTED_BINARY_CARRIER_TEXT } from "../../src/llm/content-conversion.js
 import { redactSecretsInValue } from "../../src/secrets/sanitizer.js";
 import { inspectImageDataUrl } from "../../src/utils/image-validation.js";
 import { createToolResultIntegrity } from "../../src/session/tool-result-integrity.js";
-import { syntheticPng } from "../helpers/redacted-inline-image-fixture.js";
+import { syntheticPngWithAccessKeyId } from "../helpers/redacted-inline-image-fixture.js";
 import type { LLMContentPart, LLMMessage } from "../../src/llm/types.js";
 import { clearSession } from "../../src/commands/clear.js";
 import { runTurn, setAutoCompactImplForTests } from "../../src/session/run-turn.js";
@@ -324,8 +324,9 @@ test("compaction after an eviction names only the image no request showed", asyn
 test("compaction keeps the screenshots of the tail it retains (lt30 Flt30-5)", async () => {
   // lt30 O-r1: after a compaction the five FileRead screenshots of the kept tail reached the model as an omission
   // note, and the kept analysis was about exactly those screens. A screenshot whose base64 holds a run the durable
-  // record cannot store unchanged is omitted there, and the replacement history is read back from that record.
-  const shot = syntheticPng(true);
+  // record cannot store unchanged is omitted there, and the replacement history is read back from that record. (A
+  // base58 run alone no longer counts for a valid image, so the run here is one another rule matches.)
+  const shot = syntheticPngWithAccessKeyId();
   expect(inspectImageDataUrl(shot)?.ok).toBe(true);
   expect(redactSecretsInValue(shot)).not.toBe(shot);
   const harness = createCompactionTransactionHarness([]);

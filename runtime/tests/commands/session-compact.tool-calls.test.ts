@@ -28,7 +28,7 @@ import * as permissionInstructions from "../../src/session/permission-instructio
 import * as outputStyles from "../../src/constants/outputStyles.js";
 import { usesLocalToolProfile } from "../../src/llm/wire/capability-gating.js";
 import { OMITTED_BINARY_CARRIER_TEXT } from "../../src/llm/content-conversion.js";
-import { syntheticPng } from "../helpers/redacted-inline-image-fixture.js";
+import { syntheticPngWithAccessKeyId } from "../helpers/redacted-inline-image-fixture.js";
 
 const TOOL_CALL_ID = "toolu_compact_1792";
 const TOOL_ARGUMENTS = JSON.stringify({ command: "pwd" });
@@ -227,9 +227,10 @@ describe("/compact keeps retained assistant tool calls", () => {
   });
 
   test("a retained screenshot the durable record cannot store survives manual compaction in memory", async () => {
-    // lt30 Flt30-5: the kept tail came back from the durable record, which holds an omission note for this image.
+    // lt30 Flt30-5: the kept tail came back from the durable record, which holds an omission note for this image
+    // (its base64 holds a run that a secret rule other than the base58 one matches).
     summarizer.manualCompactCall.mockImplementation(keepRecentTail);
-    const shot = syntheticPng(true);
+    const shot = syntheticPngWithAccessKeyId();
     const { session } = mkSession({
       provider: mkProvider({ content: "unused by the mocked summarizer" }),
       modelInfo: { contextWindow: 131_072 },
