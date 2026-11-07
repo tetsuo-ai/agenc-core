@@ -163,6 +163,27 @@ describe("requestsHelpers", () => {
     expect(requestsHelpers(prompt)).toBe(false);
   });
 
+  // fx31 known limit: a double quote right after a digit is an inch mark, but it paired with the next double quote on
+  // its line as the start of a quotation.
+  test.each([
+    'Set the 5" display; use two helpers to check "beta.txt" and alpha.txt',
+    "He is 6'2\" tall; spawn two helpers to read \"alpha.txt\" and \"beta.txt\".",
+  ])("an inch mark does not hide the request after it: %s", (text) => {
+    expect(requestsHelpers(text)).toBe(true);
+  });
+
+  test.each([
+    'The 27" monitor guide says "use two helpers" for this setup.',
+    'Print the 5" label, then "use two helpers" stays a literal string in the config.',
+  ])("an inch mark does not leave the quotation after it unpaired: %s", (text) => {
+    expect(requestsHelpers(text)).toBe(false);
+  });
+
+  test("a quotation that ends with a digit still ends there, and a lone inch mark hides nothing", () => {
+    expect(requestsHelpers('Explain "use 2 helpers" and "version 2" in the docs.')).toBe(false);
+    expect(requestsHelpers('Set the 5" display and use two helpers to check alpha.txt and beta.txt.')).toBe(true);
+  });
+
   test("treats missing input as no request", () => {
     expect(requestsHelpers(null)).toBe(false);
   });
@@ -254,6 +275,19 @@ describe("routeSwarmTask names helpers like agents and workers", () => {
     'Check "alpha.txt" and "beta.txt" in parallel.',
   ])("a pattern does not match across a removed span: %s", (prompt) => {
     const decision = routeSwarmTask(prompt);
+    expect(decision.signals).not.toContain("explicit_parallelism");
+    expect(decision.mode).toBe("sequential");
+  });
+
+  test("an inch mark does not hide the request after it", () => {
+    expect(routeSwarmTask('Set the 5" display; review api and tui in parallel using "beta.txt" as a guide.')).toMatchObject({
+      mode: "parallel",
+      signals: expect.arrayContaining(["explicit_parallelism"]),
+    });
+  });
+
+  test("an inch mark does not leave the quotation after it unpaired", () => {
+    const decision = routeSwarmTask('The 27" monitor docs say "review the api and the tui in parallel" for this.');
     expect(decision.signals).not.toContain("explicit_parallelism");
     expect(decision.mode).toBe("sequential");
   });
