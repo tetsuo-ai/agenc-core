@@ -827,6 +827,19 @@ export class RolloutStore {
     string,
     CompactionSourcePayloadBundlesV1
   >();
+  /**
+   * The compaction attempt whose intent this store wrote and whose committed
+   * or failed record it has not. Inside that window the rollout admits
+   * nothing but the attempt's admission journal
+   * (canonical-rollout-scanner.ts observeAdmission); any other line fails
+   * the commit. Session state and metadata lines wait here and follow the
+   * attempt's terminal record.
+   */
+  private compactionWindowAttemptId: string | undefined;
+  private readonly linesAfterCompactionWindow: {
+    readonly item: RolloutItem;
+    readonly opts: AppendOptions;
+  }[] = [];
   private liveToolPairProjection: ToolPairProjection | undefined;
   private liveToolPairProjectionId: string | undefined;
   private liveToolPairValidator: StreamingToolPairValidator | undefined;
@@ -1038,6 +1051,7 @@ export class RolloutStore {
   }
 
   append(event: Event, opts: AppendOptions = {}): boolean {
+    this.appendLinesAfterCompactionWindow();
     return this.store.append(event, opts);
   }
 
@@ -3466,6 +3480,14 @@ export class RolloutStore {
   }
 
   appendRollout(item: RolloutItem, opts: AppendOptions = {}): void {
+    if (
+      this.compactionWindowAttemptId !== undefined &&
+      (item.type === "session_state" || item.type === "session_meta")
+    ) {
+      this.linesAfterCompactionWindow.push({ item, opts });
+      return;
+    }
+    this.appendLinesAfterCompactionWindow();
     if (item.type === "response_item") {
       this.validateLiveResponseItem(item.payload);
     } else if (item.type === "compacted") {
@@ -3489,16 +3511,46 @@ export class RolloutStore {
       );
     }
     this.store.appendRollout(item, opts);
+    this.observeCompactionWindow(item);
   }
 
   private appendPersistedCompactionRollout(
     item: PersistedCompactionRolloutItem,
     opts: AppendOptions,
   ): void {
+    this.appendLinesAfterCompactionWindow();
     // Persisted manifest rows deliberately differ from the hydrated in-memory
     // RolloutItem view. The strict persisted readers above are the sole cast
     // boundary; SessionStore hydration restores the public runtime shape.
     this.store.appendRollout(item as unknown as RolloutItem, opts);
+    this.observeCompactionWindow(item);
+  }
+
+  /** Open the window at an attempt's intent and close it at its terminal record. */
+  private observeCompactionWindow(
+    item: RolloutItem | PersistedCompactionRolloutItem,
+  ): void {
+    if (item.type === "compaction_intent") {
+      this.compactionWindowAttemptId = item.payload.attempt_id;
+    } else if (
+      (item.type === "compaction_committed" ||
+        item.type === "compaction_failed") &&
+      item.payload.attempt_id === this.compactionWindowAttemptId
+    ) {
+      this.compactionWindowAttemptId = undefined;
+    }
+  }
+
+  /** Lines held during a compaction window, in order, once it has closed. */
+  private appendLinesAfterCompactionWindow(): void {
+    while (
+      this.compactionWindowAttemptId === undefined &&
+      this.linesAfterCompactionWindow.length > 0
+    ) {
+      const { item, opts } = this.linesAfterCompactionWindow[0]!;
+      this.store.appendRollout(item, opts);
+      this.linesAfterCompactionWindow.shift();
+    }
   }
 
   private appendCompactionPayloadBundles(
@@ -4025,6 +4077,7 @@ export class RolloutStore {
 
   /** Force an immediate flush (durable=true). */
   flushDurable(): void {
+    this.appendLinesAfterCompactionWindow();
     if (!this.store.flushBatch(true)) {
       throw new Error("rollout flush was not fsync-committed");
     }
@@ -4058,7 +4111,14 @@ export class RolloutStore {
   close(): void {
     this.scheduler.stop();
     this.canonicalScanner.close();
-    try { this.store.close(); } finally { this.stateDriver.close(); }
+    try {
+      // An attempt still open here can no longer commit; reopening closes it
+      // as interrupted. Keep the lines it held.
+      this.compactionWindowAttemptId = undefined;
+      this.appendLinesAfterCompactionWindow();
+    } finally {
+      try { this.store.close(); } finally { this.stateDriver.close(); }
+    }
   }
 
   private requireRunEpoch(runId: string) {
