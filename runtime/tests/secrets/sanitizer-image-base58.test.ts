@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { REDACTED_SECRET, redactSecrets, redactSecretsInValue } from "../../src/secrets/sanitizer.js";
 import { llmMessageToDurableResponseItem } from "../../src/session/message-history-conversion.js";
 import { serializeRolloutItem } from "../../src/session/rollout-item.js";
+import { imageEndsAtEndMarker, inspectImageBytes } from "../../src/utils/image-validation.js";
 import { REAL_SCREENSHOT_CROP_JPEG } from "../helpers/real-screenshot-crop.js";
 import { syntheticPng, syntheticPngWithAccessKeyId } from "../helpers/redacted-inline-image-fixture.js";
 
@@ -145,5 +146,50 @@ describe("a body that is not canonical base64 of the image keeps the rule", () =
       expect(redacted).not.toContain(BASE58_SECRET_KEY);
       expect(redacted).toContain(REDACTED_SECRET);
     }
+  });
+});
+
+// sec-rv1 item 3: a decoder never reads past an image's end marker, so bytes there can hold anything. The exemption
+// needs the end marker to be the last byte; anything after it falls back to every rule, as in 0.19.31.
+describe("an image with bytes after its end marker keeps the rule", () => {
+  async function complete(format: "png" | "jpeg" | "gif" | "webp"): Promise<Buffer> {
+    if (format === "png") return Buffer.from(body(syntheticPng(false)), "base64");
+    const imported = await import("sharp");
+    const sharp = (typeof imported.default === "function" ? imported.default : imported) as (typeof imported)["default"];
+    return sharp({ create: { width: 40, height: 30, channels: 3, background: { r: 30, g: 140, b: 90 } } })[format]().toBuffer();
+  }
+  /** `image`, aligned to three bytes, then bytes whose base64 is "////<key>00////". */
+  const withKeyAfter = (image: Buffer) => Buffer.concat([
+    image, Buffer.alloc((3 - (image.length % 3)) % 3), Buffer.from(`////${BASE58_SECRET_KEY}00////`, "base64"),
+  ]);
+
+  test.each(["png", "jpeg", "gif", "webp"] as const)("%s", async (format) => {
+    const image = await complete(format);
+    expect(imageEndsAtEndMarker(image)).toBe(true);
+    const extended = withKeyAfter(image);
+    expect(inspectImageBytes(extended).ok).toBe(true);
+    expect(imageEndsAtEndMarker(extended)).toBe(false);
+    const data = extended.toString("base64");
+    expect(data).toContain(BASE58_SECRET_KEY);
+    for (const block of [imageUrlBlock(`data:image/${format};base64,${data}`), { type: "image", source: { type: "base64", data } }]) {
+      const redacted = JSON.stringify(redactSecretsInValue(block));
+      expect(redacted).not.toContain(BASE58_SECRET_KEY);
+      expect(redacted).toContain(REDACTED_SECRET);
+    }
+  });
+
+  test("the end marker checks", async () => {
+    for (const format of ["png", "jpeg", "gif", "webp"] as const) {
+      const image = await complete(format);
+      expect(imageEndsAtEndMarker(Buffer.concat([image, Buffer.from([0])]))).toBe(false);
+    }
+    const gif = await complete("gif");
+    // A GIF without its trailer still decodes, but it has no end marker.
+    expect(inspectImageBytes(gif.subarray(0, -1)).ok).toBe(true);
+    expect(imageEndsAtEndMarker(gif.subarray(0, -1))).toBe(false);
+    const webp = await complete("webp");
+    expect(imageEndsAtEndMarker(Buffer.concat([webp, Buffer.alloc(2)]))).toBe(false);
+    expect(imageEndsAtEndMarker(Buffer.from("not an image"))).toBe(false);
+    expect(imageEndsAtEndMarker(Buffer.from(body(REAL_SCREENSHOT_CROP_JPEG), "base64"))).toBe(true);
   });
 });

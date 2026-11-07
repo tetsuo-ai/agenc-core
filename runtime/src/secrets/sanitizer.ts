@@ -10,7 +10,7 @@
  *     sanitizer behavior for logs, transcripts, hook output, and traces.
  */
 
-import { inspectImageBytes } from "../utils/image-validation.js";
+import { imageEndsAtEndMarker, inspectImageBytes } from "../utils/image-validation.js";
 
 export const REDACTED_SECRET = "[REDACTED_SECRET]";
 
@@ -760,7 +760,8 @@ function redactValue(
 /**
  * Where an image content block keeps its base64 body, when that body is
  * canonical base64 of a complete PNG, JPEG, GIF or WebP image (inspectImageBytes,
- * the check the image path uses): `image_url.url` or `source.url` as a data URL
+ * the check the image path uses) that ends with its own end marker
+ * (imageEndsAtEndMarker): `image_url.url` or `source.url` as a data URL
  * that starts exactly with `data:image/(png|jpeg|gif|webp);base64,`, or
  * `source.data`. Only that body skips the base58 wallet-key rule. Base64 does
  * not carry a key's base58 text verbatim unless it was crafted to, while the rule
@@ -792,7 +793,7 @@ const IMAGE_DATA_URL_BODY = /^data:image\/(?:png|jpeg|gif|webp);base64,([A-Za-z0
 function isCompleteImageBase64(body: string): boolean {
   if (body.length === 0 || body.length % 4 !== 0) return false;
   const bytes = Buffer.from(body, "base64");
-  return bytes.toString("base64") === body && inspectImageBytes(bytes).ok;
+  return bytes.toString("base64") === body && inspectImageBytes(bytes).ok && imageEndsAtEndMarker(bytes);
 }
 
 /**
