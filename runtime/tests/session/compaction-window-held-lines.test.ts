@@ -1,0 +1,178 @@
+import { fsyncSync, readFileSync } from "node:fs";
+import { afterEach, expect, test, vi } from "vitest";
+
+import type { LLMMessage, LLMProvider, LLMResponse } from "../../src/llm/types.js";
+import { compactConversation } from "../../src/services/compact/compact.js";
+import type { RuntimeMessage } from "../../src/services/compact/types.js";
+import type { RolloutItem } from "../../src/session/rollout-item.js";
+import { parseRolloutLine } from "../../src/session/rollout-item.js";
+import { FileThreadStore } from "../../src/thread-store/store.js";
+import {
+  createCompactionTransactionHarness,
+  type CompactionTransactionHarness,
+} from "../helpers/compaction-transaction-harness.js";
+
+// While a compaction attempt is open the rollout store holds session state and
+// metadata lines and writes them after the attempt (rollout-store.ts). These
+// cover how and when the held lines leave the store.
+
+const SOURCE: RuntimeMessage[] = Array.from({ length: 12 }, (_, index) => ({
+  role: index % 2 === 0 ? "user" : "assistant",
+  content: `source-${index}:${"x".repeat(2_000)}`,
+}));
+
+const SUMMARY: LLMResponse = {
+  content: JSON.stringify({ narrative: "Bounded summary.", facts: [], open_actions: [] }),
+  toolCalls: [],
+  usage: { promptTokens: 128, completionTokens: 128, totalTokens: 256, availability: "reported",
+    provenance: "provider" },
+  model: "grok-4.5",
+  finishReason: "stop",
+};
+
+/** A user stop, as a client Stop writes it; the generation marks the line written in each test. */
+function heldLine(generation: number): RolloutItem {
+  return { type: "session_state", payload: { userStop: { stopped: true, generation } } } as RolloutItem;
+}
+
+const isHeldLine = (generation: number) => (item: RolloutItem | undefined): boolean =>
+  item?.type === "session_state" && item.payload.userStop?.generation === generation;
+
+interface Repo {
+  bindIntent(...args: unknown[]): void;
+  markCommitted(...args: unknown[]): void;
+  recordFailure(...args: unknown[]): void;
+}
+const retentionRepo = (harness: CompactionTransactionHarness): Repo =>
+  (harness.store as unknown as { compactionRetentionRepo: Repo }).compactionRetentionRepo;
+
+let harness: CompactionTransactionHarness | undefined;
+let threadStore: FileThreadStore | undefined;
+afterEach(() => {
+  threadStore?.close();
+  threadStore = undefined;
+  harness?.close();
+  harness = undefined;
+  vi.restoreAllMocks();
+});
+
+/** A harness whose summarizer first runs `inside` while the attempt is open. */
+function harnessWriting(inside: () => void, reply: () => LLMResponse = () => SUMMARY): CompactionTransactionHarness {
+  let written = false;
+  const chat: LLMProvider["chat"] = async (_messages: readonly LLMMessage[]) => {
+    if (!written) {
+      written = true;
+      inside();
+    }
+    return reply();
+  };
+  harness = createCompactionTransactionHarness(SOURCE, { chat });
+  return harness;
+}
+
+test("an attempt that ends without a terminal record closes its window when its lease is released", async () => {
+  harness = createCompactionTransactionHarness(SOURCE);
+  // The intent and its payload are in the rollout, then binding the intent in
+  // the retention database fails: no committed or failed record follows.
+  vi.spyOn(retentionRepo(harness), "bindIntent").mockImplementationOnce(() => {
+    throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
+  });
+  await expect(compactConversation(SOURCE, harness.context)).rejects.toThrow();
+  const ended = harness.store.readAll();
+  expect(ended.filter((item) => item.type === "compaction_intent")).toHaveLength(1);
+  expect(ended.some((item) => item.type === "compaction_committed" || item.type === "compaction_failed"))
+    .toBe(false);
+
+  // A user stop after the attempt ended reaches the rollout at once instead of
+  // waiting in memory until the store closes.
+  harness.store.appendRollout(heldLine(1), { durable: true });
+  expect(harness.store.readAll().filter(isHeldLine(1))).toHaveLength(1);
+});
+
+test("a held line is written right after the committed record, before the commit's projection", async () => {
+  const store = () => harness!.store;
+  harnessWriting(() => store().appendRollout(heldLine(2), { durable: true }));
+  const repo = retentionRepo(harness!);
+  const markCommitted = repo.markCommitted.bind(repo);
+  let onDiskAtProjection: boolean | undefined;
+  vi.spyOn(repo, "markCommitted").mockImplementation((...args: unknown[]) => {
+    onDiskAtProjection = store().readAll().some(isHeldLine(2));
+    return markCommitted(...args);
+  });
+  await compactConversation(SOURCE, harness!.context);
+  expect(onDiskAtProjection).toBe(true);
+  const items = store().readAll();
+  const commit = items.findIndex((item) => item.type === "compaction_committed");
+  expect(commit).toBeGreaterThan(0);
+  expect(isHeldLine(2)(items[commit + 1])).toBe(true);
+});
+
+test("a held line is written right after the failed record, before the failure guard advances", async () => {
+  const store = () => harness!.store;
+  harnessWriting(() => store().appendRollout(heldLine(3), { durable: true }),
+    () => ({ ...SUMMARY, content: "not the summary JSON" }));
+  const repo = retentionRepo(harness!);
+  const recordFailure = repo.recordFailure.bind(repo);
+  let onDiskAtFailureGuard: boolean | undefined;
+  vi.spyOn(repo, "recordFailure").mockImplementation((...args: unknown[]) => {
+    onDiskAtFailureGuard = store().readAll().some(isHeldLine(3));
+    return recordFailure(...args);
+  });
+  await expect(compactConversation(SOURCE, harness!.context)).rejects.toThrow();
+  expect(onDiskAtFailureGuard).toBe(true);
+  const items = store().readAll();
+  const failed = items.findIndex((item) => item.type === "compaction_failed");
+  expect(failed).toBeGreaterThan(0);
+  expect(isHeldLine(3)(items[failed + 1])).toBe(true);
+});
+
+test("a held line whose fsync fails is written once, and the compaction still commits", async () => {
+  const store = () => harness!.store;
+  harnessWriting(() => store().appendRollout(heldLine(4), { durable: true }));
+  // The write of the held line reaches the file and its fsync fails once.
+  let failed = false;
+  store().setFsyncImplForTest((fd) => {
+    if (!failed && readFileSync(store().rolloutPath, "utf8").split("\n")
+      .some((line) => line.trim().length > 0 && isHeldLine(4)(parseRolloutLine(line) ?? undefined))) {
+      failed = true;
+      throw new Error("injected fsync failure");
+    }
+    fsyncSync(fd);
+  });
+  const result = await compactConversation(SOURCE, harness!.context);
+  expect(result.transaction?.committed).toBeDefined();
+  // Later writes do not write the held line again.
+  for (let index = 0; index < 3; index += 1) {
+    try {
+      store().appendRollout({ type: "response_item", payload: { role: "user", content: `after ${index}` } },
+        { durable: true });
+    } catch {
+      // An append that flushes the held line reports its failed fsync.
+    }
+  }
+  store().flushDurable();
+  expect(failed).toBe(true);
+  expect(store().readAll().filter(isHeldLine(4))).toHaveLength(1);
+});
+
+test("a memory mode change inside a window keeps the metadata line the window holds before it", async () => {
+  const threadId = () => harness!.store.sessionId;
+  harnessWriting(() => {
+    // Archiving the live thread writes a metadata line; the memory mode
+    // change after it derives its line from the latest metadata.
+    threadStore!.archiveThread({ threadId: threadId() });
+    threadStore!.updateThreadMetadata({ threadId: threadId(), patch: { memoryMode: "disabled" },
+      includeArchived: true });
+  });
+  threadStore = new FileThreadStore({ agencHome: harness!.store.store.agencHome, cwd: harness!.store.store.cwd });
+  threadStore.createThread({ threadId: threadId(), rolloutStore: harness!.store });
+  await compactConversation(SOURCE, harness!.context);
+  harness!.store.flushDurable();
+  const items = harness!.store.readAll();
+  const commit = items.findIndex((item) => item.type === "compaction_committed");
+  const metadata = items.flatMap((item, index) => item.type === "session_meta" && index > commit ? [item.payload] : []);
+  expect(metadata).toHaveLength(2);
+  const latest = metadata.at(-1) as { memoryMode?: string; threadMetadata?: { archivedAt?: string } };
+  expect(latest.memoryMode).toBe("disabled");
+  expect(typeof latest.threadMetadata?.archivedAt).toBe("string");
+});

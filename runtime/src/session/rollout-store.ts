@@ -832,8 +832,9 @@ export class RolloutStore {
    * or failed record it has not. Inside that window the rollout admits
    * nothing but the attempt's admission journal
    * (canonical-rollout-scanner.ts observeAdmission); any other line fails
-   * the commit. Session state and metadata lines wait here and follow the
-   * attempt's terminal record.
+   * the commit. Session state and metadata lines wait here and are written
+   * right after the attempt's terminal record, or when the attempt ends
+   * without one (its lease is released) or the store closes.
    */
   private compactionWindowAttemptId: string | undefined;
   private readonly linesAfterCompactionWindow: {
@@ -1090,6 +1091,14 @@ export class RolloutStore {
       this.compactionOwnership.set(attemptId, ownership);
       return { release: () => {
         if (this.compactionOwnership.get(attemptId) !== ownership) return;
+        // The transaction has ended. An attempt that wrote its intent but no
+        // committed or failed record (its intent could not be bound, or its
+        // failure record could not be written) never will: close its window
+        // so the lines it held are written now, not only when the store closes.
+        if (this.compactionWindowAttemptId === attemptId) {
+          this.compactionWindowAttemptId = undefined;
+          this.appendLinesAfterCompactionWindowBestEffort();
+        }
         // The transaction returns before its caller publishes replacement
         // history and the forced checkpoint. Keep memory readers behind both.
         if (ownership.committed || this.durablyCommittedCompactionsAwaitingReconstruction.has(attemptId)) return;
@@ -3526,7 +3535,10 @@ export class RolloutStore {
     this.observeCompactionWindow(item);
   }
 
-  /** Open the window at an attempt's intent and close it at its terminal record. */
+  /**
+   * Open the window at an attempt's intent and close it at its terminal
+   * record, then write the lines the window held right after that record.
+   */
   private observeCompactionWindow(
     item: RolloutItem | PersistedCompactionRolloutItem,
   ): void {
@@ -3538,6 +3550,7 @@ export class RolloutStore {
       item.payload.attempt_id === this.compactionWindowAttemptId
     ) {
       this.compactionWindowAttemptId = undefined;
+      this.appendLinesAfterCompactionWindowBestEffort();
     }
   }
 
@@ -3547,10 +3560,39 @@ export class RolloutStore {
       this.compactionWindowAttemptId === undefined &&
       this.linesAfterCompactionWindow.length > 0
     ) {
-      const { item, opts } = this.linesAfterCompactionWindow[0]!;
+      // Handed to the session store before its write. A durable write whose
+      // fsync fails has already appended its bytes (or queued them for a later
+      // append), so writing the line again would leave it in the rollout twice.
+      const { item, opts } = this.linesAfterCompactionWindow.shift()!;
       this.store.appendRollout(item, opts);
-      this.linesAfterCompactionWindow.shift();
     }
+  }
+
+  /**
+   * The same, for a terminal record or an ended attempt: the compaction's
+   * outcome is already settled, so a failed write of a held line must not
+   * fail it. A line that was not handed to the session store stays for the
+   * next write.
+   */
+  private appendLinesAfterCompactionWindowBestEffort(): void {
+    try {
+      this.appendLinesAfterCompactionWindow();
+    } catch {
+      // The next append, durable flush or close reports a store that still fails.
+    }
+  }
+
+  /**
+   * Every rollout item with the session state and metadata lines a compaction
+   * window still holds after them, in the order they will be written. A writer
+   * that derives a new line from the latest one (the thread store's memory
+   * mode) must see a line it is still waiting to follow.
+   */
+  readAllIncludingHeldLines(): RolloutItem[] {
+    return [
+      ...this.readAll(),
+      ...this.linesAfterCompactionWindow.map(({ item }) => item),
+    ];
   }
 
   private appendCompactionPayloadBundles(
