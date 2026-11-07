@@ -32,15 +32,18 @@
  * with a single link born and last modified during the command. While the file
  * keeps exactly that state it holds only what the session's own command wrote,
  * so a Write, Edit or apply_patch may count it as read
- * ({@link proveOwnShellCreation}): no content the session did not make can be
- * overwritten. A file a command only changed, or changed again after creating
- * it, still needs a read. The changed-files attachment does not watch a created
- * file until a file tool writes it.
+ * ({@link proveOwnShellWrite}): no content the session did not make can be
+ * overwritten. So is a file a command wrote whole from a here-document whose
+ * delimiter is quoted (no expansion) when its bytes afterwards equal that body
+ * exactly, whether the command created it or rewrote it: the model wrote that
+ * content. A file a command only changed or appended to, or changed again after
+ * creating or writing it, still needs a read. The changed-files attachment does
+ * not watch such a file until a file tool writes it.
  *
  * @module
  */
 
-import { constants as fsConstants, lstatSync, realpathSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 
@@ -51,10 +54,10 @@ import {
   fileStatFingerprint,
   fileViewStateOf,
   forEachSessionRead,
-  forgetOwnShellCreation,
-  ownShellCreationOf,
+  forgetOwnShellWrite,
+  ownShellWriteOf,
   recordOwnShellChange,
-  recordOwnShellCreation,
+  recordOwnShellWrite,
   recordSessionRead,
   resolveSessionId,
   safePathAllowingSessionPlanFile,
@@ -301,7 +304,7 @@ function recordCreatedFiles(
       if (created.birthtimeMs > 0 && created.birthtimeMs < earliest) continue;
       if (!sandboxMayWrite(scope.runtimeSandbox, path)) continue;
       const canonical = realpathSync(path);
-      recordOwnShellCreation(
+      recordOwnShellWrite(
         sessionId,
         process.platform === "win32" ? canonical.normalize("NFC") : canonical,
         fileStatFingerprint(created),
@@ -313,9 +316,139 @@ function recordCreatedFiles(
 }
 
 /**
+ * A file a command wrote whole from a here-document whose delimiter is quoted
+ * (`'EOF'`, `"EOF"` or `\EOF`): the shell writes the body without any
+ * expansion, so the file gets exactly the text the command shows. Only
+ * `cat > file` (in either order around the here-document) and `tee file`
+ * write it; `>>` appends and is not one.
+ */
+export interface VerbatimWrite {
+  /** The target word as the command wrote it, quotes removed. */
+  readonly target: string;
+  /** What the shell writes: the body lines, each ending in a newline. */
+  readonly text: string;
+}
+
+/** A here-document operator (not a here-string) and its delimiter word, quoted or not. */
+const HEREDOC_OPERATOR = /(?<!<)<<(?!<)(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|\\([^\s;&|<>()'"\\]+)|([^\s;&|<>()'"\\]+))/gu;
+const SEGMENT_BREAK = /[;&|]/u;
+
+/** The simple command around a here-document operator on its line: from the previous `;`, `&` or `|` to the next. */
+function segmentAround(line: string, start: number, end: number): string {
+  let from = start;
+  while (from > 0 && !SEGMENT_BREAK.test(line[from - 1]!)) from -= 1;
+  let to = end;
+  while (to < line.length && !SEGMENT_BREAK.test(line[to]!)) to += 1;
+  return `${line.slice(from, start)} ${line.slice(end, to)}`;
+}
+
+/** The file a `cat > file` or `tee file` segment writes its standard input to, or undefined. */
+function verbatimTarget(segment: string): string | undefined {
+  const tee = /^\s*tee\s+([^\s;&|<>()-][^\s;&|<>()]*)\s*(?:>[ \t]*\/dev\/null\s*)?$/u.exec(segment);
+  if (tee !== null) return plainWord(tee[1]!);
+  const redirect = /(?:^|\s)1?>(?![>&|])[ \t]*([^\s;&|<>()]+)/u.exec(segment);
+  if (redirect === null) return undefined;
+  // Nothing else may be read: `cat a - > f` would write a's bytes too.
+  const rest = `${segment.slice(0, redirect.index)} ${segment.slice(redirect.index + redirect[0].length)}`;
+  return /^\s*cat\s*$/u.test(rest) ? plainWord(redirect[1]!) : undefined;
+}
+
+/** One plain path word, quotes removed; undefined when it may expand or holds more than one word. */
+function plainWord(raw: string): string | undefined {
+  const words = shellWords(raw);
+  return words.length === 1 && !words[0]!.unresolvable && words[0]!.text.length > 0 ? words[0]!.text : undefined;
+}
+
+/**
+ * The quoted here-documents of a command and the files they write whole. A
+ * here-document without its closing line, or after one, ends the scan.
+ */
+export function verbatimWrites(command: string): VerbatimWrite[] {
+  if (!command.includes("<<")) return [];
+  const lines = command.split("\n");
+  const writes: VerbatimWrite[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index]!;
+    index += 1;
+    for (const operator of line.matchAll(HEREDOC_OPERATOR)) {
+      const stripTabs = operator[1] === "-";
+      const quoted = operator[2] ?? operator[3] ?? operator[4];
+      const delimiter = quoted ?? operator[5]!;
+      // Every here-document's body follows the line in order, quoted or not.
+      const body: string[] = [];
+      let closed = false;
+      while (index < lines.length) {
+        const bodyLine = stripTabs ? lines[index]!.replace(/^\t+/u, "") : lines[index]!;
+        index += 1;
+        if (bodyLine === delimiter) {
+          closed = true;
+          break;
+        }
+        body.push(bodyLine);
+      }
+      if (!closed) return writes;
+      if (quoted === undefined || delimiter.length === 0) continue;
+      const target = verbatimTarget(segmentAround(line, operator.index, operator.index + operator[0].length));
+      if (target === undefined) continue;
+      writes.push({ target, text: body.length === 0 ? "" : `${body.join("\n")}\n` });
+    }
+  }
+  return writes;
+}
+
+/** Largest file a verbatim write is compared against. */
+const VERBATIM_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Record each file a quoted here-document of the command names whose bytes,
+ * when the command returns, equal that here-document's text: the session's own
+ * command wrote all of it, whether it created the file or rewrote it whole. The
+ * comparison reads one descriptor that does not follow a symlink, between two
+ * equal stats.
+ */
+function recordVerbatimWrites(sessionId: string, scope: ShellCommandScope): void {
+  const writes = verbatimWrites(scope.command);
+  if (writes.length === 0 || changesDirectory(scope.command)) return;
+  let base: string;
+  try {
+    base = realpathSync(scope.cwd);
+  } catch {
+    return;
+  }
+  for (const write of writes) {
+    const expected = Buffer.from(write.text, "utf8");
+    if (expected.length > VERBATIM_MAX_BYTES) continue;
+    const path = isAbsolute(write.target) ? resolve(write.target) : resolve(base, write.target);
+    let fd: number | undefined;
+    try {
+      fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0) | (fsConstants.O_NOFOLLOW ?? 0));
+      const before = fstatSync(fd);
+      if (!before.isFile() || before.nlink !== 1 || before.size !== expected.length) continue;
+      const bytes = Buffer.alloc(expected.length + 1);
+      let filled = 0;
+      while (filled < bytes.length) {
+        const read = readSync(fd, bytes, filled, bytes.length - filled, filled);
+        if (read === 0) break;
+        filled += read;
+      }
+      if (filled !== expected.length || !bytes.subarray(0, filled).equals(expected)) continue;
+      const after = fileStatFingerprint(fstatSync(fd));
+      if (!sameFileStat(fileStatFingerprint(before), after)) continue;
+      const canonical = realpathSync(path);
+      recordOwnShellWrite(sessionId, process.platform === "win32" ? canonical.normalize("NFC") : canonical, after);
+    } catch {
+      // A target that cannot be read as a regular file is not recorded.
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
+  }
+}
+
+/**
  * Run one shell call of the session (`run`) and record which read files it
- * changed and which named files it created (see the module comment). Without a
- * session id it only runs the call.
+ * changed and which named files it created or wrote whole (see the module
+ * comment). Without a session id it only runs the call.
  */
 export async function trackOwnShellChanges<T>(
   args: Record<string, unknown>,
@@ -345,27 +478,29 @@ export async function trackOwnShellChanges<T>(
     if (sessionId !== undefined && absent.length > 0) {
       recordCreatedFiles(sessionId, scope, absent, startedAtMs);
     }
+    if (sessionId !== undefined) recordVerbatimWrites(sessionId, scope);
   }
 }
 
-/** Largest created file a Write or Edit may count as read without a FileRead. */
-const CREATION_PROOF_MAX_BYTES = 2 * 1024 * 1024;
+/** Largest file a Write or Edit may count as read without a FileRead. */
+const WRITE_PROOF_MAX_BYTES = 2 * 1024 * 1024;
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 /**
- * The text of a created file, read from one descriptor that does not follow a
- * symlink, when its state before and after the read is the state its command
- * left; undefined for anything else (changed since, binary, too large).
+ * The text of a file a command of the session made, read from one descriptor
+ * that does not follow a symlink, when its state before and after the read is
+ * the state its command left; undefined for anything else (changed since,
+ * binary, too large).
  */
-async function createdFileText(
+async function writtenFileText(
   path: string,
-  created: FileStatFingerprint,
+  written: FileStatFingerprint,
 ): Promise<string | undefined> {
   const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0) | (fsConstants.O_NOFOLLOW ?? 0));
   try {
     const before = await handle.stat();
-    if (!before.isFile() || before.size > CREATION_PROOF_MAX_BYTES ||
-        !sameFileStat(fileStatFingerprint(before), created)) return undefined;
+    if (!before.isFile() || before.size > WRITE_PROOF_MAX_BYTES ||
+        !sameFileStat(fileStatFingerprint(before), written)) return undefined;
     // At most the stat size plus one byte: a file that grew is refused.
     const buffer = Buffer.alloc(before.size + 1);
     let filled = 0;
@@ -375,7 +510,7 @@ async function createdFileText(
       filled += bytesRead;
     }
     if (filled !== before.size) return undefined;
-    if (!sameFileStat(fileStatFingerprint(await handle.stat()), created)) return undefined;
+    if (!sameFileStat(fileStatFingerprint(await handle.stat()), written)) return undefined;
     const bytes = buffer.subarray(0, filled);
     if (bytes.includes(0)) return undefined;
     return STRICT_UTF8.decode(bytes);
@@ -384,19 +519,19 @@ async function createdFileText(
   }
 }
 
-/** Whether a command of the session recorded creating `canonicalPath`. Path check only, for the preflight. */
-export function mayProveOwnShellCreation(sessionId: string, canonicalPath: string): boolean {
-  return ownShellCreationOf(sessionId, canonicalPath) !== undefined;
+/** Whether a command of the session recorded making `canonicalPath`. Path check only, for the preflight. */
+export function mayProveOwnShellWrite(sessionId: string, canonicalPath: string): boolean {
+  return ownShellWriteOf(sessionId, canonicalPath) !== undefined;
 }
 
 /**
- * Counts `file` as read when a command of the session created it and it still
- * has exactly the state that command left: it then holds only what the
- * session's own command wrote. Records the read as a full view of its current
- * text, as a FileRead would, so the write's own drift checks apply. Returns
- * whether the read was recorded.
+ * Counts `file` as read when a command of the session created it or wrote it
+ * whole from a quoted here-document, and it still has exactly the state that
+ * command left: it then holds only what the session's own command wrote.
+ * Records the read as a full view of its current text, as a FileRead would, so
+ * the write's own drift checks apply. Returns whether the read was recorded.
  */
-export async function proveOwnShellCreation(
+export async function proveOwnShellWrite(
   sessionId: string,
   file: string,
   allowedPaths: readonly string[],
@@ -404,22 +539,22 @@ export async function proveOwnShellCreation(
 ): Promise<boolean> {
   const safe = await safePathAllowingSessionPlanFile(file, allowedPaths, args);
   if (!safe.safe) return false;
-  const created = ownShellCreationOf(sessionId, safe.resolved);
-  if (created === undefined) return false;
+  const written = ownShellWriteOf(sessionId, safe.resolved);
+  if (written === undefined) return false;
   let text: string | undefined;
   try {
-    text = await createdFileText(safe.resolved, created);
+    text = await writtenFileText(safe.resolved, written);
   } catch {
     text = undefined;
   }
   if (text === undefined) return false;
   recordSessionRead(sessionId, safe.resolved, {
     content: text.split(/\r?\n/u).join("\n"),
-    timestamp: created.mtimeMs,
+    timestamp: written.mtimeMs,
     viewKind: "full",
     rawContent: text,
   });
-  forgetOwnShellCreation(sessionId, safe.resolved);
+  forgetOwnShellWrite(sessionId, safe.resolved);
   return true;
 }
 

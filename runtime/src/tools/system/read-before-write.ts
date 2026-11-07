@@ -4,7 +4,7 @@ import { nonEmptyString } from "../../utils/stringUtils.js";
 import { readToolRuntimeContext } from "../runtimes/context.js";
 import type { ToolPreflightFailure } from "../types.js";
 import { hasSessionRead, resolveSessionId } from "./filesystem.js";
-import { mayProveOwnShellCreation } from "./own-shell-changes.js";
+import { mayProveOwnShellWrite } from "./own-shell-changes.js";
 import { mayProvePrintedRead } from "./printed-read-proof.js";
 
 /** Keep the recovery instruction usable for both preflight and execute-time races. */
@@ -62,9 +62,9 @@ export function unreadFilePreflight(
       // Missing files, directories and special files have separate execute-time
       // diagnostics. In particular, creation must not require an impossible read.
       // A file a kept exec_command result may show whole, or one a command of
-      // the session created, is proved, or refused, at execute time.
+      // the session created or wrote whole, is proved, or refused, at execute time.
       if (!hasSessionRead(sessionId, canonical) && !mayProvePrintedRead(sessionId, canonical) &&
-          !mayProveOwnShellCreation(sessionId, canonical)) unread.push(canonical);
+          !mayProveOwnShellWrite(sessionId, canonical)) unread.push(canonical);
     } catch {
       // No known unmet read prerequisite. Existing path/permission gates decide.
     }

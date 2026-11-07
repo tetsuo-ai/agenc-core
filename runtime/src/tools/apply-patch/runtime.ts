@@ -13,7 +13,7 @@
 
 import { readBeforeWriteMessage } from "../system/read-before-write.js";
 import { mayProvePrintedRead, provePrintedRead } from "../system/printed-read-proof.js";
-import { mayProveOwnShellCreation, proveOwnShellCreation } from "../system/own-shell-changes.js";
+import { mayProveOwnShellWrite, proveOwnShellWrite } from "../system/own-shell-changes.js";
 import { open, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { loadDiff } from "../../utils/lazy-runtime-packages.js";
@@ -913,10 +913,10 @@ async function applyHunksToFilesInner(
     if (
       sessionId !== undefined &&
       !isAuthorizingSessionRead(getSessionReadSnapshot(sessionId, pathAbs)) &&
-      mayProveOwnShellCreation(sessionId, pathAbs)
+      mayProveOwnShellWrite(sessionId, pathAbs)
     ) {
-      // So does a file a command of the session created and left as is.
-      await proveOwnShellCreation(sessionId, pathAbs, opts.allowedPaths, opts.rawArgs ?? {});
+      // So does a file a command of the session made and left as is.
+      await proveOwnShellWrite(sessionId, pathAbs, opts.allowedPaths, opts.rawArgs ?? {});
       assertApplyPatchActive(control, "created-file validation");
     }
   };
