@@ -397,22 +397,20 @@ export function getWritableRootPathsWithCwd(
   return writableRootSelection(policy, cwd, sessionTempRoot)?.writableRoots ?? [];
 }
 
-export interface WritableRootsOptions {
-  /**
-   * Scan each root for nested repositories (the default). Without the scan the
-   * roots, their default and explicit carve-outs, reservations and protected
-   * metadata names are the same, but no nested repository's surface or nested
-   * `.git` pointer is listed and `nestedRepoGitDirs` is absent. Only a caller
-   * that reads none of the carve-outs may turn it off.
-   */
-  readonly nestedRepositoryScan?: boolean;
-}
-
+/**
+ * The writable roots of `policy` for `cwd`, each with its read-only carve-outs.
+ * `nestedRepositoryScan: false` leaves out the scan for nested repositories:
+ * the roots, their default and explicit carve-outs, reservations and protected
+ * metadata names are the same, but no nested repository's surface or nested
+ * `.git` pointer is listed and `nestedRepoGitDirs` is absent. Only the runtime
+ * check's policy kind (compatibilitySandboxPolicyKindForPermissionProfile)
+ * turns it off; a caller that reads the carve-outs must keep the scan.
+ */
 export function getWritableRootsWithCwd(
   policy: FileSystemSandboxPolicy,
   cwd: string,
   sessionTempRoot: string,
-  options: WritableRootsOptions = {},
+  options: { readonly nestedRepositoryScan?: boolean } = {},
 ): WritableRoot[] {
   const selection = writableRootSelection(policy, cwd, sessionTempRoot);
   if (selection === null) return [];

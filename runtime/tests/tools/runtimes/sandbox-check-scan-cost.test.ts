@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { compatibilitySandboxPolicyForPermissionProfile } from "../../../src/sandbox/engine/manager.js";
+import {
+  compatibilitySandboxPolicyForPermissionProfile,
+  compatibilitySandboxPolicyKindForPermissionProfile,
+} from "../../../src/sandbox/engine/manager.js";
 import { getWritableRootsWithCwd } from "../../../src/sandbox/engine/policy.js";
 import {
   enforceRuntimeSandboxAttempt,
@@ -126,6 +129,25 @@ describe("the runtime sandbox check's nested-repository scan", () => {
     expect(shell).toBeInstanceOf(Error);
     expect((shell as Error).message).toBe(`sandbox workspace_write blocked write outside workspace: ${join(root, "outside.txt")}`);
     expect((shell as Error & { readonly policy?: unknown }).policy).toEqual(full);
+  });
+
+  it("takes the policy kind from the same inputs without scanning, in every mode", () => {
+    const tool = createFileReadTool({ allowedPaths: [cwd] });
+    for (const mode of ["workspace_write", "read_only", "danger_full_access", "external_sandbox"] as const) {
+      const attempt = context(tool) as unknown as { sandboxMode: string; requestedSandboxMode: string };
+      attempt.sandboxMode = mode;
+      attempt.requestedSandboxMode = mode;
+      const profile = permissionProfileForRuntimeContext(attempt as never, { cwd });
+      const readdir = vi.spyOn(fs, "readdirSync");
+      const kind = compatibilitySandboxPolicyKindForPermissionProfile(
+        profile, profile.fileSystem, profile.network, cwd, sessionTempRoot,
+      );
+      expect(scannedRoots(readdir), mode).toEqual([]);
+      readdir.mockRestore();
+      expect(kind, mode).toBe(compatibilitySandboxPolicyForPermissionProfile(
+        profile, profile.fileSystem, profile.network, cwd, sessionTempRoot,
+      ).kind);
+    }
   });
 
   it("drops only the nested findings when the scan is off", () => {
