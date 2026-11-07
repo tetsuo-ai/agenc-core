@@ -352,6 +352,22 @@ export function reasoningEffortToEffortLevel(
   return toPersistableEffort(value as EffortValue | undefined)
 }
 
+/**
+ * A saved `none` (/effort off) as the session restores it: Off on the models
+ * that offer Off, which send it literally. App state holds no level for it
+ * after a restart, so the status line and /effort read it from here.
+ * Elsewhere it stays no level, as reasoningEffortToEffortLevel reads it.
+ */
+export function getSavedEffortOffForContext(
+  model: string,
+  savedEffort: string | undefined,
+  context: ProviderAuthReadContext,
+): 'none' | undefined {
+  return savedEffort === 'none' && modelOffersEffortOffForContext(model, context)
+    ? 'none'
+    : undefined
+}
+
 export function effortValueToReasoningEffort(
   value: EffortValue | undefined,
   supportedLevels?: readonly AvailableEffortLevel[],

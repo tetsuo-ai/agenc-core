@@ -15,6 +15,7 @@ import {
   getEffortLevelLabel,
   getModelDefaultReasoningEffortForContext,
   isAvailableEffortLevel,
+  getSavedEffortOffForContext,
   getSessionEffortLabelForContext,
   nativeEffortLabel,
   modelOffersEffortOffForContext,
@@ -171,8 +172,10 @@ function effortMenuSnapshot(
   providerAuthContext: ProviderAuthContext,
 ): EffortMenuSnapshot {
   const levels = getAvailableEffortLevelsForContext(model, providerAuthContext);
+  const saved = getSettingsForSource("userSettings")?.reasoning_effort;
   const explicit = currentEffortValue(ctx) ??
-    reasoningEffortToEffortLevel(getSettingsForSource("userSettings")?.reasoning_effort);
+    getSavedEffortOffForContext(model, saved, providerAuthContext) ??
+    reasoningEffortToEffortLevel(saved);
   const effective = getSessionEffortLabelForContext(model, explicit as never, providerAuthContext);
   const offersOff = modelOffersEffortOffForContext(model, providerAuthContext);
   const current = offersOff && explicit === "none"
