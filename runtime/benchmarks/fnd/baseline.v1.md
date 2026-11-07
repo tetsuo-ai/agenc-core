@@ -4,10 +4,10 @@ This artifact records bounded current and historical-reference observations.
 Every row is informational: no result is a performance threshold or gate.
 Generated inputs are synthetic and created only for the benchmark process.
 
-- JSON SHA-256: `cae308385c80e53c21a1b6761b951f04d62ddd10893916e0185082dc5aca1e18`
-- Source revision: `0c4a0116a60dd9b493af53ad5ecf1e20d235e843`
-- Production tree: `runtime/src` at Git object `5f55d4626b536f49319cb40c796d264107878651`
-- Loaded production closure: `105` module bindings across `2` cases
+- JSON SHA-256: `eb95748ad36e6c99b42743a5ecb49dd24ee61b6576145f9e200cd582781f86ca`
+- Source revision: `abce4eddc21ba2e2e12817d0f98683c5d8b9d45e`
+- Production tree: `runtime/src` at Git object `a4aa994b090aa613a8112063fc33b41d9d07bfcc`
+- Loaded production closure: `106` module bindings across `2` cases
 - Plan SHA-256: `672538014498283c935efce76c0a5244abd280aadaeb5a03a9d835f041db2ebe`
 - Node/npm: `v26.12.1` / `11.17.0`
 - OS/CPU: `linux 7.0.0-38-generic x64` / `AMD Ryzen 9 9900X 12-Core Processor` (24 logical)
@@ -18,12 +18,12 @@ Generated inputs are synthetic and created only for the benchmark process.
 
 | Case | Input | Status | Median ms | MAD ms | Worker peak RSS bytes | RSS lower-bound bytes |
 | --- | ---: | --- | ---: | ---: | ---: | ---: |
-| `csv_scheduler_progress_scan` | `rowCount=1000` | `completed` | 76.339 | 3.734 | 186159104 | 184504320 |
-| `csv_scheduler_progress_scan` | `rowCount=2000` | `completed` | 149.117 | 2.111 | 204173312 | 201633792 |
-| `csv_scheduler_progress_scan` | `rowCount=4000` | `completed` | 301.985 | 7.993 | 217362432 | 213278720 |
-| `patch_delete_parser_historical_comparison` | `hunkCount=8000` | `completed` | 2.344 | 0.254 | 90320896 | 90320896 |
-| `patch_delete_parser_historical_comparison` | `hunkCount=16000` | `completed` | 5.066 | 0.369 | 105918464 | 105721856 |
-| `patch_delete_parser_historical_comparison` | `hunkCount=32000` | `completed` | 10.981 | 0.928 | 121319424 | 120926208 |
+| `csv_scheduler_progress_scan` | `rowCount=1000` | `completed` | 91.056 | 7.116 | 182747136 | 182747136 |
+| `csv_scheduler_progress_scan` | `rowCount=2000` | `completed` | 169.454 | 2.210 | 203440128 | 201416704 |
+| `csv_scheduler_progress_scan` | `rowCount=4000` | `completed` | 346.929 | 8.298 | 220409856 | 215494656 |
+| `patch_delete_parser_historical_comparison` | `hunkCount=8000` | `completed` | 2.566 | 0.162 | 89661440 | 89661440 |
+| `patch_delete_parser_historical_comparison` | `hunkCount=16000` | `completed` | 5.169 | 0.323 | 104804352 | 104607744 |
+| `patch_delete_parser_historical_comparison` | `hunkCount=32000` | `completed` | 13.108 | 0.635 | 127356928 | 127356928 |
 
 ## Assessment notes
 
@@ -36,7 +36,7 @@ Run on the same pinned runtime and machine state; compare medians, MAD,
 operation counts, and relative scaling rather than one wall-clock sample.
 
 ```sh
-npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- --source-revision 0c4a0116a60dd9b493af53ad5ecf1e20d235e843 --output /tmp/agenc-fnd-baseline.v1.json --markdown-output /tmp/agenc-fnd-baseline.v1.md
+npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- --source-revision abce4eddc21ba2e2e12817d0f98683c5d8b9d45e --output /tmp/agenc-fnd-baseline.v1.json --markdown-output /tmp/agenc-fnd-baseline.v1.md
 npm run check:fnd-benchmark-baseline --workspace=@tetsuo-ai/runtime
 ```
 
