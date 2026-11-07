@@ -21,11 +21,14 @@ import {
 import { computeNextCronRun, parseCronExpression } from "./cron.js";
 import { logForDebugging } from "./debug.js";
 import { acquireCronStorageLock, withCronStorage } from "./cron-storage.js";
+import { durableCronDispatchSupported, durableCronDispatchUnsupported } from "./cron-dispatch-platform.js";
 import {
   MAX_CRON_FILE_BYTES,
   parseCronDeliveryOutbox,
   type CronDeliveryOutbox,
 } from "./cron-delivery-state.js";
+
+export { durableCronDispatchSupported, durableCronDispatchUnsupported } from "./cron-dispatch-platform.js";
 
 /**
  * Delivery routing for gateway-executed cron tasks (TODO task 16). A task
@@ -291,6 +294,7 @@ export async function mutateCronFile<Result>(
 }
 
 export async function appendCronTask(task: CronTask, dir?: string): Promise<void> {
+  if (!durableCronDispatchSupported()) throw durableCronDispatchUnsupported();
   await mutateCronFile(dir, (state) => {
     state.tasks.push(task);
   });

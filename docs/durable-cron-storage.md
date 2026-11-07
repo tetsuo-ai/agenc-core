@@ -1,12 +1,24 @@
 # Durable cron storage
 
-Durable cron storage now requires Linux with traversable directory descriptors
-(`/proc/self/fd`). macOS, Windows, and Linux installations without this facility
-fail closed with `descriptor-confined I/O is unsupported`; durable creation,
-mutation, and gateway delivery are unavailable there. This is a compatibility
-change. Session-only in-memory jobs do not require durable storage. There is no
-pathname fallback: checks before and after an ordinary pathname write cannot
-undo an overwrite redirected during the write.
+Durable cron storage on macOS, and on Linux without traversable directory
+descriptors (`/proc/self/fd`), fails closed with `descriptor-confined I/O is
+unsupported`. Durable creation, mutation, and gateway delivery are unavailable
+there. Windows persists scheduled tasks through the same private-path policy
+as workflow handoff storage: `.agenc` and `scheduled_tasks.json` must pass the
+current-user ACL check, identity comes from a stat of that verified path, and
+publication uses a path temporary whose inode is checked again after the
+write. This is storage groundwork only: durable records are dispatched only on
+Linux. On Windows and macOS no scheduler in the process loads them, durable
+creation (including delivery-routed jobs) is refused before any write, startup
+reports an existing record as `cron_storage_unavailable`, and the gateway
+reports delivery state as unavailable. No scheduler, startup, or gateway path
+rewrites a stored record; CronDelete can still remove one by id (removing that
+path is deferred). This is a compatibility change. Session-only in-memory jobs
+do not require durable storage, and dormant durable records neither count
+toward the session job limit nor block a session-only create.
+
+There is no pathname fallback on macOS or Linux: checks before and after an
+ordinary pathname write cannot undo an overwrite redirected during the write.
 
 The OS account home must already exist on a local filesystem accepted by the
 SQLite lock security checks, even when `AGENC_HOME` is elsewhere. Unavailable
@@ -21,16 +33,24 @@ lookup later recovers. `HOME` and `AGENC_HOME` never supply the missing authorit
 The separate existing POSIX credential-account check still requires OS identity
 when creating a new home context or broker; this change does not relax that check.
 
-Unsafe or unsupported storage is reported by CronList as an error, by session
+Unsafe or unsupported storage is reported by CronList as an error (a readable
+Windows record is listed as dormant instead, see below), by session
 startup and active schedulers as `cron_storage_unavailable` warnings, and by
 the gateway as a delivery-state diagnostic including the concrete cause.
 Only missing or malformed task records retain the empty-list behavior. Failed
 durable loads admit only the owning conversation's in-memory jobs; they do not
 dispatch durable jobs. Later rescheduling can retry after storage is repaired.
 Warnings from superseded scheduler scans are discarded. Session startup stays
-silent on a platform without descriptor-confined I/O when the workspace has no
-`.agenc/scheduled_tasks.json`: there is nothing to restore. A record that exists
-there is still reported.
+silent on macOS, and on Linux without descriptor confinement, when the
+workspace has no `.agenc/scheduled_tasks.json`. A record that exists there is
+still reported. On Windows the record can be read, and CronList shows each
+durable job as dormant (stored but not scheduled), but startup reports it as
+`cron_storage_unavailable` and no scheduler arms it until durable dispatch is
+supported there. A normal existing Windows `.agenc` inherits its parent's ACL
+and fails the private check; when it is a stable real directory with no
+`scheduled_tasks.json`, reads report absence without reading or changing
+anything. A record that exists, or any doubt about absence, still gets the
+full ACL, identity and confinement checks.
 
 Stop **all older AgenC scheduler and gateway processes using a workspace before
 upgrading its writers**, and do the same before rolling back. Old versions use
@@ -40,11 +60,20 @@ JSON format is unchanged. Old project lock files are left untouched and are no
 longer opened by the new scheduler.
 
 The durable task and delivery-outbox records remain in
-`<workspace>/.agenc/scheduled_tasks.json`. Reads and atomic replacement retain
-opened workspace and `.agenc` directory descriptors through publication,
-directory sync, and cleanup. A linked `.agenc` directory or a symlink/hardlink
-task file is refused. Existing current-user-owned 755 directories and 644 files
-remain supported when other users cannot write them. New task files use 600.
+`<workspace>/.agenc/scheduled_tasks.json`. On macOS and Linux, reads and atomic
+replacement retain opened workspace and `.agenc` directory descriptors through
+publication, directory sync, and cleanup. On Windows, those directory
+descriptors do not exist, so the same steps retain the verified `.agenc` path,
+its current-user ACL, and the published file inode; directory sync that the
+platform refuses is not treated as a lost write. A linked `.agenc` directory
+or a symlink/hardlink task file is refused. Existing current-user-owned 755
+directories and 644 files remain supported on macOS and Linux when other users
+cannot write them. New task files use 600. On Windows, `.agenc` receives a
+current-user-only ACL only when this operation creates that directory. An
+existing `.agenc` is validated and left unchanged; an unsafe ACL is rejected.
+After that directory check passes, an unsafe task file is replaced atomically
+with a newly created private file, and a read of an unsafe task file is
+rejected. The project workspace keeps its existing ACL.
 Concurrent edits may cause a transaction to fail; failure after publication
 does not imply that the original task file is unchanged.
 
