@@ -18,6 +18,7 @@ import {
   recordSessionRead,
   SESSION_ID_ARG,
 } from "./filesystem.js";
+import { trackOwnShellChanges } from "./own-shell-changes.js";
 import { createWriteStdinTool } from "./write-stdin.js";
 import { attachToolRuntimeContext } from "../runtimes/context.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
@@ -265,4 +266,16 @@ test("a PowerShell command is the session's own too", async () => {
   }
   expect(await readFile(csv, "utf8")).toBe("1,A\n2,B\n");
   expect(await attachments()).toEqual([]);
+});
+
+test("a command that runs without write access records nothing: a change made meanwhile is sent", async () => {
+  const csv = join(root, "proof.csv");
+  await write(csv, "1,A\n");
+  // Read-only inspections and read-only shells run in a sandbox without write access.
+  await trackOwnShellChanges({ [SESSION_ID_ARG]: session }, async () => {
+    await writeFile(csv, "1,A\n9,USER\n");
+  }, false);
+  const out = await attachments();
+  expect(out).toHaveLength(1);
+  expect((out[0] as { snippet: string }).snippet).toContain("9,USER");
 });

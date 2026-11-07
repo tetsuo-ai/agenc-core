@@ -1380,7 +1380,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
           shellMode: false,
           ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
           ...(onProgress !== undefined ? { onProgress } : {}),
-        })),
+        }), inspection === undefined),
       );
     },
   };

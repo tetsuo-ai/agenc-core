@@ -68,13 +68,17 @@ async function filesInView(sessionId: string): Promise<Map<string, FileStatFinge
 
 /**
  * Run one shell command of the session (`run`) and record which of its read
- * files the command changed. Without a session id it only runs the command.
+ * files the command changed. Without a session id, or for a command that runs
+ * in a sandbox without write access (`mayWrite` false), it only runs the
+ * command: such a command changes nothing, and a change made meanwhile is not
+ * its own.
  */
 export async function trackOwnShellChanges<T>(
   args: Record<string, unknown>,
   run: () => Promise<T>,
+  mayWrite = true,
 ): Promise<T> {
-  const sessionId = resolveSessionId(args);
+  const sessionId = mayWrite ? resolveSessionId(args) : undefined;
   const before = sessionId === undefined ? undefined : await filesInView(sessionId);
   try {
     return await run();

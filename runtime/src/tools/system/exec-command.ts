@@ -1331,7 +1331,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
                 : {}),
               ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
               ...(ownerId !== undefined ? { ownerId } : {}),
-            }));
+            }), inspection === undefined && readOnlyShell === undefined);
         // Commands were paused after an unproven cleanup and this call found
         // that cleanup proven: say so once, with the output.
         const admissionResumed = manager.takeAdmissionResumedNotice?.();
