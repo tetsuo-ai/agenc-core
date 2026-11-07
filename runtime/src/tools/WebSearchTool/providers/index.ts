@@ -13,6 +13,7 @@
  *   "bing"      — use Bing only (fail loudly)
  *   "mojeek"    — use Mojeek only (fail loudly)
  *   "linkup"    — use Linkup only (fail loudly)
+ *   "keenable"  — use Keenable only (fail loudly; works without a key)
  *   "ddg"       — use DuckDuckGo only (fail loudly)
  *   "native"    — use provider native / ProviderCode only (fail loudly)
  *
@@ -38,13 +39,14 @@ import { jinaProvider } from './jina.js'
 import { bingProvider } from './bing.js'
 import { mojeekProvider } from './mojeek.js'
 import { linkupProvider } from './linkup.js'
+import { keenableProvider } from './keenable.js'
 
 export { type SearchInput, type SearchProvider, type ProviderOutput, type SearchHit } from './types.js'
 
 // ---------------------------------------------------------------------------
 // All registered providers — order matters for auto mode
 // ---------------------------------------------------------------------------
-// Priority: firecrawl → tavily → exa → you → jina → bing → mojeek → linkup → ddg
+// Priority: firecrawl → tavily → exa → you → jina → bing → mojeek → linkup → keenable → ddg
 // DDG is last because it's free but rate-limited.
 // NOTE: customProvider is intentionally excluded from the auto chain.
 //       It is only available when WEB_SEARCH_PROVIDER=custom is explicitly set.
@@ -75,6 +77,7 @@ export type ProviderMode =
   | 'bing'
   | 'mojeek'
   | 'linkup'
+  | 'keenable'
   | 'native'
 
 const PROVIDER_BY_NAME: Record<string, SearchProvider> = {
@@ -88,6 +91,7 @@ const PROVIDER_BY_NAME: Record<string, SearchProvider> = {
   bing: bingProvider,
   mojeek: mojeekProvider,
   linkup: linkupProvider,
+  keenable: keenableProvider,
 }
 
 const VALID_MODES = new Set<string>(Object.keys(PROVIDER_BY_NAME).concat(['auto', 'native']))
@@ -142,7 +146,7 @@ export async function runSearch(
   // Explicit provider mode: fail fast if the provider isn't configured
   if (mode !== 'auto' && mode !== 'native') {
     const provider = chain[0]
-    if (provider && !provider.isConfigured()) {
+    if (provider && !provider.isConfigured() && !provider.selectableWithoutKey) {
       throw new Error(
         `Search provider "${mode}" is not configured. ` +
         `Set the required environment variable (e.g. ${mode.toUpperCase()}_API_KEY) ` +
