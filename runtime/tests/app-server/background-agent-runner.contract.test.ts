@@ -123,6 +123,8 @@ import { recordInFlightToolCallUnknownOutcome } from "../../src/state/tool-outpu
 import { seedPendingEffectReview } from "../state/helpers/effect-review-fixture.js";
 import { bindLiveAgentSession } from "../../src/agents/live-session.js";
 import { assertNoLiveUnknownEffect, poisonLiveEffect } from "../../src/budget/effect-settlement-supervisor.js";
+import { watchChildEffectReviews } from "../../src/session/child-effect-reviews.js";
+import * as debug from "../../src/utils/debug.js";
 import { registerChildApprovalSession, revokeChildApprovalSession } from "../../src/agents/child-approval-context.js";
 import type { ApprovalResolver } from "../../src/permissions/guardian/arbiter.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -2910,6 +2912,45 @@ describe("AgenC delegate background-agent runner", () => {
         .resolves.toMatchObject({ pendingEffectReviews: [] });
     } finally {
       childStore.close(); await parent.runner.stopAgent(parentId); driver.close(); rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores a child's unknown outcome recorded while the parent run is being cancelled", async () => {
+    const parentId = "conv-cancelled-review-parent";
+    const parent = makeTopLevelRunner({ conversationId: parentId });
+    const child = makeTopLevelRunner({ conversationId: "conv-cancelled-review-child" });
+    const unwatch = watchChildEffectReviews(parent.session as unknown as Session, child.session as unknown as Session);
+    // Cancelling the parent aborts the child's in-flight tool, which records an
+    // unknown outcome after the parent has stopped being runnable.
+    (parent.session.services as typeof parent.session.services & {
+      executionAdmission?: { cancelAdmissions: (reason: string) => unknown };
+    }).executionAdmission = { cancelAdmissions: () => {
+      child.session.emit({ eventId: "child-unknown", id: "child-unknown", msg: { type: "effect_unknown_outcome", payload: {
+        runId: "conv-cancelled-review-child", stepId: "tool:child", callId: "child-call", toolName: "exec_command",
+        recoveryCategory: "side-effecting", reason: "acknowledgement_lost", requiresReview: true, recordedAt: "2026-11-04T00:00:00.000Z",
+      } } });
+      return { affectedRunIds: [parentId], voidedReservations: 0, heldUnknownReservations: 0 };
+    } };
+    // The daemon exits on uncaughtException; record anything the review fan-out lets escape.
+    const escaped: unknown[] = [];
+    const realQueueMicrotask = globalThis.queueMicrotask;
+    const microtasks = vi.spyOn(globalThis, "queueMicrotask").mockImplementation((callback) => {
+      realQueueMicrotask(() => {
+        try { callback(); } catch (error) { escaped.push(error); }
+      });
+    });
+    const logged = vi.spyOn(debug, "logForDebugging");
+    try {
+      await parent.runner.startAgent({ objective: "idle parent", deferInitialTurn: true });
+      await parent.runner.prepareAgentCancellation(parentId, "operator");
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(escaped).toEqual([]);
+      expect(logged).not.toHaveBeenCalledWith(expect.stringContaining("not running"), expect.anything());
+    } finally {
+      microtasks.mockRestore();
+      logged.mockRestore();
+      unwatch();
+      await parent.runner.stopAgent(parentId, "operator");
     }
   });
 
