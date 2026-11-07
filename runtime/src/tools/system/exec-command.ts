@@ -18,7 +18,7 @@ import {
 import { preflightSelfTermination, preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
 import { foldDefaultSandboxPermission } from "./sandbox-permission-values.js";
 import { recordSessionRead, resolveSessionId } from "./filesystem.js";
-import { trackOwnShellChanges } from "./own-shell-changes.js";
+import { rememberShellSession, trackOwnShellChanges, type ShellCommandScope } from "./own-shell-changes.js";
 import { isCompletePrintedOutput, rememberPrintedOutput, stableWorkspaceText } from "./printed-read-proof.js";
 import type { BashToolConfig } from "./types.js";
 import { UnifiedExecError, UnifiedExecUnavailableError } from "../../unified-exec/types.js";
@@ -1313,7 +1313,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             ? { observer: config.execObserver }
             : {}),
         };
-        const output = await trackOwnShellChanges(args, () => detach
+        // A read-only inspection or read-only shell runs in a sandbox without write
+        // access, which the scope carries like any other sandbox.
+        const shellScope: ShellCommandScope = { command: cmd, runtimeSandbox };
+        const output = await trackOwnShellChanges(args, shellScope, () => detach
           ? manager.startDetachedProcess!({ ...commonRequest, ...shellRequest })
           : manager.execCommand({
               ...commonRequest,
@@ -1331,7 +1334,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
                 : {}),
               ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
               ...(ownerId !== undefined ? { ownerId } : {}),
-            }), inspection === undefined && readOnlyShell === undefined);
+            }));
+        if (output.exitCode === null) {
+          rememberShellSession(args, output.session_id ?? output.process_id, shellScope);
+        }
         // Commands were paused after an unproven cleanup and this call found
         // that cleanup proven: say so once, with the output.
         const admissionResumed = manager.takeAdmissionResumedNotice?.();

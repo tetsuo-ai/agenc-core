@@ -6236,7 +6236,7 @@ function createPowerShellTool(opts: ModelFacingToolOptions): readonly Tool[] {
           args as Record<string, unknown>,
           opts.workspaceRoot,
         );
-        const output = await trackOwnShellChanges(args as Record<string, unknown>, () => opts.unifiedExecManager!.execCommand({
+        const output = await trackOwnShellChanges(args as Record<string, unknown>, { command, runtimeSandbox }, () => opts.unifiedExecManager!.execCommand({
           cmd: command,
           shell,
           workdir: opts.workspaceRoot,

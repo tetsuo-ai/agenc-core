@@ -12,9 +12,9 @@
  * After emitting, update the in-memory snapshot so subsequent turns do
  * not re-fire the same change.
  *
- * A change the session's own shell command made, with nothing touching the
- * file after it, updates the snapshot without an attachment, as the file
- * tools' own writes do (`tools/system/own-shell-changes.ts`).
+ * A file still in the state a command of the session left after naming it
+ * gets no attachment, and its snapshot stays on the bytes the model last saw
+ * (`tools/system/own-shell-changes.ts`).
  *
  * Files that disappear (ENOENT) are evicted from the read cache; other
  * stat failures (atomic-save races, EACCES churn, transient FS errors)
@@ -31,11 +31,12 @@ import { loadDiff } from "../../utils/lazy-runtime-packages.js";
 import {
   dropSessionReadSnapshot,
   fileStatFingerprint,
+  fileViewStateOf,
   forEachSessionRead,
-  forgetOwnShellChange,
-  ownShellChangeOf,
+  recordFileViewState,
   recordSessionRead,
   sameFileStat,
+  type FileStatFingerprint,
 } from "../../tools/system/filesystem.js";
 import type {
   EditedImageFileAttachment,
@@ -140,6 +141,30 @@ function computeSnippet(before: string, after: string): string {
   return `${kept}\n\n... [snippet truncated] ...`;
 }
 
+/**
+ * After the view moved to the bytes just read and sent: remember the file's
+ * state as the view's only if nothing wrote the file between the stat and the
+ * read, so a command is never credited from a state whose bytes no request
+ * carried.
+ */
+async function recordSentState(
+  sessionId: string,
+  path: string,
+  beforeRead: FileStatFingerprint,
+): Promise<void> {
+  let afterRead: FileStatFingerprint | undefined;
+  try {
+    afterRead = fileStatFingerprint(await stat(path));
+  } catch {
+    afterRead = undefined;
+  }
+  recordFileViewState(
+    sessionId,
+    path,
+    sameFileStat(beforeRead, afterRead) ? beforeRead : undefined,
+  );
+}
+
 /** ENOENT type guard. */
 function isENOENT(err: unknown): boolean {
   return (
@@ -194,21 +219,22 @@ export const changedFilesProducer: AttachmentProducer = async (opts) => {
         }
         return;
       }
+      const now = fileStatFingerprint(st);
       if (
         typeof entry.previousTimestamp === "number" &&
         st.mtimeMs <= entry.previousTimestamp
       ) {
-        forgetOwnShellChange(sessionId, entry.path);
+        // Unchanged since the session's view: remember the state it matches.
+        recordFileViewState(sessionId, entry.path, now);
         return;
       }
-      // The session's own shell command made this change and nothing has
-      // touched the file since (tools/system/own-shell-changes.ts). The model
-      // wrote that command and saw its output, as with its own file tools, so
-      // the view is refreshed without sending the file again.
-      const ownShellChange = sameFileStat(
-        fileStatFingerprint(st),
-        ownShellChangeOf(sessionId, entry.path),
-      );
+      // Exactly the state a command of the session left after naming this file
+      // (tools/system/own-shell-changes.ts): the model wrote that command and saw
+      // its output. Nothing is sent, and the session's view stays on the bytes
+      // the model last saw, so a Write or Edit of the file asks for a read first.
+      if (sameFileStat(now, fileViewStateOf(sessionId, entry.path)?.own)) {
+        return;
+      }
 
       const ext = extname(entry.path).toLowerCase();
       const mediaType = IMAGE_MIME_BY_EXT[ext];
@@ -220,20 +246,18 @@ export const changedFilesProducer: AttachmentProducer = async (opts) => {
         } catch {
           return;
         }
-        if (!ownShellChange) {
-          out.push({
-            kind: "edited_image_file",
-            filename: entry.path,
-            content: bytes.toString("base64"),
-            mediaType,
-          });
-        }
+        out.push({
+          kind: "edited_image_file",
+          filename: entry.path,
+          content: bytes.toString("base64"),
+          mediaType,
+        });
         recordSessionRead(sessionId, entry.path, {
           rawContent: bytes.toString("base64"),
           timestamp: st.mtimeMs,
           viewKind: "full",
         });
-        forgetOwnShellChange(sessionId, entry.path);
+        await recordSentState(sessionId, entry.path, now);
         return;
       }
 
@@ -243,16 +267,16 @@ export const changedFilesProducer: AttachmentProducer = async (opts) => {
       } catch {
         return;
       }
-      const snippet = ownShellChange ? "" : computeSnippet(entry.previousRaw, nextRaw);
-      forgetOwnShellChange(sessionId, entry.path);
+      const snippet = computeSnippet(entry.previousRaw, nextRaw);
       if (snippet === "") {
-        // mtime bumped (touch) but content identical, or the session's own
-        // command changed it: refresh the view so we don't re-stat next turn.
+        // mtime bumped (touch) but content identical — refresh timestamp
+        // so we don't re-stat next turn.
         recordSessionRead(sessionId, entry.path, {
           rawContent: nextRaw,
           timestamp: st.mtimeMs,
           viewKind: "full",
         });
+        await recordSentState(sessionId, entry.path, now);
         return;
       }
       out.push({
@@ -265,6 +289,7 @@ export const changedFilesProducer: AttachmentProducer = async (opts) => {
         timestamp: st.mtimeMs,
         viewKind: "full",
       });
+      await recordSentState(sessionId, entry.path, now);
     }),
   );
 
