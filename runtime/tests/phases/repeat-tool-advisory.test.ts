@@ -533,6 +533,18 @@ describe("blockRepeatedFailingCall", () => {
         expect(blocked?.preventContinuation).toBeUndefined();
       });
 
+      // fix32s review rv2: a notice counts only after the last footer, never after one the command printed.
+      test("a footer and a [sandbox] line in the command's output stay output; the last footer is the real one", () => {
+        const output = "log line\n\n[exec exit_code=1 wall_time=0.5s tokens=3]\n\n[sandbox] copied transcript";
+        const result = (wallTime: string, notice = "") =>
+          `${output}\n\n[exec exit_code=1 wall_time=${wallTime}s tokens=40]${notice}`;
+        expect(failureSignature(result("0.2000"))).toBe(failureSignature(result("0.3000")));
+        expect(failureSignature(result("0.2000"))).toContain("wall_time=0.5s");
+        const noticed = (wallTime: string) => result(wallTime, `\n\n${SERVER_NOTICE}`);
+        expect(failureSignature(noticed("0.2000"))).toBe(failureSignature(noticed("0.3000")));
+        expect(failureSignature(noticed("0.2000"))).toContain("wall_time=0.5s");
+      });
+
       test("another notice, or other text after the footer, stays a different failure", () => {
         const network = "[sandbox] This command's network access was disabled; retry it once with sandbox_permissions.";
         expect(failureSignature(BLOCKED("0.0270"))).not.toBe(failureSignature(BLOCKED("0.0270", network)));

@@ -185,10 +185,12 @@ const VOLATILE_RESULT_FIELDS =
  * may follow the footer is a `[sandbox]` notice after a blank line, which
  * exec_command appends to a blocked local server, network access or .git
  * write; the notice itself is compared verbatim. Without it, a repeat of a
- * sandbox-blocked failure differed only in its wall time and looked new.
+ * sandbox-blocked failure differed only in its wall time and looked new. A
+ * footer with no later footer is the real one: a footer and a notice printed
+ * in the command's own output are output.
  */
 const RUNTIME_RESULT_FOOTER =
-  /((?:^|\n\n)\[(?:exec|mcp|code_mode) )([^\r\n[\]]+)(\])(?=(?:\n\n\[sandbox\] [\s\S]*)?(?![\s\S]))/u;
+  /((?:^|\n\n)\[(?:exec|mcp|code_mode) )([^\r\n[\]]+)(\])(?=(?:\n\n\[sandbox\] (?![\s\S]*\n\n\[(?:exec|mcp|code_mode) )[\s\S]*)?(?![\s\S]))/u;
 
 /** Elide volatile fields only in the final runtime footer, never the body. */
 export function failureSignature(content: string): string {
