@@ -8,7 +8,7 @@ import { llmMessageToDurableResponseItem, responseItemToLlmMessage } from "../..
 import { compactConversation } from "../../src/services/compact/compact.js";
 import { toAgenCRuntimeMessages } from "../../src/session/runtime-message-conversion.js";
 import { createCompactionTransactionHarness } from "../helpers/compaction-transaction-harness.js";
-import { isCanonicalBase64Image, syntheticPng } from "../helpers/redacted-inline-image-fixture.js";
+import { isCanonicalBase64Image, syntheticPng, syntheticPngWithAccessKeyId } from "../helpers/redacted-inline-image-fixture.js";
 
 describe("independent binary carrier boundary review", () => {
   test("validates five MiB of canonical base64 without a regex stack overflow", () => {
@@ -95,7 +95,8 @@ describe("independent binary carrier boundary review", () => {
       { role: "user", content: [
         { type: "text", text: Array.from({ length: 400 }, (_, index) =>
           `synthetic user attachment ${index}: measured item=${index};\n`).join("") },
-        { type: "image_url", image_url: { url: syntheticPng(collision) } },
+        // The durable record omits an image whose base64 a secret rule other than the base58 one matches.
+        { type: "image_url", image_url: { url: collision ? syntheticPngWithAccessKeyId() : syntheticPng(false) } },
       ] },
     ];
     const harness = createCompactionTransactionHarness([], {
