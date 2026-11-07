@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { REDACTED_SECRET, redactSecrets, redactSecretsInValue } from "../../src/secrets/sanitizer.js";
+import { createMemoizedSecretRedactor, REDACTED_SECRET, redactSecrets, redactSecretsInValue } from "../../src/secrets/sanitizer.js";
 import { llmMessageToDurableResponseItem } from "../../src/session/message-history-conversion.js";
 import { serializeRolloutItem } from "../../src/session/rollout-item.js";
 import { imageEndsAtEndMarker, inspectImageBytes } from "../../src/utils/image-validation.js";
@@ -191,5 +191,32 @@ describe("an image with bytes after its end marker keeps the rule", () => {
     expect(imageEndsAtEndMarker(Buffer.concat([webp, Buffer.alloc(2)]))).toBe(false);
     expect(imageEndsAtEndMarker(Buffer.from("not an image"))).toBe(false);
     expect(imageEndsAtEndMarker(Buffer.from(body(REAL_SCREENSHOT_CROP_JPEG), "base64"))).toBe(true);
+  });
+});
+
+// sec-rv1 item 5: the image body goes through the caller's string redactor with only the base58 rule off.
+describe("the caller's redactor handles an exempt body", () => {
+  const blocks = () => [
+    imageUrlBlock(syntheticPng(true)), imageUrlBlock(REAL_SCREENSHOT_CROP_JPEG),
+    imageUrlBlock(`data:${BASE58_SECRET_KEY};base64,${body(syntheticPng(false))}`),
+    imageUrlBlock(syntheticPngWithAccessKeyId()), imageUrlBlock(REAL_SCREENSHOT_CROP_JPEG, { detail: BASE58_SECRET_KEY }),
+    { type: "image", source: { type: "base64", media_type: "image/png", data: body(syntheticPng(true)) } },
+  ];
+
+  test("a memoized redactor gives what the plain one gives", () => {
+    const memo = createMemoizedSecretRedactor();
+    for (const round of [1, 2]) {
+      for (const block of blocks()) expect(memo(block), `round ${round}`).toEqual(redactSecretsInValue(block));
+    }
+  });
+
+  test("a memoized redactor never remembers an exempt body as clean text", () => {
+    const memo = createMemoizedSecretRedactor();
+    const url = syntheticPng(true);
+    for (let round = 0; round < 2; round += 1) {
+      expect(memo(imageUrlBlock(url))).toEqual(imageUrlBlock(url));
+      expect(memo({ note: body(url) }).note).toContain(REDACTED_SECRET);
+      expect(memo({ note: url }).note).toContain(REDACTED_SECRET);
+    }
   });
 });

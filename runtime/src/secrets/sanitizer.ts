@@ -641,11 +641,17 @@ export type RedactableJson =
 
 /** Redacts common API keys, access tokens, bearer tokens, JWTs, and secret assignments. */
 export function redactSecrets(input: string): string {
-  return redactSecretsWithRules(input, true);
+  return redactSecretsWithRules(input);
 }
 
+/**
+ * A string redactor of redactValue: every rule, or every rule but the base58
+ * wallet-key rule when `base58WalletKeys` is false (a validated image body).
+ */
+type StringRedactor = (input: string, base58WalletKeys?: boolean) => string;
+
 /** Every rule of redactSecrets; the base58 wallet-key rule only when `base58WalletKeys` is true. */
-function redactSecretsWithRules(input: string, base58WalletKeys: boolean): string {
+function redactSecretsWithRules(input: string, base58WalletKeys = true): string {
   let redacted = input;
   for (const { pattern, replacement } of SECRET_PATTERNS) {
     if (!base58WalletKeys && pattern === BASE58_WALLET_KEY_PATTERN) continue;
@@ -686,12 +692,15 @@ export function createMemoizedSecretRedactor(): typeof redactSecretsInValue {
   const maxCodeUnits = 131_072;
   const maxEntries = 256;
   let codeUnits = 0;
-  const redactString = (input: string): string => {
+  const redactString: StringRedactor = (input, base58WalletKeys = true) => {
+    // Unchanged by every rule, so also by every rule but one.
     if (clean.has(input)) {
       clean.delete(input);
       clean.add(input);
       return input;
     }
+    // A string one rule did not check is never remembered as clean.
+    if (!base58WalletKeys) return redactSecretsWithRules(input, false);
     const output = redactSecrets(input);
     if (output !== input || input.length < 32 || input.length > 32_768) {
       return output;
@@ -720,7 +729,7 @@ function createRedactionSeen() {
 function redactValue(
   value: unknown,
   seen: ReturnType<typeof createRedactionSeen>,
-  redactString: (input: string) => string = redactSecrets,
+  redactString: StringRedactor = redactSecretsWithRules,
   sensitive = false,
 ): unknown {
   // Flags such as request_user_input.isSecret are protocol structure, not
@@ -804,7 +813,7 @@ function redactImageBodyHolder(
   holder: Record<string, unknown>,
   field: string,
   seen: ReturnType<typeof createRedactionSeen>,
-  redactString: (input: string) => string,
+  redactString: StringRedactor,
 ): Record<string, unknown> {
   const output: Record<string, unknown> = {};
   for (const [key, nested] of Object.entries(holder)) {
@@ -813,7 +822,7 @@ function redactImageBodyHolder(
       continue;
     }
     const bodyStart = field === "url" ? nested.indexOf(",") + 1 : 0;
-    output[key] = redactString(nested.slice(0, bodyStart)) + redactSecretsWithRules(nested.slice(bodyStart), false);
+    output[key] = redactString(nested.slice(0, bodyStart)) + redactString(nested.slice(bodyStart), false);
   }
   return output;
 }
