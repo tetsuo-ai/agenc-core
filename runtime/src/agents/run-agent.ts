@@ -184,6 +184,7 @@ import {
 import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
 import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
+import { findToolTurnValidationIssue } from "../llm/tool-turn-validator.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 
 import { CompletedTaskResults } from "./completed-task-results.js";
@@ -3488,6 +3489,21 @@ function buildChildModelInfo(
   };
 }
 
+/**
+ * An inherited tool result carries the seal of the run that produced it (the
+ * parent's). The child's rollout accepts only results sealed for the child's
+ * own run, so the inherited copy drops the parent's seal and is sealed again
+ * when the child writes it. Nothing the provider receives changes.
+ */
+function withoutOtherRunToolResultSeal(message: LLMMessage, childRunId: string): LLMMessage {
+  const seal = message.runtimeOnly?.toolResultIntegrity;
+  if (seal === undefined || seal.runId === childRunId) return message;
+  const { toolResultIntegrity: _otherRunSeal, ...runtimeOnly } = message.runtimeOnly!;
+  if (Object.keys(runtimeOnly).length > 0) return { ...message, runtimeOnly };
+  const { runtimeOnly: _runtimeOnly, ...unsealed } = message;
+  return unsealed;
+}
+
 function splitInitialMessages(
   initialMessages: ReadonlyArray<LLMMessage>,
   fallbackUserMessage: string,
@@ -4620,12 +4636,26 @@ export async function* runAgent(
     }
     await refreshChildBaseInstructions(parent, childSession, params.plan?.destination);
     revokeLiveSession = bindLiveAgentSession(live, childSession);
-    const {
-      history,
-      userMessage,
-      userMessageRuntimeOnly,
-      requiresInitialHistoryDurability,
-    } = splitInitialMessages(params.initialMessages, params.taskPrompt);
+    const initial = splitInitialMessages(params.initialMessages, params.taskPrompt);
+    const { userMessage, userMessageRuntimeOnly } = initial;
+    // A forked child starts from its parent's messages. Its compaction can only
+    // summarize records of its own rollout (the history it offers must be an
+    // ordered projection of its canonical history), so the inherited messages
+    // are written there before the first request, as an invocation seed is.
+    // A rollout takes only complete tool turns: a fork that kept tool calls
+    // without their results (a fork read from the parent's rollout drops the
+    // results), or a child without a durable rollout, keeps the inherited
+    // messages in memory only, as before.
+    const persistInheritedHistory = initial.history.length > 0 &&
+      childSession.rolloutStore !== null && childSession.rolloutStore !== undefined &&
+      childSession.isRolloutPersistenceSuspended?.() !== true &&
+      findToolTurnValidationIssue(initial.history) === null;
+    const childRunId = childSession.conversationId;
+    const history = persistInheritedHistory
+      ? initial.history.map((message) => withoutOtherRunToolResultSeal(message, childRunId))
+      : initial.history;
+    const requiresInitialHistoryDurability =
+      initial.requiresInitialHistoryDurability || persistInheritedHistory;
     const activeChildSession = childSession;
     let sawTokenCountThisTurn = false;
     unsubscribeChildUsage = activeChildSession.eventLog.subscribe((event) => {
