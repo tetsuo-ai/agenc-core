@@ -47,13 +47,24 @@ export interface CoreCatalogSwitch {
   expandCoreCatalog?(): void;
 }
 
-// Sessions whose rollout already holds their switch: written by this process,
-// or restored from the conversation.
+// Sessions and conversations whose rollout already holds their switch:
+// written by this process, or restored from the conversation.
 const savedCoreCatalogSwitches = new WeakSet<object>();
 
 /**
+ * The conversation a session object writes to: its rollout store. Objects
+ * derived from a session, such as the admission session of each compaction
+ * attempt (services/compact/transaction.ts), share it, so the conversation
+ * gets the line once and not once per object.
+ */
+function conversationKey(sessionKey: object): object {
+  const store = (sessionKey as { readonly rolloutStore?: unknown }).rolloutStore;
+  return typeof store === "object" && store !== null ? store : sessionKey;
+}
+
+/**
  * The switch to the full core schemas as its own small session_state line,
- * once per session, at the first event after it happens. The prompt cache
+ * once per conversation, at the first event after it happens. The prompt cache
  * state carries it too, but that is written only at turn end and dropped
  * whole when it reaches the recovery line limit, so a process that died in
  * the switching turn, or a large state, lost the switch, and the resumed
@@ -62,8 +73,10 @@ const savedCoreCatalogSwitches = new WeakSet<object>();
  * caused the switch.
  */
 export function coreCatalogSwitchItem(sessionKey: object, registry?: CoreCatalogSwitch): RolloutItem | undefined {
-  if (savedCoreCatalogSwitches.has(sessionKey) || registry?.isCoreCatalogExpanded?.() !== true) return undefined;
-  savedCoreCatalogSwitches.add(sessionKey);
+  const conversation = conversationKey(sessionKey);
+  if (savedCoreCatalogSwitches.has(sessionKey)) savedCoreCatalogSwitches.add(conversation);
+  if (savedCoreCatalogSwitches.has(conversation) || registry?.isCoreCatalogExpanded?.() !== true) return undefined;
+  savedCoreCatalogSwitches.add(sessionKey).add(conversation);
   return { type: "session_state", payload: { coreCatalog: "expanded" } };
 }
 
@@ -148,7 +161,7 @@ export function restorePromptCacheState(
 ): void {
   if (savedCoreCatalogSwitch(items)) {
     registry?.expandCoreCatalog?.();
-    savedCoreCatalogSwitches.add(sessionKey);
+    savedCoreCatalogSwitches.add(sessionKey).add(conversationKey(sessionKey));
   }
   for (let index = items.length - 1; index >= 0; index--) {
     const item = items[index];
