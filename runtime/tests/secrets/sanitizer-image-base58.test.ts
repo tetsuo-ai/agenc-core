@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import { REDACTED_SECRET, redactSecrets, redactSecretsInValue } from "../../src/secrets/sanitizer.js";
+import { llmMessageToDurableResponseItem } from "../../src/session/message-history-conversion.js";
+import { serializeRolloutItem } from "../../src/session/rollout-item.js";
 import { REAL_SCREENSHOT_CROP_JPEG } from "../helpers/real-screenshot-crop.js";
 import { syntheticPng, syntheticPngWithAccessKeyId } from "../helpers/redacted-inline-image-fixture.js";
 
@@ -94,5 +96,34 @@ describe("a base58 key is still redacted", () => {
       .toEqual({ token: { type: REDACTED_SECRET, image_url: { url: REDACTED_SECRET } } });
     const lookalike = { type: "input_image", image_url: { url: REAL_SCREENSHOT_CROP_JPEG } };
     expect(JSON.stringify(redactSecretsInValue(lookalike))).toContain(REDACTED_SECRET);
+  });
+});
+
+// sec-rv1 item 1: the whole data URL used to skip the rule, so a key placed in the media type was saved verbatim.
+describe("only the body of a data URL with an image media type skips the rule", () => {
+  const pngBody = body(syntheticPng(false));
+  test.each([
+    `data:${BASE58_SECRET_KEY};base64,${pngBody}`,
+    `data:wallet ${BASE58_SECRET_KEY} x;base64,${pngBody}`,
+    `data:image/png;name=${BASE58_SECRET_KEY};base64,${pngBody}`,
+    `data:IMAGE/PNG;base64,${body(syntheticPng(true))}`,
+  ])("%#: every rule runs on a data URL that does not start with an image media type", (url) => {
+    for (const block of [imageUrlBlock(url), { type: "image", source: { url } }]) {
+      const redacted = JSON.stringify(redactSecretsInValue(block));
+      expect(redacted).not.toContain(BASE58_SECRET_KEY);
+      expect(redacted).toContain(REDACTED_SECRET);
+    }
+    const line = serializeRolloutItem({ type: "response_item", payload: llmMessageToDurableResponseItem({
+      role: "tool", toolCallId: "read", toolName: "FileRead",
+      content: [{ type: "text", text: "Read image shot.png" }, { type: "image_url", image_url: { url } }],
+    }) });
+    expect(line).not.toContain(BASE58_SECRET_KEY);
+  });
+
+  test("the four image media types keep their body", () => {
+    for (const media of ["png", "jpeg", "gif", "webp"]) {
+      const url = `data:image/${media};base64,${body(syntheticPng(true))}`;
+      expect(redactSecretsInValue(imageUrlBlock(url))).toEqual(imageUrlBlock(url));
+    }
   });
 });

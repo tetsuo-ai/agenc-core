@@ -760,12 +760,14 @@ function redactValue(
 /**
  * Where an image content block keeps its base64 body, when that body is
  * canonical base64 of a complete PNG, JPEG, GIF or WebP image (inspectImageBytes,
- * the check the image path uses): `image_url.url` or `source.url` as a data URL,
- * or `source.data`. Only that body skips the base58 wallet-key rule. Base64 does
+ * the check the image path uses): `image_url.url` or `source.url` as a data URL
+ * that starts exactly with `data:image/(png|jpeg|gif|webp);base64,`, or
+ * `source.data`. Only that body skips the base58 wallet-key rule. Base64 does
  * not carry a key's base58 text verbatim unless it was crafted to, while the rule
  * matched a base58 run in almost every real screenshot, so durable persistence
  * dropped the screenshots. Every other rule still applies to the body, and every
- * rule applies to the block's other fields and to any body that does not validate.
+ * rule applies to the data URL's prefix, the block's other fields and any body
+ * that does not validate.
  */
 function validatedImageBody(
   value: Record<string, unknown>,
@@ -785,7 +787,7 @@ function validatedImageBody(
   return undefined;
 }
 
-const IMAGE_DATA_URL_BODY = /^data:[^;,]+;base64,([A-Za-z0-9+/]*={0,2})$/u;
+const IMAGE_DATA_URL_BODY = /^data:image\/(?:png|jpeg|gif|webp);base64,([A-Za-z0-9+/]*={0,2})$/u;
 
 function isCompleteImageBase64(body: string): boolean {
   if (body.length === 0 || body.length % 4 !== 0) return false;
@@ -793,7 +795,10 @@ function isCompleteImageBase64(body: string): boolean {
   return bytes.toString("base64") === body && inspectImageBytes(bytes).ok;
 }
 
-/** The fields of an image block's `image_url` or `source`: the validated body without the base58 rule, the rest as usual. */
+/**
+ * The fields of an image block's `image_url` or `source`: the validated body
+ * without the base58 rule, a data URL's prefix and every other field as usual.
+ */
 function redactImageBodyHolder(
   holder: Record<string, unknown>,
   field: string,
@@ -802,9 +807,12 @@ function redactImageBodyHolder(
 ): Record<string, unknown> {
   const output: Record<string, unknown> = {};
   for (const [key, nested] of Object.entries(holder)) {
-    output[key] = key === field && typeof nested === "string"
-      ? redactSecretsWithRules(nested, false)
-      : redactValue(nested, seen, redactString, isSensitiveKey(key));
+    if (key !== field || typeof nested !== "string") {
+      output[key] = redactValue(nested, seen, redactString, isSensitiveKey(key));
+      continue;
+    }
+    const bodyStart = field === "url" ? nested.indexOf(",") + 1 : 0;
+    output[key] = redactString(nested.slice(0, bodyStart)) + redactSecretsWithRules(nested.slice(bodyStart), false);
   }
   return output;
 }
