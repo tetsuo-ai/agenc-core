@@ -13,6 +13,7 @@
 
 import { readBeforeWriteMessage } from "../system/read-before-write.js";
 import { mayProvePrintedRead, provePrintedRead } from "../system/printed-read-proof.js";
+import { mayProveOwnShellCreation, proveOwnShellCreation } from "../system/own-shell-changes.js";
 import { open, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { loadDiff } from "../../utils/lazy-runtime-packages.js";
@@ -908,6 +909,15 @@ async function applyHunksToFilesInner(
       // bytes so the ordinary drift gate still catches later changes.
       await provePrintedRead(sessionId, pathAbs, opts.allowedPaths, opts.rawArgs ?? {});
       assertApplyPatchActive(control, "printed-read validation");
+    }
+    if (
+      sessionId !== undefined &&
+      !isAuthorizingSessionRead(getSessionReadSnapshot(sessionId, pathAbs)) &&
+      mayProveOwnShellCreation(sessionId, pathAbs)
+    ) {
+      // So does a file a command of the session created and left as is.
+      await proveOwnShellCreation(sessionId, pathAbs, opts.allowedPaths, opts.rawArgs ?? {});
+      assertApplyPatchActive(control, "created-file validation");
     }
   };
   const planRead = async (pathAbs: string): Promise<string> => {

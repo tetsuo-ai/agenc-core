@@ -893,6 +893,60 @@ export function recordOwnShellChange(
   states.set(canonicalPath, { ...states.get(canonicalPath), own });
 }
 
+/**
+ * Files a command of the session created: absent when the command started,
+ * named by it, and a single-link regular file born during it when it returned
+ * (`tools/system/own-shell-changes.ts`). The state is the file's when the
+ * command returned. While the file keeps exactly that state it holds only what
+ * the session's own command wrote, so a Write or Edit may count it as read
+ * (no content the session did not make can be overwritten). A file a command
+ * only changed is never recorded here. Lives and is cleared with the session
+ * read state; bounded, oldest dropped first.
+ */
+const sessionOwnShellCreations = new Map<string, Map<string, FileStatFingerprint>>();
+const MAX_OWN_SHELL_CREATIONS_PER_SESSION = 4096;
+
+export function recordOwnShellCreation(
+  sessionId: string | undefined,
+  canonicalPath: string,
+  created: FileStatFingerprint,
+): void {
+  if (conversationReadScopeClosed()) return;
+  const resolved = resolveSessionReadId(sessionId);
+  if (!resolved || resolved.trim().length === 0) return;
+  let creations = sessionOwnShellCreations.get(resolved);
+  if (creations === undefined) {
+    creations = new Map();
+    sessionOwnShellCreations.set(resolved, creations);
+  }
+  creations.delete(canonicalPath);
+  creations.set(canonicalPath, created);
+  while (creations.size > MAX_OWN_SHELL_CREATIONS_PER_SESSION) {
+    const oldest = creations.keys().next().value;
+    if (oldest === undefined) break;
+    creations.delete(oldest);
+  }
+}
+
+export function ownShellCreationOf(
+  sessionId: string | undefined,
+  canonicalPath: string,
+): FileStatFingerprint | undefined {
+  if (conversationReadScopeClosed()) return undefined;
+  const resolved = resolveSessionReadId(sessionId);
+  if (!resolved || resolved.trim().length === 0) return undefined;
+  return sessionOwnShellCreations.get(resolved)?.get(canonicalPath);
+}
+
+export function forgetOwnShellCreation(
+  sessionId: string | undefined,
+  canonicalPath: string,
+): void {
+  const resolved = resolveSessionReadId(sessionId);
+  if (!resolved || resolved.trim().length === 0) return;
+  sessionOwnShellCreations.get(resolved)?.delete(canonicalPath);
+}
+
 /** Drop a single file's recorded snapshot. Used on ENOENT eviction. */
 export function dropSessionReadSnapshot(
   sessionId: string | undefined,
@@ -927,6 +981,7 @@ export function clearSessionReadState(
 ): void {
   sessionReadState.delete(sessionId);
   sessionFileViewStates.delete(sessionId);
+  sessionOwnShellCreations.delete(sessionId);
   try {
     rmSync(resolveLocalHistorySessionDir(sessionId, sessionTempRoot), {
       recursive: true,
@@ -944,6 +999,7 @@ export function clearSessionReadState(
 export function clearSessionReadCache(sessionId: string): void {
   sessionReadState.delete(sessionId);
   sessionFileViewStates.delete(sessionId);
+  sessionOwnShellCreations.delete(sessionId);
 }
 
 export interface SessionReadSnapshotExport {

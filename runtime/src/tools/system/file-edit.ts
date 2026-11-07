@@ -57,6 +57,7 @@ import {
 } from "./filesystem.js";
 import { readBeforeWriteMessage, unreadFilePreflight } from "./read-before-write.js";
 import { provePrintedRead } from "./printed-read-proof.js";
+import { proveOwnShellCreation } from "./own-shell-changes.js";
 import { checkMemorySecrets } from "../../memory/privacy.js";
 import {
   FILE_TOOL_PATH_SCHEMA,
@@ -1083,10 +1084,12 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         undefined;
       if (sessionId !== undefined) {
         recordedSnapshot = getSessionReadSnapshot(sessionId, absoluteFilePath);
-        // A file the model saw whole in a recent exec_command result counts as read.
+        // A file the model saw whole in a recent exec_command result counts as
+        // read, and so does one a command of the session created and left as is.
         if (
           !isAuthorizingSessionRead(recordedSnapshot) &&
-          await provePrintedRead(sessionId, absoluteFilePath, config.allowedPaths, rawArgs)
+          (await provePrintedRead(sessionId, absoluteFilePath, config.allowedPaths, rawArgs) ||
+            await proveOwnShellCreation(sessionId, absoluteFilePath, config.allowedPaths, rawArgs))
         ) {
           recordedSnapshot = getSessionReadSnapshot(sessionId, absoluteFilePath);
         }
@@ -1505,10 +1508,12 @@ function createMultiEditTool(config: FileEditToolConfig, originalDisjoint: boole
         undefined;
       if (sessionId !== undefined) {
         recordedSnapshot = getSessionReadSnapshot(sessionId, absoluteFilePath);
-        // A file the model saw whole in a recent exec_command result counts as read.
+        // A file the model saw whole in a recent exec_command result counts as
+        // read, and so does one a command of the session created and left as is.
         if (
           !isAuthorizingSessionRead(recordedSnapshot) &&
-          await provePrintedRead(sessionId, absoluteFilePath, config.allowedPaths, rawArgs)
+          (await provePrintedRead(sessionId, absoluteFilePath, config.allowedPaths, rawArgs) ||
+            await proveOwnShellCreation(sessionId, absoluteFilePath, config.allowedPaths, rawArgs))
         ) {
           recordedSnapshot = getSessionReadSnapshot(sessionId, absoluteFilePath);
         }

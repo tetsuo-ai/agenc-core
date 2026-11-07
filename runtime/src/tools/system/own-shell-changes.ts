@@ -26,11 +26,22 @@
  * file still asks for a read first. Every other change, during the command or
  * not, is sent as before.
  *
+ * A file the command created is recorded too: a path a whole shell word of the
+ * command names (the rule above), that the sandbox lets it write, that did not
+ * exist when the command started and that, when it returns, is a regular file
+ * with a single link born and last modified during the command. While the file
+ * keeps exactly that state it holds only what the session's own command wrote,
+ * so a Write, Edit or apply_patch may count it as read
+ * ({@link proveOwnShellCreation}): no content the session did not make can be
+ * overwritten. A file a command only changed, or changed again after creating
+ * it, still needs a read. The changed-files attachment does not watch a created
+ * file until a file tool writes it.
+ *
  * @module
  */
 
-import { realpathSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { constants as fsConstants, lstatSync, realpathSync } from "node:fs";
+import { open, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 
 import { canWritePathWithCwd } from "../../sandbox/engine/policy.js";
@@ -40,8 +51,13 @@ import {
   fileStatFingerprint,
   fileViewStateOf,
   forEachSessionRead,
+  forgetOwnShellCreation,
+  ownShellCreationOf,
   recordOwnShellChange,
+  recordOwnShellCreation,
+  recordSessionRead,
   resolveSessionId,
+  safePathAllowingSessionPlanFile,
   sameFileStat,
   type FileStatFingerprint,
 } from "./filesystem.js";
@@ -207,10 +223,10 @@ async function statFingerprint(path: string): Promise<FileStatFingerprint | unde
 async function creditableFiles(
   sessionId: string,
   scope: ShellCommandScope,
+  paths: ReadonlySet<string>,
 ): Promise<Map<string, FileStatFingerprint>> {
   const named: Array<{ readonly path: string; readonly bytes: number }> = [];
-  if (scope.command.length === 0) return new Map();
-  const paths = commandNamedPaths(scope.command, scope.cwd);
+  if (paths.size === 0) return new Map();
   forEachSessionRead(sessionId, (path, snapshot) => {
     // The producer's own selection: full views that carry their raw bytes.
     if (typeof snapshot.rawContent !== "string" || snapshot.isPartialView === true) return;
@@ -239,9 +255,67 @@ function isImageSnapshot(path: string): boolean {
   return IMAGE_EXTENSIONS.test(path);
 }
 
+/** Named paths checked for a creation per command; a longer command's later words are not. */
+const MAX_CREATION_CANDIDATES = 1024;
+/**
+ * How far before the command's start a created file's times may fall: file
+ * times come from a coarser clock than `Date.now()`, and FAT keeps two-second
+ * modification times. A renamed older file has older times.
+ */
+const CREATION_CLOCK_SLACK_MS = 2_000;
+
+/** Paths the command names that do not exist yet: the files it may create. */
+function absentNamedPaths(paths: ReadonlySet<string>): string[] {
+  const absent: string[] = [];
+  let checked = 0;
+  for (const path of paths) {
+    checked += 1;
+    if (checked > MAX_CREATION_CANDIDATES) break;
+    try {
+      if (lstatSync(path, { throwIfNoEntry: false }) === undefined) absent.push(path);
+    } catch {
+      // Not a creatable path (a file where a directory is named, a name too long): never a creation.
+    }
+  }
+  return absent;
+}
+
+/**
+ * Record each absent named path that the command left as a regular file with a
+ * single link, born and last modified during the command, that the sandbox
+ * let it write. A hard link or a renamed older file is not a creation.
+ */
+function recordCreatedFiles(
+  sessionId: string,
+  scope: ShellCommandScope,
+  absent: readonly string[],
+  startedAtMs: number,
+): void {
+  const earliest = startedAtMs - CREATION_CLOCK_SLACK_MS;
+  for (const path of absent) {
+    try {
+      // Most named words were never files: one cheap synchronous lstat each.
+      const created = lstatSync(path, { throwIfNoEntry: false });
+      if (created === undefined || !created.isFile() || created.nlink !== 1 || created.mtimeMs < earliest) continue;
+      // A file system that keeps no birth time reports zero.
+      if (created.birthtimeMs > 0 && created.birthtimeMs < earliest) continue;
+      if (!sandboxMayWrite(scope.runtimeSandbox, path)) continue;
+      const canonical = realpathSync(path);
+      recordOwnShellCreation(
+        sessionId,
+        process.platform === "win32" ? canonical.normalize("NFC") : canonical,
+        fileStatFingerprint(created),
+      );
+    } catch {
+      // A path that cannot be inspected is not recorded.
+    }
+  }
+}
+
 /**
  * Run one shell call of the session (`run`) and record which read files it
- * changed (see the module comment). Without a session id it only runs the call.
+ * changed and which named files it created (see the module comment). Without a
+ * session id it only runs the call.
  */
 export async function trackOwnShellChanges<T>(
   args: Record<string, unknown>,
@@ -249,7 +323,12 @@ export async function trackOwnShellChanges<T>(
   run: () => Promise<T>,
 ): Promise<T> {
   const sessionId = resolveSessionId(args);
-  const before = sessionId === undefined ? undefined : await creditableFiles(sessionId, scope);
+  const startedAtMs = Date.now();
+  const named = sessionId === undefined || scope.command.length === 0
+    ? new Set<string>()
+    : commandNamedPaths(scope.command, scope.cwd);
+  const before = sessionId === undefined ? undefined : await creditableFiles(sessionId, scope, named);
+  const absent = absentNamedPaths(named);
   try {
     return await run();
   } finally {
@@ -263,7 +342,85 @@ export async function trackOwnShellChanges<T>(
         }),
       );
     }
+    if (sessionId !== undefined && absent.length > 0) {
+      recordCreatedFiles(sessionId, scope, absent, startedAtMs);
+    }
   }
+}
+
+/** Largest created file a Write or Edit may count as read without a FileRead. */
+const CREATION_PROOF_MAX_BYTES = 2 * 1024 * 1024;
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+/**
+ * The text of a created file, read from one descriptor that does not follow a
+ * symlink, when its state before and after the read is the state its command
+ * left; undefined for anything else (changed since, binary, too large).
+ */
+async function createdFileText(
+  path: string,
+  created: FileStatFingerprint,
+): Promise<string | undefined> {
+  const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0) | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || before.size > CREATION_PROOF_MAX_BYTES ||
+        !sameFileStat(fileStatFingerprint(before), created)) return undefined;
+    // At most the stat size plus one byte: a file that grew is refused.
+    const buffer = Buffer.alloc(before.size + 1);
+    let filled = 0;
+    while (filled < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, filled);
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+    if (filled !== before.size) return undefined;
+    if (!sameFileStat(fileStatFingerprint(await handle.stat()), created)) return undefined;
+    const bytes = buffer.subarray(0, filled);
+    if (bytes.includes(0)) return undefined;
+    return STRICT_UTF8.decode(bytes);
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Whether a command of the session recorded creating `canonicalPath`. Path check only, for the preflight. */
+export function mayProveOwnShellCreation(sessionId: string, canonicalPath: string): boolean {
+  return ownShellCreationOf(sessionId, canonicalPath) !== undefined;
+}
+
+/**
+ * Counts `file` as read when a command of the session created it and it still
+ * has exactly the state that command left: it then holds only what the
+ * session's own command wrote. Records the read as a full view of its current
+ * text, as a FileRead would, so the write's own drift checks apply. Returns
+ * whether the read was recorded.
+ */
+export async function proveOwnShellCreation(
+  sessionId: string,
+  file: string,
+  allowedPaths: readonly string[],
+  args: Record<string, unknown>,
+): Promise<boolean> {
+  const safe = await safePathAllowingSessionPlanFile(file, allowedPaths, args);
+  if (!safe.safe) return false;
+  const created = ownShellCreationOf(sessionId, safe.resolved);
+  if (created === undefined) return false;
+  let text: string | undefined;
+  try {
+    text = await createdFileText(safe.resolved, created);
+  } catch {
+    text = undefined;
+  }
+  if (text === undefined) return false;
+  recordSessionRead(sessionId, safe.resolved, {
+    content: text.split(/\r?\n/u).join("\n"),
+    timestamp: created.mtimeMs,
+    viewKind: "full",
+    rawContent: text,
+  });
+  forgetOwnShellCreation(sessionId, safe.resolved);
+  return true;
 }
 
 /**

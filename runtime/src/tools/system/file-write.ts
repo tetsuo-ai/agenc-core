@@ -57,6 +57,7 @@ import {
 } from "./filesystem.js";
 import { readBeforeWriteMessage, unreadFilePreflight } from "./read-before-write.js";
 import { provePrintedRead } from "./printed-read-proof.js";
+import { proveOwnShellCreation } from "./own-shell-changes.js";
 import { checkMemorySecrets } from "../../memory/privacy.js";
 import {
   FILE_TOOL_PATH_SCHEMA,
@@ -435,9 +436,13 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
       // tests and embedded contexts keep working — same convention as
       // `Edit`'s gate.
       if (existed && sessionId !== undefined) {
-        // A file the model saw whole in a recent exec_command result counts as read.
+        // A file the model saw whole in a recent exec_command result counts as
+        // read, and so does one a command of the session created and left as is.
         if (!hasSessionRead(sessionId, absolutePath)) {
           await provePrintedRead(sessionId, absolutePath, allowedPaths, rawArgs);
+        }
+        if (!hasSessionRead(sessionId, absolutePath)) {
+          await proveOwnShellCreation(sessionId, absolutePath, allowedPaths, rawArgs);
         }
         if (!hasSessionRead(sessionId, absolutePath)) {
           return preMutationErrorResult(readBeforeWriteMessage([absolutePath]));
