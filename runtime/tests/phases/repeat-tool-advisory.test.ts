@@ -941,6 +941,78 @@ describe("blockRepeatedFailingCall", () => {
       expect(blockRepeatedFailingCall(state, session, write)?.preventContinuation).toBe(true);
     });
 
+    // fix31s review residual: a new state-changing command or new input between retries restarted the count every
+    // time, so a loop that did something new between retries was never stopped. A command or input now restarts a
+    // failing call once per error; a file change or a different error restarts it again.
+    const EPERM = "listen EPERM: operation not permitted 0.0.0.0:3000\n\n[exec exit_code=1 wall_time=0.2s tokens=12]";
+    const ran = (cmd: string, id: string) => completed(call("exec_command", { cmd }, id), "\n\n[exec exit_code=0]", false);
+
+    test("a retry loop with a new state-changing command between cycles is stopped like one with the same command", () => {
+      expect(attemptsUntilStop((c) => ran(`touch f-${c}`, `t-${c}`))).toBe(9);
+      expect(attemptsUntilStop((c) => ran(`python3 -c "print(${c})"`, `py-${c}`))).toBe(9);
+      expect(attemptsUntilStop((c) =>
+        completed(call("write_stdin", { session_id: 7, chars: `answer ${c}\n` }, `in-${c}`), "ok", false))).toBe(9);
+    });
+
+    /**
+     * One attempt of a failing `npm start`, then one other thing, as a model that checks something after each
+     * failure. Returns the attempt at which a refusal ended the turn, or Infinity after 40 attempts.
+     */
+    function alternatingAttemptsUntilStop(
+      between: (attempt: number) => CompletedToolResultRecord,
+      error: (attempt: number) => string = () => EPERM,
+    ): number {
+      const { session } = mkSessionStub();
+      const state = mkState([], 1);
+      for (let attempt = 1; attempt <= 40; attempt += 1) {
+        state.modelSampleOrdinal += 1;
+        const retry = call("exec_command", { cmd: "npm start" }, `a-${attempt}`);
+        const blocked = blockRepeatedFailingCall(state, session, retry);
+        if (blocked === null) {
+          state.completedToolResults.push(completed(retry, error(attempt), true));
+        } else {
+          state.completedToolResults.push(completed(retry, blocked.content, true, blocked.metadata));
+          if (blocked.preventContinuation === true) return attempt;
+        }
+        state.modelSampleOrdinal += 1;
+        state.completedToolResults.push(between(attempt));
+      }
+      return Number.POSITIVE_INFINITY;
+    }
+
+    test("a retry after each new diagnostic command is refused once the commands stop changing its error", () => {
+      expect(alternatingAttemptsUntilStop((n) => ran(`lsof -i :300${n}`, `l-${n}`))).toBe(6);
+      expect(alternatingAttemptsUntilStop((n) => ran(`ps aux | grep -c node-${n}`, `p-${n}`))).toBe(6);
+    });
+
+    test("a command that changes the failing call's error restarts its count each time", () => {
+      expect(alternatingAttemptsUntilStop((n) => ran(`npm install dep-${n}`, `i-${n}`),
+        (n) => `Error: Cannot find module 'dep-${n}'\n\n[exec exit_code=1 wall_time=0.3s tokens=9]`))
+        .toBe(Number.POSITIVE_INFINITY);
+    });
+
+    test("one command restarts a failing call, a second one for the same error does not, a file change does", () => {
+      const { session } = mkSessionStub();
+      const start = call("exec_command", { cmd: "npm start" }, "s");
+      const fail = (id: string) => completed({ ...start, id }, EPERM, true);
+      const state = mkState([fail("s-0"), fail("s-1"), fail("s-2"), ran("npm install", "i-0")], 4);
+      // The install may have fixed it, so the call runs again.
+      expect(blockRepeatedFailingCall(state, session, start)).toBeNull();
+      state.completedToolResults.push(fail("s-3"), fail("s-4"), fail("s-5"), ran("npm ci", "i-1"));
+      state.modelSampleOrdinal = 8;
+      // It failed the same way three more times: another command does not restart it.
+      const refused = blockRepeatedFailingCall(state, session, start);
+      expect(refused).not.toBeNull();
+      expect(refused?.preventContinuation).toBeUndefined();
+      state.completedToolResults.push(
+        completed({ ...start, id: "s-r" }, refused!.content, true, refused!.metadata),
+        completed(call("apply_patch", { input: "*** Begin Patch\n*** Update File: server.js" }, "p"),
+          "Success. Updated the following files:\nM server.js", false),
+      );
+      state.modelSampleOrdinal = 9;
+      expect(blockRepeatedFailingCall(state, session, start)).toBeNull();
+    });
+
     // Flt30-11 (lt30-1931-mpv-C-r1 on 0.19.30, requests 12 to 16): after the
     // last apply_patch, the same grep and node --check calls were refused for
     // sandbox_permissions "use_default" until the turn stopped. That value
