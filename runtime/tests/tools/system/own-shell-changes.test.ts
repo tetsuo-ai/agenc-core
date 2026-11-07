@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -20,7 +20,7 @@ import {
   recordSessionRead,
   SESSION_ID_ARG,
 } from "./filesystem.js";
-import { commandNamesFile } from "./own-shell-changes.js";
+import { commandNamedPaths } from "./own-shell-changes.js";
 import { createWriteStdinTool } from "./write-stdin.js";
 import { attachToolRuntimeContext } from "../runtimes/context.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
@@ -86,10 +86,11 @@ function exec(cmd: string, extra: Record<string, unknown> = {}, execManager: Uni
   return bound.execute(shellArgs("exec_command", { cmd, ...extra }, { sandbox }));
 }
 
-function poll(sessionId: number, yieldMs: number, execManager: UnifiedExecProcessManagerLike = manager, sandbox: Sandbox = "danger") {
+function poll(sessionId: number, yieldMs: number, execManager: UnifiedExecProcessManagerLike = manager, sandbox: Sandbox = "danger",
+              chars = "") {
   const tool = createWriteStdinTool({ cwd: root, allowedPaths: [root], lightMode: true, unifiedExecManager: execManager });
   const bound = sandbox === "danger" ? bindExplicitDangerBoundary(tool) : tool;
-  return bound.execute(shellArgs("write_stdin", { session_id: sessionId, chars: "", yield_time_ms: yieldMs }, { sandbox }));
+  return bound.execute(shellArgs("write_stdin", { session_id: sessionId, chars, yield_time_ms: yieldMs }, { sandbox }));
 }
 
 async function write(file: string, content: string, sessionId = session) {
@@ -192,22 +193,57 @@ test("two of the session's commands naming the file before the next request send
   expect(await attachments()).toEqual([]);
 });
 
-test("a change made while the session polls a process whose command names the file is its own", async () => {
+test("P8: a poll credits only paths named in its own input, not the command of the process it waits on", async () => {
   const csv = join(root, "proof.csv");
   await write(csv, "1,A\n");
   expect(await attachments()).toEqual([]);
-  const started = await exec(
-    "while [ ! -e go ]; do sleep 0.05; done; printf '2,B\\n' >> proof.csv; echo appended",
-    { yield_time_ms: 200 },
-  );
+  // The process names proof.csv but only reads it.
+  const started = await exec("while [ ! -e go ]; do sleep 0.05; done; cat proof.csv; echo read", { yield_time_ms: 200 });
   const sessionId = (started.codeModeResult as { session_id?: number }).session_id;
   expect(sessionId, String(started.content)).toEqual(expect.any(Number));
   const polled = poll(sessionId!, 10_000);
   await delay(300);
+  await outsideAppend(csv, "9,USER");
   await writeFile(join(root, "go"), "");
-  expect(String((await polled).content)).toContain("appended");
-  expect(await readFile(csv, "utf8")).toBe("1,A\n2,B\n");
+  expect(String((await polled).content)).toContain("read");
+  expect(await allAttachments()).toEqual([expect.objectContaining({ kind: "edited_text_file", filename: csv })]);
+}, 20_000);
+
+test("input a write_stdin call sends that names a file credits the change to the session", async () => {
+  const csv = join(root, "proof.csv");
+  await write(csv, "1,A\n");
   expect(await attachments()).toEqual([]);
+  const started = await exec("bash --noprofile --norc", { tty: true, yield_time_ms: 500 });
+  const sessionId = (started.codeModeResult as { session_id?: number }).session_id;
+  expect(sessionId, String(started.content)).toEqual(expect.any(Number));
+  const tool = bindExplicitDangerBoundary(createWriteStdinTool({ cwd: root, allowedPaths: [root], lightMode: true, unifiedExecManager: manager }));
+  const typed = await tool.execute(shellArgs("write_stdin", {
+    session_id: sessionId, chars: "printf '2,B\\n' >> proof.csv; echo typed\n", yield_time_ms: 2_000,
+  }));
+  expect(String(typed.content)).toContain("typed");
+  expect(await readFile(csv, "utf8")).toBe("1,A\n2,B\n");
+  expect(await allAttachments()).toEqual([expect.objectContaining({ kind: "own_shell_change_notice", filename: csv })]);
+}, 20_000);
+
+test("P7: a command naming b/index.ts does not credit a change to a/index.ts", async () => {
+  const other = `${session}-second`;
+  sessions.push(other);
+  const a = join(root, "a/index.ts");
+  const b = join(root, "b/index.ts");
+  await mkdir(join(root, "a"));
+  await mkdir(join(root, "b"));
+  await write(a, "export const a = 1;\n");
+  await write(b, "export const b = 1;\n");
+  expect(await allAttachments()).toEqual([]);
+  const running = exec("sleep 1; cat b/index.ts");
+  await delay(300);
+  expect((await read(a, other)).isError).not.toBe(true);
+  const edited = await edit(a, "a = 1", "a = 2", other);
+  expect(edited.isError, String(edited.content)).not.toBe(true);
+  await running;
+  const out = await allAttachments();
+  expect(out).toEqual([expect.objectContaining({ kind: "edited_text_file", filename: a })]);
+  expect((out[0] as { snippet: string }).snippet).toContain("a = 2");
 }, 20_000);
 
 test("P1: after a command copies other bytes over a read file, a Write from the old view is refused", async () => {
@@ -284,8 +320,9 @@ test("P4: in a read-only sandbox nothing is credited to exec_command, write_stdi
   const started = await exec("cat proof.csv", {}, writer, "read_only");
   expect(started.isError, String(started.content)).not.toBe(true);
   expect(snippetOf(await attachments())).toContain("2,OUTSIDE");
-  // write_stdin polling that process.
-  expect((await poll(7, 1_000, writer, "read_only")).isError, "poll").not.toBe(true);
+  // write_stdin sending that process input that names the file.
+  const sent = await poll(7, 1_000, writer, "read_only", "cat proof.csv\n");
+  expect(sent.isError, String(sent.content)).not.toBe(true);
   expect(snippetOf(await attachments())).toContain("3,OUTSIDE");
   // PowerShell, found on PATH, through the same manager.
   await writeFile(join(root, "pwsh"), "");
@@ -404,19 +441,23 @@ test("a PowerShell command naming the file is the session's own too", async () =
   expect(await attachments()).toEqual([]);
 });
 
-test("a command names a file when the file name appears in it as a whole word", () => {
+test("a command names the paths its words and quoted strings resolve to in its directory", () => {
   const cases: Array<[string, string, boolean]> = [
     ["printf '2,B\\n' >> proof.csv", "/w/proof.csv", true],
+    ["printf x>>proof.csv", "/w/proof.csv", true],
     ["cat ./data/proof.csv | wc -l", "/w/data/proof.csv", true],
     ["python3 - <<'PY'\np = Path('src/durable-service.mjs')\nPY", "/w/src/durable-service.mjs", true],
     ["cat \"my notes.md\"", "/w/my notes.md", true],
+    ["cat /w/abs/file.txt", "/w/abs/file.txt", true],
+    ["cat b/index.ts", "/w/a/index.ts", false],
     ["cp proof.csv.bak backup", "/w/proof.csv", false],
     ["cat xproof.csv", "/w/proof.csv", false],
     ["sleep 1; echo done", "/w/proof.csv", false],
     ["node scripts/capture.mjs", "/w/shots/hero.png", false],
+    ["cd sub && cat f.txt", "/w/sub/f.txt", false],
   ];
   for (const [command, path, expected] of cases) {
-    expect(commandNamesFile(command, path), `${command} / ${path}`).toBe(expected);
+    expect(commandNamedPaths(command, "/w").has(path), `${command} / ${path}`).toBe(expected);
   }
 });
 

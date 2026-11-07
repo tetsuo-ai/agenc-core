@@ -245,7 +245,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         const ownerId = processOwnerIdFromToolArgs(
           args as Record<string, unknown>,
         );
-        const output = await trackOwnShellChanges(args, polledShellScope(args, sessionId, chars, runtimeSandbox), () => manager.writeStdin({
+        const output = await trackOwnShellChanges(args, polledShellScope(args, sessionId, chars, config?.cwd ?? process.cwd(), runtimeSandbox), () => manager.writeStdin({
           ...(execOwnerBindingFromToolArgs(args as Record<string, unknown>) !== undefined
             ? { ownerBinding: execOwnerBindingFromToolArgs(args as Record<string, unknown>) } : {}),
           session_id: sessionId,

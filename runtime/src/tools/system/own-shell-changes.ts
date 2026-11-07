@@ -10,11 +10,11 @@
  * `printf >>` once per item was sent again after each append.
  *
  * A shell tool runs its command inside {@link trackOwnShellChanges} with the
- * command's text and its sandbox. A read file is credited to the command only
- * when the command names it (its file name appears in the command text, or in
- * the command of the process a poll waits on), the sandbox lets the command
- * write it, and its disk state when the command starts is one the producer has
- * accounted for (the state it last found matching the session's view, or the
+ * command's text, directory and sandbox. A read file is credited to the command
+ * only when the command names its path (a path-shaped word or quoted string of
+ * the command, or of the input a write_stdin call sends, resolves to it), the
+ * sandbox lets the command write it, and its disk state when the command starts
+ * is one the producer has accounted for (the state it last found matching the session's view, or the
  * state an earlier credited command left). When the command returns, each such
  * file whose state moved is recorded with its new state. The producer then
  * sends nothing for the file while it keeps exactly that state, and leaves the
@@ -25,8 +25,9 @@
  * @module
  */
 
+import { realpathSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { basename } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 
 import { canWritePathWithCwd } from "../../sandbox/engine/policy.js";
 import { effectivePermissionProfile } from "../../sandbox/engine/policy-transforms.js";
@@ -41,29 +42,49 @@ import {
   type FileStatFingerprint,
 } from "./filesystem.js";
 
-/** What one shell call runs: its text and the sandbox it runs in (undefined: no OS sandbox). */
+/**
+ * What one shell call runs: its text (for a write_stdin call, only the input it
+ * sends), the directory its relative paths resolve against, and the sandbox it
+ * runs in (undefined: no OS sandbox).
+ */
 export interface ShellCommandScope {
   readonly command: string;
+  readonly cwd: string;
   readonly runtimeSandbox: UnifiedExecRuntimeSandbox | undefined;
 }
 
-const NAME_CHARS = "A-Za-z0-9._-";
-const NAME_ONLY = new RegExp(`^[${NAME_CHARS}]+$`, "u");
-const NON_NAME = new RegExp(`[^${NAME_CHARS}]+`, "u");
+/** Runs of characters a path can hold, between shell and code punctuation. */
+const PATH_RUN = /[^\s'"`;&|<>(){}[\],:=$\\*?!]+/gu;
+/** Quoted strings, whose contents may be a path with spaces or other separators. */
+const QUOTED = /'([^']*)'|"((?:[^"\\]|\\.)*)"/gu;
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
-/** Whether a command text names a file: the file name appears in it as a whole word. */
-export function commandNamesFile(command: string, path: string, words?: ReadonlySet<string>): boolean {
-  const name = basename(path);
-  if (name.length === 0 || command.length === 0) return false;
-  if (NAME_ONLY.test(name)) return (words ?? new Set(command.split(NON_NAME))).has(name);
-  return new RegExp(
-    `(?:^|[^${NAME_CHARS}])${escapeRegExp(name)}(?:$|[^${NAME_CHARS}])`,
-    "u",
-  ).test(command);
+/**
+ * The paths a command names: every path-shaped word and every quoted string,
+ * resolved against the command's directory. A path spelled through a variable,
+ * a glob, `~` or a `cd` earlier in the command is not resolved and names nothing.
+ */
+export function commandNamedPaths(command: string, cwd: string): Set<string> {
+  const words = new Set<string>();
+  for (const match of command.matchAll(PATH_RUN)) words.add(match[0]);
+  for (const match of command.matchAll(QUOTED)) {
+    const quoted = match[1] ?? match[2];
+    if (quoted !== undefined && quoted.length > 0) words.add(quoted);
+  }
+  const bases = new Set([cwd]);
+  try {
+    bases.add(realpathSync(cwd));
+  } catch {
+    // The directory alone.
+  }
+  const paths = new Set<string>();
+  for (const word of words) {
+    if (isAbsolute(word)) {
+      paths.add(resolve(word));
+      continue;
+    }
+    for (const base of bases) paths.add(resolve(base, word));
+  }
+  return paths;
 }
 
 /** Whether the effective sandbox (after any granted escalation or extra permission) lets the command write `path`. */
@@ -103,11 +124,11 @@ async function creditableFiles(
 ): Promise<Map<string, FileStatFingerprint>> {
   const named: Array<{ readonly path: string; readonly bytes: number }> = [];
   if (scope.command.length === 0) return new Map();
-  const words = new Set(scope.command.split(NON_NAME));
+  const paths = commandNamedPaths(scope.command, scope.cwd);
   forEachSessionRead(sessionId, (path, snapshot) => {
     // The producer's own selection: full views that carry their raw bytes.
     if (typeof snapshot.rawContent !== "string" || snapshot.isPartialView === true) return;
-    if (!commandNamesFile(scope.command, path, words) || !sandboxMayWrite(scope.runtimeSandbox, path)) return;
+    if (!paths.has(path) || !sandboxMayWrite(scope.runtimeSandbox, path)) return;
     named.push({ path, bytes: Buffer.byteLength(snapshot.rawContent, "utf8") });
   });
   const inView = new Map<string, FileStatFingerprint>();
@@ -160,9 +181,9 @@ export async function trackOwnShellChanges<T>(
 }
 
 /**
- * The command and sandbox of each process an exec call left running, so a later
- * write_stdin poll credits what that process names. Keyed by the session id and
- * the exec session id; bounded, oldest dropped first.
+ * The directory and sandbox of each process an exec call left running, for the
+ * input a later write_stdin call sends it. Keyed by the session id and the exec
+ * session id; bounded, oldest dropped first.
  */
 const shellSessions = new Map<string, ShellCommandScope>();
 const MAX_SHELL_SESSIONS = 512;
@@ -190,20 +211,23 @@ export function rememberShellSession(
 }
 
 /**
- * The scope of a write_stdin call: the polled process's command and sandbox
- * plus the input it sends. An unknown process contributes no command text and
- * the poll's own sandbox.
+ * The scope of a write_stdin call: only the input it sends, so a poll credits
+ * no file (the process's own command was credited for its first window), and
+ * input that names a path is resolved in the process's directory and sandbox.
+ * An unknown process gets the poll's directory and sandbox.
  */
 export function polledShellScope(
   args: Record<string, unknown>,
   execSessionId: number,
   input: string,
+  pollCwd: string,
   pollSandbox: UnifiedExecRuntimeSandbox | undefined,
 ): ShellCommandScope {
   const key = shellSessionKey(args, execSessionId);
   const process = key === undefined ? undefined : shellSessions.get(key);
   return {
-    command: process === undefined ? input : `${process.command}\n${input}`,
+    command: input,
+    cwd: process?.cwd ?? pollCwd,
     runtimeSandbox: process === undefined ? pollSandbox : process.runtimeSandbox,
   };
 }

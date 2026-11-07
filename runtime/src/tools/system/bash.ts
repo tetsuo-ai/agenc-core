@@ -1166,10 +1166,11 @@ export function createBashTool(config?: BashToolConfig): Tool {
       try {
         ownShellScope = {
           command: useShellMode ? shellCommand : [command, ...execArgs].join(" "),
+          cwd,
           runtimeSandbox: inspection?.runtimeSandbox ?? runtimeSandboxForExec(rawArgs, defaultCwd),
         };
       } catch {
-        ownShellScope = { command: "", runtimeSandbox: undefined };
+        ownShellScope = { command: "", cwd, runtimeSandbox: undefined };
       }
 
       /** TOOL-03: wrap final spawn program/args when platform isolation is required. */

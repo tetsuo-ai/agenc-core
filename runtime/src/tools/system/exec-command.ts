@@ -1315,7 +1315,11 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         };
         // A read-only inspection or read-only shell runs in a sandbox without write
         // access, which the scope carries like any other sandbox.
-        const shellScope: ShellCommandScope = { command: cmd, runtimeSandbox };
+        const shellScope: ShellCommandScope = {
+          command: cmd,
+          cwd: effectiveWorkdir ?? config?.cwd ?? process.cwd(),
+          runtimeSandbox,
+        };
         const output = await trackOwnShellChanges(args, shellScope, () => detach
           ? manager.startDetachedProcess!({ ...commonRequest, ...shellRequest })
           : manager.execCommand({
