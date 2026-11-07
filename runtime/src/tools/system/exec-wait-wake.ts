@@ -9,11 +9,14 @@
  * mailbox (what wait_agent wakes on). When either arrives, or was already
  * there when the wait started, the wait ends and the call returns the
  * command's session_id, as at the end of a yield; the command is not stopped.
+ * A run with a deadline (`agenc -p --deadline`) ends the wait when its
+ * reserve starts, so the model learns it must wrap up while there is time.
  *
  * @module
  */
 
 import type { Session } from "../../session/session.js";
+import { runDeadlineClock, runDeadlineOf } from "../../session/run-deadline.js";
 import type { QueuedCommand } from "../../types/textInputTypes.js";
 import type { BusyWaitWake } from "../../unified-exec/types.js";
 import {
@@ -24,12 +27,14 @@ import {
 } from "../../utils/messageQueueManager.js";
 
 /** Why a busy wait was ended early; the abort reason of {@link BusyWaitWake.signal}. */
-export type BusyWaitWakeReason = "input";
+export type BusyWaitWakeReason = "input" | "deadline_reserve";
 
 /** The longest a busy wait can run; the mailbox watch never needs to outlive it. */
 const MAILBOX_WATCH_MS = 10 * 60_000;
 
-type WakeSession = Pick<Session, "conversationId"> & Partial<Pick<Session, "hasPendingInput" | "waitForMailboxChange">>;
+type WakeSession = Pick<Session, "conversationId"> &
+  Partial<Pick<Session, "hasPendingInput" | "waitForMailboxChange">> &
+  { readonly services?: unknown };
 
 /**
  * A queued command this conversation's turn delivers to the model after its
@@ -66,11 +71,22 @@ export function busyWaitWakeFor(session: WakeSession | undefined): (() => BusyWa
       void session.waitForMailboxChange(MAILBOX_WATCH_MS, undefined, watchEnded.signal)
         .then((changed) => { if (changed) wake("input"); }, () => {});
     }
+    // The deadline reserve: from then on the model must finish, so a wait
+    // that runs into it hands control back at its start.
+    let cancelReserveTimer: (() => void) | undefined;
+    const deadline = runDeadlineOf(session);
+    if (deadline !== undefined) {
+      const clock = runDeadlineClock();
+      const untilReserve = deadline.at - deadline.reserveMs - clock.now();
+      if (untilReserve <= 0) wake("deadline_reserve");
+      else cancelReserveTimer = clock.schedule(untilReserve, () => wake("deadline_reserve"));
+    }
     return {
       signal: controller.signal,
       dispose: () => {
         unsubscribe();
         watchEnded.abort();
+        cancelReserveTimer?.();
       },
     };
   };

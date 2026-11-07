@@ -7,6 +7,7 @@ import type { ExecCommandToolOutput, UnifiedExecProcessManagerLike } from "../..
 import { withExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 import { busyWaitWakeFor } from "../../../src/tools/system/exec-wait-wake.js";
 import { attachToolRuntimeContext } from "../../../src/tools/runtimes/context.js";
+import { setRunDeadlineClockForTests } from "../../../src/session/run-deadline.js";
 import { enqueue, enqueuePendingNotification, resetCommandQueueForTesting } from "../../../src/utils/messageQueueManager.js";
 
 // wait33: in the Superyat run on 0.19.32, 45 model calls only polled a
@@ -214,6 +215,57 @@ describe("what ends a busy wait early", () => {
       expect(lastRequest(light.execCommand)).not.toHaveProperty("busyWaitWake");
     } finally {
       resetCommandQueueForTesting();
+    }
+  });
+});
+
+describe("the deadline reserve ends a busy wait", () => {
+  function fakeClock(now: number) {
+    const scheduled: Array<{ delayMs: number; fire: () => void; cancelled: boolean }> = [];
+    setRunDeadlineClockForTests({
+      now: () => now,
+      schedule: (delayMs, fire) => {
+        const timer = { delayMs, fire, cancelled: false };
+        scheduled.push(timer);
+        return () => { timer.cancelled = true; };
+      },
+    });
+    return scheduled;
+  }
+  const deadlineSession = (deadlineAt: number, deadlineReserveMs: number) => ({
+    conversationId: "conv-1",
+    services: { runtimeOptions: { deadlineAt, deadlineReserveMs } },
+  });
+
+  test("when the reserve starts during the wait", () => {
+    try {
+      const scheduled = fakeClock(1_000_000);
+      // The reserve starts 90 s from now: 3 minutes left, 90 s of reserve.
+      const wake = busyWaitWakeFor(deadlineSession(1_000_000 + 180_000, 90_000))!();
+      expect(wake.signal.aborted).toBe(false);
+      expect(scheduled.map((timer) => timer.delayMs)).toEqual([90_000]);
+      scheduled[0]!.fire();
+      expect(wake.signal.aborted).toBe(true);
+      expect(wake.signal.reason).toBe("deadline_reserve");
+      wake.dispose();
+    } finally {
+      setRunDeadlineClockForTests(null);
+    }
+  });
+
+  test("at once inside the reserve, never without a deadline, and dispose cancels the timer", () => {
+    try {
+      const scheduled = fakeClock(1_000_000);
+      expect(busyWaitWakeFor(deadlineSession(1_000_000 + 60_000, 90_000))!().signal.reason).toBe("deadline_reserve");
+      const plain = busyWaitWakeFor({ conversationId: "conv-1", services: { runtimeOptions: {} } })!();
+      expect(plain.signal.aborted).toBe(false);
+      expect(scheduled).toEqual([]);
+      const later = busyWaitWakeFor(deadlineSession(1_000_000 + 600_000, 120_000))!();
+      later.dispose();
+      expect(scheduled[0]!.cancelled).toBe(true);
+      expect(later.signal.aborted).toBe(false);
+    } finally {
+      setRunDeadlineClockForTests(null);
     }
   });
 });
