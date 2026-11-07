@@ -13,7 +13,7 @@
  * not re-fire the same change.
  *
  * A file still in the state a command of the session left after naming it
- * gets no attachment, and its snapshot stays on the bytes the model last saw
+ * gets one short notice instead of its contents, and its snapshot stays on the bytes the model last saw
  * (`tools/system/own-shell-changes.ts`).
  *
  * Files that disappear (ENOENT) are evicted from the read cache; other

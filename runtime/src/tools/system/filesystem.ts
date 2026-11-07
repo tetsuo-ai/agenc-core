@@ -818,7 +818,7 @@ export function sameFileStat(
  * - `view`: the state the producer last found matching the session's view (the
  *   snapshot the read-before-write checks use);
  * - `own`: the state a command of the session left when it changed the file and
- *   named it. While the file keeps that state the producer sends nothing and
+ *   named it. While the file keeps that state the producer sends only a short notice and
  *   leaves the session's view where it was, so a later Write or Edit still asks
  *   for a read of the bytes the command wrote.
  * It lives and is cleared with the session read state.

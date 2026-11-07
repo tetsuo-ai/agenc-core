@@ -11,16 +11,20 @@
  *
  * A shell tool runs its command inside {@link trackOwnShellChanges} with the
  * command's text, directory and sandbox. A read file is credited to the command
- * only when the command names its path (a path-shaped word or quoted string of
- * the command, or of the input a write_stdin call sends, resolves to it), the
- * sandbox lets the command write it, and its disk state when the command starts
- * is one the producer has accounted for (the state it last found matching the session's view, or the
- * state an earlier credited command left). When the command returns, each such
- * file whose state moved is recorded with its new state. The producer then
- * sends nothing for the file while it keeps exactly that state, and leaves the
- * session's view on the bytes the model last saw, so a Write or Edit of the file
- * still asks for a read first. Every other change, during the command or not,
- * is sent as before.
+ * only when all of these hold: a whole shell word of the command (for a
+ * write_stdin call, of the input it sends) resolves to the file's path in the
+ * real working directory; that word cannot expand and, on POSIX, holds no
+ * backslash; the command cannot change directory (no cd, pushd, popd or the
+ * like, and for write_stdin none in the shell's command or any earlier input);
+ * the sandbox lets the command write the file; and the file's disk state when
+ * the command starts is one the producer has accounted for (the state it last
+ * found matching the session's view, or the state an earlier credited command
+ * left). When the command returns, each such file whose state moved is recorded
+ * with its new state. While the file keeps exactly that state, the producer
+ * sends one short notice for it instead of its contents and leaves the
+ * session's view on the bytes the model last saw, so a Write or Edit of the
+ * file still asks for a read first. Every other change, during the command or
+ * not, is sent as before.
  *
  * @module
  */
