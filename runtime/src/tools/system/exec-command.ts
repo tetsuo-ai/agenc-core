@@ -160,6 +160,19 @@ const PLAIN_INTERACTIVE_SHELL_RE =
 export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
 
 /**
+ * What ends this call's busy wait early, with the command still running: a
+ * prompt queued for its session, which the turn delivers after the tool
+ * phase, or the start of its run's deadline reserve
+ * (tools/system/exec-wait-wake.ts). Nothing without an invoking session.
+ */
+export function busyWaitWakeArg(
+  args: Readonly<Record<string, unknown>>,
+): { readonly busyWaitWake?: () => BusyWaitWake } {
+  const wake = busyWaitWakeFor(readInvokingSession(args));
+  return wake === undefined ? {} : { busyWaitWake: wake };
+}
+
+/**
  * Whether a Light command still using CPU when its yield passes keeps this
  * call waiting until it exits or stops using CPU, bounded (process manager
  * `waitWhileBusy`), instead of returning a session_id the model polls with
@@ -168,14 +181,6 @@ export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
  * yield ask for control back early. Off with `AGENC_EXEC_WAIT_WHILE_BUSY=0`
  * and in Standard sessions.
  */
-/** What ends this call's busy wait early: input queued for its session (tools/system/exec-wait-wake.ts). */
-export function busyWaitWakeArg(
-  args: Readonly<Record<string, unknown>>,
-): { readonly busyWaitWake?: () => BusyWaitWake } {
-  const wake = busyWaitWakeFor(readInvokingSession(args));
-  return wake === undefined ? {} : { busyWaitWake: wake };
-}
-
 function waitsWhileBusy(
   config: ExecCommandToolConfig | undefined,
   args: Readonly<Record<string, unknown>>,
