@@ -1172,7 +1172,7 @@ export class RolloutStore {
     const attempt = scan.attempts.get(attemptId);
     // A commit on disk is the projection reconstruction's to finish, never this.
     if (attempt?.records.some((record) => record.item.type === "compaction_committed") === true) return;
-    this.reconcileCompactionPin(pin, attempt, scan);
+    this.reconcileCompactionPin(pin, attempt, scan, { throwFailureAppend: true });
   }
 
   withCanonicalBackgroundWork<T>(work: () => T | Promise<T>): Promise<T> {
@@ -2955,6 +2955,12 @@ export class RolloutStore {
     listedPin: CompactionPinRecord,
     attemptScan: CanonicalCompactionAttemptScan | undefined,
     scan: CanonicalRolloutScan,
+    /**
+     * A live store closing an unfinished attempt: a failure record that cannot
+     * be written is thrown to the caller, which tries again later, instead of
+     * becoming a deferral for the next open.
+     */
+    options: { readonly throwFailureAppend?: boolean } = {},
   ): void {
     let pin = this.compactionRetentionRepo.require(listedPin.attemptId);
     const items = attemptScan?.records.map((record) => record.item) ?? [];
@@ -3163,6 +3169,7 @@ export class RolloutStore {
           automatic: pin.automatic,
         });
       } catch (error) {
+        if (options.throwFailureAppend === true) throw error;
         this.compactionRetentionRepo.createDeferral({
           sessionId: pin.sessionId,
           attemptId: pin.attemptId,

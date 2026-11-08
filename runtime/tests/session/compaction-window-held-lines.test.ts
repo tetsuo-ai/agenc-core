@@ -165,6 +165,24 @@ test("an attempt whose failure record waits in the degraded buffer is not closed
   expect(failureReasons(items)).toHaveLength(1);
 });
 
+test("a failure record the close cannot write leaves the attempt unfinished, and the next compaction closes it", async () => {
+  harness = createCompactionTransactionHarness(SOURCE);
+  // The intent bind fails in the transaction; closing the attempt when its
+  // lease is released binds it, and then its failure record meets a full disk.
+  vi.spyOn(retentionRepo(harness), "bindIntent").mockImplementationOnce(() => { throw ioError(); });
+  failWritesOfFailureRecords(harness.store);
+  await expect(compactConversation(SOURCE, harness.context)).rejects.toThrow();
+  expect(harness.store.store.isDegraded).toBe(true);
+  // The disk recovers and the waiting rows drain.
+  harness.store.store.setWriteImplForTest(writeSync);
+  await (harness.store.store as unknown as { degraded: { tryFlush(): Promise<boolean> } }).degraded.tryFlush();
+  expect(harness.store.store.isDegraded).toBe(false);
+  // The next compaction closes the attempt first and commits, without a restart.
+  const result = await compactConversation(SOURCE, harness.context);
+  expect(result.transaction?.committed).toBeDefined();
+  expect(failureReasons(harness.store.readAll())).toEqual(["recovery_interrupted"]);
+});
+
 test("a held line is written right after the committed record, before the commit's projection", async () => {
   const store = () => harness!.store;
   harnessWriting(() => store().appendRollout(heldLine(2), { durable: true }));
