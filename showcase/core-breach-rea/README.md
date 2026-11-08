@@ -12,6 +12,7 @@ CORE BREACH is a small first-person shooter, written entirely by AgenC Core 0.19
   - It had no source code, no WAD data and no internet.
 - **[FOLLOW-UP.md](FOLLOW-UP.md)**: one playtest message, sent afterwards in the same session.
 - **[code/](code/)**: everything it produced, unedited.
+- **[site/](site/)**: the Vercel config (security headers) and the notice served at breach.agenc.ag. The deployed site is code/game without verify.mjs, plus these files and code/LICENSE as LICENSE.txt.
 
 ## What it did
 
