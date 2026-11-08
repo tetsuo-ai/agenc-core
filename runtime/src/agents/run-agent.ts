@@ -3489,6 +3489,18 @@ function buildChildModelInfo(
   };
 }
 
+/** Leading plain-text system messages of an inherited history that are not an invocation seed. */
+function leadingSystemMessageCount(history: readonly LLMMessage[]): number {
+  let count = 0;
+  while (count < history.length) {
+    const message = history[count]!;
+    if (message.role !== "system" || typeof message.content !== "string" ||
+        message.runtimeOnly?.agentInvocation !== undefined) break;
+    count += 1;
+  }
+  return count;
+}
+
 /**
  * An inherited tool result carries the seal of the run that produced it (the
  * parent's). The child's rollout accepts only results sealed for the child's
@@ -4642,17 +4654,29 @@ export async function* runAgent(
     // summarize records of its own rollout (the history it offers must be an
     // ordered projection of its canonical history), so the inherited messages
     // are written there before the first request, as an invocation seed is.
-    // A rollout takes only complete tool turns: a fork that kept tool calls
-    // without their results (a fork read from the parent's rollout drops the
-    // results), or a child without a durable rollout, keeps the inherited
-    // messages in memory only, as before.
-    const persistInheritedHistory = initial.history.length > 0 &&
+    // System-shaped text ahead of them (a session memory child's copy of its
+    // parent's base instructions) is not history: the child session keeps it
+    // and every request frames it as before, so it is never stored or
+    // summarized away. A rollout takes only complete tool turns and no other
+    // system or developer messages: a fork that kept tool calls without their
+    // results (a fork read from the parent's rollout drops the results), one
+    // with instructions further in, or a child without a durable rollout keeps
+    // the inherited messages in memory only, as before.
+    const leadingSystem = leadingSystemMessageCount(initial.history);
+    const inherited = initial.history.slice(leadingSystem);
+    const persistInheritedHistory = inherited.length > 0 &&
       childSession.rolloutStore !== null && childSession.rolloutStore !== undefined &&
       childSession.isRolloutPersistenceSuspended?.() !== true &&
-      findToolTurnValidationIssue(initial.history) === null;
+      !inherited.some((message) => message.role === "system" || message.role === "developer") &&
+      findToolTurnValidationIssue(inherited) === null;
     const childRunId = childSession.conversationId;
+    if (persistInheritedHistory && leadingSystem > 0) {
+      childSession.setInheritedSystemHistory(
+        initial.history.slice(0, leadingSystem).map((message) => message.content as string),
+      );
+    }
     const history = persistInheritedHistory
-      ? initial.history.map((message) => withoutOtherRunToolResultSeal(message, childRunId))
+      ? inherited.map((message) => withoutOtherRunToolResultSeal(message, childRunId))
       : initial.history;
     const requiresInitialHistoryDurability =
       initial.requiresInitialHistoryDurability || persistInheritedHistory;

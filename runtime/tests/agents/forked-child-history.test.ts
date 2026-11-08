@@ -61,17 +61,22 @@ function isCompactionRequest(messages: readonly LLMMessage[]): boolean {
 const SUMMARY = JSON.stringify({ narrative: "The inherited exchange, summarized.", facts: [], open_actions: [] });
 
 /** A provider that summarizes compaction requests and finishes everything else. */
-function provider(seen: LLMMessage[][]): LLMProvider {
-  const answer = async (messages: LLMMessage[]): Promise<LLMResponse> => {
-    if (isCompactionRequest(messages)) return reply(SUMMARY);
+function provider(seen: LLMMessage[][], compactions: LLMMessage[][] = [], instructions: string[] = []): LLMProvider {
+  const answer = async (messages: LLMMessage[], options?: { readonly systemPrompt?: string }): Promise<LLMResponse> => {
+    if (isCompactionRequest(messages)) {
+      compactions.push(messages);
+      return reply(SUMMARY);
+    }
     seen.push(messages);
+    instructions.push(options?.systemPrompt ?? "");
     return reply("NOTHING_TO_SAVE");
   };
   return {
     name: "fake",
-    chat: vi.fn(async (messages: LLMMessage[]) => answer(messages)),
-    chatStream: vi.fn(async (messages: LLMMessage[], onChunk: (chunk: { content: string; done: boolean }) => void) => {
-      const response = await answer(messages);
+    chat: vi.fn(async (messages: LLMMessage[], options?: { readonly systemPrompt?: string }) => answer(messages, options)),
+    chatStream: vi.fn(async (messages: LLMMessage[], onChunk: (chunk: { content: string; done: boolean }) => void,
+      options?: { readonly systemPrompt?: string }) => {
+      const response = await answer(messages, options);
       onChunk({ content: response.content, done: true });
       return response;
     }),
@@ -121,7 +126,8 @@ const MODEL_INFO: ModelInfo = {
 } as ModelInfo;
 
 /** A parent session with admission and, unless told otherwise, a durable rollout; its children get both. */
-function parentSession(seen: LLMMessage[][], modelInfo: ModelInfo = MODEL_INFO, durable = true) {
+function parentSession(seen: LLMMessage[][], modelInfo: ModelInfo = MODEL_INFO, durable = true,
+  compactions: LLMMessage[][] = [], instructions: string[] = []) {
   const home = mkdtempSync(join(tmpdir(), "agenc-fork-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "agenc-fork-project-"));
   mkdirSync(join(cwd, ".git"));
@@ -139,7 +145,7 @@ function parentSession(seen: LLMMessage[][], modelInfo: ModelInfo = MODEL_INFO, 
       mcpConnectionManager: { setApprovalPolicy: () => {}, setSandboxPolicy: () => {},
         requiredStartupFailures: async () => [] },
       mcpStartupCancellationToken: { cancel: () => {}, isCancelled: () => false },
-      provider: provider(seen),
+      provider: provider(seen, compactions, instructions),
       registry: { tools: [], toLLMTools: () => [], dispatch: async () => ({ content: "", isError: false }) } as ToolRegistry,
       hooks: { executeStop: async () => ({}) },
       admissionRequired: false,
@@ -286,4 +292,47 @@ test("a fork that kept a tool call without its result keeps its inherited histor
   expect(history.map((item) => textOf(responseItemToLlmMessage(item)))).toEqual(["Extract memories.", "NOTHING_TO_SAVE"]);
   const request = seen[0]!.filter((message) => message.role !== "system");
   expect(request.slice(0, inherited.length).map(textOf)).toEqual(inherited.map(textOf));
+});
+
+// The session memory child receives its parent's base instructions as a
+// system message ahead of the conversation (memory/session/sessionMemory.ts).
+// They are instructions, not history: never a stored response item, never
+// compaction source, and in the request's system instructions before and
+// after a compaction.
+const BASE = "BASE-INSTRUCTIONS-MARKER: you are the parent's assistant; keep its rules.";
+
+test("a child's leading system message stays in its system instructions and is never stored", async () => {
+  const seen: LLMMessage[][] = [];
+  const instructions: string[] = [];
+  const session = parentSession(seen, MODEL_INFO, true, [], instructions);
+  const { live, result } = await run(session, [{ role: "system", content: BASE }, ...inheritedMessages(200),
+    { role: "user", content: "Extract memories." }]);
+  expect(result.error).toBeUndefined();
+  expect(result.outcome).toBe("completed");
+  expect(instructions[0]).toContain(BASE);
+  expect(seen[0]!.some((message) => textOf(message).includes("BASE-INSTRUCTIONS-MARKER"))).toBe(false);
+  const rollout = readFileSync(live.rolloutPath!, "utf8");
+  expect(rollout).not.toContain("BASE-INSTRUCTIONS-MARKER");
+  // The rest of the inherited history is in the child's rollout.
+  expect(rolloutItems(live.rolloutPath!).filter((item) => item.type === "response_item")).toHaveLength(6);
+});
+
+test("a compaction of such a child neither summarizes nor drops its leading system message", async () => {
+  const seen: LLMMessage[][] = [];
+  const compactions: LLMMessage[][] = [];
+  const instructions: string[] = [];
+  const session = parentSession(seen, { ...MODEL_INFO, autoCompactTokenLimit: 16_000 } as ModelInfo, true, compactions,
+    instructions);
+  const { live, result } = await run(session, [{ role: "system", content: BASE }, ...inheritedMessages(40_000),
+    { role: "user", content: "Extract memories." }]);
+  expect(result.error).toBeUndefined();
+  expect(result.outcome).toBe("completed");
+  const items = rolloutItems(live.rolloutPath!);
+  expect(items.filter((item) => item.type === "compaction_committed").length).toBeGreaterThan(0);
+  // Not compaction source, not stored, and still the request's instructions after the compaction.
+  expect(compactions.length).toBeGreaterThan(0);
+  expect(compactions.some((request) => JSON.stringify(request).includes("BASE-INSTRUCTIONS-MARKER"))).toBe(false);
+  expect(readFileSync(live.rolloutPath!, "utf8")).not.toContain("BASE-INSTRUCTIONS-MARKER");
+  expect(instructions.length).toBeGreaterThan(0);
+  expect(instructions.at(-1)).toContain(BASE);
 });

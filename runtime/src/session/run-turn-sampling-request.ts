@@ -169,7 +169,8 @@ function buildSamplingRequestContract(
 ): StreamModelRequestContract {
   const samplingContext = { ...ctx, permissionMode: permissionContext.mode };
   let messageStart = 0;
-  const leadingSystemParts: string[] = [];
+  // A child's inherited system-shaped text leads, as it would at the head of the history.
+  const leadingSystemParts: string[] = [...(session.inheritedSystemHistory ?? [])];
   while (state.messagesForQuery[messageStart]?.role === "system") {
     leadingSystemParts.push(messageText(state.messagesForQuery[messageStart]!));
     messageStart += 1;
