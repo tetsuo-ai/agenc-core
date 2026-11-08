@@ -99,3 +99,26 @@ test("a commit the state database cannot mark committed keeps its one terminal r
   });
   await expectOneCommittedTerminal();
 });
+
+test("a commit whose write meets a full disk keeps its one terminal record once the disk recovers, and the rollout opens again", async () => {
+  harness = createCompactionTransactionHarness(SOURCE, { chat: async () => SUMMARY });
+  const store = harness.store.store;
+  // The write of the commit record meets a full disk: the commit and its
+  // payload chunks wait in the session store's degraded buffer.
+  let full = true;
+  store.setWriteImplForTest((fd, buffer, offset, length) => {
+    if (full && Buffer.from(buffer.subarray(offset, offset + length)).toString("utf8").includes('"compaction_committed"')) {
+      throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    }
+    return writeSync(fd, buffer, offset, length);
+  });
+  const error = await compactConversation(SOURCE, harness.context).then(() => undefined, (thrown: unknown) => thrown);
+  expect(store.isDegraded).toBe(true);
+  // The disk recovers and what waited is written.
+  full = false;
+  await (store as unknown as { degraded: { tryFlush(): Promise<boolean> } }).degraded.tryFlush();
+  expect(store.isDegraded).toBe(false);
+  expect(terminals(harness.store.readAll())).toEqual(["compaction_committed"]);
+  expect(terminals(reopen(harness.store))).toEqual(["compaction_committed"]);
+  expect(error).toBeInstanceOf(CompactionReconstructionRequiredError);
+});

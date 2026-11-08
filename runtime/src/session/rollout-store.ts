@@ -1680,6 +1680,14 @@ export class RolloutStore {
           item.payload.attempt_id === expected.payload.attempt_id,
       );
     if (terminalItems.length === 0) {
+      // Rows the session store still holds reach the file later: a commit
+      // write that met a full disk waits in the degraded buffer with its
+      // payload chunks. A failure record now would land before them.
+      if (this.store.hasUnsettledRows) {
+        this.poisonCompactionProjection(expected.payload.attempt_id, [
+          appendError,
+        ]);
+      }
       // The canonical tail was repaired and fsynced without this commit. The
       // transaction layer may now append the single failure terminal.
       return;
