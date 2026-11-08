@@ -218,6 +218,24 @@ describe("waits that continue while the command is busy", () => {
       .toContainEqual([result.session_id, "running"]);
   }, 30_000);
 
+  it("ends within a second of its wake with the real 5 s check interval, the command still running", async () => {
+    const processes = new UnifiedExecProcessManager();
+    managers.push(processes);
+    const controller = new AbortController();
+    let wokenAt = 0;
+    // The first check runs at the 300 ms yield; the wake lands inside the 5 s step after it.
+    setTimeout(() => { wokenAt = Date.now(); controller.abort("input"); }, 2_000);
+    const result = await processes.execCommand({
+      cmd: busyFor(30), yield_time_ms: 300, waitWhileBusy: true,
+      busyWaitWake: () => ({ signal: controller.signal, dispose: () => {} }),
+    });
+    expect(wokenAt).toBeGreaterThan(0);
+    expect(Date.now() - wokenAt).toBeLessThan(1_000);
+    expect(result.session_id).toEqual(expect.any(Number));
+    expect(processes.listOwnedProcesses().map((view) => [view.sessionId, view.status]))
+      .toContainEqual([result.session_id, "running"]);
+  }, 40_000);
+
   it("does not start when its wake has already fired, and a poll's wake works the same", async () => {
     const processes = manager();
     const fired = new AbortController();
