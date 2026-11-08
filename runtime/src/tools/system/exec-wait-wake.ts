@@ -3,13 +3,14 @@
  * command keeps running as a session.
  *
  * A wait that continues while its command is busy can last minutes. Input
- * that the turn would hand the model at its next request must not sit behind
- * it: a prompt queued for this conversation (the turn delivers those after
- * the tool phase, run-turn-queued-commands.ts) or input in the session
- * mailbox (what wait_agent wakes on). When either arrives, or was already
- * there when the wait started, the wait ends and the call returns the
- * command's session_id, as at the end of a yield; the command is not stopped.
- * A run with a deadline (`agenc -p --deadline`) ends the wait when its
+ * that the turn hands the model at its next request must not sit behind it:
+ * a prompt queued for this conversation, which the turn delivers after the
+ * tool phase (run-turn-queued-commands.ts). When one is queued, or was
+ * already queued when the wait started, the wait ends and the call returns
+ * the command's session_id, as at the end of a yield; the command is not
+ * stopped. Session mailbox input is not watched: the turn reads the mailbox
+ * only when it starts, so ending the wait for it would hand nothing to the
+ * model. A run with a deadline (`agenc -p --deadline`) ends the wait when its
  * reserve starts, so the model learns it must wrap up while there is time.
  *
  * @module
@@ -29,12 +30,7 @@ import {
 /** Why a busy wait was ended early; the abort reason of {@link BusyWaitWake.signal}. */
 export type BusyWaitWakeReason = "input" | "deadline_reserve";
 
-/** The longest a busy wait can run; the mailbox watch never needs to outlive it. */
-const MAILBOX_WATCH_MS = 10 * 60_000;
-
-type WakeSession = Pick<Session, "conversationId"> &
-  Partial<Pick<Session, "hasPendingInput" | "waitForMailboxChange">> &
-  { readonly services?: unknown };
+type WakeSession = Pick<Session, "conversationId"> & { readonly services?: unknown };
 
 /**
  * A queued command this conversation's turn delivers to the model after its
@@ -58,7 +54,6 @@ export function busyWaitWakeFor(session: WakeSession | undefined): (() => BusyWa
   if (session === undefined || typeof session.conversationId !== "string") return undefined;
   return () => {
     const controller = new AbortController();
-    const watchEnded = new AbortController();
     const wake = (reason: BusyWaitWakeReason): void => {
       if (!controller.signal.aborted) controller.abort(reason);
     };
@@ -67,10 +62,6 @@ export function busyWaitWakeFor(session: WakeSession | undefined): (() => BusyWa
       if (queued()) wake("input");
     });
     if (queued()) wake("input");
-    if (typeof session.waitForMailboxChange === "function") {
-      void session.waitForMailboxChange(MAILBOX_WATCH_MS, undefined, watchEnded.signal)
-        .then((changed) => { if (changed) wake("input"); }, () => {});
-    }
     // The deadline reserve: from then on the model must finish, so a wait
     // that runs into it hands control back at its start.
     let cancelReserveTimer: (() => void) | undefined;
@@ -85,7 +76,6 @@ export function busyWaitWakeFor(session: WakeSession | undefined): (() => BusyWa
       signal: controller.signal,
       dispose: () => {
         unsubscribe();
-        watchEnded.abort();
         cancelReserveTimer?.();
       },
     };

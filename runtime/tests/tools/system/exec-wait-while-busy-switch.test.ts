@@ -117,22 +117,11 @@ describe("which Light waits continue while the command is busy", () => {
 
 describe("what ends a busy wait early", () => {
   const owner = (conversationId: string) => ({ kind: "session" as const, conversationId });
-  const mailbox = () => {
-    let changed: (value: boolean) => void = () => {};
-    return {
-      waitForMailboxChange: vi.fn((_ms: number, _ownership: unknown, signal?: AbortSignal) =>
-        new Promise<boolean>((resolve) => {
-          changed = resolve;
-          signal?.addEventListener("abort", () => resolve(false), { once: true });
-        })),
-      arrive: () => changed(true),
-    };
-  };
 
   test("a prompt queued for this conversation, delivered after the tool phase", () => {
     resetCommandQueueForTesting();
     try {
-      const wake = busyWaitWakeFor({ conversationId: "conv-1", ...mailbox() })!();
+      const wake = busyWaitWakeFor({ conversationId: "conv-1" })!();
       enqueue({ value: "other chat", mode: "prompt", queueOwner: owner("conv-2") });
       enqueuePendingNotification({ value: "<task-notification/>", mode: "task-notification", queueOwner: owner("conv-1") });
       enqueue({ value: "/compact", mode: "prompt", queueOwner: owner("conv-1") });
@@ -146,20 +135,20 @@ describe("what ends a busy wait early", () => {
     }
   });
 
-  test("a prompt already queued when the wait starts, and input in the session mailbox", async () => {
+  test("a prompt already queued when the wait starts, but not session mailbox input", async () => {
     resetCommandQueueForTesting();
     try {
       enqueue({ value: "change of plan", mode: "prompt", queueOwner: owner("conv-1") });
       expect(busyWaitWakeFor({ conversationId: "conv-1" })!().signal.aborted).toBe(true);
       resetCommandQueueForTesting();
-      const box = mailbox();
-      const wake = busyWaitWakeFor({ conversationId: "conv-1", ...box })!();
-      expect(box.waitForMailboxChange).toHaveBeenCalledTimes(1);
+      // The turn reads the mailbox only when it starts: ending the wait for
+      // its input would hand the model nothing, so it is not watched.
+      const waitForMailboxChange = vi.fn(async () => true);
+      const session = { conversationId: "conv-1", hasPendingInput: () => true, waitForMailboxChange };
+      const wake = busyWaitWakeFor(session)!();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(waitForMailboxChange).not.toHaveBeenCalled();
       expect(wake.signal.aborted).toBe(false);
-      box.arrive();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(wake.signal.aborted).toBe(true);
       wake.dispose();
       expect(busyWaitWakeFor(undefined)).toBeUndefined();
     } finally {
@@ -167,14 +156,11 @@ describe("what ends a busy wait early", () => {
     }
   });
 
-  test("disposing stops watching the queue and the mailbox", () => {
+  test("disposing stops watching the queue", () => {
     resetCommandQueueForTesting();
     try {
-      const box = mailbox();
-      const wake = busyWaitWakeFor({ conversationId: "conv-1", ...box })!();
+      const wake = busyWaitWakeFor({ conversationId: "conv-1" })!();
       wake.dispose();
-      const watchSignal = box.waitForMailboxChange.mock.calls[0]![2] as AbortSignal;
-      expect(watchSignal.aborted).toBe(true);
       enqueue({ value: "late", mode: "prompt", queueOwner: owner("conv-1") });
       expect(wake.signal.aborted).toBe(false);
     } finally {
