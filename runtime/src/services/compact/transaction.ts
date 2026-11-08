@@ -633,6 +633,11 @@ async function compactConversationTransactionBody(
       committed = adapter.commit(commitInput);
     } catch (error) {
       if (error instanceof CompactionTransactionError) throw error;
+      // The commit record reached the rollout, but its fsync or the state
+      // database did not confirm it: the attempt is committed and the session
+      // is rebuilt from it. A failure record after it would give the attempt a
+      // second terminal record, and the rollout could not be opened again.
+      if (error instanceof CompactionReconstructionRequiredError) throw error;
       // Name the cause and the commit's size facts in the message itself:
       // the warning that reaches the rollout, the TUI, and stderr carries
       // the message, and a disk-full write must be distinguishable from a
