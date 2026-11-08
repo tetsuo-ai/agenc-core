@@ -4157,6 +4157,17 @@ export class SessionStore {
     return this.degraded.isDegraded;
   }
 
+  /**
+   * Whether rows handed to this store may still be missing from the file: a
+   * degraded ring buffer waiting for the disk, an fsync still being retried, or
+   * a one-shot run that writes only when it closes. A reader of the file does
+   * not see them yet, and they reach it later in their own order.
+   */
+  get hasUnsettledRows(): boolean {
+    return this.degraded.isDegraded || this.degraded.size > 0 ||
+      this.pendingFsyncRetries.size > 0 || (this.oneShotFastMode && !this.closed);
+  }
+
   /** Current canonical inode identity under the lifetime writer lease. */
   canonicalSourceIdentity(): {
     readonly rolloutPath: string;

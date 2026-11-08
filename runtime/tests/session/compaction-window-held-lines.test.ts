@@ -1,4 +1,4 @@
-import { fsyncSync, readFileSync } from "node:fs";
+import { fsyncSync, readFileSync, writeSync } from "node:fs";
 import { afterEach, expect, test, vi } from "vitest";
 
 import type { LLMMessage, LLMProvider, LLMResponse } from "../../src/llm/types.js";
@@ -6,6 +6,7 @@ import { compactConversation } from "../../src/services/compact/compact.js";
 import type { RuntimeMessage } from "../../src/services/compact/types.js";
 import type { RolloutItem } from "../../src/session/rollout-item.js";
 import { parseRolloutLine } from "../../src/session/rollout-item.js";
+import { RolloutStore } from "../../src/session/rollout-store.js";
 import { FileThreadStore } from "../../src/thread-store/store.js";
 import {
   createCompactionTransactionHarness,
@@ -122,6 +123,46 @@ test("an attempt that cannot be closed when it ends keeps no window open and is 
   const nextIntent = items.findIndex((item, index) => index > 0 && item.type === "compaction_intent" &&
     item.payload.attempt_id !== (ended.find((e) => e.type === "compaction_intent") as { payload: { attempt_id: string } }).payload.attempt_id);
   expect(closed).toBeLessThan(nextIntent);
+});
+
+/** Fail every write that carries a compaction_failed record, as a full disk would. */
+function failWritesOfFailureRecords(store: RolloutStore): void {
+  store.store.setWriteImplForTest((fd, buffer, offset, length) => {
+    if (Buffer.from(buffer.subarray(offset, offset + length)).toString("utf8").includes('"compaction_failed"')) {
+      throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    }
+    return writeSync(fd, buffer, offset, length);
+  });
+}
+
+/** Close the store and open the rollout again, as a restarted daemon does; returns its items. */
+function reopen(store: RolloutStore): RolloutItem[] {
+  const cwd = store.store.cwd;
+  const sessionId = store.sessionId;
+  store.close();
+  const reopened = new RolloutStore({ cwd, sessionId, agencVersion: "0.13.0", sessionTempRoot: cwd,
+    autoStartScheduler: false, resume: true });
+  try {
+    reopened.open({ sessionId, timestamp: new Date().toISOString(), cwd, originator: "held-line-test",
+      agencVersion: "0.13.0", model: "grok-4.5", modelProvider: "grok" });
+    return reopened.readAll();
+  } finally {
+    reopened.close();
+  }
+}
+
+test("an attempt whose failure record waits in the degraded buffer is not closed a second time", async () => {
+  const store = () => harness!.store;
+  // The summary is invalid, so the attempt records its failure; the disk is
+  // full for that write, which waits in the session store's degraded buffer.
+  harnessWriting(() => failWritesOfFailureRecords(store()), () => ({ ...SUMMARY, content: "not the summary JSON" }));
+  await expect(compactConversation(SOURCE, harness!.context)).rejects.toThrow();
+  expect(store().store.isDegraded).toBe(true);
+  // The disk recovers and the store closes: what waited is written. One
+  // terminal record for the attempt, and the rollout opens again.
+  store().store.setWriteImplForTest(writeSync);
+  const items = reopen(store());
+  expect(failureReasons(items)).toHaveLength(1);
 });
 
 test("a held line is written right after the committed record, before the commit's projection", async () => {

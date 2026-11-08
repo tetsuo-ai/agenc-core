@@ -1143,11 +1143,22 @@ export class RolloutStore {
    * record and failure guard entry; a pin whose intent never reached the
    * rollout is released. Either way it leaves the preparing state, which a
    * later compaction would take as source provenance it cannot reference.
-   * Throws when the state database or the rollout still fails.
+   * Throws when the state database or the rollout still fails, or while the
+   * session store holds rows the file does not have yet.
    */
   private closeUnfinishedCompactionAttempt(attemptId: string): void {
     const pin = this.compactionRetentionRepo.get(attemptId);
     if (pin === undefined || (pin.state !== "preparing" && pin.state !== "intent_bound")) return;
+    // The scan below reads the file. A failure record the session store still
+    // holds (an ENOSPC write waiting in its degraded buffer) is not there yet:
+    // closing now would write a second terminal record, and the rollout could
+    // no longer be opened. The attempt stays unfinished until those rows land.
+    if (this.store.hasUnsettledRows) {
+      throw new CompactionTransactionError(
+        "pin_failed",
+        "rollout rows are still waiting for the disk; the unfinished compaction attempt is closed later",
+      );
+    }
     this.store.syncCanonicalTail();
     const scan = this.canonicalScanner.scan(this.rolloutPath, {
       sessionTempRoot: this.sessionTempRoot,
