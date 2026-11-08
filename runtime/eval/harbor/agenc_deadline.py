@@ -40,12 +40,42 @@ def _positive(value: object) -> float | None:
     return float(value) if value > 0 else None
 
 
-def _task_timeout_sec(task_path: object, trial_dir: Path) -> float | None:
-    if not isinstance(task_path, str) or not task_path:
+def _task_dir(task: dict, trial_dir: Path) -> Path | None:
+    """Where the trial's task.toml lives.
+
+    A local task names its ``path``. A registry task (``-d
+    terminal-bench/terminal-bench-2-1``) names only ``org/name`` and a sha256
+    ``ref``; Harbor unpacks it into its package cache, at the place
+    ``PackageTaskId.get_local_path`` computes. Harbor's own resolver is used
+    when it is importable, the same computation otherwise.
+    """
+    path = task.get("path")
+    if isinstance(path, str) and path:
+        task_dir = Path(path)
+        return task_dir if task_dir.is_absolute() else trial_dir / task_dir
+    try:
+        from harbor.models.trial.config import TaskConfig
+
+        return Path(TaskConfig.model_validate(task).get_local_path())
+    except Exception:
+        pass
+    name, ref = task.get("name"), task.get("ref")
+    if (
+        isinstance(name, str)
+        and name.count("/") == 1
+        and isinstance(ref, str)
+        and ref.startswith("sha256:")
+    ):
+        org, short = name.split("/")
+        packages = Path("~/.cache/harbor/tasks/packages").expanduser()
+        return packages / org / short / ref.removeprefix("sha256:")
+    return None
+
+
+def _task_timeout_sec(task: dict, trial_dir: Path) -> float | None:
+    task_dir = _task_dir(task, trial_dir)
+    if task_dir is None:
         return None
-    task_dir = Path(task_path)
-    if not task_dir.is_absolute():
-        task_dir = trial_dir / task_dir
     try:
         task = tomllib.loads((task_dir / "task.toml").read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
@@ -65,7 +95,7 @@ def resolve_agent_budget_sec(trial_dir: Path) -> float | None:
     agent = config.get("agent") if isinstance(config.get("agent"), dict) else {}
     task = config.get("task") if isinstance(config.get("task"), dict) else {}
     base = _positive(agent.get("override_timeout_sec")) or _task_timeout_sec(
-        task.get("path"), trial_dir
+        task, trial_dir
     )
     if base is None:
         return None
