@@ -18,11 +18,12 @@ import { attachToolRuntimeContext } from "../runtimes/context.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 
-// A file the session's own shell command created holds only what that command
-// wrote, so a Write, Edit or apply_patch may treat it as read (yacht32: an
-// apply_patch of scripts/shots.mjs, made with `cat > scripts/shots.mjs <<'EOF'`,
-// was refused as "not read yet"). Only files the command created count, never
-// files it changed: no content the session did not make can be overwritten.
+// A file the session's own shell command created counts as read only when the
+// model wrote its bytes in the command: a quoted here-document whose body equals
+// the file (yacht32: an apply_patch of scripts/shots.mjs, made with
+// `cat > scripts/shots.mjs <<'EOF'`, was refused as "not read yet"). A file a
+// command made any other way (other output, a copy, another writer while the
+// command ran) or changed still needs a read: the model has not seen its bytes.
 
 let root: string;
 let session: string;
@@ -86,7 +87,7 @@ const SHOTS_PATCH = "*** Begin Patch\n*** Update File: scripts/shots.mjs\n@@\n-a
 const refusedAsUnread = (result: { isError?: boolean; content: unknown }): boolean =>
   result.isError === true && String(result.content).includes("File has not been read yet");
 
-test("apply_patch of a file the session's own command created needs no read", async () => {
+test("apply_patch of a file the session's own here-document created needs no read", async () => {
   const file = join(root, "scripts/shots.mjs");
   expect((await exec(CREATE_SHOTS)).isError).not.toBe(true);
   expect(hasSessionRead(session, file)).toBe(false);
@@ -97,17 +98,30 @@ test("apply_patch of a file the session's own command created needs no read", as
   expect(await readFile(file, "utf8")).toBe(`${SHOTS}process.exit(0);\n`);
 });
 
-test("Edit and Write of files the session's own command created need no read", async () => {
-  expect((await exec("printf 'const a = 1;\\n' > a.js && printf 'draft\\n' > notes.md && touch empty.txt")).isError)
+test("a file made by a command's other output still needs a read", async () => {
+  expect((await exec("printf 'const a = 1;\\n' > a.js && echo draft > notes.md && touch empty.txt")).isError)
     .not.toBe(true);
-  const edited = await edit(join(root, "a.js"), "a = 1", "a = 2");
-  expect(edited.isError, String(edited.content)).not.toBe(true);
-  expect(await readFile(join(root, "a.js"), "utf8")).toBe("const a = 2;\n");
-  for (const [name, content] of [["notes.md", "final\n"], ["empty.txt", "now filled\n"]] as const) {
-    const written = await write(join(root, name), content);
-    expect(written.isError, String(written.content)).not.toBe(true);
-    expect(await readFile(join(root, name), "utf8")).toBe(content);
-  }
+  expect(refusedAsUnread(await edit(join(root, "a.js"), "a = 1", "a = 2"))).toBe(true);
+  expect(refusedAsUnread(await write(join(root, "notes.md"), "final\n"))).toBe(true);
+  expect(refusedAsUnread(await write(join(root, "empty.txt"), "now filled\n"))).toBe(true);
+  expect(await readFile(join(root, "a.js"), "utf8")).toBe("const a = 1;\n");
+});
+
+test("R1: a file another writer creates while a command of the session waits for it still needs a read", async () => {
+  const result = join(root, "result.json");
+  const running = exec("while [ ! -e result.json ]; do sleep 0.05; done; echo ready");
+  await delay(300);
+  await writeFile(result, '{"status":"theirs"}\n');
+  expect(String((await running).content)).toContain("ready");
+  expect(refusedAsUnread(await write(result, "{}\n"))).toBe(true);
+  expect(await readFile(result, "utf8")).toBe('{"status":"theirs"}\n');
+});
+
+test("R2: a copy a command of the session made still needs a read", async () => {
+  await writeFile(join(root, "src.txt"), "bytes the model never saw\n");
+  expect((await exec("cp src.txt copy.txt")).isError).not.toBe(true);
+  expect(refusedAsUnread(await write(join(root, "copy.txt"), "replaced\n"))).toBe(true);
+  expect(await readFile(join(root, "copy.txt"), "utf8")).toBe("bytes the model never saw\n");
 });
 
 test("a file the command only changed still needs a read", async () => {
@@ -129,36 +143,32 @@ test("a file created and then changed by a later command, as yacht32's shots.mjs
   expect(refusedAsUnread(await patch.execute(patchArgs(SHOTS_PATCH)))).toBe(true);
 });
 
-test("a created file someone else changed afterwards still needs a read", async () => {
+test("a file a here-document created that someone else changed afterwards still needs a read", async () => {
   const file = join(root, "notes.md");
-  expect((await exec("printf 'draft\\n' > notes.md")).isError).not.toBe(true);
+  expect((await exec("cat > notes.md <<'EOF'\ndraft\nEOF")).isError).not.toBe(true);
   await delay(20);
   await writeFile(file, "draft\nadded by the user\n");
   expect(refusedAsUnread(await write(file, "final\n"))).toBe(true);
   expect(await readFile(file, "utf8")).toBe("draft\nadded by the user\n");
 });
 
-test("a file the command did not name, a hard link and a renamed older file are not creations", async () => {
+test("a hard link and a renamed older file a command made still need a read", async () => {
   const old = join(root, "old.txt");
   await writeFile(old, "the user's text\n");
   const anHourAgo = new Date(Date.now() - 3_600_000);
   await utimes(old, anHourAgo, anHourAgo);
   await writeFile(join(root, "linked-source.txt"), "shared bytes\n");
-  expect((await exec([
-    "OUT=generated.txt; printf 'made\\n' > \"$OUT\"",
-    "ln linked-source.txt link.txt",
-    "mv old.txt renamed.txt",
-  ].join("\n"))).isError).not.toBe(true);
-  for (const name of ["generated.txt", "link.txt", "renamed.txt"]) {
+  expect((await exec("ln linked-source.txt link.txt\nmv old.txt renamed.txt")).isError).not.toBe(true);
+  for (const name of ["link.txt", "renamed.txt"]) {
     expect(refusedAsUnread(await write(join(root, name), "overwritten\n")), name).toBe(true);
   }
   expect(await readFile(join(root, "renamed.txt"), "utf8")).toBe("the user's text\n");
   expect(await readFile(join(root, "linked-source.txt"), "utf8")).toBe("shared bytes\n");
 });
 
-test("the preflight lets a created file through and keeps refusing an unread one", async () => {
+test("the preflight lets a here-document's file through and keeps refusing an unread one", async () => {
   await writeFile(join(root, "existing.js"), "const x = 1;\n");
-  expect((await exec("printf 'const y = 1;\\n' > created.js")).isError).not.toBe(true);
+  expect((await exec("cat > created.js <<'EOF'\nconst y = 1;\nEOF")).isError).not.toBe(true);
   const args = { [SESSION_ID_ARG]: session };
   expect(unreadFilePreflight(args, [join(root, "created.js")], root, [root])).toBeNull();
   expect(unreadFilePreflight(args, [join(root, "existing.js")], root, [root]))

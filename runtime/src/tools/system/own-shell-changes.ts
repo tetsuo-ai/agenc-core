@@ -26,24 +26,21 @@
  * file still asks for a read first. Every other change, during the command or
  * not, is sent as before.
  *
- * A file the command created is recorded too: a path a whole shell word of the
- * command names (the rule above), that the sandbox lets it write, that did not
- * exist when the command started and that, when it returns, is a regular file
- * with a single link born and last modified during the command. While the file
- * keeps exactly that state it holds only what the session's own command wrote,
- * so a Write, Edit or apply_patch may count it as read
- * ({@link proveOwnShellWrite}): no content the session did not make can be
- * overwritten. So is a file a command wrote whole from a here-document whose
- * delimiter is quoted (no expansion) when its bytes afterwards equal that body
- * exactly, whether the command created it or rewrote it: the model wrote that
- * content. A file a command only changed or appended to, or changed again after
- * creating or writing it, still needs a read. The changed-files attachment does
- * not watch such a file until a file tool writes it.
+ * A file a command wrote whole from a here-document whose delimiter is quoted
+ * (no expansion) is recorded too, when its bytes after the command equal that
+ * body exactly, whether the command created it or rewrote it: the model wrote
+ * every byte of it in the command. While the file keeps exactly that state, a
+ * Write, Edit or apply_patch may count it as read ({@link proveOwnShellWrite}).
+ * A file a command created any other way (a redirect of other output, a copy,
+ * a download, another writer while the command ran), changed, appended to, or
+ * changed again after writing it, still needs a read: the model has not seen
+ * its bytes. The changed-files attachment does not watch such a file until a
+ * file tool writes it.
  *
  * @module
  */
 
-import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 
@@ -258,63 +255,6 @@ function isImageSnapshot(path: string): boolean {
   return IMAGE_EXTENSIONS.test(path);
 }
 
-/** Named paths checked for a creation per command; a longer command's later words are not. */
-const MAX_CREATION_CANDIDATES = 1024;
-/**
- * How far before the command's start a created file's times may fall: file
- * times come from a coarser clock than `Date.now()`, and FAT keeps two-second
- * modification times. A renamed older file has older times.
- */
-const CREATION_CLOCK_SLACK_MS = 2_000;
-
-/** Paths the command names that do not exist yet: the files it may create. */
-function absentNamedPaths(paths: ReadonlySet<string>): string[] {
-  const absent: string[] = [];
-  let checked = 0;
-  for (const path of paths) {
-    checked += 1;
-    if (checked > MAX_CREATION_CANDIDATES) break;
-    try {
-      if (lstatSync(path, { throwIfNoEntry: false }) === undefined) absent.push(path);
-    } catch {
-      // Not a creatable path (a file where a directory is named, a name too long): never a creation.
-    }
-  }
-  return absent;
-}
-
-/**
- * Record each absent named path that the command left as a regular file with a
- * single link, born and last modified during the command, that the sandbox
- * let it write. A hard link or a renamed older file is not a creation.
- */
-function recordCreatedFiles(
-  sessionId: string,
-  scope: ShellCommandScope,
-  absent: readonly string[],
-  startedAtMs: number,
-): void {
-  const earliest = startedAtMs - CREATION_CLOCK_SLACK_MS;
-  for (const path of absent) {
-    try {
-      // Most named words were never files: one cheap synchronous lstat each.
-      const created = lstatSync(path, { throwIfNoEntry: false });
-      if (created === undefined || !created.isFile() || created.nlink !== 1 || created.mtimeMs < earliest) continue;
-      // A file system that keeps no birth time reports zero.
-      if (created.birthtimeMs > 0 && created.birthtimeMs < earliest) continue;
-      if (!sandboxMayWrite(scope.runtimeSandbox, path)) continue;
-      const canonical = realpathSync(path);
-      recordOwnShellWrite(
-        sessionId,
-        process.platform === "win32" ? canonical.normalize("NFC") : canonical,
-        fileStatFingerprint(created),
-      );
-    } catch {
-      // A path that cannot be inspected is not recorded.
-    }
-  }
-}
-
 /**
  * A file a command wrote whole from a here-document whose delimiter is quoted
  * (`'EOF'`, `"EOF"` or `\EOF`): the shell writes the body without any
@@ -447,8 +387,8 @@ function recordVerbatimWrites(sessionId: string, scope: ShellCommandScope): void
 
 /**
  * Run one shell call of the session (`run`) and record which read files it
- * changed and which named files it created or wrote whole (see the module
- * comment). Without a session id it only runs the call.
+ * changed and which files it wrote whole from a quoted here-document (see the
+ * module comment). Without a session id it only runs the call.
  */
 export async function trackOwnShellChanges<T>(
   args: Record<string, unknown>,
@@ -456,12 +396,10 @@ export async function trackOwnShellChanges<T>(
   run: () => Promise<T>,
 ): Promise<T> {
   const sessionId = resolveSessionId(args);
-  const startedAtMs = Date.now();
   const named = sessionId === undefined || scope.command.length === 0
     ? new Set<string>()
     : commandNamedPaths(scope.command, scope.cwd);
   const before = sessionId === undefined ? undefined : await creditableFiles(sessionId, scope, named);
-  const absent = absentNamedPaths(named);
   try {
     return await run();
   } finally {
@@ -474,9 +412,6 @@ export async function trackOwnShellChanges<T>(
           }
         }),
       );
-    }
-    if (sessionId !== undefined && absent.length > 0) {
-      recordCreatedFiles(sessionId, scope, absent, startedAtMs);
     }
     if (sessionId !== undefined) recordVerbatimWrites(sessionId, scope);
   }
@@ -525,9 +460,9 @@ export function mayProveOwnShellWrite(sessionId: string, canonicalPath: string):
 }
 
 /**
- * Counts `file` as read when a command of the session created it or wrote it
- * whole from a quoted here-document, and it still has exactly the state that
- * command left: it then holds only what the session's own command wrote.
+ * Counts `file` as read when a command of the session wrote it whole from a
+ * quoted here-document and it still has exactly the state that command left:
+ * the model wrote every byte of it.
  * Records the read as a full view of its current text, as a FileRead would, so
  * the write's own drift checks apply. Returns whether the read was recorded.
  */

@@ -894,15 +894,12 @@ export function recordOwnShellChange(
 }
 
 /**
- * Files whose whole current text the session's own shell commands made
- * (`tools/system/own-shell-changes.ts`): a file a command created (absent when
- * the command started, named by it, a single-link regular file born during it)
- * or one a command wrote whole from a quoted here-document whose body equals
- * the file's bytes. The state is the file's when the command returned. While
- * the file keeps exactly that state, a Write or Edit may count it as read: no
- * content the session did not make can be overwritten. A file a command only
- * appended to or changed is never recorded here. Lives and is cleared with the
- * session read state; bounded, oldest dropped first.
+ * Files a command of the session wrote whole from a quoted here-document whose
+ * body equals the file's bytes (`tools/system/own-shell-changes.ts`), whether
+ * the command created the file or rewrote it. The state is the file's when the
+ * command returned. While the file keeps exactly that state, a Write or Edit
+ * may count it as read: the model wrote every byte of it. Lives and is cleared
+ * with the session read state; bounded, oldest dropped first.
  */
 const sessionOwnShellWrites = new Map<string, Map<string, FileStatFingerprint>>();
 const MAX_OWN_SHELL_WRITES_PER_SESSION = 4096;
