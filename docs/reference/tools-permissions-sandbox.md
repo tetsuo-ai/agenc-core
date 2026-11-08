@@ -292,8 +292,10 @@ command still running as a session, and so does the start of the deadline
 reserve of a run started with `--deadline`. An interrupt stops the wait as it
 stops a yield.
 Platforms without a process reader (Windows) keep the yield. A check that
-finds the command's root process gone waits up to a second for its exit, so
-the result is the exit rather than a session that has ended. With
+finds no process of the command left (its root gone, or in the persistent
+sandbox and the reusable command server only their executor) waits up to a
+second for its exit, so the result is the exit rather than a session that has
+ended. With
 `AGENC_DIAGNOSTICS_FILE` set, every wait that went past its yield writes one
 `exec_busy_wait` line: how it ended, how long it held the call, and the CPU
 share measured at each check.

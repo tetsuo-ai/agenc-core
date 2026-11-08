@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /** Lets a test replace the next process checks; otherwise the real sampler runs. */
-const sampling = vi.hoisted(() => ({ missingChecks: 0 }));
+const sampling = vi.hoisted(() => ({ missingChecks: 0, emptyChecks: 0 }));
 vi.mock("../../src/unified-exec/process-state.js", async (original) => {
   const actual = await original<typeof import("../../src/unified-exec/process-state.js")>();
   return {
@@ -13,6 +13,14 @@ vi.mock("../../src/unified-exec/process-state.js", async (original) => {
       if (sampling.missingChecks > 0) {
         sampling.missingChecks -= 1;
         return undefined;
+      }
+      if (sampling.emptyChecks > 0) {
+        // As in the persistent sandbox or the reusable command server after
+        // the command exited: the root (the executor) is listed, no process
+        // of the command is.
+        sampling.emptyChecks -= 1;
+        return { groups: [], memberCount: 0, cpuSeconds: 0, cpuDeltaSeconds: 0, exited: [],
+          check: { cpuSeconds: 0, members: new Map() } };
       }
       return actual.checkSessionProcesses(...args);
     }),
@@ -37,6 +45,7 @@ describe("busy waits", () => {
   const restoreDiagnostics = process.env.AGENC_DIAGNOSTICS_FILE;
   afterEach(async () => {
     sampling.missingChecks = 0;
+    sampling.emptyChecks = 0;
     vi.restoreAllMocks();
     if (restoreDiagnostics === undefined) delete process.env.AGENC_DIAGNOSTICS_FILE;
     else process.env.AGENC_DIAGNOSTICS_FILE = restoreDiagnostics;
@@ -52,6 +61,15 @@ describe("busy waits", () => {
     const processes = manager();
     // The first check at the yield finds no root, as right after an exit.
     sampling.missingChecks = 1;
+    const result = await processes.execCommand({ cmd: "sleep 1; echo finished", yield_time_ms: 300, waitWhileBusy: true });
+    expect(result.session_id).toBeUndefined();
+    expect(result.exit_code).toBe(0);
+    expect(result.output).toContain("finished");
+  }, 20_000);
+
+  it("wait briefly for the exit when a check finds no process of the command left under a live root", async () => {
+    const processes = manager();
+    sampling.emptyChecks = 1;
     const result = await processes.execCommand({ cmd: "sleep 1; echo finished", yield_time_ms: 300, waitWhileBusy: true });
     expect(result.session_id).toBeUndefined();
     expect(result.exit_code).toBe(0);

@@ -518,7 +518,7 @@ interface BusyWaitStart {
 
 /** How one busy wait went, for its diagnostics line. */
 interface BusyWaitTrace {
-  reason?: "exit" | "idle" | "cap" | "limit" | "stopped" | "woken" | "no_reader" | "root_gone";
+  reason?: "exit" | "idle" | "cap" | "limit" | "stopped" | "woken" | "no_reader" | "root_gone" | "no_command";
   wokenBy?: string;
   /** CPU share in cores at each check, rounded to 0.01. */
   readonly shares: number[];
@@ -2961,15 +2961,18 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       // ends the wait the way it ends a yield (the timer rejects at once).
       if (entry.exitState !== null) return end("exit", "exit");
       if (options.signal.aborted) await delay(0, undefined, { signal: options.signal });
-      if (report === undefined) {
-        // The session's root is gone: it has exited, and the exit event may
-        // be a moment behind. Wait for it briefly so the result is the exit,
-        // not a session that no longer runs.
+      if (report === undefined || report.memberCount === 0) {
+        // The command has exited and its exit event may be a moment behind.
+        // A command with its own launcher takes its root with it; in the
+        // persistent sandbox and the reusable command server the root is the
+        // long-lived executor, which stays, so no process of the command is
+        // left. Wait for the exit briefly so the result is the exit, not a
+        // session that no longer runs.
         const exited = await Promise.race([
           entry.exitPromise.then(() => true),
           delay(1_000, false, { signal: options.signal }),
         ]);
-        return exited ? end("exit", "exit") : end("timeout", "root_gone");
+        return exited ? end("exit", "exit") : end("timeout", report === undefined ? "root_gone" : "no_command");
       }
       const now = performance.now();
       const seconds = Math.max(0.001, (now - baselineAt) / 1_000);
