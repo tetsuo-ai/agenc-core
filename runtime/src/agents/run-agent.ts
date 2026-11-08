@@ -4666,7 +4666,6 @@ export async function* runAgent(
     const inherited = initial.history.slice(leadingSystem);
     const persistInheritedHistory = inherited.length > 0 &&
       childSession.rolloutStore !== null && childSession.rolloutStore !== undefined &&
-      childSession.isRolloutPersistenceSuspended?.() !== true &&
       !inherited.some((message) => message.role === "system" || message.role === "developer") &&
       findToolTurnValidationIssue(inherited) === null;
     const childRunId = childSession.conversationId;

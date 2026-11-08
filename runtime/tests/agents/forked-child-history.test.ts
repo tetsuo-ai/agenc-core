@@ -294,6 +294,22 @@ test("a fork that kept a tool call without its result keeps its inherited histor
   expect(request.slice(0, inherited.length).map(textOf)).toEqual(inherited.map(textOf));
 });
 
+test("a forked child whose rollout persistence is suspended stops before its first request", async () => {
+  // A session whose rollout persistence is suspended keeps its events out of
+  // its rollout (a fork turn on its source session). A child in that state can
+  // write neither its inherited history nor its run terminal, so it fails;
+  // it must not spend a model request first.
+  const seen: LLMMessage[][] = [];
+  const session = parentSession(seen);
+  const suspended = Session.prototype.isRolloutPersistenceSuspended;
+  const spy = vi.spyOn(Session.prototype, "isRolloutPersistenceSuspended").mockImplementation(function (this: Session) {
+    return this.conversationId !== PARENT || suspended.call(this);
+  });
+  cleanups.push(() => spy.mockRestore());
+  await expect(run(session, [...inheritedMessages(200), { role: "user", content: "Extract memories." }])).rejects.toThrow();
+  expect(seen).toEqual([]);
+});
+
 // The session memory child receives its parent's base instructions as a
 // system message ahead of the conversation (memory/session/sessionMemory.ts).
 // They are instructions, not history: never a stored response item, never
