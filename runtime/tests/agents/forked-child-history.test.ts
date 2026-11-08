@@ -294,6 +294,33 @@ test("a fork that kept a tool call without its result keeps its inherited histor
   expect(request.slice(0, inherited.length).map(textOf)).toEqual(inherited.map(textOf));
 });
 
+test.each(["system", "developer"] as const)(
+  "a fork with a %s message further into its inherited history keeps it in memory, as before",
+  async (role) => {
+    // The child's rollout takes no system or developer message after the
+    // leading ones: such a fork starts from memory, as it always did.
+    const seen: LLMMessage[][] = [];
+    const instructions: string[] = [];
+    const session = parentSession(seen, MODEL_INFO, true, [], instructions);
+    const inherited: LLMMessage[] = [
+      { role: "user", content: "Please look at the project." },
+      { role: "assistant", content: "The project has three files." },
+      { role, content: "MID-HISTORY-INSTRUCTION: keep the answers short." },
+      { role: "user", content: "And the tests?" },
+      { role: "assistant", content: "Two test files." },
+    ];
+    const { live, result } = await run(session, [...inherited, { role: "user", content: "Extract memories." }]);
+    expect(result.error).toBeUndefined();
+    expect(result.outcome).toBe("completed");
+    const history = rolloutItems(live.rolloutPath!).flatMap((item) => item.type === "response_item" ? [item.payload as ResponseItem] : []);
+    expect(history.map((item) => textOf(responseItemToLlmMessage(item)))).toEqual(["Extract memories.", "NOTHING_TO_SAVE"]);
+    expect(readFileSync(live.rolloutPath!, "utf8")).not.toContain("MID-HISTORY-INSTRUCTION");
+    const request = [instructions[0] ?? "", ...seen[0]!.map(textOf)].join("\n");
+    expect(request).toContain("Please look at the project.");
+    expect(request).toContain("MID-HISTORY-INSTRUCTION");
+  },
+);
+
 test("a forked child whose rollout persistence is suspended stops before its first request", async () => {
   // A session whose rollout persistence is suspended keeps its events out of
   // its rollout (a fork turn on its source session). A child in that state can
