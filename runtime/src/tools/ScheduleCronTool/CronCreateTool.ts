@@ -9,6 +9,7 @@ import { buildTool, type ToolDef } from "../Tool.js";
 import { cronToHuman, parseCronExpression } from "../../utils/cron.js";
 import {
   addCronTask,
+  durableCronDispatchSupported,
   getCronFilePath,
   listAllCronTasks,
   listSessionCronTasks,
@@ -131,7 +132,12 @@ export const CronCreateTool = buildTool({
     }) !== undefined;
     let tasks;
     try {
-      tasks = await listAllCronTasks(getProjectRoot(), conversationId);
+      // Off Linux a session-only create never reads stored durable records:
+      // they are dormant there, so they must not count toward MAX_JOBS and a
+      // record that fails to read must not refuse a session job.
+      tasks = needsDurableRead || durableCronDispatchSupported()
+        ? await listAllCronTasks(getProjectRoot(), conversationId)
+        : listSessionCronTasks(conversationId);
     } catch (error) {
       if (needsDurableRead || (error as NodeJS.ErrnoException | null)?.code !== "DESCRIPTOR_UNSUPPORTED") {
         if (error instanceof Error) markEffectBoundaryNotCrossed(error, {
@@ -141,6 +147,13 @@ export const CronCreateTool = buildTool({
         throw error;
       }
       tasks = listSessionCronTasks(conversationId);
+    }
+    if (needsDurableRead && !durableCronDispatchSupported()) {
+      return {
+        result: false,
+        message: "Durable and delivery-routed crons are dispatched only on Linux; use durable: false for a session job.",
+        errorCode: 8,
+      };
     }
     if (tasks.length >= MAX_JOBS) {
       return {
