@@ -19,41 +19,80 @@ state with the task's own tests. The score is pass@1 over the tasks.
 
 `runtime/eval/harbor/agenc_agent.py` is a Harbor installed-agent adapter
 (`--agent agenc_agent:Agenc` with the file's directory on `PYTHONPATH`). It
-installs AgenC with the public installer (`https://get.agenc.ag/install.sh
---no-daemon`), or from a tarball built by
-`packages/agenc/scripts/build-runtime-tarball.mjs` when `runtime_url` is set,
-which is how an unreleased commit of main is measured. It then runs
+runs AgenC the way the published Terminal-Bench 2.1 runs did (Harbor Hub jobs
+[2bf2c84d](https://hub.harborframework.com/jobs/2bf2c84d-83c2-47a3-9341-e635c45bd329),
+84.5% with release 0.19.24, and
+[71f39f3b](https://hub.harborframework.com/jobs/71f39f3b-22f8-4dbe-9f25-2b039d3a4534)).
+It needs only this directory and a provider key, so anyone with Harbor can
+rerun it, on any Harbor environment.
 
-```
-agenc --dangerously-bypass-approvals-and-sandbox --provider <p> --model <m> --deadline +<s> -p "<instruction>"
-```
+1. Install. The public installer (`https://get.agenc.ag/install.sh
+   --no-daemon`) pins the release (`version`), downloads the runtime tarball
+   named in the release manifest, checks its sha256 and writes the `agenc`
+   wrapper, which runs the bundled Node. With `runtime_url` set, a tarball
+   built by `packages/agenc/scripts/build-runtime-tarball.mjs` is installed
+   instead, which is how an unreleased commit of main is measured. When the
+   image lacks `libatomic.so.1`, the copy in the runtime goes into
+   `/usr/local/lib`: the daemon starts with a sanitized environment, so the
+   wrapper's `LD_LIBRARY_PATH` does not reach it.
+2. Configure. `model_provider`, `model` and `reasoning_effort` go into
+   `$AGENC_HOME/config.toml`, as a user sets them.
+3. Trust. `agenc_trust_card.cjs` starts the interactive TUI in the task's
+   working directory, in a pseudo-terminal inside the container (the
+   runtime's own node-pty), waits for the "Trust this project?" card, presses
+   `y`, and checks that the product wrote its trust record after the keypress
+   and that the record covers the directory. The adapter never writes
+   `trusted-projects.json`. The proof is `agent/trust-card/trust-card.json`.
+4. Run. One headless turn with the instruction on stdin:
 
-in the task's working directory, trusting that directory first. The model
-name follows Harbor's `provider/model` form. The provider's key is read from
-the runner's environment and forwarded only into the agent process.
+   ```
+   agenc -p --budget max --dangerously-bypass-approvals-and-sandbox --output-format stream-json
+   ```
 
-Options (`--ak key=value`): `version` (pin a release), `manifest_url`,
-`runtime_url`, `effort` (default `medium`), `add_dirs` (extra workspace
-roots passed as `--add-dir`, default `/`: the tasks configure the whole
-container and AgenC's shell write policy otherwise refuses writes outside
-the task directory, a boundary the other harnesses do not have), `env`
-(extra `KEY=VALUE` pairs for the agent process, comma separated, which is
-how a runtime switch such as `AGENC_COMPLETION_CONTRACT=0` is measured
-against the default), `stop_daemon` (default false), `deadline_sec` and
-`deadline_margin_sec`.
+   with `AGENC_EFFORT_LEVEL` set to the effort and
+   `AGENC_DEEPSEEK_WEB_SEARCH=off`, so WebSearch uses its own fallback instead
+   of DeepSeek's server-side search. The provider's key is read from the
+   runner's environment and passed only to the agent's processes.
+5. Stop. At normal exit, or at the trial's agent deadline minus 2 s, the
+   adapter stops the daemon the canonical way (`agenc daemon stop`). Task
+   timeouts are never changed. A run stopped at the deadline ends with
+   `AgencDeadlineReached`, which Harbor treats like its own timeout: the task
+   is still verified. The stop takes about 2 s through `docker exec`, so
+   `agent/deadline-guard.json` records `stopped_after_deadline` when it ends
+   a little late. A failed stop raises `AgencGuardFailed` and skips
+   verification, because the agent may still be running.
+6. Evidence. The native rollouts are copied to `agent/native-rollouts`, each
+   gets an ATIF view, and the largest becomes `agent/trajectory.json`, the
+   file Harbor Hub publishes (`agenc_atif.py`). Tokens and Core's own cost
+   estimate go into the trial context.
+
+Setup failures (install, trust card) raise `AgencSetupError`, so
+`--retry-include AgencSetupError` retries those and nothing else.
+
+The model name follows Harbor's `provider/model` form. Options (`--ak
+key=value`): `version`, `reasoning_effort` (default `max`; the Terminal-Bench
+2.1 leaderboard tells runs apart by agent name and this value; `effort` is the
+older name and still works), `budget` (default `max`), `manifest_url`,
+`runtime_url`, `base_url` (provider base URL, for a gateway that holds the
+key), `env` (extra `KEY=VALUE` pairs for the agent's processes, comma
+separated; they win over the adapter's own, which is how a runtime switch
+such as `AGENC_COMPLETION_CONTRACT=0` is measured), `add_dirs` (extra
+workspace roots for `--add-dir`, none by default), `cli_deadline`,
+`deadline_sec` and `deadline_margin_sec`.
 
 Harbor kills the agent when its run exceeds the trial's agent timeout but
 never tells the agent what that timeout is. The adapter recomputes it the way
 Harbor does (task.toml `[agent] timeout_sec`, the agent override and cap, the
 timeout multipliers) from the trial's `config.json` next to the agent's log
-directory, and passes it as `--deadline` minus `deadline_margin_sec` (default
-120 s, room for AgenC's own backstop and the rollout copy). AgenC then tells
-the model its budget, asks it to finish in the reserve, and exits 5 with the
-saved result before Harbor's kill (see the `--deadline` notes in
-[cli.md](../reference/cli.md)). `deadline_sec` overrides the budget in
-seconds; `deadline_sec=0` runs without a deadline, which is how the old
-behaviour is measured. The derivation lives in `agenc_deadline.py` next to the
-adapter and is tested with `python3 -m unittest discover -s runtime/eval/harbor`.
+directory, and stops the daemon 2 s before it. With `cli_deadline=true` it
+also passes the budget to AgenC as `--deadline` minus `deadline_margin_sec`
+(default 120 s); AgenC then tells the model its budget, asks it to finish in
+the reserve, and exits 5 with the saved result (see the `--deadline` notes in
+[cli.md](../reference/cli.md)). The published runs did not pass it, so it is
+off by default. `deadline_sec` overrides the budget in seconds and
+`deadline_sec=0` runs without one. The derivation lives in `agenc_deadline.py`.
+The adapter's helpers are tested with `python3 -m unittest discover -s
+runtime/eval/harbor` (Python 3.11 or newer).
 
 The same file carries `HermesCurrent`, Harbor's Hermes adapter with its
 install check fixed (the current Hermes CLI has no `version` subcommand) and
@@ -70,6 +109,26 @@ export PYTHONPATH=/path/to/agenc-core/runtime/eval/harbor
 DEEPSEEK_API_KEY=... harbor run -p ./tb2/terminal-bench -a agenc_agent:Agenc \
   -m deepseek/deepseek-v4-pro -o ./jobs/agenc -n 4 -k 1
 ```
+
+### Reproducing the published Terminal-Bench 2.1 run
+
+```bash
+uv tool install harbor            # the published runs used 0.23.0
+export PYTHONPATH=/path/to/agenc-core/runtime/eval/harbor
+DEEPSEEK_API_KEY=... harbor run \
+  -d terminal-bench/terminal-bench-2-1@sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a \
+  -a agenc_agent:Agenc -m deepseek/deepseek-flash \
+  --ak version=0.19.24 --ak reasoning_effort=max \
+  -k 5 -n 4 -o ./jobs/agenc-tb21
+```
+
+The digest is the leaderboard's dataset revision. Registry task names carry
+the `terminal-bench/` prefix (`-i terminal-bench/fix-git`). The published
+runs used the same release, agent flags, trust method and stop, with two
+pieces around the agent that are not in this directory: an egress filter that
+refused known routes to benchmark answers, and a local gateway that held the
+DeepSeek key and logged every call. Passes that saw a task's solution or
+tests were then counted as failures (5 of 445 trials in job 2bf2c84d).
 
 Task images are `linux/amd64`. On Apple silicon, run Docker in a VM with
 Rosetta (colima: `--vz-rosetta`) and share the working directory with the VM
