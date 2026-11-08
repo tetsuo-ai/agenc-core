@@ -249,6 +249,95 @@ test("a held line whose fsync fails is written once, and the compaction still co
   expect(store().readAll().filter(isHeldLine(4))).toHaveLength(1);
 });
 
+/** Text of one write the session store makes to the rollout. */
+const writtenText = (buffer: Uint8Array, offset: number, length: number): string =>
+  Buffer.from(buffer.subarray(offset, offset + length)).toString("utf8");
+
+const lineAfterWindow: RolloutItem = { type: "response_item", payload: { role: "user", content: "after the window" } };
+
+/** The held line is in the rollout once, right before the line appended after the window. */
+function expectWrittenOnceBefore(items: readonly RolloutItem[], generation: number): void {
+  expect(items.filter(isHeldLine(generation))).toHaveLength(1);
+  const held = items.findIndex(isHeldLine(generation));
+  expect(items[held + 1]).toMatchObject(lineAfterWindow);
+}
+
+test("a held line dropped unwritten by a write error that does not enter degraded mode is written by the next append", async () => {
+  const store = () => harness!.store;
+  harnessWriting(() => store().appendRollout(heldLine(6), { durable: true }));
+  // The first write of the held line fails before any of its bytes reach the
+  // file, with an error that does not enter degraded mode, so the session
+  // store drops it.
+  let dropped = 0;
+  store().store.setWriteImplForTest((fd, buffer, offset, length) => {
+    if (dropped === 0 && writtenText(buffer, offset, length).includes('"generation":6')) {
+      dropped += 1;
+      throw Object.assign(new Error("file too large"), { code: "EFBIG" });
+    }
+    return writeSync(fd, buffer, offset, length);
+  });
+  const result = await compactConversation(SOURCE, harness!.context);
+  expect(result.transaction?.committed).toBeDefined();
+  expect(dropped).toBe(1);
+  expect(store().store.isDegraded).toBe(false);
+  store().appendRollout(lineAfterWindow, { durable: true });
+  expectWrittenOnceBefore(store().readAll(), 6);
+});
+
+test("a held line the session store refuses before taking it stays queued for the next append", async () => {
+  const store = () => harness!.store;
+  harnessWriting(() => store().appendRollout(heldLine(7), { durable: true }));
+  // Right after the committed record is written, the session store refuses
+  // one append before it takes the item, as it does while its write-behind
+  // queue has failed.
+  const writeBehind = store().store.writeBehind;
+  const assertHealthy = writeBehind.assertHealthy.bind(writeBehind);
+  let refuseNext = false;
+  let refused = 0;
+  vi.spyOn(writeBehind, "assertHealthy").mockImplementation(() => {
+    if (refuseNext) {
+      refuseNext = false;
+      refused += 1;
+      throw new Error("injected failed write-behind queue");
+    }
+    assertHealthy();
+  });
+  store().store.setWriteImplForTest((fd, buffer, offset, length) => {
+    const written = writeSync(fd, buffer, offset, length);
+    if (refused === 0 && writtenText(buffer, offset, length).includes('"compaction_committed"')) refuseNext = true;
+    return written;
+  });
+  const result = await compactConversation(SOURCE, harness!.context);
+  expect(result.transaction?.committed).toBeDefined();
+  expect(refused).toBe(1);
+  expect(store().readAll().some(isHeldLine(7))).toBe(false);
+  expect(store().readAllIncludingHeldLines().filter(isHeldLine(7))).toHaveLength(1);
+  store().appendRollout(lineAfterWindow, { durable: true });
+  expectWrittenOnceBefore(store().readAll(), 7);
+});
+
+test("a held line that meets a full disk waits in the degraded buffer and is written once", async () => {
+  const store = () => harness!.store;
+  harnessWriting(() => store().appendRollout(heldLine(8), { durable: true }));
+  let full = true;
+  store().store.setWriteImplForTest((fd, buffer, offset, length) => {
+    if (full && writtenText(buffer, offset, length).includes('"generation":8')) {
+      throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    }
+    return writeSync(fd, buffer, offset, length);
+  });
+  const result = await compactConversation(SOURCE, harness!.context);
+  expect(result.transaction?.committed).toBeDefined();
+  expect(store().store.isDegraded).toBe(true);
+  // The disk recovers and the line that waited is written; later appends do
+  // not write it again.
+  full = false;
+  await (store().store as unknown as { degraded: { tryFlush(): Promise<boolean> } }).degraded.tryFlush();
+  expect(store().store.isDegraded).toBe(false);
+  store().appendRollout(lineAfterWindow, { durable: true });
+  expectWrittenOnceBefore(store().readAll(), 8);
+});
+
 test("a memory mode change inside a window keeps the metadata line the window holds before it", async () => {
   const threadId = () => harness!.store.sessionId;
   harnessWriting(() => {

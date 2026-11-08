@@ -3633,19 +3633,23 @@ export class RolloutStore {
       this.compactionWindowAttemptId === undefined &&
       this.linesAfterCompactionWindow.length > 0
     ) {
-      // Handed to the session store before its write. A durable write whose
-      // fsync fails has already appended its bytes (or queued them for a later
-      // append), so writing the line again would leave it in the rollout twice.
-      const { item, opts } = this.linesAfterCompactionWindow.shift()!;
-      this.store.appendRollout(item, opts);
+      // A line leaves the queue once the session store has taken it, even when
+      // its write then fails: a durable write whose fsync fails has already
+      // appended its bytes, and one that meets a full disk waits in the
+      // degraded buffer, so writing the line again would leave it in the
+      // rollout twice. A line the store refused or dropped unwritten stays
+      // first in the queue.
+      const { item, opts } = this.linesAfterCompactionWindow[0]!;
+      const offer = this.store.offerRollout(item, opts);
+      if (offer.appended || offer.taken) this.linesAfterCompactionWindow.shift();
+      if (!offer.appended) throw offer.error;
     }
   }
 
   /**
    * The same, for a terminal record or an ended attempt: the compaction's
    * outcome is already settled, so a failed write of a held line must not
-   * fail it. A line that was not handed to the session store stays for the
-   * next write.
+   * fail it. A line the session store did not take stays for the next write.
    */
   private appendLinesAfterCompactionWindowBestEffort(): void {
     try {
