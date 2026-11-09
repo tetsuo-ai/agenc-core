@@ -1118,6 +1118,61 @@ function promptCacheAfter(tally: PromptCacheTally, event: SessionTranscriptEvent
     : tally;
 }
 
+/**
+ * Model calls dispatched in each turn, counted as events reach the store. The
+ * store keeps only the newest `MAX_TRANSCRIPT_EVENTS` events, so a turn longer
+ * than that window lost its first calls from the "done in ... · N model calls"
+ * line (186 shown for 331 in a two-and-a-half-hour turn). Like the cost and
+ * prompt-cache tallies it survives the window and transcript clears.
+ */
+interface ModelCallTally {
+  /** The turn a dispatched model call belongs to: the last one started and not yet ended. */
+  readonly openTurnId: string | null;
+  /** Calls per turn id, the newest `MAX_TALLIED_TURNS` turns. */
+  readonly byTurn: ReadonlyMap<string, number>;
+}
+
+const EMPTY_MODEL_CALL_TALLY: ModelCallTally = { openTurnId: null, byTurn: new Map() };
+const MAX_TALLIED_TURNS = 256;
+
+/** The tally after one event; only turn boundaries and dispatched model turns change it. */
+function modelCallsAfter(tally: ModelCallTally, event: SessionTranscriptEvent): ModelCallTally {
+  const { type, payload: rawPayload } = unwrap(event);
+  const payload = payloadRecord(rawPayload);
+  switch (type) {
+    case "turn_start":
+    case "turn_started": {
+      if (typeof payload.turnId !== "string") {
+        return tally.openTurnId === null ? tally : { ...tally, openTurnId: null };
+      }
+      if (tally.byTurn.has(payload.turnId)) {
+        return tally.openTurnId === payload.turnId ? tally : { ...tally, openTurnId: payload.turnId };
+      }
+      const byTurn = new Map(tally.byTurn).set(payload.turnId, 0);
+      for (const turnId of byTurn.keys()) {
+        if (byTurn.size <= MAX_TALLIED_TURNS) break;
+        byTurn.delete(turnId);
+      }
+      return { openTurnId: payload.turnId, byTurn };
+    }
+    case "turn_complete":
+    case "turn_failed":
+    case "turn_aborted":
+      return tally.openTurnId !== null &&
+        (payload.turnId === undefined || payload.turnId === tally.openTurnId)
+        ? { ...tally, openTurnId: null }
+        : tally;
+    case "execution_admission": {
+      if (payload.event !== "dispatched" || payload.kind !== "model_turn") return tally;
+      const turnId = tally.openTurnId;
+      if (turnId === null || !tally.byTurn.has(turnId)) return tally;
+      return { ...tally, byTurn: new Map(tally.byTurn).set(turnId, tally.byTurn.get(turnId)! + 1) };
+    }
+    default:
+      return tally;
+  }
+}
+
 function compactWhitespace(value: string): string {
   return value.trim().split(/\s+/).join(" ");
 }
@@ -1915,6 +1970,8 @@ const STREAM_WARNING_RESET_EVENTS = new Set([
 export function adaptTranscriptEvents(
   events: readonly SessionTranscriptEvent[],
   startupMessages: readonly LLMMessage[] = [],
+  /** Calls per turn counted as events arrived (the store's tally), for turns longer than `events`. */
+  modelCallsByTurn?: ReadonlyMap<string, number>,
 ): AdaptedTranscript {
   const orderedEvents = orderSequencedEvents(events);
   const settledCollabSpawnCallIds = collectSettledCollabSpawnCallIds(orderedEvents);
@@ -2209,11 +2266,14 @@ export function adaptTranscriptEvents(
           }
         }
         if (typeof payload.durationMs === "number" && payload.durationMs >= 0) {
+          const completedTurnId = typeof payload.turnId === "string" ? payload.turnId : currentTurnId;
+          const modelCalls = Math.max(currentTurnModelCalls,
+            completedTurnId === null ? 0 : modelCallsByTurn?.get(completedTurnId) ?? 0);
           out.push({
             type: "system",
             subtype: "turn_duration",
             durationMs: payload.durationMs,
-            ...(currentTurnModelCalls > 0 ? { modelCalls: currentTurnModelCalls } : {}),
+            ...(modelCalls > 0 ? { modelCalls } : {}),
             timestamp: completionTimestamp,
             uuid: nextUuid(),
             isMeta: false,
@@ -3296,6 +3356,8 @@ interface TranscriptState {
   readonly sessionUsage: AdmissionUsageSummary | null;
   /** Like `sessionCostUsd`, survives the event ring buffer and clears. */
   readonly promptCache: PromptCacheTally;
+  /** Model calls per turn, counted as events arrived; survives the ring buffer too. */
+  readonly modelCalls: ModelCallTally;
 }
 
 type TranscriptAction =
@@ -3553,6 +3615,7 @@ function buildTranscriptState(
   let sessionCostUsd = 0;
   let sessionUsage: AdmissionUsageSummary | null = null;
   let promptCache = EMPTY_PROMPT_CACHE_TALLY;
+  let modelCalls = EMPTY_MODEL_CALL_TALLY;
 
   for (const event of orderSequencedEvents(unorderedEvents)) {
     const key = eventKey(event);
@@ -3571,6 +3634,7 @@ function buildTranscriptState(
     sessionCostUsd += tokenCountCostUsd(event);
     sessionUsage = latestSessionUsage(sessionUsage, event);
     promptCache = promptCacheAfter(promptCache, event);
+    modelCalls = modelCallsAfter(modelCalls, event);
     pushStoredEvent(events, clampEventForStorage(event), keys, foldedKeys);
     maxSeq = maxEventSeq(maxSeq, event);
   }
@@ -3588,7 +3652,7 @@ function buildTranscriptState(
 
   evictOldestEvents(events, keys);
 
-  return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage, promptCache };
+  return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage, promptCache, modelCalls };
 }
 
 function reducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
@@ -3614,6 +3678,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
             state.sessionCostUsd + tokenCountCostUsd(action.event),
           sessionUsage: latestSessionUsage(state.sessionUsage, action.event),
           promptCache: promptCacheAfter(state.promptCache, action.event),
+          modelCalls: modelCallsAfter(state.modelCalls, action.event),
         };
       }
 
@@ -3638,6 +3703,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         sessionCostUsd: state.sessionCostUsd + tokenCountCostUsd(action.event),
         sessionUsage: latestSessionUsage(state.sessionUsage, action.event),
         promptCache: promptCacheAfter(state.promptCache, action.event),
+        modelCalls: modelCallsAfter(state.modelCalls, action.event),
       };
     }
     case "appendBatch": {
@@ -3662,6 +3728,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         let addedCostUsd = 0;
         let sessionUsage = state.sessionUsage;
         let promptCache = state.promptCache;
+        let modelCalls = state.modelCalls;
         const fresh: SessionTranscriptEvent[] = [];
         for (const event of action.events) {
           const key = eventKey(event);
@@ -3671,6 +3738,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
           addedCostUsd += tokenCountCostUsd(event);
           sessionUsage = latestSessionUsage(sessionUsage, event);
           promptCache = promptCacheAfter(promptCache, event);
+          modelCalls = modelCallsAfter(modelCalls, event);
         }
         // Known events stay out of the rebuild: a replayed delta sorts ahead
         // of the stored event it was folded into, and would be added twice.
@@ -3683,6 +3751,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
           sessionCostUsd: state.sessionCostUsd + addedCostUsd,
           sessionUsage,
           promptCache,
+          modelCalls,
         };
       }
       const keys = state.keys as Set<string>;
@@ -3691,6 +3760,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
       let sessionCostUsd = state.sessionCostUsd;
       let sessionUsage = state.sessionUsage;
       let promptCache = state.promptCache;
+      let modelCalls = state.modelCalls;
       for (const event of action.events) {
         const key = eventKey(event);
         if (keys.has(key)) continue;
@@ -3699,6 +3769,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         sessionCostUsd += tokenCountCostUsd(event);
         sessionUsage = latestSessionUsage(sessionUsage, event);
         promptCache = promptCacheAfter(promptCache, event);
+        modelCalls = modelCallsAfter(modelCalls, event);
         const seq = eventSeq(event);
         maxSeq = seq === null ? maxSeq : maxEventSeq(maxSeq, event);
       }
@@ -3707,7 +3778,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
       const foldedKeys = [...state.foldedKeys];
       for (const event of pending) pushStoredEvent(events, event, keys, foldedKeys);
       evictOldestEvents(events, keys);
-      return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage, promptCache };
+      return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage, promptCache, modelCalls };
     }
   }
 }
@@ -3724,6 +3795,7 @@ export function createSessionTranscriptStateForTesting(
       sessionCostUsd: 0,
       sessionUsage: null,
       promptCache: EMPTY_PROMPT_CACHE_TALLY,
+      modelCalls: EMPTY_MODEL_CALL_TALLY,
     },
     { kind: "reset", events },
   );
@@ -3793,6 +3865,7 @@ export function useSessionTranscript(
     sessionCostUsd: 0,
     sessionUsage: null,
     promptCache: EMPTY_PROMPT_CACHE_TALLY,
+    modelCalls: EMPTY_MODEL_CALL_TALLY,
   });
 
   // A wholesale replacement can shrink a tall, scrolled transcript to a
@@ -3885,7 +3958,9 @@ export function useSessionTranscript(
   }, [session]);
 
   return useMemo(() => {
-    const adapted = adaptTranscriptEvents(state.events, startupMessages);
+    // The store's per-turn call tally survives the event window, so a long
+    // turn's "done" line counts every call it made.
+    const adapted = adaptTranscriptEvents(state.events, startupMessages, state.modelCalls.byTurn);
     // `state.sessionCostUsd` survives the event ring buffer and transcript
     // clear/replacement events; the adapter's local total covers standalone
     // callers and matches this value until old events are evicted.
@@ -3895,5 +3970,5 @@ export function useSessionTranscript(
       sessionUsage: state.sessionUsage,
       promptCacheShare: promptCacheSharePercent(state.promptCache),
     };
-  }, [state.events, state.sessionCostUsd, state.sessionUsage, state.promptCache, startupMessages]);
+  }, [state.events, state.sessionCostUsd, state.sessionUsage, state.promptCache, state.modelCalls, startupMessages]);
 }

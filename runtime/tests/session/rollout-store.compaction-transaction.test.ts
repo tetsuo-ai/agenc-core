@@ -916,6 +916,43 @@ describe("RolloutStore transactional compaction", () => {
     }
   });
 
+  it("leaves a commit already in the rollout to reconstruction when its attempt is closed as unfinished", () => {
+    const store = openStore("commit-failpoint-close", {
+      afterCompactionCommitAppendForTestingOnly: () => {
+        throw new Error("crash after fsync");
+      },
+    });
+    try {
+      expect(() => commitSmallCompaction(store, "close-attempt")).toThrow(
+        /reconstruction is required/i,
+      );
+      const repo = (store as unknown as {
+        compactionRetentionRepo: { get(attemptId: string): unknown };
+      }).compactionRetentionRepo;
+      const pin = repo.get("close-attempt");
+      expect(pin).toMatchObject({ state: "intent_bound" });
+      // The close a lease release or the next compaction makes for an attempt
+      // that ended without a terminal record finds the commit and leaves the
+      // pin and the rollout to the projection reconstruction.
+      (store as unknown as {
+        closeUnfinishedCompactionAttempt(attemptId: string): void;
+      }).closeUnfinishedCompactionAttempt("close-attempt");
+      expect(repo.get("close-attempt")).toEqual(pin);
+      expect(
+        store.readAll().filter(
+          (item) =>
+            (item.type === "compaction_committed" || item.type === "compaction_failed") &&
+            item.payload.attempt_id === "close-attempt",
+        ).map((item) => item.type),
+      ).toEqual(["compaction_committed"]);
+      expect(() => store.assertCompactionProjectionReady()).toThrow(
+        /reconstruction is required/i,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
   it("resolves write-success/fsync-failure as one committed terminal", () => {
     const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);

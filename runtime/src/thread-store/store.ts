@@ -1268,7 +1268,8 @@ export class FileThreadStore implements ThreadStore {
   ): void {
     const live = this.liveRecorders.get(entry.threadId);
     if (live !== undefined) {
-      const latest = latestSessionMeta(live.readAll());
+      // A metadata line an open compaction attempt holds is the latest one.
+      const latest = latestSessionMeta(live.readAllIncludingHeldLines());
       live.appendRollout(
         {
           type: "session_meta",

@@ -3991,6 +3991,24 @@ export class Session {
     return this.rolloutPersistenceSuspendDepth > 0;
   }
 
+  /**
+   * System-shaped text a child received ahead of its inherited messages (a
+   * session memory child's copy of its parent's base instructions). Every
+   * request frames it as a leading system message of the history would be
+   * (run-turn-sampling-request.ts), but it is not history: it is never written
+   * to the rollout, never offered to a compaction, and it outlasts compactions
+   * and turns.
+   */
+  get inheritedSystemHistory(): readonly string[] {
+    return this.inheritedSystemHistoryParts;
+  }
+
+  setInheritedSystemHistory(parts: readonly string[]): void {
+    this.inheritedSystemHistoryParts = [...parts];
+  }
+
+  private inheritedSystemHistoryParts: readonly string[] = [];
+
   async withRolloutPersistenceSuspended<T>(fn: () => Promise<T>): Promise<T> {
     this.writeBehind.finish();
     this.rolloutPersistenceSuspendDepth += 1;

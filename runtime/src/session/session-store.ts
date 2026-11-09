@@ -1868,6 +1868,16 @@ export interface AppendOptions {
   readonly turnId?: string;
 }
 
+/**
+ * What became of an item offered with `SessionStore.offerRollout`. When the
+ * append failed, `taken` says whether the store still has the item: offering a
+ * taken item again would write it twice, and an item that was not taken is
+ * still the caller's to write.
+ */
+export type RolloutOffer =
+  | { readonly appended: true }
+  | { readonly appended: false; readonly taken: boolean; readonly error: unknown };
+
 export interface CompactionIndexSnapshot {
   readonly toolResultBytesByTurn: ReadonlyMap<string, number>;
   readonly tokenEstimateByTurn?: ReadonlyMap<string, number>;
@@ -2574,6 +2584,34 @@ export class SessionStore {
    * batched and eventually flushed.
    */
   appendRollout(item: RolloutItem, opts: AppendOptions = {}): void {
+    this.appendRolloutItem(item, opts, undefined);
+  }
+
+  /**
+   * appendRollout for an item its caller keeps until this store has taken it,
+   * returning a failure instead of throwing it. The store has taken an item
+   * once it waits in a batch or in the write-behind queue, even when its write
+   * then fails: a durable write whose fsync fails has already appended its
+   * bytes, and one that meets a full disk waits in the degraded buffer. An item
+   * the store refused (a failed write-behind queue, a durable item for a closed
+   * store) or dropped unwritten with a write error that does not enter degraded
+   * mode was not taken.
+   */
+  offerRollout(item: RolloutItem, opts: AppendOptions = {}): RolloutOffer {
+    const custody = { taken: false };
+    try {
+      this.appendRolloutItem(item, opts, custody);
+      return { appended: true };
+    } catch (error) {
+      return { appended: false, taken: custody.taken, error };
+    }
+  }
+
+  private appendRolloutItem(
+    item: RolloutItem,
+    opts: AppendOptions,
+    custody: { taken: boolean } | undefined,
+  ): void {
     if (this.oneShotFastMode) item = structuredClone(item);
     this.writeBehind.assertHealthy();
     if (this.writeBehind.deferring) {
@@ -2583,6 +2621,7 @@ export class SessionStore {
         withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
           () => this.appendRollout(captured, options));
       });
+      if (custody !== undefined) custody.taken = true;
       return;
     }
     const durable =
@@ -2598,7 +2637,18 @@ export class SessionStore {
       this.batchOpenedAtMs = monotonicMs();
     }
     this.pending.push(item);
-    if (durable && !this.flushBatch(true)) {
+    if (custody !== undefined) custody.taken = true;
+    if (!durable) return;
+    let committed: boolean;
+    try {
+      committed = this.flushBatch(true);
+    } catch (error) {
+      // A write error that does not enter degraded mode drops the batch
+      // (flushBatchUntimed); an item still waiting in it stays taken.
+      if (custody !== undefined) custody.taken = this.pending.includes(item);
+      throw error;
+    }
+    if (!committed) {
       throw new Error("durable rollout item was not fsync-committed");
     }
   }
@@ -4155,6 +4205,17 @@ export class SessionStore {
 
   get isDegraded(): boolean {
     return this.degraded.isDegraded;
+  }
+
+  /**
+   * Whether rows handed to this store may still be missing from the file: a
+   * degraded ring buffer waiting for the disk, an fsync still being retried, or
+   * a one-shot run that writes only when it closes. A reader of the file does
+   * not see them yet, and they reach it later in their own order.
+   */
+  get hasUnsettledRows(): boolean {
+    return this.degraded.isDegraded || this.degraded.size > 0 ||
+      this.pendingFsyncRetries.size > 0 || (this.oneShotFastMode && !this.closed);
   }
 
   /** Current canonical inode identity under the lifetime writer lease. */
