@@ -1,6 +1,7 @@
 import { readCompactionTransactionAdapter } from "./transaction-adapter.js";
 export { readCompactionTransactionAdapter } from "./transaction-adapter.js";
 import { resolveReasoningEffort } from "../../llm/reasoning-effort.js";
+import { supportsThinkingOffRecovery } from "../../session/reasoning-recovery-capability.js";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
@@ -1527,6 +1528,12 @@ async function invokeCompactionProvider(params: {
     maxOutputTokens: params.outputReserveTokens,
     contextWindowTokens: params.contextWindowTokens,
     reasoningEffort: params.reasoningEffort,
+    // A summary is a transcription task. Where the route can answer without
+    // thinking, it does: thinking shares the output limit with the answer, and
+    // a summary cut off by its own reasoning is a failed attempt.
+    ...(supportsThinkingOffRecovery(params.providerName, params.model)
+      ? { disableThinkingForRecovery: true as const }
+      : {}),
     // Compaction is a constrained summarization call, not an agent turn. Keep
     // it explicitly tool-free so constructor-scoped client tools and
     // provider-native server tools cannot be added after preflight token

@@ -259,8 +259,22 @@ async function compactConversationImpl(
     summaryInputMessages,
     toolPairSafeSplitIndex,
   );
+  // Every prompt the user typed stays verbatim through an automatic
+  // compaction. The task and the corrections that followed are what the work
+  // is measured against, and a model's summary does not have to restate them.
+  // The model-free tier carries the request in its own digest and keeps its rule.
+  const keptPromptIndexes = automatic && options.summarizer === undefined
+    ? retainedUserPromptIndexes(messages, splitIndex,
+        retainedUserPromptByteLimit(getEffectiveContextWindowSize(context)))
+    : new Set<number>();
+  // When prompts are all there is before the split, keeping them would leave
+  // nothing to summarize. Then only the live request is kept, as before.
+  const retainedPromptIndexes = messages.slice(0, splitIndex).some((message, index) =>
+    !isAgentInvocationMessage(message) && index !== lastUserIndex && !keptPromptIndexes.has(index))
+    ? keptPromptIndexes
+    : new Set<number>();
   const isProtected = (message: RuntimeMessage, index: number): boolean =>
-    isAgentInvocationMessage(message) || index === lastUserIndex;
+    isAgentInvocationMessage(message) || index === lastUserIndex || retainedPromptIndexes.has(index);
   const protectedInvocationMessages = messages
     .slice(0, splitIndex)
     .filter(isProtected);
@@ -477,6 +491,53 @@ export function automaticCompactionSplit(
     if (degraded) break;
   }
   return split;
+}
+
+/** Most bytes of earlier user prompts an automatic compaction keeps verbatim. */
+export const MAX_RETAINED_USER_PROMPT_BYTES = 64 * 1024;
+/** Kept prompts never take more than this share of the context window, so a compaction still frees room. */
+const RETAINED_USER_PROMPT_WINDOW_SHARE = 0.05;
+const RETAINED_PROMPT_BYTES_PER_TOKEN = 4;
+
+/** The byte limit for kept prompts on a model with this effective context window. */
+export function retainedUserPromptByteLimit(effectiveWindowTokens: number): number {
+  if (!Number.isFinite(effectiveWindowTokens) || effectiveWindowTokens <= 0) return 0;
+  return Math.min(MAX_RETAINED_USER_PROMPT_BYTES,
+    Math.floor(effectiveWindowTokens * RETAINED_USER_PROMPT_WINDOW_SHARE * RETAINED_PROMPT_BYTES_PER_TOKEN));
+}
+
+function isUserPrompt(message: RuntimeMessage): boolean {
+  return (message.originalRole ?? message.role ?? message.message?.role) === "user" &&
+    message.isMeta !== true && message.runtimeOnly?.compactionHistory === undefined;
+}
+
+/**
+ * The prompts the user typed before `splitIndex` that stay verbatim: the
+ * first one when it fits `byteLimit`, then the newest ones while they fit.
+ */
+export function retainedUserPromptIndexes(
+  messages: readonly RuntimeMessage[],
+  splitIndex: number,
+  byteLimit: number = MAX_RETAINED_USER_PROMPT_BYTES,
+): Set<number> {
+  const prompts: number[] = [];
+  for (let index = 0; index < Math.min(splitIndex, messages.length); index += 1) {
+    if (isUserPrompt(messages[index]!)) prompts.push(index);
+  }
+  const bytesOf = (index: number): number => Buffer.byteLength(
+    JSON.stringify(messages[index]!.message?.content ?? messages[index]!.content ?? ""), "utf8");
+  const retained = new Set<number>();
+  if (prompts.length === 0) return retained;
+  let bytes = bytesOf(prompts[0]!);
+  if (bytes > byteLimit) return retained;
+  retained.add(prompts[0]!);
+  for (let at = prompts.length - 1; at >= 1; at -= 1) {
+    const size = bytesOf(prompts[at]!);
+    if (bytes + size > byteLimit) break;
+    retained.add(prompts[at]!);
+    bytes += size;
+  }
+  return retained;
 }
 
 export function automaticCompactionLiveUserIndex(

@@ -81,6 +81,32 @@ describe("compaction summary reasoning effort", () => {
     expect(harness.context.options?.maxOutputTokens).toBe(32_768);
   });
 
+  it("asks native DeepSeek for a summary without thinking", async () => {
+    const source = createSource(40);
+    harness = createCompactionTransactionHarness(source, {
+      sessionId: SESSION_ID,
+      contextWindowTokens: 65_536,
+      maxOutputTokens: 32_768,
+      compactionMode: "automatic",
+    });
+    await shapeSession(harness, {
+      selection: { provider: "deepseek", model: "deepseek-flash" },
+      reasoningEffort: "max",
+      supportedReasoningLevels: ["low", "high", "max"],
+    });
+    // The summary call goes to the provider and model that own the context.
+    Object.assign(harness.provider, { name: "deepseek" });
+    Object.assign(harness.context.options!, { mainLoopModel: "deepseek-flash" });
+
+    const result = await compactOutsideTurn(source, harness);
+
+    expect(result.transaction).toBeDefined();
+    const calls = harness.provider.chat.mock.calls as unknown as [unknown, LLMChatOptions][];
+    expect(calls.length).toBeGreaterThan(0);
+    // Thinking shares the output limit with the answer, so the whole limit is left for the summary.
+    for (const [, options] of calls) expect(options.disableThinkingForRecovery).toBe(true);
+  });
+
   it("sends the session's effort on every summary call", async () => {
     const source = createSource(40);
     harness = createCompactionTransactionHarness(source, {
@@ -95,6 +121,10 @@ describe("compaction summary reasoning effort", () => {
     // Map calls and at least one reduction.
     expect(sent.length).toBeGreaterThan(2);
     expect(sent).toEqual(sent.map(() => "low"));
+    // A route with no thinking switch is sent no request to turn it off.
+    for (const [, options] of harness.provider.chat.mock.calls as unknown as [unknown, LLMChatOptions][]) {
+      expect(options.disableThinkingForRecovery).toBeUndefined();
+    }
   });
 
   it("sends the effort the session has when the compaction runs", async () => {
