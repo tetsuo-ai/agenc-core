@@ -454,6 +454,27 @@ function withPromptCacheKeyHeaders(
 }
 
 /**
+ * The ChatGPT subscription backend keeps a conversation's requests on the host
+ * that holds its cached prefix by the `session_id` request header. The body's
+ * `prompt_cache_key` does not do that there: measured 2026-11-11 on
+ * gpt-6.1-sol with a byte-identical request prefix, 18 of 18 follow-up calls
+ * read no cached tokens without the header and 7 of 36 with it.
+ * `conversation_id` had no effect. Only this backend gets the header; the
+ * platform API and every other Responses destination are unchanged.
+ */
+function withChatGptSessionHeader(
+  headers: Readonly<Record<string, string>> | undefined,
+  chatgptBackend: boolean,
+  request: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, string>> | undefined {
+  const key = request.prompt_cache_key;
+  if (!chatgptBackend || typeof key !== "string" || !HEADER_SAFE_PROMPT_CACHE_KEY.test(key)) {
+    return headers;
+  }
+  return { session_id: key, ...headers };
+}
+
+/**
  * The QwenCloud Token Plan quota refusal (HTTP 429 insufficient_quota) blocks
  * every call until the plan's quota returns (token-plan-faq). Say so instead of
  * the generic billing sentence, and never retry it as throttling.
@@ -1191,7 +1212,7 @@ export class OpenAIProvider implements LLMProvider {
           });
           const response = await session.requestJson<Record<string, unknown>>({
             api: "responses",
-            headers,
+            headers: withChatGptSessionHeader(headers, this.isChatGptBackend(), request),
             path: this.resolvePath("/responses"),
             method: "POST",
             body: request,
@@ -1903,7 +1924,7 @@ export class OpenAIProvider implements LLMProvider {
       try {
         response = await this.requestStream({
           api: "responses",
-          headers,
+          headers: withChatGptSessionHeader(headers, this.isChatGptBackend(), request),
           path: this.resolvePath("/responses"),
           body: request,
           timeoutMs,
