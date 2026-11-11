@@ -19,12 +19,14 @@ state with the task's own tests. The score is pass@1 over the tasks.
 
 `runtime/eval/harbor/agenc_agent.py` is a Harbor installed-agent adapter
 (`--agent agenc_agent:Agenc` with the file's directory on `PYTHONPATH`). It
-runs AgenC the way the published Terminal-Bench 2.1 runs did (Harbor Hub jobs
+runs AgenC the way the published Terminal-Bench 2.1 run did: Harbor Hub job
 [2bf2c84d](https://hub.harborframework.com/jobs/2bf2c84d-83c2-47a3-9341-e635c45bd329),
-84.5% with release 0.19.24, and
-[71f39f3b](https://hub.harborframework.com/jobs/71f39f3b-22f8-4dbe-9f25-2b039d3a4534)).
-It needs only this directory and a provider key, so anyone with Harbor can
-rerun it, on any Harbor environment.
+84.5% with release 0.19.24. An earlier public run,
+[71f39f3b](https://hub.harborframework.com/jobs/71f39f3b-22f8-4dbe-9f25-2b039d3a4534)
+(started 2026-10-12, 76.2%, 61 trials ended by the timeout), used an older
+agent wrapper and no `--deadline`; this adapter does not claim to reproduce
+it. The adapter needs only this directory and a provider key, so anyone with
+Harbor can rerun it, on any Harbor environment.
 
 1. Install. The public installer (`https://get.agenc.ag/install.sh
    --no-daemon`) pins the release (`version`), downloads the runtime tarball
@@ -84,13 +86,16 @@ Harbor kills the agent when its run exceeds the trial's agent timeout but
 never tells the agent what that timeout is. The adapter recomputes it the way
 Harbor does (task.toml `[agent] timeout_sec`, the agent override and cap, the
 timeout multipliers) from the trial's `config.json` next to the agent's log
-directory, and stops the daemon 2 s before it. With `cli_deadline=true` it
-also passes the budget to AgenC as `--deadline` minus `deadline_margin_sec`
-(default 120 s); AgenC then tells the model its budget, asks it to finish in
-the reserve, and exits 5 with the saved result (see the `--deadline` notes in
-[cli.md](../reference/cli.md)). The published runs did not pass it, so it is
-off by default. `deadline_sec` overrides the budget in seconds and
-`deadline_sec=0` runs without one. The derivation lives in `agenc_deadline.py`.
+directory, and stops the daemon 2 s before it. By default it also passes
+that same instant to AgenC as `--deadline` (`cli_deadline`, on by default;
+`deadline_margin_sec`, default 2, is the distance from the timeout). AgenC
+then tells the model its budget, asks it to finish in the reserve, and exits
+5 with the saved result (see the `--deadline` notes in
+[cli.md](../reference/cli.md)). The published 84.5% run launched this way:
+its Hub config records `cli_deadline: true`, and it ended with no trial
+killed by the timeout. `cli_deadline=false` runs without the flag.
+`deadline_sec` overrides the budget in seconds and `deadline_sec=0` runs
+without one. The derivation lives in `agenc_deadline.py`.
 The adapter's helpers are tested with `python3 -m unittest discover -s
 runtime/eval/harbor` (Python 3.11 or newer).
 
@@ -113,7 +118,7 @@ DEEPSEEK_API_KEY=... harbor run -p ./tb2/terminal-bench -a agenc_agent:Agenc \
 ### Reproducing the published Terminal-Bench 2.1 run
 
 ```bash
-uv tool install harbor            # the published runs used 0.23.0
+uv tool install harbor            # the published run used 0.23.0
 export PYTHONPATH=/path/to/agenc-core/runtime/eval/harbor
 DEEPSEEK_API_KEY=... harbor run \
   -d terminal-bench/terminal-bench-2-1@sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a \
@@ -124,11 +129,17 @@ DEEPSEEK_API_KEY=... harbor run \
 
 The digest is the leaderboard's dataset revision. Registry task names carry
 the `terminal-bench/` prefix (`-i terminal-bench/fix-git`). The published
-runs used the same release, agent flags, trust method and stop, with two
-pieces around the agent that are not in this directory: an egress filter that
-refused known routes to benchmark answers, and a local gateway that held the
-DeepSeek key and logged every call. Passes that saw a task's solution or
-tests were then counted as failures (5 of 445 trials in job 2bf2c84d).
+run (job 2bf2c84d) used the same release, agent flags, trust method, stop and
+`--deadline`, with two pieces around the agent that are not in this
+directory: an egress filter that refused known routes to benchmark answers,
+and a local gateway that held the DeepSeek key and logged every call. Passes
+that saw a task's solution or tests were then counted as failures (5 of 445
+trials in job 2bf2c84d).
+
+A copy of this adapter from before the `--deadline` default changed (commit
+`92d519f6e` and earlier) launches without the flag. Add `--ak
+cli_deadline=true --ak deadline_margin_sec=2` to that command to match the
+published run.
 
 Task images are `linux/amd64`. On Apple silicon, run Docker in a VM with
 Rosetta (colima: `--vz-rosetta`) and share the working directory with the VM

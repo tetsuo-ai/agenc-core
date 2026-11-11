@@ -105,8 +105,16 @@ class DeadlineFlagTest(unittest.TestCase):
         self.assertEqual(deadline_flag(28800.0), f"--deadline +{28800 - int(DEFAULT_DEADLINE_MARGIN_SEC)}")
         self.assertEqual(deadline_flag(3600.0, margin_sec=300), "--deadline +3300")
 
+    def test_default_matches_the_published_run(self) -> None:
+        # Hub job 2bf2c84d passed --deadline at the stop instant: 2 s before the agent timeout.
+        self.assertEqual(DEFAULT_DEADLINE_MARGIN_SEC, 2.0)
+        self.assertEqual(deadline_flag(900.0), "--deadline +898")
+        source = (Path(__file__).parent / "agenc_agent.py").read_text()
+        self.assertRegex(source, r"cli_deadline: bool = Field\(\s+default=True,")
+        self.assertRegex(source, r"GUARD_MARGIN_SEC = 2\b")
+
     def test_floors_a_short_budget_and_skips_a_missing_one(self) -> None:
-        self.assertEqual(deadline_flag(90.0), f"--deadline +{MIN_DEADLINE_SEC}")
+        self.assertEqual(deadline_flag(90.0, margin_sec=120), f"--deadline +{MIN_DEADLINE_SEC}")
         self.assertEqual(deadline_flag(None), "")
         self.assertEqual(deadline_flag(0), "")
         self.assertEqual(deadline_flag(float("inf")), "")
