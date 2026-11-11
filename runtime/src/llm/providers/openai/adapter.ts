@@ -90,7 +90,8 @@ import {
   parseOpenAIResponsesUsage,
   type OpenAIResponsesRequestOptions,
 } from "../../wire/responses-openai.js";
-import { metaModelUsesResponsesApi } from "../../registry/meta-models.js";
+import { isRegisteredMetaChatModel, metaModelUsesResponsesApi } from "../../registry/meta-models.js";
+import { transportSilenceFetch } from "../../transport-silence.js";
 import { resolveReasoningEffort } from "../../reasoning-effort.js";
 import { ResponsesFunctionCallItemIds } from "../../wire/responses-function-call-ids.js";
 import { assertKimiRequestPayloadSize } from "../../wire/kimi-contract.js";
@@ -1173,6 +1174,7 @@ export class OpenAIProvider implements LLMProvider {
           });
           const session = this.client.createTurnSession({
             wireApi: "responses",
+            ...this.transportOptions(model),
           });
           const reasoningReplay = this.reasoningReplayOptions(model, options);
           const functionCallItemId = this.functionCallItemIdOptions();
@@ -1228,6 +1230,7 @@ export class OpenAIProvider implements LLMProvider {
 
         const session = this.client.createTurnSession({
           wireApi: "chat_completions",
+          ...this.transportOptions(model),
         });
         assertProviderStructuredOutputCompatibility({
           providerName: this.name,
@@ -2965,6 +2968,13 @@ export class OpenAIProvider implements LLMProvider {
     return error;
   }
 
+  /** Select by the effective request model, leaving other providers untouched. */
+  private transportOptions(model: unknown): { readonly fetchImpl?: typeof fetch } {
+    return this.name === "meta" && typeof model === "string" && isRegisteredMetaChatModel(model)
+      ? { fetchImpl: transportSilenceFetch(this.config.fetchImpl) }
+      : {};
+  }
+
   private async requestStream(args: {
     readonly api: "responses" | "chat_completions";
     readonly path: string;
@@ -2977,6 +2987,7 @@ export class OpenAIProvider implements LLMProvider {
   }): Promise<ProviderHttpStreamResponse> {
     const session = this.client.createTurnSession({
       wireApi: args.api,
+      ...this.transportOptions(args.body.model),
     });
     return await session.requestStream({
       api: args.api,
