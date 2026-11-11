@@ -20,12 +20,28 @@ import type { Session } from "../../session/session.js";
 import { runDeadlineClock, runDeadlineOf } from "../../session/run-deadline.js";
 import type { QueuedCommand } from "../../types/textInputTypes.js";
 import type { BusyWaitWake } from "../../unified-exec/types.js";
-import {
-  hasCommandsInQueue,
-  isSlashCommand,
-  queuedCommandOwnedByConversation,
-  subscribeToCommandQueue,
-} from "../../utils/messageQueueManager.js";
+
+type MessageQueue = typeof import("../../utils/messageQueueManager.js");
+
+/**
+ * The command queue is daemon-side code. It is loaded when a wait first needs
+ * it, so the CLI, whose static graph reaches this file through exec_command,
+ * does not load the queue and what it imports at startup.
+ */
+let loadedQueue: MessageQueue | undefined;
+let loadingQueue: Promise<void> | undefined;
+
+/**
+ * Loads the command queue ahead of the first wait. A wake loads it itself on
+ * first use; once loaded, every wake watches the queue from the moment it is
+ * made.
+ */
+export function loadBusyWaitQueue(): Promise<void> {
+  loadingQueue ??= import("../../utils/messageQueueManager.js").then((queue) => {
+    loadedQueue = queue;
+  });
+  return loadingQueue;
+}
 
 /** Why a busy wait was ended early; the abort reason of {@link BusyWaitWake.signal}. */
 export type BusyWaitWakeReason = "input" | "deadline_reserve";
@@ -37,10 +53,10 @@ type WakeSession = Pick<Session, "conversationId"> & { readonly services?: unkno
  * tool phase: a prompt or task notification owned by the conversation, for
  * the main thread, not a slash command, at "now" or "next" priority.
  */
-function deliveredAfterTools(command: QueuedCommand, conversationId: string): boolean {
-  return queuedCommandOwnedByConversation(command, conversationId) &&
+function deliveredAfterTools(queue: MessageQueue, command: QueuedCommand, conversationId: string): boolean {
+  return queue.queuedCommandOwnedByConversation(command, conversationId) &&
     (command.mode === "prompt" || command.mode === "task-notification") &&
-    !isSlashCommand(command) &&
+    !queue.isSlashCommand(command) &&
     command.agentId === undefined &&
     (command.priority ?? "next") !== "later";
 }
@@ -57,11 +73,25 @@ export function busyWaitWakeFor(session: WakeSession | undefined): (() => BusyWa
     const wake = (reason: BusyWaitWakeReason): void => {
       if (!controller.signal.aborted) controller.abort(reason);
     };
-    const queued = (): boolean => hasCommandsInQueue((command) => deliveredAfterTools(command, session.conversationId));
-    const unsubscribe = subscribeToCommandQueue(() => {
+    let disposed = false;
+    let unsubscribe: (() => void) | undefined;
+    const watch = (queue: MessageQueue): void => {
+      if (disposed) return;
+      const queued = (): boolean =>
+        queue.hasCommandsInQueue((command) => deliveredAfterTools(queue, command, session.conversationId));
+      unsubscribe = queue.subscribeToCommandQueue(() => {
+        if (queued()) wake("input");
+      });
       if (queued()) wake("input");
-    });
-    if (queued()) wake("input");
+    };
+    if (loadedQueue !== undefined) watch(loadedQueue);
+    else {
+      void loadBusyWaitQueue().then(() => {
+        if (loadedQueue !== undefined) watch(loadedQueue);
+      }, () => {
+        // Without the queue the wait still ends at the exit, the cap and the deadline reserve.
+      });
+    }
     // The deadline reserve: from then on the model must finish, so a wait
     // that runs into it hands control back at its start.
     let cancelReserveTimer: (() => void) | undefined;
@@ -75,7 +105,8 @@ export function busyWaitWakeFor(session: WakeSession | undefined): (() => BusyWa
     return {
       signal: controller.signal,
       dispose: () => {
-        unsubscribe();
+        disposed = true;
+        unsubscribe?.();
         cancelReserveTimer?.();
       },
     };

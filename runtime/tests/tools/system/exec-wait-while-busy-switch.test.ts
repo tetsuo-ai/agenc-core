@@ -1,11 +1,11 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeAll, describe, expect, test, vi } from "vitest";
 
 import { buildToolRegistry } from "../../../src/tool-registry.js";
 import { EXEC_WAIT_WHILE_BUSY_ENV, execWaitWhileBusyEnabled } from "../../../src/tools/system/exec-wait-mode.js";
 import type { Session } from "../../../src/session/session.js";
 import type { ExecCommandToolOutput, UnifiedExecProcessManagerLike } from "../../../src/unified-exec/types.js";
 import { withExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
-import { busyWaitWakeFor } from "../../../src/tools/system/exec-wait-wake.js";
+import { busyWaitWakeFor, loadBusyWaitQueue } from "../../../src/tools/system/exec-wait-wake.js";
 import { attachToolRuntimeContext } from "../../../src/tools/runtimes/context.js";
 import { setRunDeadlineClockForTests } from "../../../src/session/run-deadline.js";
 import { enqueue, enqueuePendingNotification, resetCommandQueueForTesting } from "../../../src/utils/messageQueueManager.js";
@@ -117,6 +117,9 @@ describe("which Light waits continue while the command is busy", () => {
 
 describe("what ends a busy wait early", () => {
   const owner = (conversationId: string) => ({ kind: "session" as const, conversationId });
+  // The queue is loaded on first use, to keep it out of the CLI's startup graph.
+  // With it loaded, a wake watches the queue from the moment it is made.
+  beforeAll(async () => { await loadBusyWaitQueue(); });
 
   test("a prompt queued for this conversation, delivered after the tool phase", () => {
     resetCommandQueueForTesting();
