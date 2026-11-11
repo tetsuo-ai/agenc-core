@@ -1,3 +1,4 @@
+import { editThenRunEnabled, withEditThenRun } from "./tools/edit-then-run.js";
 import { suggestToolForUnknownName } from "./tools/tool-name-suggestion.js";
 import { unknownToolResult } from "./tools/results.js";
 import { oneShotFastModeActive } from "./one-shot-fast-mode.js";
@@ -1374,7 +1375,7 @@ export function buildToolRegistry(
       // The supplied TOML policy is live, including nested per-tool defaults.
       // Snapshot its value rather than its object identity or array references.
       [JSON.stringify(options.toolsConfig)],
-      [usesBatchEdit()],
+      [usesBatchEdit(), editThenRunEnabled(options.lightMode, options.getSession?.()?.services.providerEnvironment)],
     ];
   }
 
@@ -1423,9 +1424,11 @@ export function buildToolRegistry(
     );
     const withoutManagedMcpCollisions = (tools: readonly Tool[]): Tool[] =>
       preserveTrustedRuntimeOwnedTools(tools).filter(tool => !managedMcpNames.has(tool.name));
-    const baseSpecs = withoutManagedMcpCollisions(staticTools.map(tool =>
-      usesBatchEdit() && tool === legacyBuiltinEdit && batchBuiltinEdit !== undefined ? batchBuiltinEdit : tool,
-    )).map(specForTool);
+    const baseSpecs = withoutManagedMcpCollisions(staticTools.map(tool => {
+      const selected = usesBatchEdit() && tool === legacyBuiltinEdit && batchBuiltinEdit !== undefined ? batchBuiltinEdit : tool;
+      return editThenRunEnabled(options.lightMode, options.getSession?.()?.services.providerEnvironment)
+        ? withEditThenRun(selected) : selected;
+    })).map(specForTool);
     const directMcpTools = mcpTools.filter(
       (tool) => tool.metadata?.deferred !== true,
     );

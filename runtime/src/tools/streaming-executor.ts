@@ -141,6 +141,8 @@ export interface TrackedTool {
    * overwrite, no status flip-back, no sibling-cascade revival.
    */
   finalized?: boolean;
+  /** The follow-up owns its own executor and drain deadline. */
+  followupRunning?: boolean;
   /**
    * Reclaim outcome for a force-finalized tool. "running" until force-final;
    * "reclaimed" if the dispatch unwound within the cleanup grace (lock/permit
@@ -402,6 +404,10 @@ export interface StreamingToolExecutorOptions {
     toolCall: LLMToolCall,
     signal: AbortSignal,
   ) => Promise<ToolDispatchResult>;
+  /** Runs after the runtime releases its lease, before the next exclusive call.
+   * The follow-up must own its timeout and drain boundary. */
+  readonly afterToolCall?: (call: LLMToolCall, result: ToolDispatchResult,
+    signal: AbortSignal, durationMs: number) => Promise<ToolDispatchResult>;
   /** Live runtime cutover path: executor owns router/orchestrator/execution dispatch. */
   readonly liveToolDispatch?: {
     readonly router: ToolRouter;
@@ -430,6 +436,7 @@ async function waitUnlessAborted(turn: Promise<void>, signal: AbortSignal): Prom
 
 export class StreamingToolExecutor {
   private readonly registry: ToolRegistry;
+  private readonly afterToolCall?: StreamingToolExecutorOptions["afterToolCall"];
   private readonly onProgress?: (event: ProgressEvent) => void;
   private readonly maxConcurrency: number;
   private readonly maxToolDrainMs: number;
@@ -510,6 +517,7 @@ export class StreamingToolExecutor {
         : DRAIN_CLEANUP_GRACE_MS;
     this.runToolUseFn = opts.runToolUseFn;
     this.liveToolDispatch = opts.liveToolDispatch;
+    this.afterToolCall = opts.afterToolCall;
     this.parentAbortController = opts.parentAbortController ?? null;
     this.siblingAbortController = new AbortController();
     this.attachAbortSignal(opts.abortSignal);
@@ -1144,7 +1152,7 @@ export class StreamingToolExecutor {
    *     killed before its own timeout + settling headroom.
    */
   private toolDrainDeadlineMs(tool: TrackedTool): number {
-    if (!Number.isFinite(this.maxToolDrainMs)) return Number.POSITIVE_INFINITY;
+    if (tool.followupRunning || !Number.isFinite(this.maxToolDrainMs)) return Number.POSITIVE_INFINITY;
     const resolvedName = this.resolveModelToolName(tool.toolCall.name);
     const def = this.registry.tools.find((t) => t.name === resolvedName);
     if (def === undefined) {
@@ -1631,9 +1639,18 @@ export class StreamingToolExecutor {
         startedAtMs,
         dispatchSignal,
       );
-      const result = this.runtime
+      let result = this.runtime
         ? await runToolRuntimeCall(this.runtime, runtimeContext, dispatch)
         : await dispatch();
+
+      if (this.afterToolCall && !tool.finalized) {
+        tool.followupRunning = true;
+        try {
+          result = await this.afterToolCall(tool.toolCall, result, dispatchSignal, performance.now() - startedAtMs);
+        } finally {
+          tool.followupRunning = false;
+        }
+      }
 
       // Late settle of an already force-finalized tool: didFinalize === false ⇒
       // no result overwrite, no status flip-back, no sibling cascade.

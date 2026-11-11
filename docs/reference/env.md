@@ -414,6 +414,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_LSP_EDIT_FEEDBACK_MS` | How long Edit, MultiEdit and Write wait for the language server's diagnostics on the edited file before returning (default `1500`, max `30000`; `0` disables the same-turn feedback, diagnostics then arrive as the next turn's attachment) |
 | `AGENC_DISABLE_CRON` | Disable CronCreate/List/Delete and the in-session scheduler. Delivery-routed jobs still need `agenc gateway run`; their webhook destinations are public-only and address-pinned ([autonomy.md](autonomy.md#webhook-destinations-pinned-fail-closed)) |
 | `AGENC_DISABLE_BACKGROUND_TASKS` | Block background tasks |
+| `AGENC_EDIT_THEN_RUN` | Light sessions only. `1` adds an optional `check` shell command to apply_patch, Write, Edit and MultiEdit. It runs after a successful edit through the normal exec_command permissions, approvals, sandbox, timeout and output limits. `0` or unset: off, preserving the existing schemas. Captured with the session environment. |
 | `AGENC_CODE_MODE` | `1`/`true`/`on` plus resolvable `quickjs-emscripten` registers LIVE `exec`/`wait` |
 | `AGENC_SHELL` | Absolute executable path whose filename is `bash` or `zsh`; an unsupported or non-executable explicit path fails instead of falling back |
 | `AGENC_SHELL_PREFIX` | Wrap bash/hook command argv (POSIX) |
@@ -478,7 +479,7 @@ autostart. Ordinary startup leaves it unset.
 
 ### AGENC_E*
 
-`AGENC_EMIT_TOOL_USE_SUMMARIES`, `AGENC_ENABLE_EXTENDED_KEYS`, `AGENC_ENABLE_SESSION_MEMORY_COMPACT`, `AGENC_ENABLE_TOKEN_USAGE_ATTACHMENT`, `AGENC_ENABLE_XAA`, `AGENC_ENTRYPOINT`, `AGENC_ENVIRONMENT_KIND`, `AGENC_EXEC_HARD_TIMEOUT`, `AGENC_EXEC_WAIT_WHILE_BUSY`, `AGENC_EXPERIMENTAL_AGENT_TEAMS`.
+`AGENC_EDIT_THEN_RUN`, `AGENC_EMIT_TOOL_USE_SUMMARIES`, `AGENC_ENABLE_EXTENDED_KEYS`, `AGENC_ENABLE_SESSION_MEMORY_COMPACT`, `AGENC_ENABLE_TOKEN_USAGE_ATTACHMENT`, `AGENC_ENABLE_XAA`, `AGENC_ENTRYPOINT`, `AGENC_ENVIRONMENT_KIND`, `AGENC_EXEC_HARD_TIMEOUT`, `AGENC_EXEC_WAIT_WHILE_BUSY`, `AGENC_EXPERIMENTAL_AGENT_TEAMS`.
 
 ### AGENC_F*
 

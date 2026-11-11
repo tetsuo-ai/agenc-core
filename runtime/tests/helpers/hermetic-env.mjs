@@ -226,6 +226,8 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_EXEC_HARD_TIMEOUT',
   // waiting past the yield while a command is busy (a test that needs it sets it explicitly)
   'AGENC_EXEC_WAIT_WHILE_BUSY',
+  // a check that runs right after an edit (a test that needs it sets it explicitly)
+  'AGENC_EDIT_THEN_RUN',
   // endpoints and subprocess/service activation
   'AGENC_BACKEND_URL',
   'AGENC_DAEMON_URL',

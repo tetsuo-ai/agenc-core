@@ -1,3 +1,4 @@
+import { editThenRunCommand, editThenRunEnabled } from "../tools/edit-then-run.js";
 import { applyWebSearchInstruction, resolveWebSearchMode } from "../tools/web-search-mode.js";
 import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
 import { assistantMessageFromResponse, parseToolUseBlocks, admittedModelStepId } from "../phases/stream-model.js";
@@ -2823,7 +2824,9 @@ async function* runTurnKernelInner(
         });
       },
       requiresResponse: response => {
-        return response.toolCalls.length === 0 || hasConfiguredToolHooks(session);
+        return response.toolCalls.length === 0 || hasConfiguredToolHooks(session) ||
+          (editThenRunEnabled(session.services.runtimeOptions?.lightMode, session.services.providerEnvironment) &&
+            response.toolCalls.some(call => editThenRunCommand(call, session.services.registry) !== undefined));
       },
       completedTool: result => { state.completedToolResults.push(result); },
     });

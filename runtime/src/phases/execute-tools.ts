@@ -1,3 +1,4 @@
+import { editThenRunCommand, editThenRunEnabled } from "../tools/edit-then-run.js";
 import { withCompletedToolTiming } from "../tools/stage-timing.js";
 import { autoFixPostToolHookIsInactive } from "../services/autoFix/autoFixHook.js";
 /**
@@ -464,6 +465,10 @@ export function ensureStreamingToolExecutor(
   const activeTurnAbort = session.activeTurn?.unsafePeek()?.abortController;
   executor = new StreamingToolExecutor({
     registry: session.services.registry,
+    ...(editThenRunEnabled(session.services.runtimeOptions?.lightMode, session.services.providerEnvironment) ? {
+      afterToolCall: (call: LLMToolCall, result: ToolDispatchResult, callSignal: AbortSignal, durationMs: number) =>
+        runEditThenCommand(state, ctx, session, call, result, callSignal, durationMs),
+    } : {}),
     maxConcurrency: resolveMaxToolUseConcurrency(),
     abortSignal: signal,
     // The escalation target when a tool abort must end the turn: the
@@ -661,9 +666,10 @@ function recordCompletedToolCall(
   toolCall: LLMToolCall,
   result: ToolDispatchResult,
   durationMs?: number,
+  includeModelMessage = true,
 ): CompletedToolResultRecord {
   return withCompletedToolTiming(session, toolCall.id, () =>
-    recordCompletedToolCallTimed(state, ctx, session, toolCall, result, durationMs));
+    recordCompletedToolCallTimed(state, ctx, session, toolCall, result, durationMs, includeModelMessage));
 }
 
 function recordCompletedToolCallTimed(
@@ -673,6 +679,7 @@ function recordCompletedToolCallTimed(
   toolCall: LLMToolCall,
   result: ToolDispatchResult,
   durationMs?: number,
+  includeModelMessage = true,
 ): CompletedToolResultRecord {
   // Remaining run budget when this result landed (#2503); rendered on the
   // result in the query projection only.
@@ -727,7 +734,7 @@ function recordCompletedToolCallTimed(
     toolResultUserRecord(toolCall.id, toolCall.name, result, untrustedKind,
       session.services.runtimeOptions?.lightMode === true),
   );
-  state.messages.push(
+  if (includeModelMessage) state.messages.push(
     toolResultMessage(
       session.conversationId,
       toolCall.id,
@@ -738,6 +745,89 @@ function recordCompletedToolCallTimed(
     ),
   );
   return completed;
+}
+
+function editCheck(call: LLMToolCall, session: Session): string | undefined {
+  return editThenRunEnabled(session.services.runtimeOptions?.lightMode, session.services.providerEnvironment)
+    ? editThenRunCommand(call, session.services.registry) : undefined;
+}
+
+/** Keep execution records separate while the model receives one combined result. */
+async function runEditThenCommand(
+  state: TurnState, ctx: TurnContext, session: Session,
+  call: LLMToolCall, edit: ToolDispatchResult, signal: AbortSignal, durationMs: number,
+): Promise<ToolDispatchResult> {
+  const command = editCheck(call, session);
+  if (command === undefined) return edit;
+  if (edit.isError === true) return edit;
+  if (edit.preventContinuation === true || signal.aborted) {
+    return { ...edit, content: `${edit.content}\ncheck skipped: edit did not succeed.` };
+  }
+  recordCompletedToolCall(state, ctx, session, call, edit, durationMs);
+  const commandCall: LLMToolCall = {
+    id: `${call.id}-check-${crypto.randomUUID()}`, name: "exec_command",
+    arguments: JSON.stringify({ cmd: command }),
+  };
+  const commandBlock = parseToolUseBlocksForSyntheticRecovery(commandCall)!;
+  state.toolUseBlocks.push(commandBlock);
+  const blocked = blockRepeatedFailingCall(state, session, commandCall);
+  let checked: ToolDispatchResult;
+  if (blocked !== null) {
+    session.emit({ id: session.nextInternalSubId(), msg: toolCallStartedEvent(commandCall, session, ctx.cwd) });
+    checked = blocked;
+    recordCompletedToolCall(state, ctx, session, commandCall, checked, 0, false);
+    if (blocked.preventContinuation === true) {
+      state.noProgressStop ??= { explanation: repeatedFailingCallStopExplanation(commandCall, blocked) };
+    }
+  } else {
+    // A separate executor crosses the same runtime, router, hooks, permission,
+    // sandbox and admission boundaries. No edit approval is inherited.
+    const activeTurnAbort = session.activeTurn?.unsafePeek()?.abortController;
+    const executor = new StreamingToolExecutor({
+      registry: session.services.registry, abortSignal: signal,
+      ...(activeTurnAbort !== undefined ? { parentAbortController: activeTurnAbort } : {}),
+      runtime: createToolExecutionRuntime(),
+      liveToolDispatch: {
+        router: routerFromRegistry(session.services.registry),
+        options: { ...buildLiveToolDispatchOptions(ctx, session, signal),
+          ...(state.samplingRequestToolNames !== undefined
+            ? { advertisedToolNames: Object.freeze([...state.samplingRequestToolNames]) } : {}),
+        },
+      },
+    });
+    queueStreamingToolCall(executor, commandBlock, commandCall, session, ctx, state);
+    executor.close();
+    checked = { content: "check did not run.", isError: true };
+    for await (const completed of executor.getRemainingResults()) {
+      checked = completed.result;
+      recordCompletedToolCall(state, ctx, session, commandCall, checked, completed.durationMs, false);
+      appendHookAdditionalContexts(state, session, completed.additionalContexts ?? []);
+    }
+  }
+  appendRepeatToolAdvisory(state, session, [call, commandCall]);
+  const combined: ToolDispatchResult = {
+    ...edit, content: `${edit.content}\n\n${checked.content}`, contentItems: undefined,
+    isError: checked.isError === true,
+    preventContinuation: checked.preventContinuation,
+    metadata: { ...edit.metadata,
+      ...(checked.metadata?.effectReviewStop !== undefined ? { effectReviewStop: checked.metadata.effectReviewStop } : {}),
+      ...(checked.metadata?.execUnavailableStop !== undefined ? { execUnavailableStop: checked.metadata.execUnavailableStop } : {}),
+    },
+  };
+  const light = session.services.runtimeOptions?.lightMode === true;
+  // The command makes the combined body workspace data, including for Write
+  // and Edit, whose ordinary runtime-authored status lines are unframed.
+  const content = modelFacingToolResultContent("exec_command", combined, "workspace", light) as string;
+  const message = toolResultMessage(session.conversationId, call.id, call.name,
+    { ...combined, content }, "workspace", light);
+  // Seal the exact exec-framed body so replay preserves its data boundary.
+  message.content = content;
+  message.runtimeOnly = { ...message.runtimeOnly,
+    toolResultIntegrity: createToolResultIntegrity({ runId: session.conversationId, toolCallId: call.id, content }),
+  };
+  const index = state.messages.findIndex(item => item.role === "tool" && item.toolCallId === call.id);
+  state.messages[index] = message;
+  return combined;
 }
 
 function isSubagentSummaryTurn(ctx: TurnContext, session: Session): boolean {
@@ -769,7 +859,7 @@ function startToolUseSummaryGeneration(
     signal ?? session.abortController?.signal ?? new AbortController().signal;
   const toolUseIds = state.toolUseBlocks.map((block) => block.id);
   const tools: ToolUseSummaryToolInfo[] = state.toolUseBlocks.map((block) => {
-    const result = completedThisPass.get(block.id);
+    const result = completedThisPass.get(block.id) ?? state.completedToolResults.find(record => record.callId === block.id);
     return {
       name: block.name,
       input: block.input,
@@ -885,7 +975,9 @@ export async function executeTools(
         id: session.nextInternalSubId(),
         msg: toolCallStartedEvent(call, session, ctx.cwd),
       });
-      const completed = recordCompletedToolCall(state, ctx, session, call, blocked);
+      const refusal = editCheck(call, session) === undefined ? blocked
+        : { ...blocked, content: `${blocked.content}\ncheck skipped: edit did not succeed.` };
+      const completed = recordCompletedToolCall(state, ctx, session, call, refusal);
       completedThisPass.set(completed.callId, completed);
       if (blocked.preventContinuation === true) {
         preventContinuation = true;
@@ -917,11 +1009,16 @@ export async function executeTools(
 
   for await (const {
     toolCall,
-    result,
+    result: dispatched,
     additionalContexts: contexts,
     durationMs,
   } of executor.getRemainingResults()) {
-    const completed = recordCompletedToolCall(
+    const command = editCheck(toolCall, session);
+    const alreadyRecorded = command === undefined ? undefined
+      : state.completedToolResults.find(record => record.callId === toolCall.id);
+    const result = !alreadyRecorded && dispatched.isError === true && command !== undefined
+      ? { ...dispatched, content: `${dispatched.content}\ncheck skipped: edit did not succeed.` } : dispatched;
+    const completed = alreadyRecorded ?? recordCompletedToolCall(
       state,
       ctx,
       session,
@@ -934,14 +1031,14 @@ export async function executeTools(
     if (result.preventContinuation === true) {
       preventContinuation = true;
     }
-    const reviewStop = stopExplanation(completed.metadata, "effectReviewStop");
+    const reviewStop = stopExplanation(result.metadata, "effectReviewStop");
     if (reviewStop !== undefined) {
       // A refused side-effecting call whose earlier effect awaits review ends
       // the turn as a bounded stop (#2501), reported like the backstop's.
       preventContinuation = true;
       state.effectReviewStop ??= { explanation: reviewStop };
     }
-    const execStop = stopExplanation(completed.metadata, "execUnavailableStop");
+    const execStop = stopExplanation(result.metadata, "execUnavailableStop");
     if (execStop !== undefined) {
       // Shell tools are paused after an unproven process cleanup. Every
       // later shell call would be refused the same way, so the turn ends
@@ -961,7 +1058,9 @@ export async function executeTools(
   // Advisory loop-breaker: after the batch's results are on the record,
   // count consecutive identical calls and remind the model at escalating
   // run lengths. Purely additive context — never blocks or rewrites a call.
-  appendRepeatToolAdvisory(state, session, normalizedToolCalls);
+  appendRepeatToolAdvisory(state, session, normalizedToolCalls.filter(call =>
+    editCheck(call, session) === undefined ||
+      state.completedToolResults.find(record => record.callId === call.id)?.isError === true));
   if (preventContinuation) {
     state.needsFollowUp = false;
     state.preventContinuation = true;
