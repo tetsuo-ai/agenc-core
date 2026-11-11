@@ -703,6 +703,15 @@ export function chatCompletionsCapabilityHintsForProvider(
     ...(slug === "meta" || isZai
       ? { toolChoicePolicy: "auto_only" as const }
       : {}),
+    // Meta caches a prompt prefix on the backend that served it and routes
+    // requests that share a `prompt_cache_key` together. Without the key the
+    // calls of one session land on different backends: measured on Muse Spark
+    // 1.3 and Muse Ember with a byte-identical prefix, every other call had
+    // no cached tokens. Chat Completions accepts the field like Responses does.
+    // https://dev.meta.ai/docs/prompt-caching
+    ...(slug === "meta"
+      ? { promptCacheKeyFields: ["prompt_cache_key"] as const }
+      : {}),
     ...(isKimi
       ? {
           toolChoicePolicy: isKimiK3
