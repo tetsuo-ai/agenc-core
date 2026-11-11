@@ -66,6 +66,18 @@ to those models. Thinking tokens count toward the limit. Both have the same
 built-in tools and per-token prices. Explicit context caching is unsupported
 on Gemini 4, and Google ignores sampling parameters.
 
+Native Argon and Carbon calls can think silently for more than five minutes,
+which is where Node's fetch gives up on a response by default. For these two
+models the header and body silence limits are 20 minutes, the wait Google asks
+of a client. A request that already carries a longer limit, or none, keeps it.
+The limit is finite on purpose: a connection that died without a reset would
+otherwise hold the turn until someone cancelled it. This applies to streaming,
+non-streaming and token-count calls, using the effective model for each
+request. Provider and per-call timeouts, the session stream watchdog, user
+cancellation and run deadlines still apply. Other Gemini models keep their
+existing transport limits. An injected custom fetch must preserve the supplied
+dispatcher to get the longer wait.
+
 An unconfigured Gemini session leaves thinking controls out of the request.
 An explicit `reasoning_effort = "none"` also omits the control, even when
 another configured effort would otherwise apply. Neither case disables the
