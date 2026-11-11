@@ -578,6 +578,36 @@ function writeOneShotJsonLine(value: unknown, io: OneShotIo): void {
   io.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
+/**
+ * The run's totals from one `session_usage` event, in the shape of the
+ * result's `tokenUsage`. That event is the admission ledger's own summary:
+ * every model call the run paid for, auxiliary and tool calls included, at
+ * the price the ledger settled. Null for any other event, for another
+ * agent's event, and for a payload that is not a complete summary.
+ */
+function oneShotSessionUsage(
+  event: unknown,
+  agentId: string,
+): JsonObject | null {
+  const params = daemonEventParams(event);
+  if (params === null) return null;
+  if (typeof params.agentId === "string" && params.agentId !== agentId) return null;
+  const nested = isJsonRecord(params.event) ? params.event : null;
+  if (nested?.type !== "session_usage" || !isJsonRecord(nested.payload)) return null;
+  const { inputTokens, outputTokens, totalTokens, costUsd, hasUnknownCost, costEstimated } = nested.payload;
+  const counts = [inputTokens, outputTokens, totalTokens, costUsd];
+  if (!counts.every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0)) return null;
+  if (typeof hasUnknownCost !== "boolean") return null;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    costUsd,
+    costKnown: !hasUnknownCost,
+    ...(costEstimated === true ? { costEstimated: true } : {}),
+  } as JsonObject;
+}
+
 function oneShotSnapshotFields(
   snapshot: unknown,
 ): Pick<OneShotJsonResult, "tokenUsage"> {
@@ -943,6 +973,10 @@ export async function awaitDaemonOneShotRun(params: {
   // complete message so the two are never written twice.
   let streamedMessage = "";
   const collectedEvents: unknown[] = [];
+  // The latest ledger summary of this run. The result reports it, so its
+  // totals are the ones the events before it carried. The snapshot's counter
+  // covers only the main loop and is priced apart from the ledger.
+  let sessionUsage: JsonObject | undefined;
   const printedCompletionWarnings = new Set<string>();
   // In continue mode the stream id we choose is the daemon's turn id, so
   // terminal events of any other turn (a replayed history item, an unrelated
@@ -991,6 +1025,7 @@ export async function awaitDaemonOneShotRun(params: {
         Pick<OneShotJsonResult, "tokenUsage">
       > => {
         if (outputFormat === "text") return {};
+        if (sessionUsage !== undefined) return { tokenUsage: sessionUsage };
         try {
           return oneShotSnapshotFields(
             await daemonClient.request("session.snapshot", { sessionId }),
@@ -1215,6 +1250,8 @@ export async function awaitDaemonOneShotRun(params: {
               });
             return;
           }
+
+          sessionUsage = oneShotSessionUsage(event, params.agentId) ?? sessionUsage;
 
           const chunk = daemonOneShotMessageChunk(event);
           if (chunk !== null) {
