@@ -29,10 +29,12 @@ key and its default remains **`x-ai/grok-4.5`**.
 ## Gemini reasoning effort
 
 Core defaults to `gemini-3.8-flash` for the Gemini provider. Gemini 4 Argon
-(`gemini-4-argon`) leads the model list but is not the default: Google does
-not offer it on the free tier, and it costs more per token. Choose it with
-`/model` or an explicit model setting. `gemini-3.1-pro-preview` remains
-selectable the same way.
+(`gemini-4-argon`) leads the model list, followed by Gemini 4 Carbon
+(`gemini-4-carbon`). Neither has a free tier, and both cost more per token
+than Flash. Carbon is Google's strongest reasoning model and spends more
+thinking tokens per turn than Argon, so it is slower and uses more tokens.
+Choose either with `/model` or an explicit model setting.
+`gemini-3.1-pro-preview` remains selectable the same way.
 
 `gemini-3.7-flash` and `gemini-3.5-flash` are deprecated. Google answers them
 with `gemini-3.8-flash` and `gemini-3.6-flash`, so AgenC hides them from the
@@ -47,6 +49,7 @@ supported-level metadata.
 | Model | Explicit levels | Provider default when omitted |
 | --- | --- | --- |
 | `gemini-4-argon` | `low`, `medium`, `high` | `medium` |
+| `gemini-4-carbon` | `low`, `medium`, `high` | `medium` |
 | `gemini-3.8-flash` | `low`, `medium`, `high` | `medium` |
 | `gemini-3.1-pro-preview` | `low`, `medium`, `high` | `high` |
 | `gemini-3.6-flash` | `minimal`, `low`, `medium`, `high` | `medium` |
@@ -56,10 +59,12 @@ supported-level metadata.
 | `gemini-3-flash-preview` | `minimal`, `low`, `medium`, `high` | `high` |
 | `gemini-3-pro-preview` | `low`, `high` | `high` |
 
-Gemini 4 Argon shares one 1,048,576-token window between input, thinking and
-output. A streamed response may use 65,536 output tokens, and a non-streaming
+Gemini 4 Argon and Carbon each share one 1,048,576-token window between input,
+thinking and output. A streamed response may use 65,536 output tokens, and a non-streaming
 call at most 32,768, so AgenC lowers the limit it sends on non-streaming calls
-to that model. Thinking tokens count toward the limit.
+to those models. Thinking tokens count toward the limit. Both have the same
+built-in tools and per-token prices. Explicit context caching is unsupported
+on Gemini 4, and Google ignores sampling parameters.
 
 An unconfigured Gemini session leaves thinking controls out of the request.
 An explicit `reasoning_effort = "none"` also omits the control, even when
@@ -78,20 +83,23 @@ Flash, and Flash-Lite use `thinkingBudget` on the native `generateContent`
 API, so AgenC does not accept named effort levels for those models or invent
 a token-budget conversion.
 
-Sources checked on 2026-09-08 and again on 2026-10-28: Google's
+Sources checked on 2026-09-08, 2026-10-28 and for Carbon on 2026-11-11: Google's
 [native ThinkingConfig reference](https://ai.google.dev/api/generate-content#ThinkingConfig),
 [thinking guide](https://ai.google.dev/gemini-api/docs/generate-content/thinking),
-[Gemini 4 Argon guide](https://ai.google.dev/gemini-api/docs/generate-content/latest-model), and
+[Latest Gemini models guide](https://ai.google.dev/gemini-api/docs/generate-content/latest-model), and
 [Gemini 3 guide](https://ai.google.dev/gemini-api/docs/gemini-3).
 
 ### Gemini prices, logging and credits
 
 Several Gemini prices are introductory and change on a date Google announces:
-Gemini 4 Argon from December 1, 2026, and 3.8 Flash, 3.6 Flash and Robotics
-ER 2 from January 1, 2027. AgenC records both prices and bills each call at
+Gemini 4 Argon and Carbon from December 1, 2026, and 3.8 Flash, 3.6 Flash and
+Robotics ER 2 from January 1, 2027. AgenC records both prices and bills each call at
 the rate in effect when it ran, switching at 00:00 UTC on the first day of the
-new price. A Gemini model with no price row shows its cost as unknown; AgenC
-never borrows another model's price for it.
+new price. Argon and Carbon cost $2 per million input tokens and $10 per
+million output tokens through November 30, then $4 and $20. Implicit caching
+discounts input by 95% ($0.10, then $0.20 per million cached tokens). Output
+prices include thinking tokens. A Gemini model with no price row shows its
+cost as unknown; AgenC never borrows another model's price for it.
 
 Since October 26, 2026, new paid Gemini API projects keep `generateContent`
 requests in their AI Studio logs unless a request sets `store` to `false`.

@@ -43,12 +43,17 @@ const BUDGET_LEVELS = Object.freeze([] as const);
 // (ai.google.dev/gemini-api/docs/generate-content/latest-model). The same
 // guide lists minimal as the default level of 3.5 and 3.1 Flash-Lite.
 //
+// Gemini 4 Carbon (2026-11-11) has the same levels and output limits as
+// Argon, including HTTP 400 for MINIMAL. It uses more thinking tokens per
+// turn (ai.google.dev/gemini-api/docs/generate-content/latest-model).
+//
 // Deprecated 2026-10-08 (changelog): requests for gemini-3.7-flash and
 // gemini-3.5-flash are routed to gemini-3.8-flash and gemini-3.6-flash. A
 // live request for each returned modelVersion "gemini-3.8-flash" and
 // "gemini-3.6-flash" on 2026-10-28.
 export const GEMINI_THINKING_MODELS: readonly GeminiThinkingModel[] = Object.freeze(([
   { model: "gemini-4-argon", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "medium", curated: true, maxOutputTokens: 65_536, nonStreamingMaxOutputTokens: 32_768 },
+  { model: "gemini-4-carbon", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "medium", curated: true, maxOutputTokens: 65_536, nonStreamingMaxOutputTokens: 32_768 },
   { model: "gemini-3.1-pro-preview", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "high", curated: true },
   { model: "gemini-3.8-flash", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "medium", curated: true },
   { model: "gemini-3.7-flash", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "medium", curated: true, routedTo: "gemini-3.8-flash" },

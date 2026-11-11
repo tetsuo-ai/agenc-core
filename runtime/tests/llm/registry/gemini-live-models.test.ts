@@ -26,6 +26,7 @@ const FUTURE = "gemini-4-futura-preview";
 const LIVE_LIST = {
   models: [
     { name: "models/gemini-4-argon", displayName: "Gemini 4 Argon", inputTokenLimit: 1_048_576, outputTokenLimit: 32_768, supportedGenerationMethods: ["generateContent", "countTokens", "batchGenerateContent"], thinking: true },
+    { name: "models/gemini-4-carbon", displayName: "Gemini 4 Carbon", inputTokenLimit: 1_048_576, outputTokenLimit: 32_768, supportedGenerationMethods: ["generateContent", "countTokens", "batchGenerateContent"], thinking: true },
     { name: "models/gemini-3.8-flash", displayName: "Gemini 3.8 Flash", inputTokenLimit: 1_048_576, outputTokenLimit: 65_536, supportedGenerationMethods: ["generateContent", "countTokens", "createCachedContent", "batchGenerateContent"], thinking: true },
     { name: "models/gemini-3.1-flash-lite-preview", displayName: "Gemini 3.1 Flash Lite Preview", inputTokenLimit: 1_048_576, outputTokenLimit: 65_536, supportedGenerationMethods: ["generateContent", "countTokens", "createCachedContent", "batchGenerateContent"], thinking: true },
     { name: `models/${FUTURE}`, displayName: "Gemini 4 Futura Preview", inputTokenLimit: 2_097_152, outputTokenLimit: 32_768, supportedGenerationMethods: ["generateContent", "countTokens"], thinking: true },
@@ -110,12 +111,14 @@ describe("Gemini live model list", () => {
       supportedReasoningLevels: [],
     });
     expect(resolveProviderModelCapabilities({ provider: "gemini", model: FUTURE }).acceptsReasoningEffort).toBe(false);
-    // Registered models keep their reviewed rows, including Argon's 65,536
+    // Registered models keep their reviewed rows, including Gemini 4's 65,536
     // streaming output, not the list's 32,768 non-streaming cap.
-    expect(resolveRegisteredModelCatalogEntry({ provider: "gemini", model: "gemini-4-argon" })).toMatchObject({
-      maxOutputTokens: 65_536,
-      supportedReasoningLevels: ["low", "medium", "high"],
-    });
+    for (const model of ["gemini-4-argon", "gemini-4-carbon"]) {
+      expect(resolveRegisteredModelCatalogEntry({ provider: "gemini", model })).toMatchObject({
+        maxOutputTokens: 65_536,
+        supportedReasoningLevels: ["low", "medium", "high"],
+      });
+    }
   });
 
   test("does not read the list without an API key", async () => {

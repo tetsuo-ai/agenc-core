@@ -21,6 +21,7 @@ const MODEL_LEVELS = [
   // Thinking guide (generate-content) 2026-10-28: low, medium (default),
   // high; a live MINIMAL request answers HTTP 400.
   ["gemini-4-argon", ["low", "medium", "high"]],
+  ["gemini-4-carbon", ["low", "medium", "high"]],
   ["gemini-3.1-pro-preview", ["low", "medium", "high"]],
   ["gemini-3.8-flash", ["low", "medium", "high"]],
   ["gemini-3.6-flash", ["minimal", "low", "medium", "high"]],
@@ -90,7 +91,7 @@ describe("Gemini reasoning metadata", () => {
     expect((await manager.getModelInfo(model)).contextWindow).toBe(1_048_576);
   });
 
-  test.each(["gemini-3.1-pro-preview-unverified", "gemini-3.5-flash-unverified", "gemini-4-argon-unverified"])("does not grant levels to %s", (model) => {
+  test.each(["gemini-3.1-pro-preview-unverified", "gemini-3.5-flash-unverified", "gemini-4-argon-unverified", "gemini-4-carbon-unverified"])("does not grant levels to %s", (model) => {
     expect(resolveRegisteredModelCatalogEntry({ provider: "gemini", model })).toBeUndefined();
     expect(resolveProviderModelCapabilities({ provider: "gemini", model }).acceptsReasoningEffort).toBe(false);
   });
@@ -122,6 +123,7 @@ describe("Gemini reasoning metadata", () => {
   // Flash-Lite session think at medium instead of its documented minimal.
   test.each([
     ["gemini-4-argon", "medium"],
+    ["gemini-4-carbon", "medium"],
     ["gemini-3.8-flash", "medium"],
     ["gemini-3.6-flash", "medium"],
     ["gemini-3.5-flash-lite", "minimal"],
@@ -133,7 +135,7 @@ describe("Gemini reasoning metadata", () => {
   });
 
   test("leads the picker with Gemini 4 Argon and keeps 3.8 Flash as the provider default", () => {
-    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.gemini[0]).toBe("gemini-4-argon");
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.gemini.slice(0, 2)).toEqual(["gemini-4-argon", "gemini-4-carbon"]);
     expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.gemini).toBe("gemini-3.8-flash");
   });
 });
@@ -178,8 +180,11 @@ describe.each(["chat", "stream", "count"] as const)("Gemini %s reasoning wire co
 
   test.each([
     ["gemini-4-argon", "minimal"],
+    ["gemini-4-carbon", "minimal"],
     ["gemini-4-argon", "xhigh"],
+    ["gemini-4-carbon", "xhigh"],
     ["gemini-4-argon", "max"],
+    ["gemini-4-carbon", "max"],
     ["gemini-3.1-pro-preview", "minimal"],
     ["gemini-3.1-pro-preview", "xhigh"],
     ["gemini-3.1-pro-preview", "max"],
@@ -193,10 +198,10 @@ describe.each(["chat", "stream", "count"] as const)("Gemini %s reasoning wire co
   });
 });
 
-describe("Gemini per-call output ceilings", () => {
+describe.each(["gemini-4-argon", "gemini-4-carbon"])("%s per-call output ceilings", (model) => {
   function provider(fetchImpl: typeof fetch) {
     return new GeminiProvider({
-      model: "gemini-4-argon",
+      model,
       endpointPlan: createGeminiEndpointPlan(),
       credentialPlan: { kind: "api-key", credential: "fixture", source: "factory" },
       fetchImpl,
@@ -210,7 +215,7 @@ describe("Gemini per-call output ceilings", () => {
   // ai.google.dev/gemini-api/docs/generate-content/long-decode: one stream
   // returns up to 65,536 tokens; a non-streaming REST call over 32,768
   // without a continuation token is refused.
-  test("caps a non-streaming Gemini 4 Argon call at 32,768 output tokens", async () => {
+  test("caps a non-streaming Gemini 4 call at 32,768 output tokens", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => Response.json(payload));
     await provider(fetchImpl).chat(messages, { maxOutputTokens: 65_536 });
     expect(sentMaxOutput(fetchImpl)).toBe(32_768);
@@ -222,7 +227,7 @@ describe("Gemini per-call output ceilings", () => {
     expect(sentMaxOutput(fetchImpl)).toBe(8_000);
   });
 
-  test("lets a Gemini 4 Argon stream use 65,536 output tokens", async () => {
+  test("lets a Gemini 4 stream use 65,536 output tokens", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
       new Response(`data: ${JSON.stringify(payload)}\n\n`, { headers: { "content-type": "text/event-stream" } }));
     await provider(fetchImpl).chatStream(messages, () => {}, { maxOutputTokens: 65_536 });
