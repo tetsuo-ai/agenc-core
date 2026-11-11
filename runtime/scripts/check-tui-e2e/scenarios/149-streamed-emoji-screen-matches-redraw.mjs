@@ -22,9 +22,6 @@
  */
 import assert from "node:assert/strict";
 
-import { writeFile } from "node:fs/promises";
-import path from "node:path";
-
 import { renderCellFrame, WIDTH_PROFILES } from "../helpers/cell-frame.mjs";
 
 export const meta = {
@@ -41,12 +38,6 @@ const frameOf = (session, from, cellsOf) =>
   renderCellFrame(session.raw.slice(from), { cols: session.cols, rows: session.rows, cellsOf });
 
 const picture = (frame) => frame.map((row) => row.text).join("\n");
-
-/** With TUI_E2E_DEBUG=1 the frames are kept next to the runner's logs. */
-async function keepFrame(name, frame) {
-  if (process.env.TUI_E2E_DEBUG !== "1" || !process.env.TMPDIR) return;
-  await writeFile(path.join(process.env.TMPDIR, `tui-e2e-frame-149-${name}.log`), `${picture(frame)}\n`);
-}
 
 async function resizeTo(session, cols) {
   const from = session.raw.length;
@@ -74,8 +65,6 @@ async function streamAndCompare(session, from, label) {
   for (const [profile, cellsOf] of Object.entries(WIDTH_PROFILES)) {
     const live = renderCellFrame(session.raw.slice(from, liveEnd), { cols, rows: session.rows, cellsOf });
     const redrawn = frameOf(session, redrawFrom, cellsOf);
-    await keepFrame(`${cols}-${profile}-live`, live);
-    await keepFrame(`${cols}-${profile}-redraw`, redrawn);
     const different = [];
     for (let index = 0; index < live.length; index += 1) {
       if (live[index].cells !== redrawn[index].cells) {
