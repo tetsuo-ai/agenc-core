@@ -146,22 +146,24 @@ describe('PromptInputQueuedCommands coverage swarm 180', () => {
 
     const output = await renderQueuedCommands()
 
-    expect(output).toContain('2 inputs queued for next turn')
-    expect(output).toContain('first queued prompt')
-    expect(output).toContain('array backed bash command')
+    expect(output).toContain('queued for next turn')
+    expect(output).toContain('1  first queued prompt')
+    expect(output).toContain('2  ! array backed bash command')
     expect(output).not.toContain('<bash-input>[object Object]</bash-input>')
   })
 
   test('passes brief layout through the queued message provider when brief features are enabled', async () => {
     fixture.features.KAIROS_BRIEF = true
     fixture.appState.isBriefOnly = true
+    // Typed inputs are listed as plain rows; the provider wraps the other
+    // visible queue items, such as task notifications.
     fixture.commands = [
       {
-        mode: 'prompt',
+        mode: 'task-notification',
         value: 'brief queued prompt',
       },
       {
-        mode: 'prompt',
+        mode: 'task-notification',
         value: 'second queued prompt',
       },
     ]
