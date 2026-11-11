@@ -3311,20 +3311,27 @@ async function* runTurnKernelInner(
   // today, so there is nothing to reset on compaction.)
   // The fast loop can hand over an oversized request before any canonical
   // sample has established compaction pressure. Check that request before send.
-  let deferredCompaction = continuedFromFastMode;
+  let handoverFitPending = continuedFromFastMode;
+  let compactionRefusals = 0;
+  let dispatchCalls = 0;
+  let retryCompactionAt = 0;
   let requiredCompactionAttempted = false;
   // One proactive attempt per prepared dispatch. The re-prepared request is
   // admitted when it fits; it is not compacted a second time in that retry.
   let proactiveDispatchCompactionAttempted = false;
   const deferCompactionRefusal = (): void => {
-    deferredCompaction = true;
+    const compactionBackoffCalls = Math.min(20, 5 * 2 ** Math.min(compactionRefusals++, 2));
+    retryCompactionAt = dispatchCalls + compactionBackoffCalls;
+    // A fresh dispatch after backoff starts a new bounded ladder episode.
+    state.compactionLadder = undefined;
+    if (state.autoCompactTracking) state.autoCompactTracking = { ...state.autoCompactTracking, consecutiveFailures: 0 };
     session.emit({
       id: session.nextInternalSubId(),
       msg: {
         type: "warning",
         payload: {
           cause: "auto_compact_deferred",
-          message: "Compaction could not safely reduce history. Continuing with the unchanged history only while the next full request fits the context window.",
+          message: `Compaction could not safely reduce history. Retrying after ${compactionBackoffCalls} model calls while the next full request fits the context window.`,
         },
       },
     });
@@ -3967,23 +3974,31 @@ async function* runTurnKernelInner(
             }
             // The shortened request is dispatched as is; the next sample makes
             // a fresh compaction decision over the history it then holds.
-            deferredCompaction = false;
+            handoverFitPending = false;
+            retryCompactionAt = 0;
             requiredCompactionAttempted = false;
             proactiveDispatchCompactionAttempted = false;
             emitContextFitNotice(session, fitted, current);
+            dispatchCalls += 1;
             return fitted.request;
           };
           // Every physical model dispatch measures the assembled request,
           // including the first sample, native counts, images and fresh tools.
           const measuredPressure = await requestPressure();
-          const requestFits = async () => (await requestPressure()).fits;
-          if (!deferredCompaction && proactiveDispatchCompactionAttempted) {
+          const handoverFitOnly = handoverFitPending;
+          handoverFitPending = false;
+          const backingOff = dispatchCalls < retryCompactionAt;
+          const admitUnchanged = (): true => { dispatchCalls += 1; return true; };
+          if (proactiveDispatchCompactionAttempted || requiredCompactionAttempted) {
             // A successful shrink may fall below the proactive threshold
             // while admission's calibrated or native count still cannot fit.
             // Every re-prepared request must pass the same hard fit check.
             proactiveDispatchCompactionAttempted = false;
+            requiredCompactionAttempted = false;
+            retryCompactionAt = 0;
+            compactionRefusals = 0;
             const current = await requestPressure();
-            return current.fits ? true : fitOrFail(current);
+            return current.fits ? admitUnchanged() : fitOrFail(current);
           }
           const autoCompactLimit = getPreSamplingAutoCompactTokenLimit(ctx);
           /*
@@ -3997,13 +4012,13 @@ async function* runTurnKernelInner(
            * later physical dispatch, including provider-native token counts.
            */
           const preparedOverThreshold =
-            !deferredCompaction &&
+            !backingOff && !handoverFitOnly &&
             autoCompactLimit !== undefined &&
             // Admission learns conservative fallback calibration from prior
             // provider usage. Keep that scoped factor on the proactive path
             // too; the synchronous estimate omits it.
             measuredPressure.inputTokens >= autoCompactLimit;
-          if (!deferredCompaction && preparedOverThreshold) {
+          if (preparedOverThreshold) {
             proactiveDispatchCompactionAttempted = true;
             persistNewResponseItems();
             const compacted = await compactPreparedRequest(false);
@@ -4012,52 +4027,35 @@ async function* runTurnKernelInner(
             // whether the unchanged request fits after a refusal.
             pressure = undefined;
             if (compacted) {
+              retryCompactionAt = 0;
+              compactionRefusals = 0;
               session.bindProviderConversation();
               return false;
             }
             proactiveDispatchCompactionAttempted = false;
-            /*
-             * Advisory no-shrink / summary rejection sets deferredCompaction
-             * and returns without climbing the ladder. That refusal must not
-             * spend the one re-prepare: the mandatory attempt below owns it,
-             * and a successful shrink has to come back here for the smaller
-             * request. Returning false here discarded that shrink and ended
-             * the turn as compact_failed.
-             */
-            if (!deferredCompaction) {
-              // Only proven unchanged-history advisory refusals may defer.
-              // A provider, persistence or projection failure is terminal even
-              // when the unchanged request happens to fit this window.
-              if (structuralDecline === undefined) {
-                throw new DeferredCompactionError(
-                  "The conversation is too large for the next reply. " +
-                    (session.services?.runtimeOptions?.nonInteractive !== true ? "Run /compact to retry, or start a new conversation with /clear." : ""),
-                );
-              }
-              // Every tier left history unchanged because it cannot be
-              // reduced further. The request itself may still fit, or fit
-              // once its tool results are shortened.
-              const current = await requestPressure();
-              if (current.fits) {
-                emitStructuralCompactionDecline(session, structuralDecline, true);
-                return true;
-              }
-              return fitOrFail(current);
+            if (structuralDecline === undefined && dispatchCalls >= retryCompactionAt) {
+              // A disabled gate or missing owner is not an exhausted attempt.
+              throw new DeferredCompactionError(
+                "The conversation is too large for the next reply. " +
+                  (session.services?.runtimeOptions?.nonInteractive !== true ? "Run /compact to retry, or start a new conversation with /clear." : ""),
+              );
             }
+            const current = await requestPressure();
+            if (current.fits) {
+              if (structuralDecline !== undefined) {
+                emitStructuralCompactionDecline(session, structuralDecline, true);
+                if (dispatchCalls >= retryCompactionAt) deferCompactionRefusal();
+              }
+              return admitUnchanged();
+            }
+            if (structuralDecline !== undefined) return fitOrFail(current);
           }
-          if (!deferredCompaction) {
-            proactiveDispatchCompactionAttempted = false;
-            return true;
-          }
-          if (await requestFits()) {
-            if (requiredCompactionAttempted) deferredCompaction = false;
+          // Backoff and handover never bypass the hard window, even below
+          // the threshold. Recount after refusals can include new calibration.
+          if ((await requestPressure()).fits) {
             requiredCompactionAttempted = false;
-            return true;
-          }
-          if (requiredCompactionAttempted) {
-            // The mandatory compaction committed and the re-prepared request
-            // still does not fit: shorten its tool results.
-            return fitOrFail(await requestPressure());
+            proactiveDispatchCompactionAttempted = false;
+            return admitUnchanged();
           }
           requiredCompactionAttempted = true;
           persistNewResponseItems();

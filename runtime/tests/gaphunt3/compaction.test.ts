@@ -177,7 +177,7 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
     harness.close();
   });
 
-  it("classifies a provider AbortError as a cancel even without an aborted controller", async () => {
+  it("counts a provider AbortError as a provider failure when the controller is not aborted", async () => {
     const abortError = new Error("aborted");
     abortError.name = "AbortError";
     const messages = [makeMessage("x".repeat(60_000)), makeMessage("recent request")];
@@ -188,17 +188,20 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
       },
     });
 
-    await expect(
-      autoCompactIfNeeded(
-        messages,
-        harness.context,
-        undefined,
-        undefined,
-        { consecutiveFailures: 0 },
-        0,
-        { force: true },
-      ),
-    ).rejects.toBe(abortError);
+    const result = await autoCompactIfNeeded(
+      messages,
+      harness.context,
+      undefined,
+      undefined,
+      { consecutiveFailures: 0 },
+      0,
+      { force: true },
+    );
+    expect(result).toMatchObject({
+      wasCompacted: false,
+      consecutiveFailures: 1,
+      skippedFailureReason: "provider_error",
+    });
     harness.close();
   });
 

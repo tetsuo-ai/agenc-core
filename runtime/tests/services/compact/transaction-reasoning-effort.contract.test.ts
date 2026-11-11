@@ -75,7 +75,8 @@ describe("compaction summary reasoning effort", () => {
     expect(result.transaction).toBeDefined();
     expect(sentEfforts(harness)).toEqual(sentEfforts(harness).map(() => "low"));
     for (const [, options] of harness.provider.chat.mock.calls as unknown as [unknown, LLMChatOptions][]) {
-      expect(options.maxOutputTokens).toBe(8_192);
+      // This fixture routes through grok, which has no thinking-off switch.
+      expect(options.maxOutputTokens).toBe(16_384);
     }
     expect(mainLoopEffort(harness)).toBe("max");
     expect(harness.context.options?.maxOutputTokens).toBe(32_768);

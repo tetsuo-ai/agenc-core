@@ -11,6 +11,9 @@ import * as autoCompactService from "../../src/services/compact/autoCompact.js";
 import { CompactionCannotReduceError } from "../../src/services/compact/transaction-types.js";
 import { getAttachmentTrackingState } from "../../src/session/attachment-state.js";
 import { routeSwarmTask } from "../../src/agents/swarm-routing.js";
+import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
+import { oneShotFastModeActive } from "../../src/one-shot-fast-mode.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 
 afterEach(() => {
@@ -115,6 +118,48 @@ describe("advisory compaction refusal", () => {
       .toContainEqual(expect.objectContaining({ outcome: "completed", code: 0 }));
   });
 
+  test("a fast-mode handover checks fit once and restores later threshold checks", async () => {
+    const exercise = createToolExercise(3);
+    const provider = exercise.session.services.provider;
+    const original = provider.chatStream.bind(provider);
+    let calls = 0;
+    let fastCalls = 0;
+    provider.chatStream = async (...args) => {
+      calls += 1;
+      if (oneShotFastModeActive()) fastCalls += 1;
+      if (calls === 2) throw Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+      return original(...args);
+    };
+    Object.assign(exercise.session.services, {
+      runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true, nonInteractive: true,
+        dangerouslyBypassApprovalsAndSandbox: true, relaxedOneShot: true }),
+      permissionModeRegistry: new PermissionModeRegistry({ ...exercise.session.permissionModeRegistry.current(),
+        mode: "bypassPermissions", isBypassPermissionsModeAvailable: true }),
+    });
+    Object.assign(exercise.ctx, { permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" },
+      config: { ...exercise.ctx.config, bypassFastMode: true },
+      modelInfo: { ...exercise.ctx.modelInfo, contextWindow: 65_536 } });
+    const atSamples: number[] = [];
+    setAutoCompactImplForTests(async () => { atSamples.push(exercise.samples()); return noShrink(); });
+    await drain(runTurn(exercise.session, exercise.ctx, "finish the implementation", { exactOutput: true }));
+    expect(fastCalls).toBe(2);
+    expect(atSamples).toEqual([2]);
+    expect(exercise.samples()).toBe(4);
+  });
+
+  test.each(advisoryRefusals)("$name: retries after 5, 10, then 20 model calls", async ({ refuse }) => {
+    const exercise = createToolExercise(37);
+    const attemptSamples: number[] = [];
+    setAutoCompactImplForTests(async (_messages, _context, _tracking, _snip, injection) => {
+      if (injection !== "before_last_user_message") return { wasCompacted: false };
+      attemptSamples.push(exercise.samples());
+      return refuse();
+    });
+    await drain(runTurn(exercise.session, exercise.ctx, "finish the implementation"));
+    expect(attemptSamples).toEqual([1, 6, 16, 36]);
+    expect(exercise.samples()).toBe(38);
+  });
+
   test.each(advisoryRefusals)("$name: a new oversized tool result gets one mandatory attempt without spending advisory failure strikes", async ({ name, refuse }) => {
     const exercise = createToolExercise(4, 4);
     const compact = vi.fn(async (_messages, _context, _tracking, _snip, injection) =>
@@ -160,7 +205,8 @@ describe("advisory compaction refusal", () => {
           // This request cannot fit even admission's minimum 1,024-token
           // clamped output. The replacement can; changing the output ceiling
           // alone must not make this mandatory-compaction fixture admissible.
-          inputTokens: JSON.stringify(request.messages).includes("fresh oversized result") ? 3_073 : 1_024,
+          inputTokens: JSON.stringify(request.messages).includes("fresh oversized result") ? 3_073
+            : JSON.stringify(request.messages).includes("small summary") ? 3_050 : 1_024,
           complete: true,
           confidence: "exact" as const,
           countedComponents: ["system", "messages", "tools", "provider_framing"] as const,
@@ -191,7 +237,7 @@ describe("advisory compaction refusal", () => {
       .toContainEqual(expect.objectContaining({ outcome: "completed", code: 0 }));
   });
 
-  test("does not defer other compaction failures even when the next request could fit", async () => {
+  test("backs off after exhausted non-structural tiers while the request fits", async () => {
     const exercise = createToolExercise(1);
     setAutoCompactImplForTests(async () => ({
       wasCompacted: false,
@@ -201,9 +247,9 @@ describe("advisory compaction refusal", () => {
 
     await drain(runTurn(exercise.session, exercise.ctx, "finish the implementation"));
 
-    expect(exercise.samples()).toBe(1);
+    expect(exercise.samples()).toBe(2);
     expect(exercise.events.map((event) => classifyTurnTerminal(event.msg)))
-      .toContainEqual(expect.objectContaining({ outcome: "errored", failureCode: "compact_failed" }));
+      .toContainEqual(expect.objectContaining({ outcome: "completed", code: 0 }));
   });
 
   test.each(advisoryRefusals.flatMap((refusal) => [0, 1].map((overflow) => ({ ...refusal, overflow }))))("$name: uses native counts at a $overflow-token overflow past the minimum admitted output", async ({ name, refuse, overflow }) => {
