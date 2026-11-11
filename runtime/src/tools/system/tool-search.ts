@@ -242,7 +242,9 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
       keywords: ["tools", "catalog", "discovery", "select", "deferred"],
       virtualNoFsWrites: true,
     },
-    recoveryCategory: "side-effecting",
+    // Replaying discovery adds the same names to a Set and expands the same
+    // catalog flag. It changes session state, but repeating it is safe.
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {

@@ -424,6 +424,9 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_ALLOW_UNTRUSTED_HOOKS` | Permit command hook effects in an untrusted workspace; captured once at runtime ingress; see below |
 | `AGENC_ENABLE_TASKS` | TUI task-board pool only. LIVE Task* tools are always registered and deferred |
 | `AGENC_DEFER_RARE_TOOLS` | On by default in standard sessions: built-in tools most sessions never call load through tool search instead of being sent with every request. They are the delegation tools (`select:spawn_agent` loads spawn_agent with wait_agent, send_message, assign_task, close_agent and list_agents), TodoWrite, Orient, web_fetch, WebSearch, report_agent_job_result (a CSV job loads it for its workers), ImagineImage, ImagineVideo, XSearch, LSP, NotebookRead, the three Ledger tools, VerifyPlanExecution and SendUserMessage; write_stdin, kill_process and list_processes load by themselves when exec_command leaves a session running. The tool search description names them so the model knows they exist, and a loaded tool joins the end of the tool list so the cached prompt prefix before it stays valid. `0` advertises every tool again. Light sessions keep their own initial tool set and defer only the rare tools, and only with `1`. A policy without system.searchTools advertises them all. Overrides config.toml `defer_rare_tools`. Captured with the session environment, so a client sets it per session |
+| `AGENC_READ_RANGE_NOTE` | Boolean-like, default on. Partial text and rendered notebook reads append their line range and total. Text reads over the byte or token cap return a window of complete lines when one fits. Off preserves legacy result bytes and cap errors. Malformed values use on |
+| `AGENC_READ_DEDUP` | Boolean-like, default off. In each model request, repeat text reads with the same file identity, timestamps, range and snapshot bytes use a one-line reference to an intact earlier read in that request. Full history is retained; shortened or missing results and compaction boundaries prevent reuse. Malformed values use off |
+| `AGENC_EXEC_OUTPUT_KEEP` | `headtail` (default) preserves legacy command results. `log` saves full streamed exec output in the session temp root before live-buffer truncation, keeps failure lines and final summaries, collapses exact repeats and carriage-return progress, and names the full log when output is reduced. Successful commands use at most 2,000 tokens; failures retain the requested budget up to 25,000. Unset or malformed values use `headtail` |
 | `AGENC_EXEC_HARD_TIMEOUT` | `1` restores exec_command's hard timeout: a command that reaches its `timeoutMs` is stopped and the result says `timed_out=true`, as before 0.19.26, and the exec_command schema describes timeoutMs as a hard timeout. Unset or `0`: the command keeps running as a tracked session. Overrides config.toml `exec_hard_timeout`. Captured with the session environment, so a client sets it per session |
 | `AGENC_EXEC_WAIT_WHILE_BUSY` | On by default in Light sessions: an `exec_command` whose yield passes (the default 30 s or longer; not `background`, `tty` or `detach`), or an empty `write_stdin` poll whose yield passes (no yield or at least 30 s, of a session not started with `background`), keeps waiting while the command's processes still use at least a quarter of a CPU core, until it exits, goes idle, its `timeoutMs` passes or 240 s after the call started, so the model gets the result without polling it. `0` returns every wait to its yield. Standard sessions never wait past the yield. Captured with the session environment, so a client sets it per session |
 | `AGENC_USE_NATIVE_FILE_SEARCH` | Native fuzzy file index path |
@@ -479,7 +482,7 @@ autostart. Ordinary startup leaves it unset.
 
 ### AGENC_E*
 
-`AGENC_EDIT_THEN_RUN`, `AGENC_EMIT_TOOL_USE_SUMMARIES`, `AGENC_ENABLE_EXTENDED_KEYS`, `AGENC_ENABLE_SESSION_MEMORY_COMPACT`, `AGENC_ENABLE_TOKEN_USAGE_ATTACHMENT`, `AGENC_ENABLE_XAA`, `AGENC_ENTRYPOINT`, `AGENC_ENVIRONMENT_KIND`, `AGENC_EXEC_HARD_TIMEOUT`, `AGENC_EXEC_WAIT_WHILE_BUSY`, `AGENC_EXPERIMENTAL_AGENT_TEAMS`.
+`AGENC_EDIT_THEN_RUN`, `AGENC_EMIT_TOOL_USE_SUMMARIES`, `AGENC_ENABLE_EXTENDED_KEYS`, `AGENC_ENABLE_SESSION_MEMORY_COMPACT`, `AGENC_ENABLE_TOKEN_USAGE_ATTACHMENT`, `AGENC_ENABLE_XAA`, `AGENC_ENTRYPOINT`, `AGENC_ENVIRONMENT_KIND`, `AGENC_EXEC_HARD_TIMEOUT`, `AGENC_EXEC_OUTPUT_KEEP`, `AGENC_EXEC_WAIT_WHILE_BUSY`, `AGENC_EXPERIMENTAL_AGENT_TEAMS`.
 
 ### AGENC_F*
 
@@ -519,7 +522,7 @@ autostart. Ordinary startup leaves it unset.
 
 ### AGENC_R*
 
-`AGENC_REMOTE`, `AGENC_REMOTE_AUTH_LOGIN_POLL_URL`, `AGENC_REMOTE_AUTH_LOGIN_START_URL`, `AGENC_REMOTE_AUTH_ME_URL`, `AGENC_REMOTE_AUTH_TIER_URL`, `AGENC_REMOTE_AUTH_TOKEN`, `AGENC_REMOTE_DEBUG`, `AGENC_REMOTE_FULL_CONTROL`, `AGENC_REMOTE_MEMORY_DIR`, `AGENC_REMOTE_SESSION_ID`, `AGENC_ROLLOUT_TRACE_ROOT`.
+`AGENC_READ_DEDUP`, `AGENC_READ_RANGE_NOTE`, `AGENC_REMOTE`, `AGENC_REMOTE_AUTH_LOGIN_POLL_URL`, `AGENC_REMOTE_AUTH_LOGIN_START_URL`, `AGENC_REMOTE_AUTH_ME_URL`, `AGENC_REMOTE_AUTH_TIER_URL`, `AGENC_REMOTE_AUTH_TOKEN`, `AGENC_REMOTE_DEBUG`, `AGENC_REMOTE_FULL_CONTROL`, `AGENC_REMOTE_MEMORY_DIR`, `AGENC_REMOTE_SESSION_ID`, `AGENC_ROLLOUT_TRACE_ROOT`.
 
 ### AGENC_S*
 

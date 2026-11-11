@@ -15,13 +15,12 @@ import { buildToolRegistry, type ToolRegistry } from "../../src/tool-registry.js
 import type { Tool } from "../../src/tools/types.js";
 import { bindAdmittedToolHarness } from "../helpers/admitted-tool-harness.js";
 
-const READ_ONLY_TOOLS = ["web_fetch", "WebSearch", "XSearch", "Sleep"] as const;
+const READ_ONLY_TOOLS = ["web_fetch", "WebSearch", "XSearch", "Sleep", "system.searchTools"] as const;
 const READ_ONLY_EFFECT_EXCEPTIONS: Readonly<Record<string, string>> = {
   AskUserQuestion: "Waits for a user response to an interactive prompt.",
   EnterPlanMode: "Changes the session's permission mode through its workflow controller.",
   Skill: "Records skill invocation in the session's skill history.",
   SendUserMessage: "Emits a user-visible message that a replay could duplicate.",
-  "system.searchTools": "Loads deferred tools into the session's advertised catalog.",
 };
 
 let workspaceRoot: string;

@@ -1,3 +1,4 @@
+import { projectRepeatedReads } from "../tools/read-result-projection.js";
 import { DegenerateTextDetector } from "../llm/degenerate-text.js";
 import { completeReasoningCapSample, type ReasoningCapSample } from "../session/reasoning-cap-policy.js";
 /**
@@ -212,7 +213,7 @@ function toVisibleAssistantText(
 function buildProviderMessages(
   request: StreamModelRequestContract,
 ): LLMMessage[] {
-  return request.input.map(cloneLlmMessageSnapshot);
+  return [...projectRepeatedReads(request.input)].map(cloneLlmMessageSnapshot);
 }
 
 function cloneProviderTools(tools: ReadonlyArray<LLMTool>): LLMTool[] {

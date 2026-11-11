@@ -1796,7 +1796,7 @@ describe("T11 W3-B — permission evaluator integration", () => {
       );
 
       expect(out.isError).toBe(false);
-      expect(out.content).toBe("2→two\n3→three");
+      expect(out.content).toBe("2→two\n3→three\n[lines 2-3 of 5; next offset 4]");
       expect(out.content).not.toContain("InputValidationError");
     } finally {
       await rm(workspace, { recursive: true, force: true });

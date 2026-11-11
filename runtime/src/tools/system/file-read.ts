@@ -9,8 +9,8 @@ import { sideEffectFreeTool } from "../side-effect-free.js";
  * Key behaviors preserved from AgenC:
  *   - Token-aware text-file size cap (defaults to 25k tokens, matching
  *     the upstream `DEFAULT_MAX_OUTPUT_TOKENS`). When the rough estimate
- *     exceeds the cap, the read is rejected with the exact error
- *     message AgenC emits so model-side recovery copy still works.
+ *     exceeds the cap, range-note mode returns a bounded line prefix.
+ *     Legacy mode retains the existing actionable cap error.
  *   - Image multimodal output: PNG/JPG/JPEG/GIF/WEBP read as bytes,
  *     base64-encoded, and returned via `contentItems` as
  *     `input_image` with a data URL. The text `content` carries a
@@ -40,6 +40,7 @@ import { sideEffectFreeTool } from "../side-effect-free.js";
  * @module
  */
 
+import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { dirname, extname, isAbsolute, resolve } from "node:path";
@@ -50,10 +51,12 @@ import {
 } from "../../permissions/readonly-read-guard.js";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
+import { readRangeNoteEnabled, readDedupEnabled } from "../read-result-options.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
 import type { FunctionCallOutputContentItem } from "../context.js";
 import { addLineNumbers } from "./_deps/line-numbers.js";
 import {
+  getSessionReadSnapshot,
   recordSessionRead,
   resolveSessionId,
   safePathAllowingSessionPlanFile,
@@ -449,6 +452,30 @@ function sliceLines(
   };
 }
 
+function withRangeNote(numbered: string, sliced: SliceResult): string {
+  if (!readRangeNoteEnabled() || !sliced.isPartial || sliced.numLines === 0) return numbered;
+  const next = sliced.endLine < sliced.totalLines ? `; next offset ${sliced.endLine + 1}` : "";
+  return `${numbered}\n[lines ${sliced.startLine}-${sliced.endLine} of ${sliced.totalLines}${next}]`;
+}
+
+/** Keep complete lines. A single oversized line still uses the existing actionable error. */
+function fitTextSlice(sliced: SliceResult, opts: TextReadOpts): SliceResult {
+  if (!readRangeNoteEnabled()) return sliced;
+  const lines = sliced.content.split("\n");
+  let low = 0;
+  let high = lines.length;
+  while (low < high) {
+    const count = Math.ceil((low + high) / 2);
+    const content = lines.slice(0, count).join("\n");
+    if (Buffer.byteLength(content, "utf8") <= opts.maxTextBytes &&
+        estimateTokens(content, extname(opts.displayPath)) <= opts.maxTokens) low = count;
+    else high = count - 1;
+  }
+  if (low === 0 || low === lines.length) return sliced;
+  return { ...sliced, content: lines.slice(0, low).join("\n"),
+    endLine: sliced.startLine + low - 1, numLines: low, isPartial: true };
+}
+
 async function readInitialBytes(
   filePath: string,
   maxBytes: number,
@@ -467,6 +494,8 @@ async function sliceTextFileByLineStream(
   filePath: string,
   offset: number,
   limit: number | undefined,
+  maxBytes = Number.POSITIVE_INFINITY,
+  countAll = false,
 ): Promise<SliceResult> {
   const startLine = Math.max(1, offset);
   const effectiveLimit = limit ?? DEFAULT_LINE_LIMIT;
@@ -474,14 +503,20 @@ async function sliceTextFileByLineStream(
   let totalLines = 0;
 
   const input = createReadStream(filePath, { encoding: "utf8" });
+  let endsWithNewline = false;
+  let selectedBytes = 0;
+  let windowFull = false;
+  input.on("data", (chunk: string) => { endsWithNewline = chunk.endsWith("\n"); });
   const reader = createInterface({ input, crlfDelay: Infinity });
   try {
     for await (const line of reader) {
       totalLines += 1;
-      if (totalLines >= startLine && selected.length < effectiveLimit) {
-        selected.push(line);
+      if (totalLines >= startLine && selected.length < effectiveLimit && !windowFull) {
+        const bytes = Buffer.byteLength(line, "utf8") + (selected.length > 0 ? 1 : 0);
+        if (selected.length > 0 && selectedBytes + bytes > maxBytes) windowFull = true;
+        else { selected.push(line); selectedBytes += bytes; }
       }
-      if (selected.length >= effectiveLimit) {
+      if (!countAll && selected.length >= effectiveLimit) {
         break;
       }
     }
@@ -490,6 +525,10 @@ async function sliceTextFileByLineStream(
     input.destroy();
   }
 
+  if (countAll && endsWithNewline) {
+    totalLines += 1;
+    if (!windowFull && totalLines >= startLine && selected.length < effectiveLimit) selected.push("");
+  }
   const endLine =
     selected.length > 0
       ? startLine + selected.length - 1
@@ -645,6 +684,7 @@ async function readTextFile(
     readonly size: number;
     readonly mtimeMs: number;
   } | null = rawFileStats;
+  const rangeNote = readRangeNoteEnabled();
   const explicitWindow = opts.offset > 1 || opts.limit !== undefined;
   let boundFile: WorkspaceBoundReadFile | undefined;
   let boundWindow:
@@ -657,6 +697,7 @@ async function readTextFile(
           opts.offset,
           opts.limit ?? DEFAULT_LINE_LIMIT,
           opts.maxTextBytes,
+          rangeNote,
         );
       } catch (error) {
         if (error instanceof WorkspaceBoundReadFileTooLargeError) {
@@ -665,30 +706,31 @@ async function readTextFile(
               opts.maxTextBytes,
             )}. Use a smaller offset and limit window.`,
           );
-        }
-        throw error;
+        } else throw error;
       }
       fileStats = boundWindow.stats;
     } else {
       try {
         boundFile = await boundRead.readFile(opts.maxTextBytes);
       } catch (error) {
-        if (error instanceof WorkspaceBoundReadFileTooLargeError) {
+        if (error instanceof WorkspaceBoundReadFileTooLargeError && rangeNote) {
+          boundWindow = await boundRead.readTextWindow(opts.offset, opts.limit ?? DEFAULT_LINE_LIMIT, opts.maxTextBytes, true);
+          fileStats = boundWindow.stats;
+        } else if (error instanceof WorkspaceBoundReadFileTooLargeError) {
           return errorResult(
             `File size ${formatBytes(error.size)} exceeds the text-read limit of ${formatBytes(
               opts.maxTextBytes,
             )}. Use offset and limit to read a slice, or a different tool for large binary blobs.`,
           );
-        }
-        throw error;
+        } else throw error;
       }
-      fileStats = boundFile.stats;
+      fileStats = boundFile?.stats ?? boundWindow?.stats ?? null;
     }
   }
   const authoritativeBytes =
     boundWindow?.stats.size ?? boundFile?.stats.size ?? fileStats?.size ?? 0;
   opts.readGuard?.();
-  if (!explicitWindow && authoritativeBytes > opts.maxTextBytes) {
+  if (!rangeNote && !explicitWindow && authoritativeBytes > opts.maxTextBytes) {
     return errorResult(
       `File size ${formatBytes(authoritativeBytes)} exceeds the text-read limit of ${formatBytes(
         opts.maxTextBytes,
@@ -697,7 +739,7 @@ async function readTextFile(
   }
   const shouldStreamWindow =
     boundRead === undefined &&
-    explicitWindow &&
+    (explicitWindow || rangeNote) &&
     authoritativeBytes > opts.maxTextBytes;
   const binarySample =
     boundWindow?.binarySample ??
@@ -715,15 +757,17 @@ async function readTextFile(
     shouldStreamWindow || boundWindow !== undefined
       ? undefined
       : binarySample.toString("utf-8");
-  const sliced =
+  const sliced = fitTextSlice(
     boundWindow ??
     (shouldStreamWindow
       ? await sliceTextFileByLineStream(
           resolvedPath.canonical,
           opts.offset,
           opts.limit,
+          rangeNote ? opts.maxTextBytes : Number.POSITIVE_INFINITY,
+          rangeNote,
         )
-      : sliceLines(text ?? "", opts.offset, opts.limit));
+      : sliceLines(text ?? "", opts.offset, opts.limit)), opts);
   const slicedBytes = Buffer.byteLength(sliced.content, "utf8");
   if (slicedBytes > opts.maxTextBytes) {
     return errorResult(
@@ -775,7 +819,7 @@ async function readTextFile(
     });
   }
 
-  if (sliced.content.length === 0) {
+  if (sliced.content.length === 0 && (!rangeNote || sliced.numLines === 0 || sliced.totalLines === 0)) {
     if (sliced.totalLines === 0) {
       return {
         content:
@@ -801,9 +845,22 @@ async function readTextFile(
     };
   }
 
+  const snapshot = readDedupEnabled() ? getSessionReadSnapshot(sessionId, resolvedPath.canonical) : undefined;
+  const observedRange = snapshot?.viewKind === "partial"
+    ? [snapshot.readOffset, snapshot.readLimit ?? null] : [1, null];
   return {
-    content: formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers),
+    content: withRangeNote(sliced.content.length === 0 && sliced.numLines > 0
+      ? `${sliced.startLine}→`
+      : formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers), sliced),
     metadata: {
+      ...(rawFileStats !== null && snapshot?.content === sliced.content &&
+          snapshot.timestamp === rawFileStats.mtimeMs ? {
+        readObservationKey: createHash("sha256").update(JSON.stringify([
+          resolvedPath.canonical, rawFileStats.dev, rawFileStats.ino, rawFileStats.size,
+          rawFileStats.mtimeMs, rawFileStats.ctimeMs, opts.offset, opts.limit ?? null,
+          observedRange, snapshot.content,
+        ])).digest("hex"),
+      } : {}),
       filePath: opts.displayPath,
       totalLines: sliced.totalLines,
       startLine: sliced.startLine,
@@ -1110,7 +1167,7 @@ async function readNotebookFile(
     };
   }
 
-  const numbered = formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers);
+  const numbered = withRangeNote(formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers), sliced);
   const selectedImages = rendered.ok.images.filter(
     (image) =>
       image.lineNumber >= sliced.startLine &&

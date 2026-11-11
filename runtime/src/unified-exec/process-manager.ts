@@ -1,3 +1,4 @@
+import { FullOutputLog, logOutputEnabled, reduceLogsTogether } from "./log-output.js";
 import { OneShotProcessServer, OneShotProcessServerCleanupError } from "./one-shot-process-server.js";
 import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { SessionSandbox, SessionSandboxCleanupError, type SessionSandboxAvailability } from "../sandbox/linux-launcher/session-sandbox.js";
@@ -261,10 +262,13 @@ export class ProcessOutputBuffer {
   /** When the process last wrote anything (creation time until it does). */
   lastOutputAt = Date.now();
 
-  constructor(private readonly maxChars = DEFAULT_OUTPUT_BUFFER_CHARS) {}
+  /** True when the live buffer has lost pending bytes, even if a later result fits. */
+  truncated = false;
+  constructor(private readonly maxChars = DEFAULT_OUTPUT_BUFFER_CHARS, readonly fullLog?: FullOutputLog) {}
 
   append(stream: UnifiedExecStream, chunk: string): void {
     if (chunk.length === 0) return;
+    this.fullLog?.append(chunk);
     this.lastOutputAt = Date.now();
     this.outputBytes += Buffer.byteLength(chunk);
     this.outputTail = chunk.length >= TASK_OUTPUT_TAIL_CHARS
@@ -321,6 +325,7 @@ export class ProcessOutputBuffer {
   private collapsePending(): void {
     if (this.totalChars <= this.maxChars) return;
     this.collapseCountForTest += 1;
+    this.truncated = true;
 
     // The cap is still exceeded by pending (undrained) output. Rather than
     // dropping the most-recent unconsumed bytes wholesale (which previously
@@ -349,7 +354,7 @@ export class ProcessOutputBuffer {
     // `[... omitted N chars ...]` marker between the preserved head and tail,
     // so it replaces the pending chunks directly, stdout before stderr for
     // deterministic output; an empty stream contributes no chunk.
-    const [stdout, stderr] = truncateHeadTailTogether(
+    const [stdout, stderr] = (this.fullLog?.path === undefined ? truncateHeadTailTogether : reduceLogsTogether)(
       [stdoutText, stderrText],
       this.maxChars,
     );
@@ -682,15 +687,26 @@ function createResult(params: {
   readonly timeoutBackgroundedMs?: number;
   readonly timeoutStoppedAtSessionLimit?: number;
   readonly processState?: string;
+  readonly logMode?: boolean;
+  readonly fullLogPath?: string;
+  readonly bufferTruncated?: boolean;
 }): ExecCommandToolOutput {
   // max_output_tokens bounds the whole result, so stdout and stderr share it.
-  const [stdout, stderr] = truncateHeadTailTogether(
+  const budget = params.logMode === true && params.exitCode === 0
+    ? Math.min(maxCharsForTokens(params.maxOutputTokens), 8_000)
+    : maxCharsForTokens(params.maxOutputTokens);
+  const savedNote = params.logMode === true
+    ? params.fullLogPath === undefined ? "\n[full output log unavailable]" : `\n[full output: ${params.fullLogPath}]`
+    : "";
+  const reducer = params.logMode === true && params.fullLogPath !== undefined ? reduceLogsTogether : truncateHeadTailTogether;
+  const [stdout, stderr] = reducer(
     [params.stdout, params.stderr],
-    maxCharsForTokens(params.maxOutputTokens),
+    params.logMode === true ? Math.max(128, budget - savedNote.length) : budget,
   );
+  const reduced = stdout.truncated || stderr.truncated || (params.logMode === true && params.bufferTruncated === true);
   const output = [stdout.text, stderr.text]
     .filter((part) => part.length > 0)
-    .join("");
+    .join("") + (reduced ? savedNote : "");
   const originalText = `${params.stdout}${params.stderr}`;
   return {
     output,
@@ -704,7 +720,7 @@ function createResult(params: {
     durationMs: params.durationMs,
     wall_time_seconds: params.durationMs / 1000,
     timedOut: params.timedOut,
-    truncated: stdout.truncated || stderr.truncated,
+    truncated: reduced,
     original_token_count: approximateTokenCount(originalText),
     ...(params.residualProcessesTerminated === true
       ? { residual_processes_terminated: true }
@@ -2262,7 +2278,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }): Promise<ProcessEntry> {
     this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
     this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
-    const output = new ProcessOutputBuffer();
+    const output = new ProcessOutputBuffer(DEFAULT_OUTPUT_BUFFER_CHARS,
+      logOutputEnabled({ ...this.baseEnv, ...this.env }) ? new FullOutputLog(params.runtimeSandbox?.sessionTempRoot ?? this.sessionTempRoot) : undefined);
     const abortController = new AbortController();
     const exit = makeDeferredExit();
     const notifyData = (stream: UnifiedExecStream, chunk: string): void => {
@@ -2295,6 +2312,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       if (entry.exitState !== null) return;
       entry.exitState = state;
       entry.endedAt = Date.now();
+      entry.output.fullLog?.close();
       // gaphunt3 #44: the process settled — drop the upstream-abort listener so
       // it does not survive (the normal-exit path the `{ once: true }` never covered).
       entry.detachUpstreamAbort?.();
@@ -2804,6 +2822,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       processState = sample.line;
     }
     return createResult({
+      logMode: entry.output.fullLog !== undefined,
+      fullLogPath: entry.output.fullLog?.path,
+      bufferTruncated: entry.output.truncated,
       stdout,
       stderr,
       exitCode: entry.exitState?.exitCode ?? null,

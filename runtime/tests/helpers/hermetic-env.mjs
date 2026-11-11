@@ -228,6 +228,10 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_EXEC_WAIT_WHILE_BUSY',
   // a check that runs right after an edit (a test that needs it sets it explicitly)
   'AGENC_EDIT_THEN_RUN',
+  // read and command output shaping switches (a test that needs one sets it explicitly)
+  'AGENC_EXEC_OUTPUT_KEEP',
+  'AGENC_READ_DEDUP',
+  'AGENC_READ_RANGE_NOTE',
   // endpoints and subprocess/service activation
   'AGENC_BACKEND_URL',
   'AGENC_DAEMON_URL',

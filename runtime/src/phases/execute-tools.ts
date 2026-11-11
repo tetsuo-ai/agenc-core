@@ -98,6 +98,7 @@ import {
   frameUntrustedToolResultContent,
   type UntrustedToolResultKind,
 } from "../tools/untrusted-tool-result-framing.js";
+import { registerReadObservation } from "../tools/read-result-projection.js";
 import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
 import { createToolResultIntegrity, createDeferredTextToolResultIntegrity } from "../session/tool-result-integrity.js";
 import { execCommandRunsConcurrently } from "../tools/read-only-shell-concurrency.js";
@@ -130,6 +131,10 @@ export function toolResultMessage(
       }),
     },
   };
+  if ((toolName === "FileRead" || toolName === "Read") && result.isError !== true &&
+      typeof result.metadata?.readObservationKey === "string") {
+    registerReadObservation(message.runtimeOnly!.toolResultIntegrity!.resultId, result.metadata.readObservationKey);
+  }
   const failureKind = recoverableFailureKind(result.metadata);
   if (failureKind !== null) {
     message.runtimeOnly = {

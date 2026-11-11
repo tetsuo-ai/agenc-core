@@ -167,7 +167,7 @@ describe("FileRead tool", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(result.content).toBe("10→line-10");
+    expect(result.content).toBe("10→line-10\n[lines 10-10 of 51; next offset 11]");
   });
 
   test("offset without limit uses the default bounded window over the byte cap", async () => {
@@ -278,7 +278,7 @@ describe("FileRead tool", () => {
       __agencSessionId: sessionId,
     });
     expect(result.isError).toBeUndefined();
-    expect(result.content).toBe("2→b\n3→c");
+    expect(result.content).toBe("2→b\n3→c\n[lines 2-3 of 7; next offset 4]");
 
     // User-initiated partial reads satisfy the read-before-write gate.
     expect(hasSessionRead(sessionId, file)).toBe(true);

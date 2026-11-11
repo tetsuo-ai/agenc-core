@@ -279,6 +279,7 @@ export interface WorkspaceBoundFileReadCapability extends WorkspaceBoundReadCapa
     offset: number,
     limit: number,
     maxBytes: number,
+    completeLineCount?: boolean,
   ) => Promise<WorkspaceBoundTextWindow>;
 }
 
@@ -1718,23 +1719,33 @@ try {
             );
       const selected = [];
       let totalLines = 0;
+      let selectedBytes = 0;
+      let windowFull = false;
+      let endsWithNewline = false;
       const input = opened.handle.createReadStream({
         encoding: "utf8",
         autoClose: false,
         start: 0,
       });
+      input.on("data", (chunk) => { endsWithNewline = chunk.endsWith("\n"); });
       const reader = createInterface({ input, crlfDelay: Infinity });
       try {
         for await (const line of reader) {
           totalLines += 1;
-          if (totalLines >= offset && selected.length < limit) {
-            selected.push(line);
+          if (totalLines >= offset && selected.length < limit && !windowFull) {
+            const bytes = Buffer.byteLength(line, "utf8") + (selected.length > 0 ? 1 : 0);
+            if (command.completeLineCount && selected.length > 0 && selectedBytes + bytes > maxBytes) windowFull = true;
+            else { selected.push(line); selectedBytes += bytes; }
           }
-          if (selected.length >= limit) break;
+          if (!command.completeLineCount && selected.length >= limit) break;
         }
       } finally {
         reader.close();
         input.destroy();
+      }
+      if (command.completeLineCount && endsWithNewline) {
+        totalLines += 1;
+        if (!windowFull && totalLines >= offset && selected.length < limit) selected.push("");
       }
       const content = selected.join("\n");
       if (Buffer.byteLength(content, "utf8") > maxBytes) {
@@ -3551,6 +3562,7 @@ class BoundDirectoryHelper {
     readonly offset: number;
     readonly limit: number;
     readonly maxBytes: number;
+    readonly completeLineCount?: boolean;
   }): Promise<WorkspaceBoundTextWindow> {
     const relativeSegments = this.#relativeSegments(input.relativePath);
     const expectedPath = resolve(this.#readRootPath, ...relativeSegments);
@@ -3558,6 +3570,7 @@ class BoundDirectoryHelper {
       {
         type: "mutate",
         operation: "read_text_window",
+        completeLineCount: input.completeLineCount,
         name: relativeSegments.at(-1),
         parentSegments: [],
         expectedKind: "file",
@@ -4406,8 +4419,9 @@ export async function bindWorkspaceFileReadCapability(
           expectedIdentity: exactFile.identity,
           maxBytes,
         }),
-      readTextWindow: (offset, limit, maxBytes) =>
+      readTextWindow: (offset, limit, maxBytes, completeLineCount) =>
         lease.use().readTextWindow({
+          completeLineCount,
           relativePath,
           expectedIdentity: exactFile.identity,
           offset,
