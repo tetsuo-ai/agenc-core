@@ -370,6 +370,32 @@ export class LogUpdate {
         if (writeCellWithStyleStr(screen, added, styleStr)) {
           currentStyleId = added.styleId
         }
+        // A terminal that draws this cluster wider than we count has just
+        // painted over the cell after it. That cell may be unchanged in this
+        // frame, so the diff would never repair it: write it again now.
+        let rewritten = added
+        let afterX = x + (rewritten.width === CellWidth.Wide ? 2 : 1)
+        while (hasDisputedWidth(rewritten.char) && afterX < next.screen.width) {
+          const after = cellAt(next.screen, afterX, y)
+          if (
+            !after ||
+            after.width === CellWidth.SpacerTail ||
+            after.width === CellWidth.SpacerHead
+          ) {
+            break
+          }
+          moveCursorTo(screen, afterX, y)
+          currentHyperlink = transitionHyperlink(
+            screen.diff,
+            currentHyperlink,
+            after.hyperlink,
+          )
+          const afterStyleStr = stylePool.transition(currentStyleId, after.styleId)
+          if (!writeCellWithStyleStr(screen, after, afterStyleStr)) break
+          currentStyleId = after.styleId
+          rewritten = after
+          afterX += after.width === CellWidth.Wide ? 2 : 1
+        }
       } else if (removed) {
         // Cell was removed - clear it with a space
         // (This handles shrinking content)
@@ -746,15 +772,19 @@ function writeCellWithStyleStr(
     diff.push({ type: 'styleStr', str: styleStr })
   }
 
-  const needsCompensation = cellWidth === 2 && needsWidthCompensation(cell.char)
+  // Terminals do not agree on the width of every emoji and symbol. For a
+  // cluster of that kind the cursor is put back to the column we count from
+  // (CHA) right after it, so a terminal that advanced one cell more or less
+  // cannot move the rest of the row. On a terminal that agrees with us the
+  // CHA is a no-op.
+  const disputed = hasDisputedWidth(cell.char)
 
-  // On terminals with old wcwidth tables, a compensated emoji only advances
-  // the cursor 1 column, so the CHA below skips column x+1 without painting
-  // it. Write a styled space there first — on correct terminals the emoji
-  // glyph (width 2) overwrites it harmlessly; on old terminals it fills the
-  // gap with the emoji's background. Also clears any stale content at x+1.
+  // A terminal that draws a two-cell cluster in one cell leaves column x+1
+  // unpainted. Write a styled space there first: where the cluster is two
+  // cells wide it paints over the space, elsewhere the space fills the gap
+  // and clears stale content.
   // CHA is 1-based, so column px+1 (0-based) is CHA target px+2.
-  if (needsCompensation && px + 1 < vw) {
+  if (disputed && cellWidth === 2 && px + 1 < vw) {
     diff.push({ type: 'cursorTo', col: px + 2 })
     diff.push({ type: 'stdout', content: ' ' })
     diff.push({ type: 'cursorTo', col: px + 1 })
@@ -762,8 +792,9 @@ function writeCellWithStyleStr(
 
   diff.push({ type: 'stdout', content: cell.char })
 
-  // Force terminal cursor to correct column after the emoji.
-  if (needsCompensation) {
+  // Force the terminal cursor to the column after the cluster. A one-cell
+  // cluster in the last column is left alone: the cursor has nowhere to go.
+  if (disputed && (cellWidth === 2 || px + 1 < vw)) {
     diff.push({ type: 'cursorTo', col: px + cellWidth + 1 })
   }
 
@@ -808,33 +839,34 @@ function moveCursorTo(screen: VirtualScreen, targetX: number, targetY: number) {
 }
 
 /**
- * Identify emoji where the terminal's wcwidth may disagree with Unicode.
- * On terminals with correct tables, the CHA we emit is a harmless no-op.
+ * True for a cluster whose width terminals do not agree on:
  *
- * Two categories:
- * 1. Newer emoji (Unicode 12.0+) missing from terminal wcwidth tables.
- * 2. Text-by-default emoji + VS16 (U+FE0F): the base codepoint is width 1
- *    in wcwidth, but VS16 triggers emoji presentation making it width 2.
- *    Examples: ⚔️ (U+2694), ☠️ (U+2620), ❤️ (U+2764).
+ * - an emoji or a symbol that can be drawn as one (U+2705, U+26A0, U+2194,
+ *   U+00A9 ...): some terminals follow the Unicode width data, some use two
+ *   cells for every emoji glyph, older ones lack the newer code points;
+ * - a cluster with U+FE0F or U+FE0E, a joiner, a keycap or a skin tone:
+ *   some terminals size the whole cluster, some size each code point;
+ * - a regional indicator, alone or as a flag.
+ *
+ * Letters, digits, punctuation, box drawing and CJK are not in this set:
+ * their width is the same everywhere we know of.
  */
-function needsWidthCompensation(char: string): boolean {
-  const cp = char.codePointAt(0)
-  if (cp === undefined) return false
-  // U+1FA70-U+1FAFF: Symbols and Pictographs Extended-A (Unicode 12.0-15.0)
-  // U+1FB00-U+1FBFF: Symbols for Compatibility Computing (Unicode 13.0)
-  if ((cp >= 0x1fa70 && cp <= 0x1faff) || (cp >= 0x1fb00 && cp <= 0x1fbff)) {
-    return true
+function hasDisputedWidth(char: string): boolean {
+  const first = char.charCodeAt(0)
+  // Fast exits. Below U+203C only U+00A9 and U+00AE can be drawn as emoji,
+  // and a keycap or selector needs a second code unit.
+  if (first < 0x203c) {
+    return char.length >= 2
+      ? DISPUTED_WIDTH.test(char)
+      : first === 0xa9 || first === 0xae
   }
-  // Text-by-default emoji with VS16: scan for U+FE0F in multi-codepoint
-  // graphemes. Single BMP chars (length 1) and surrogate pairs without VS16
-  // skip this check. VS16 (0xFE0F) can't collide with surrogates (0xD800-0xDFFF).
-  if (char.length >= 2) {
-    for (let i = 0; i < char.length; i++) {
-      if (char.charCodeAt(i) === 0xfe0f) return true
-    }
-  }
-  return false
+  // CJK ideographs and Hangul syllables on their own.
+  if (first >= 0x3400 && first <= 0xd7ff && char.length === 1) return false
+  return DISPUTED_WIDTH.test(char)
 }
+
+const DISPUTED_WIDTH =
+  /\p{Extended_Pictographic}|\p{Regional_Indicator}|\p{Emoji_Modifier}|[\ufe0e\ufe0f\u200d\u20e3]/u
 
 class VirtualScreen {
   // Public for direct mutation by writeCellWithStyleStr (avoids txn overhead).
