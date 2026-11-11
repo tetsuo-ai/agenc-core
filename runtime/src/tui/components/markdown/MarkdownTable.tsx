@@ -296,11 +296,11 @@ export function MarkdownTable({
 
         // Wrap label and value as one text, so the first line is shorter by
         // the label and no second pass has to join broken lines again. A
-        // stand-in of the same width takes the place of the label and colon
-        // while wrapping. Lines stay one cell short of the content width
-        // after the indent.
+        // stand-in takes the place of the label and colon while wrapping. It
+        // is shorter than them by the indent, because the first line has no
+        // indent: every line then ends at most one cell before the edge.
         const wrapWidth = Math.max(terminalWidth - wrapIndent.length - 1, 10);
-        const labelStandIn = 'x'.repeat(stringWidth(label) + 1);
+        const labelStandIn = 'x'.repeat(Math.max(1, stringWidth(label) + 1 - wrapIndent.length));
         const labelLine = `${ANSI_BOLD_START}${label}:${ANSI_BOLD_END}`;
         let valueLines: string[];
         if (labelStandIn.length + 1 >= wrapWidth) {
