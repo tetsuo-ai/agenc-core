@@ -5,6 +5,7 @@ import {
 } from '@alcalzone/ansi-tokenize'
 import { logForDebugging } from '../../utils/debug.js'
 import type { Diff, FlickerReason, Frame } from './frame.js'
+import { stringWidth } from './stringWidth.js'
 import type { Point } from './layout/geometry.js'
 import {
   type Cell,
@@ -371,11 +372,12 @@ export class LogUpdate {
           currentStyleId = added.styleId
         }
         // A terminal that draws this cluster wider than we count has just
-        // painted over the cell after it. That cell may be unchanged in this
-        // frame, so the diff would never repair it: write it again now.
-        let rewritten = added
-        let afterX = x + (rewritten.width === CellWidth.Wide ? 2 : 1)
-        while (hasDisputedWidth(rewritten.char) && afterX < next.screen.width) {
+        // painted over the cells after it. Those cells may be unchanged in
+        // this frame, so the diff would never repair them: write them again
+        // now, as many as the cluster can cover.
+        let afterX = x + (added.width === CellWidth.Wide ? 2 : 1)
+        let overdrawn = hasDisputedWidth(added.char) ? overdrawCells(added) : 0
+        while (overdrawn > 0 && afterX < next.screen.width) {
           const after = cellAt(next.screen, afterX, y)
           if (
             !after ||
@@ -393,8 +395,12 @@ export class LogUpdate {
           const afterStyleStr = stylePool.transition(currentStyleId, after.styleId)
           if (!writeCellWithStyleStr(screen, after, afterStyleStr)) break
           currentStyleId = after.styleId
-          rewritten = after
-          afterX += after.width === CellWidth.Wide ? 2 : 1
+          const afterWidth = after.width === CellWidth.Wide ? 2 : 1
+          afterX += afterWidth
+          overdrawn = Math.max(
+            overdrawn - afterWidth,
+            hasDisputedWidth(after.char) ? overdrawCells(after) : 0,
+          )
         }
       } else if (removed) {
         // Cell was removed - clear it with a space
@@ -863,6 +869,19 @@ function hasDisputedWidth(char: string): boolean {
   // CJK ideographs and Hangul syllables on their own.
   if (first >= 0x3400 && first <= 0xd7ff && char.length === 1) return false
   return DISPUTED_WIDTH.test(char)
+}
+
+/**
+ * How many cells after a cluster a terminal can paint over when it draws the
+ * cluster wider than we count. A terminal without cluster support draws
+ * every code point on its own: a family of three is six cells there, two
+ * here. One cell is the least, for a symbol drawn as a two-cell emoji.
+ */
+function overdrawCells(cell: Cell): number {
+  if (cell.char.length <= 2) return 1
+  let separate = 0
+  for (const codePoint of cell.char) separate += stringWidth(codePoint)
+  return Math.max(1, separate - (cell.width === CellWidth.Wide ? 2 : 1))
 }
 
 const DISPUTED_WIDTH =

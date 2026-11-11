@@ -163,24 +163,26 @@ describe('a repaint next to a cluster of disputed width', () => {
     expect(terminal.grid[0]![4]).toBe(' ')
   })
 
-  test('the cell after a rewritten cluster is written again, even when it did not change', () => {
+  test('the cells a cluster can cover are written again, even when they did not change', () => {
     // The terminal draws the family as three wide glyphs (six cells), as a
     // terminal without cluster support does. The program counts two cells.
     const { log, frame } = harness()
     const terminal = new ToyTerminal(WIDTH, 2, cluster => (cluster === FAMILY ? 6 : cluster === CHECK ? 2 : 1))
-    const before = frame([['a ', { text: CHECK, modelWidth: 2 }, ' ok'], ['']], WIDTH)
+    const before = frame([['a ', { text: CHECK, modelWidth: 2 }, ' familia ok'], ['']], WIDTH)
     terminal.apply(log.render(frame([[''], ['']], WIDTH), before, true, false))
-    // Only the emoji changes. The space and "ok" after it are the same cells.
-    const after = frame([['a ', { text: FAMILY, modelWidth: 2 }, ' ok'], ['']], WIDTH)
+    // Only the emoji changes. The text after it is the same cells as before.
+    const after = frame([['a ', { text: FAMILY, modelWidth: 2 }, ' familia ok'], ['']], WIDTH)
     const diff = log.render(before, after, true, false)
     const written = diff
       .filter((patch): patch is { type: 'stdout'; content: string } => patch.type === 'stdout')
       .map(patch => patch.content)
       .join('')
-    // The cluster, then the cell after it.
-    expect(written.endsWith(`${FAMILY} `)).toBe(true)
+    // The cluster, then the four cells its extra glyphs covered.
+    expect(written.endsWith(`${FAMILY} fam`)).toBe(true)
     // The cursor goes back to the column after the two cells we count.
     expect(diff.some(patch => patch.type === 'cursorTo' && patch.col === 5)).toBe(true)
+    terminal.apply(diff)
+    expect(terminal.columnOf(0, ' familia ok')).toBe(4)
   })
 
   test('plain text, box drawing and CJK get no extra cursor moves', () => {
