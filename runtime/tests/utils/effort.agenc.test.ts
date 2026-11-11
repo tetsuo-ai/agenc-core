@@ -269,3 +269,14 @@ test('Z.AI Coding Plan preserves the same literal max effort contract', async ()
   expect(modelSupportsMaxEffortForContext('glm-5.3', context)).toBe(true)
   expect(resolveAppliedEffortForContext('glm-5.3', 'max', context)).toBe('max')
 })
+
+
+test('Muse Ember infers Meta and keeps its six levels and max picker default', async () => {
+  const effort = await importFreshEffortModule({ provider: 'xai' })
+  const context = { home: {}, environment: {}, provider: '' } as never
+  expect(effort.getAvailableEffortLevelsForContext('muse-ember-1.0', context))
+    .toEqual(['minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+  expect(effort.getDefaultEffortForModelForContext('muse-ember-1.0', context)).toBe('max')
+  expect(effort.resolveAppliedEffortForContext('muse-ember-1.0', 'max', context)).toBe('max')
+  expect(effort.resolveAppliedEffortForContext('muse-ember-1.0', 'xhigh', context)).toBe('xhigh')
+})

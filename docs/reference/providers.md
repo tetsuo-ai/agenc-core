@@ -363,10 +363,10 @@ the AWS SDK profile, shared-file, instance-metadata, or web-identity chains.
 
 Meta Model API uses `MODEL_API_KEY`, the key variable Meta documents for the
 Model API, sent as a bearer token. Meta's own Muse Code CLI reads
-`META_API_KEY` instead; AgenC does not read that variable. Muse Spark models use
-the OpenAI-compatible `/chat/completions` transport and Muse Wonder uses
+`META_API_KEY` instead; AgenC does not read that variable. Muse Spark and Ember
+models use the OpenAI-compatible `/chat/completions` transport and Muse Wonder uses
 `/responses` (below). The default model is `muse-wonder-1.0`. The LLM
-catalog includes `muse-wonder-1.0`, `muse-spark-1.3`,
+catalog includes `muse-wonder-1.0`, `muse-ember-1.0`, `muse-spark-1.3`,
 `muse-spark-1.3-contributor`, `muse-spark-1.2`,
 `muse-spark-1.2-contributor`, and `muse-spark-1.1`. The `/models` entries
 `muse-image-1.0` and `muse-voice-transcribe-1.0` are media APIs, so they remain
@@ -380,7 +380,7 @@ Muse Spark is registered with a 1,048,576-token context window and a
 131,072-token maximum output. Its supported reasoning levels are `minimal`,
 `low`, `medium`, `high`, and `xhigh` (default `medium`); standard-tier
 `muse-spark-1.3` also accepts `max`. The API rejects `none`, and `max` is not
-available on the other registered models. See Meta's
+available on the other registered Spark models. See Meta's
 [reasoning guide](https://dev.meta.ai/docs/reasoning). The chat models accept image input, JSON-schema structured
 output, and parallel function calls. Meta accepts only `tool_choice: "auto"`
 and rejects `stop`, so AgenC normalizes those controls before sending a
@@ -420,6 +420,38 @@ reasoning tokens. A stream that ends with an `error` event or `response.failed`
 carrying `server_shutting_down`, `service_overloaded`, `backend_unavailable`,
 or `server_error` is retried like a server error; a 402 billing error is
 terminal ([error handling](https://dev.meta.ai/docs/error-handling)).
+
+Muse Ember (`muse-ember-1.0`, display name Muse Ember) is Meta's efficient
+execution model for high-volume, repeated work: sub-agent tasks, tool calls,
+routing, and large collections of files. Meta recommends pairing it with Spark
+or Wonder for planning, and using Spark or Wonder for hard single-shot coding
+([Ember guide](https://dev.meta.ai/docs/muse-ember),
+[model selection](https://dev.meta.ai/docs/choose-a-model)). Ember uses the same
+Chat Completions wire as Spark in AgenC, with image input, JSON-schema output,
+and parallel function calls. Meta also offers Responses and Messages endpoints,
+and accepts text, image, video, audio, and PDF input; AgenC's chat adapter exposes
+text and image input here. Its context window is 1,048,576 tokens and maximum
+output is 524,288 tokens. The six reasoning efforts are `minimal`, `low`,
+`medium`, `high`, `xhigh`, and `max`. The catalog and Meta's omitted-effort
+default are `max`; an AgenC session without an explicit effort still sends the
+global `reasoning_effort` default (`medium`), as with Wonder. Explicit `none`
+is omitted because Meta rejects it, so Meta uses `max` for that request.
+Ember has standard mode only, with no Contributor variant.
+
+Ember's prices per 1M tokens depend on the entire request's input size,
+including cached tokens:
+
+| Input tokens per request | Input | Cached input | Output |
+| --- | --- | --- | --- |
+| Up to 200,000 | $0.10 | $0.004 | $0.50 |
+| Over 200,000 | $0.30 | $0.012 | $1.50 |
+
+A request over 200,000 input tokens uses the long-context rates for all tokens,
+including output, rather than just the excess input. Grounded web search is
+$2.50 per 1,000 queries. Spark and Wonder have no long-context premium. Ember's
+published rate limits are 3,000 requests and 4,000,000 tokens per minute, the
+same as Wonder and Spark 1.3
+([pricing and limits](https://dev.meta.ai/docs/pricing-rate-limits)).
 
 Muse Wonder Full is not on the Model API. Meta offers it only inside its Muse
 Code CLI on the Power Usage and Maximum Usage subscription plans, and that
@@ -1019,7 +1051,7 @@ rejects or silently ignores. An undefined `acceptsX` flag still means
 
 | Field | Who gets it |
 | --- | --- |
-| `reasoning_effort` | OpenAI reasoning-family slugs (`gpt-5`, `o1`, `o3`, `o4`, `codex`, `chatgpt-5`). Grok 4.3 / 4.5 / 4.6, `grok-4-20-multi-agent` / `grok-4.20-multi-agent`, and `grok-build-latest`. Meta Muse Spark models for `minimal`, `low`, `medium`, `high`, and `xhigh`, plus `max` on standard-tier `muse-spark-1.3` (Muse Wonder uses the Responses wire). Z.AI GLM-5.3 models and native Kimi K3 for `low`, `high`, and `max` only. Cerebras `gpt-oss-120b` for `low`, `medium`, `high`; Cerebras `qwen-3.8-27b` and `gemma-4-31b` for `none`, `low`, `medium`, `high`. NVIDIA NIM families below, and only values in that family's enum. Everyone else: stripped. `/effort` on a local model is a no-op on the wire. |
+| `reasoning_effort` | OpenAI reasoning-family slugs (`gpt-5`, `o1`, `o3`, `o4`, `codex`, `chatgpt-5`). Grok 4.3 / 4.5 / 4.6, `grok-4-20-multi-agent` / `grok-4.20-multi-agent`, and `grok-build-latest`. Meta Muse Spark and Ember models for `minimal`, `low`, `medium`, `high`, and `xhigh`, plus `max` on standard-tier `muse-spark-1.3` and `muse-ember-1.0` (Muse Wonder uses the Responses wire). Z.AI GLM-5.3 models and native Kimi K3 for `low`, `high`, and `max` only. Cerebras `gpt-oss-120b` for `low`, `medium`, `high`; Cerebras `qwen-3.8-27b` and `gemma-4-31b` for `none`, `low`, `medium`, `high`. NVIDIA NIM families below, and only values in that family's enum. Everyone else: stripped. `/effort` on a local model is a no-op on the wire. |
 | `tool_choice` | Meta and Z.AI accept only `auto`. `required` and named choices are normalized to `auto`; `none` omits both the tools and choice fields. Native Kimi K3 additionally accepts `required`; Kimi K2.7/K2.6 normalize it to `auto`, and all native Kimi models normalize named choices because they are incompatible with thinking. Requests above the Z.AI or Kimi 128-function limit fail locally rather than dropping tools. Cerebras omits tool-choice/parallel controls whenever no tool definitions are attached, as required by API v2. Other compatible providers keep the requested value. |
 | `stop` | Meta rejects stop sequences, so its adapter strips them. Z.AI receives only the first sequence from a caller list. Other compatible providers keep caller-supplied sequences. |
 | `service_tier` | `openai` and `azure-openai`; explicit Cerebras pass-through remains for configured dedicated endpoints, while its shared catalog advertises no selectable tier |

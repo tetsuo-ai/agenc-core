@@ -1020,6 +1020,27 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
         },
       ]),
     )),
+    // Muse Ember USD/1M: 0.10 input, 0.004 cached, 0.50 output up to 200K.
+    // Above 200K input (including cache hits), the entire request costs 3x.
+    // Standard mode only. Reviewed 2026-11-11:
+    // https://dev.meta.ai/docs/pricing-rate-limits
+    "meta:muse-ember-1.0": {
+      inputUsdPer1K: 0.0001,
+      outputUsdPer1K: 0.0005,
+      cachedInputUsdPer1K: 0.000004,
+      cachedInputIncludedInInputTokens: true,
+      webSearchUsdPerRequest: 0.0025,
+      longContext: {
+        aboveInputTokens: 200_000,
+        rates: {
+          inputUsdPer1K: 0.0003,
+          outputUsdPer1K: 0.0015,
+          cachedInputUsdPer1K: 0.000012,
+          cachedInputIncludedInInputTokens: true,
+          webSearchUsdPerRequest: 0.0025,
+        },
+      },
+    },
     // Muse Wonder USD/1M: 4.00 input, 0.20 cached input, 20.00 output; no
     // Contributor mode on the Model API. Verified 2026-10-12:
     // https://dev.meta.ai/docs/pricing-rate-limits

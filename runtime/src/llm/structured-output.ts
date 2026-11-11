@@ -141,7 +141,7 @@ export function resolveProviderStructuredOutputMode(input: {
   }
   if (provider === "meta") {
     if (!isRegisteredMetaChatModel(input.model)) return "unsupported";
-    // Muse Wonder runs on Responses (`text.format`); Muse Spark on Chat
+    // Muse Wonder runs on Responses (`text.format`); Muse Spark and Ember on Chat
     // Completions (`response_format`). https://dev.meta.ai/docs/structured-output
     const responses = metaModelUsesResponsesApi(input.model);
     if (responses && input.api === "responses") return "native_text_format";

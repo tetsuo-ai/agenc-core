@@ -265,3 +265,19 @@ test.each(desktopEffortCatalog.filter(row => row.levels.length > 0))(
         .toBe(effort === "none" && !noneOnWire ? undefined : effort);
     }
   });
+
+
+test("Ember session keeps configured max and uses the global medium default", () => {
+  const model = "muse-ember-1.0";
+  const levels = resolveRegisteredModelCatalogEntry({ provider: "meta", model })?.supportedReasoningLevels;
+  const configure = (reasoning_effort = defaultConfig().reasoning_effort) => sessionConfigurationFromAgenCConfig({
+    config: { ...defaultConfig(), model_provider: "meta", model, reasoning_effort },
+    provider: "meta", model, workspaceRoot: "/tmp/ws",
+  }).collaborationMode.reasoningEffort;
+  expect(configure("max")).toBe("max");
+  expect(configure("xhigh")).toBe("xhigh");
+  expect(configure()).toBe("medium");
+  expect(resolveSessionReasoningEffort(configure(), levels, { provider: "meta", model })).toBe("medium");
+  expect(resolveSessionReasoningEffort("max", levels, { provider: "meta", model })).toBe("max");
+  expect(resolveSessionReasoningEffort("none", levels, { provider: "meta", model })).toBeUndefined();
+});
