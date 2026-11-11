@@ -122,7 +122,36 @@ function calledToolNames(messages) {
   );
 }
 
+/**
+ * Markdown replies for render gates. A prompt that says "reply with the
+ * markdown fixture <name>" gets the text below, so a gate can put a known
+ * table into the transcript.
+ *
+ * `owner-table` is the table of the owner's report of 2026-11-11: rows with
+ * a check mark emoji had their borders out of place.
+ */
+export const MARKDOWN_REPLY_FIXTURES = Object.freeze({
+  "owner-table": [
+    "Estado del plan:",
+    "",
+    "| Fase | Estado | Evidencia |",
+    "|---|---|---|",
+    "| P1 Backup | ✅ | `edl/boot_stock.img` (96 MiB partición completa, doble lectura sha256 idéntico) |",
+    "| P2 Verificación | ✅ | magic ANDROID!, header v2, kernel gzip 15 MB, ramdisk 1123 KB, DTB 294 KB, cmdline legible |",
+    "| P3 Parche Magisk | ✅ | `magisk_patched.img` (17.1 MB, unpack válido, ramdisk con Magisk, DTB sin tocar) |",
+    "| P4 Flash boot_b | ⏳ | listo para ejecutar: `fastboot flash boot_b magisk_patched.img` |",
+    "| P5 Arranque desde b | ⏳ | mitigación preparada: `vbmeta_b` desverificado si AVB rechaza |",
+    "| P6 Root | ⏳ | `su -c id` |",
+  ].join("\n"),
+});
+
 function completionForPrompt(prompt) {
+  const fixture = /\breply with the markdown fixture\s+([a-z0-9-]+)/i.exec(
+    prompt,
+  )?.[1];
+  if (fixture && Object.hasOwn(MARKDOWN_REPLY_FIXTURES, fixture)) {
+    return MARKDOWN_REPLY_FIXTURES[fixture];
+  }
   const singleWord =
     /\b(?:reply with|say only)\s+(?:the\s+)?(?:single\s+)?word\s+([A-Za-z0-9_-]+)/i.exec(
       prompt,
