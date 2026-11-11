@@ -51,6 +51,37 @@ function truncate(
   return sliceFit(text, 0, columns - ellipsisWidth) + ellipsis
 }
 
+const TAB_INTERVAL = 8
+
+/**
+ * Word wrap that drops the space left over at each wrap point but keeps the
+ * indent of every source line. The rows that continue an indented line get
+ * the same indent, so a nested list item or a line of code stays in its
+ * column. A plain trimming wrap would move all of them to column 0.
+ */
+function wrapTrimKeepingIndent(text: string, maxWidth: number): string {
+  return text
+    .split('\n')
+    .map(line => {
+      const body = line.trimStart()
+      if (body.length === 0 || body.length === line.length) {
+        return wrapAnsi(line, maxWidth, { trim: true, hard: true })
+      }
+      let indentWidth = 0
+      for (const char of line.slice(0, line.length - body.length)) {
+        indentWidth +=
+          char === '\t' ? TAB_INTERVAL - (indentWidth % TAB_INTERVAL) : 1
+      }
+      // A very deep indent must still leave room for the text.
+      const indent = ' '.repeat(Math.min(indentWidth, Math.floor(maxWidth / 2)))
+      return wrapAnsi(body, maxWidth - indent.length, { trim: true, hard: true })
+        .split('\n')
+        .map(row => indent + row)
+        .join('\n')
+    })
+    .join('\n')
+}
+
 export default function wrapText(
   text: string,
   maxWidth: number,
@@ -64,10 +95,7 @@ export default function wrapText(
   }
 
   if (wrapType === 'wrap-trim') {
-    return wrapAnsi(text, maxWidth, {
-      trim: true,
-      hard: true,
-    })
+    return wrapTrimKeepingIndent(text, maxWidth)
   }
 
   if (wrapType!.startsWith('truncate')) {

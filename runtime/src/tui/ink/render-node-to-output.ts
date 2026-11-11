@@ -247,6 +247,23 @@ function applyStylesToWrappedText(
     let runSegmentIndex = charToSegment[charIndex] ?? 0
 
     for (let i = 0; i < line.length; i++) {
+      // In trim mode the wrap can drop whitespace of the original or add an
+      // indent to a continuation row. Keep the two texts in step: an added
+      // space takes the style of its row and uses up nothing, and dropped
+      // whitespace is passed over.
+      if (trimEnabled && charIndex < originalPlain.length) {
+        const lineChar = line[i]!
+        if (lineChar !== originalPlain[charIndex]) {
+          if (/\s/.test(lineChar)) continue
+          while (
+            charIndex < originalPlain.length &&
+            /\s/.test(originalPlain[charIndex]!)
+          ) {
+            charIndex++
+          }
+        }
+      }
+
       const currentSegmentIndex = charToSegment[charIndex] ?? runSegmentIndex
 
       if (currentSegmentIndex !== runSegmentIndex) {
