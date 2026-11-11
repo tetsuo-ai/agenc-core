@@ -14,12 +14,12 @@ describe("R5 useSessionTranscript exposes streamingToolUses on transcript snapsh
   test("B5.6 session-transcript.ts memoizes the adaptTranscriptEvents result, so any field added to AdaptedTranscript (including streamingToolUses) is automatically surfaced to App.tsx", () => {
     const source = readSource();
     expect(source).toMatch(
-      /const\s+adapted\s*=\s*adaptTranscriptEvents\s*\(\s*state\.events\s*,\s*startupMessages\s*\)/,
+      /const\s+adapted\s*=\s*adaptTranscriptEvents\s*\(\s*state\.events\s*,\s*startupMessages\s*,\s*state\.modelCalls\.byTurn\s*,\s*state\.efficiencyBeforeEvents\s*\)/,
     );
     expect(source).toMatch(
       /return\s+\{\s*\.\.\.adapted\s*,\s*sessionCostUsd:\s*state\.sessionUsage\?\.costUsd\s*\?\?\s*state\.sessionCostUsd\s*,\s*sessionUsage:\s*state\.sessionUsage\s*,\s*promptCacheShare:\s*promptCacheSharePercent\(state\.promptCache\)\s*,?\s*\}/s,
     );
-    expect(source).toMatch(/\[state\.events,\s*state\.sessionCostUsd,\s*state\.sessionUsage,\s*state\.promptCache,\s*startupMessages\]/);
+    expect(source).toMatch(/\[state\.events,\s*state\.efficiencyBeforeEvents,\s*state\.sessionCostUsd,\s*state\.sessionUsage,\s*state\.promptCache,\s*state\.modelCalls,\s*startupMessages\]/);
   });
 
   test("B5.6 the snapshot returned by adaptTranscriptEvents always has streamingToolUses, including in the no-events case the hook produces on first mount", () => {

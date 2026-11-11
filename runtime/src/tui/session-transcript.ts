@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { EMPTY_TURN_EFFICIENCY, advanceTurnEfficiency, type TurnEfficiency, type TurnEfficiencyState } from "./turn-efficiency.js";
 import { selectableUserMessagesFilter } from "./components/message-selector-filter.js";
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef } from "react";
 import { getInkInstance } from "./ink/instances.js";
@@ -120,6 +121,7 @@ export interface AdaptedTranscript {
    * makes the header chrome update on the same render as the completed turn.
    */
   readonly sessionCostUsd: number;
+  readonly turnEfficiency: TurnEfficiency | null;
   readonly sessionUsage?: AdmissionUsageSummary | null;
 }
 
@@ -1972,6 +1974,7 @@ export function adaptTranscriptEvents(
   startupMessages: readonly LLMMessage[] = [],
   /** Calls per turn counted as events arrived (the store's tally), for turns longer than `events`. */
   modelCallsByTurn?: ReadonlyMap<string, number>,
+  efficiencyBeforeEvents: TurnEfficiencyState = EMPTY_TURN_EFFICIENCY,
 ): AdaptedTranscript {
   const orderedEvents = orderSequencedEvents(events);
   const settledCollabSpawnCallIds = collectSettledCollabSpawnCallIds(orderedEvents);
@@ -2002,15 +2005,16 @@ export function adaptTranscriptEvents(
   let sessionUsage: AdmissionUsageSummary | null = null;
   let streamingThinking: AdaptedTranscript["streamingThinking"] = null;
   let lastThinkingText = "";
-  let currentTurnId: string | null = null;
+  let currentTurnId: string | null = efficiencyBeforeEvents.turnId;
+  let efficiency = efficiencyBeforeEvents;
+  // Standalone projections use the same tally as the store. A supplied tally
+  // is authoritative, so the live store never counts calls a second time.
+  let projectedModelCalls = EMPTY_MODEL_CALL_TALLY;
   let currentTurnTimestamp: string | undefined;
-  // Model calls dispatched since the current turn started, for the quiet
-  // "done in 5.5s · 3 model calls" line under each finished turn.
-  let currentTurnModelCalls = 0;
   let currentTurnAssistantMessageIndexes: number[] = [];
   let lastAssistantText = "";
   let lastAssistantTextForActiveTurn = "";
-  let isStreaming = false;
+  let isStreaming = efficiencyBeforeEvents.current !== null;
   const interruptionNotices = new Set<string>();
   let admissionCancellationNoticeUuid: string | null = null;
   let pendingTaskBudgetNotice: { message: string; uuid: string } | null = null;
@@ -2062,12 +2066,30 @@ export function adaptTranscriptEvents(
     }
   };
 
+  const appendTurnFooter = (
+    payload: Record<string, unknown>, nextUuid: () => string, timestamp: string,
+    turn: TurnEfficiencyState["current"], fallbackTurnId: string | null,
+  ): void => {
+    if (typeof payload.durationMs !== "number" || !Number.isFinite(payload.durationMs) || payload.durationMs < 0) return;
+    const turnId = typeof payload.turnId === "string" ? payload.turnId : fallbackTurnId;
+    out.push({
+      type: "system", subtype: "turn_duration", durationMs: payload.durationMs,
+      modelCalls: turnId === null ? undefined : (modelCallsByTurn ?? projectedModelCalls.byTurn).get(turnId) ?? 0,
+      turnUsage: turn?.usage ?? null,
+      timestamp, uuid: nextUuid(), isMeta: false,
+    });
+  };
+
   let pendingUserTimestampIndex: number | undefined;
   for (const raw of orderedEvents) {
     const event = unwrap(raw);
     if (seen.has(event.key)) continue;
     seen.add(event.key);
     const payload = payloadRecord(event.payload);
+    if (modelCallsByTurn === undefined) projectedModelCalls = modelCallsAfter(projectedModelCalls, raw);
+    const finishedTurnEfficiency = efficiency.current;
+    const finishedTurnId = currentTurnId;
+    efficiency = advanceTurnEfficiency(efficiency, event.type, payload);
     // Stable row identity (M-TUI-1): each message projected from this event
     // gets a uuid of `${event.key}:${blockIndex}` from a per-event counter, so
     // re-projecting the same event list (every streaming delta) yields the
@@ -2201,7 +2223,6 @@ export function adaptTranscriptEvents(
           pendingUserTimestampIndex = undefined;
         }
         currentTurnAssistantMessageIndexes = [];
-        currentTurnModelCalls = 0;
         // Clear streaming tool state when a new turn boundary arrives. Any
         // partially-streamed tool inputs from the previous turn are abandoned
         // because they will never receive a matching completion event in this
@@ -2265,21 +2286,7 @@ export function adaptTranscriptEvents(
             }
           }
         }
-        if (typeof payload.durationMs === "number" && payload.durationMs >= 0) {
-          const completedTurnId = typeof payload.turnId === "string" ? payload.turnId : currentTurnId;
-          const modelCalls = Math.max(currentTurnModelCalls,
-            completedTurnId === null ? 0 : modelCallsByTurn?.get(completedTurnId) ?? 0);
-          out.push({
-            type: "system",
-            subtype: "turn_duration",
-            durationMs: payload.durationMs,
-            ...(modelCalls > 0 ? { modelCalls } : {}),
-            timestamp: completionTimestamp,
-            uuid: nextUuid(),
-            isMeta: false,
-          });
-        }
-        currentTurnModelCalls = 0;
+        appendTurnFooter(payload, nextUuid, completionTimestamp, finishedTurnEfficiency, finishedTurnId);
         currentTurnTimestamp = undefined;
         currentTurnAssistantMessageIndexes = [];
         streamingText = "";
@@ -2346,6 +2353,7 @@ export function adaptTranscriptEvents(
             ? makeSystemMessage(stringResult(payload.message), "error", nextUuid())
             : makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning", nextUuid()));
         }
+        appendTurnFooter(payload, nextUuid, timestampFromUnixMillis(payload.completedAt) ?? "", finishedTurnEfficiency, finishedTurnId);
         break;
       case "execution_admission":
         if (payload.event === "denied" && payload.kind === "model_turn" && payload.reason === "budget_exceeded") {
@@ -2357,9 +2365,6 @@ export function adaptTranscriptEvents(
               ? `The task used ${used} of ${max} tokens. Type /budget to raise or remove the cap for this session, then continue.`
               : "A budget limit stopped this task. Type /budget to review the task allowance, then continue. Independent spending limits still apply." };
           break;
-        }
-        if (payload.event === "dispatched" && payload.kind === "model_turn") {
-          currentTurnModelCalls += 1;
         }
         // A denied model turn is the ONLY admission outcome a person must see:
         // the turn then "completes" in a few hundred ms with an empty
@@ -3335,6 +3340,10 @@ export function adaptTranscriptEvents(
     streamingToolUses,
     streamingThinking,
     turnStreamedChars,
+    turnEfficiency: efficiency.current === null ? null : {
+      ...efficiency.current,
+      modelCalls: efficiency.turnId === null ? 0 : (modelCallsByTurn ?? projectedModelCalls.byTurn).get(efficiency.turnId) ?? 0,
+    },
     streamQuietWarning,
     latestUsage,
     sessionCostUsd: sessionUsage?.costUsd ?? sessionCostUsd,
@@ -3343,6 +3352,8 @@ export function adaptTranscriptEvents(
 }
 
 interface TranscriptState {
+  /** Constant-size turn totals for events evicted from the front of the ring. */
+  readonly efficiencyBeforeEvents: TurnEfficiencyState;
   readonly events: readonly SessionTranscriptEvent[];
   readonly keys: ReadonlySet<string>;
   /**
@@ -3594,19 +3605,24 @@ function trimFoldedKeys(keys: Set<string>, foldedKeys: string[]): void {
 function evictOldestEvents(
   events: SessionTranscriptEvent[],
   keys: Set<string>,
-): void {
-  if (events.length <= MAX_TRANSCRIPT_EVENTS) return;
+  efficiencyBeforeEvents: TurnEfficiencyState,
+): TurnEfficiencyState {
+  if (events.length <= MAX_TRANSCRIPT_EVENTS) return efficiencyBeforeEvents;
   const dropCount = events.length - MAX_TRANSCRIPT_EVENTS;
   const dropped = events.splice(0, dropCount);
   for (const event of dropped) {
     keys.delete(eventKey(event));
+    const unwrapped = unwrap(event);
+    efficiencyBeforeEvents = advanceTurnEfficiency(efficiencyBeforeEvents, unwrapped.type, payloadRecord(unwrapped.payload));
   }
+  return efficiencyBeforeEvents;
 }
 
 function buildTranscriptState(
   unorderedEvents: readonly SessionTranscriptEvent[],
   /** Folded delta keys to keep recognizing when rebuilding a live store. */
   carriedFoldedKeys: readonly string[] = [],
+  efficiencyBeforeEvents: TurnEfficiencyState = EMPTY_TURN_EFFICIENCY,
 ): TranscriptState {
   const keys = new Set<string>();
   const foldedKeys: string[] = [];
@@ -3620,6 +3636,7 @@ function buildTranscriptState(
   for (const event of orderSequencedEvents(unorderedEvents)) {
     const key = eventKey(event);
     if (isTranscriptResetEvent(event)) {
+      efficiencyBeforeEvents = EMPTY_TURN_EFFICIENCY;
       keys.clear();
       foldedKeys.length = 0;
       events.length = 0;
@@ -3650,9 +3667,9 @@ function buildTranscriptState(
     trimFoldedKeys(keys, foldedKeys);
   }
 
-  evictOldestEvents(events, keys);
+  efficiencyBeforeEvents = evictOldestEvents(events, keys, efficiencyBeforeEvents);
 
-  return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage, promptCache, modelCalls };
+  return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage, promptCache, modelCalls, efficiencyBeforeEvents };
 }
 
 function reducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
@@ -3671,6 +3688,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         const rebuilt = buildTranscriptState(
           [...state.events, action.event],
           isTranscriptResetEvent(action.event) ? [] : state.foldedKeys,
+          state.efficiencyBeforeEvents,
         );
         return {
           ...rebuilt,
@@ -3693,9 +3711,10 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
       const foldedKeys = [...state.foldedKeys];
       keys.add(key);
       pushStoredEvent(events, clampEventForStorage(action.event), keys, foldedKeys);
-      evictOldestEvents(events, keys);
+      const efficiencyBeforeEvents = evictOldestEvents(events, keys, state.efficiencyBeforeEvents);
 
       return {
+        efficiencyBeforeEvents,
         events,
         keys,
         foldedKeys,
@@ -3745,6 +3764,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         const rebuilt = buildTranscriptState(
           [...state.events, ...fresh],
           fresh.some(isTranscriptResetEvent) ? [] : state.foldedKeys,
+          state.efficiencyBeforeEvents,
         );
         return {
           ...rebuilt,
@@ -3777,8 +3797,8 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
       const events = [...state.events];
       const foldedKeys = [...state.foldedKeys];
       for (const event of pending) pushStoredEvent(events, event, keys, foldedKeys);
-      evictOldestEvents(events, keys);
-      return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage, promptCache, modelCalls };
+      const efficiencyBeforeEvents = evictOldestEvents(events, keys, state.efficiencyBeforeEvents);
+      return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage, promptCache, modelCalls, efficiencyBeforeEvents };
     }
   }
 }
@@ -3796,6 +3816,7 @@ export function createSessionTranscriptStateForTesting(
       sessionUsage: null,
       promptCache: EMPTY_PROMPT_CACHE_TALLY,
       modelCalls: EMPTY_MODEL_CALL_TALLY,
+      efficiencyBeforeEvents: EMPTY_TURN_EFFICIENCY,
     },
     { kind: "reset", events },
   );
@@ -3866,6 +3887,7 @@ export function useSessionTranscript(
     sessionUsage: null,
     promptCache: EMPTY_PROMPT_CACHE_TALLY,
     modelCalls: EMPTY_MODEL_CALL_TALLY,
+    efficiencyBeforeEvents: EMPTY_TURN_EFFICIENCY,
   });
 
   // A wholesale replacement can shrink a tall, scrolled transcript to a
@@ -3960,7 +3982,7 @@ export function useSessionTranscript(
   return useMemo(() => {
     // The store's per-turn call tally survives the event window, so a long
     // turn's "done" line counts every call it made.
-    const adapted = adaptTranscriptEvents(state.events, startupMessages, state.modelCalls.byTurn);
+    const adapted = adaptTranscriptEvents(state.events, startupMessages, state.modelCalls.byTurn, state.efficiencyBeforeEvents);
     // `state.sessionCostUsd` survives the event ring buffer and transcript
     // clear/replacement events; the adapter's local total covers standalone
     // callers and matches this value until old events are evicted.
@@ -3970,5 +3992,5 @@ export function useSessionTranscript(
       sessionUsage: state.sessionUsage,
       promptCacheShare: promptCacheSharePercent(state.promptCache),
     };
-  }, [state.events, state.sessionCostUsd, state.sessionUsage, state.promptCache, state.modelCalls, startupMessages]);
+  }, [state.events, state.efficiencyBeforeEvents, state.sessionCostUsd, state.sessionUsage, state.promptCache, state.modelCalls, startupMessages]);
 }
