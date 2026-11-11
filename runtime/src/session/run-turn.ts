@@ -1083,6 +1083,7 @@ async function prepareSamplingRequestBoundary(
   }
 
   const request = buildSamplingRequestContract(state, session, samplingContext, permissionContext);
+  state.samplingRequestMaxOutputTokens = request.maxOutputTokens;
 
   return {
     kind: "request",
@@ -1348,6 +1349,7 @@ async function runSamplingRequest(
     }
     if (admitted !== true) prepared = { ...prepared, request: admitted };
   }
+  state.samplingRequestMaxOutputTokens = prepared.request.maxOutputTokens;
   rememberSentContextImages(session, prepared.request.input, state.messages);
   const samplingContext = prepared.samplingContext;
   const previousSample = state.reasoningCapPolicy?.sample;

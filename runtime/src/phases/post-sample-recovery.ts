@@ -644,6 +644,7 @@ export async function postSampleRecovery(
           escalateAllowed:
             ctx.modelInfo.maxOutputTokensCappedDefault === true &&
             ctx.modelInfo.maxOutputTokensExplicit !== true,
+          currentMaxOutputTokens: c.state.samplingRequestMaxOutputTokens ?? ctx.modelInfo.maxOutputTokens,
           escalatedMaxOutputTokens: escalatedMaxOutputTokensForModel(
             ctx.modelInfo,
           ),

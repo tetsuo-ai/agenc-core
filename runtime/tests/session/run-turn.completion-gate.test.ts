@@ -197,6 +197,27 @@ async function exhaustGate(maxRounds: number) {
 }
 
 describe("completion gate in the turn loop", () => {
+  test.each([
+    { provider: "deepseek", model: "deepseek-flash", levels: ["low", "high", "max"] as const },
+    { provider: "openai", model: "gpt-6-luna", levels: ["low", "high", "max"] as const },
+  ])("keeps the normal output ceiling for $provider reasoning verification and recovery", async ({ provider: providerName, model, levels }) => {
+    const { provider, requests, options } = scriptedProvider([
+      toolStep("work"), textStep("Done."),
+      { ...textStep("Verification partly complete"), finishReason: "length" },
+      ...Array.from({ length: 8 }, (_, i) => toolStep(`verify-${i}`)),
+    ]);
+    Object.defineProperty(provider, "name", { value: providerName });
+    const { session } = headlessSession(provider, true);
+    const ctx = mkCtx();
+    await collect(session, { ...ctx, modelProviderId: providerName, reasoningEffort: "max",
+      modelInfo: { ...ctx.modelInfo, slug: model, supportedReasoningLevels: levels,
+        maxOutputTokens: 64_000, maxOutputTokensUpperLimit: 393_216, maxOutputTokensCappedDefault: true } });
+    expect(options.slice(2).length).toBeGreaterThan(1);
+    expect(options.slice(2).every(option => option?.maxOutputTokens === 64_000)).toBe(true);
+    expect(requests[3]?.some(message => message.content === "Verification partly complete")).toBe(true);
+    expect(requests).toHaveLength(8);
+  });
+
   test("verification respects lower output limits and caps recovery requests", async () => {
     const {provider, requests, options} = scriptedProvider([
       toolStep("work"), textStep("Done."),

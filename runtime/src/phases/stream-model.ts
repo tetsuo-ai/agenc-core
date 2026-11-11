@@ -108,7 +108,7 @@ export interface StreamModelRequestContract {
   readonly managedRequestId?: string;
   readonly input: ReadonlyArray<LLMMessage>;
   readonly tools: ReadonlyArray<LLMTool>;
-  readonly parallelToolCalls: boolean;
+  readonly parallelToolCalls?: boolean;
   readonly baseInstructions: string;
   readonly toolChoice?: LLMToolChoice;
   readonly contextWindowTokens?: number;
