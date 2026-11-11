@@ -114,6 +114,28 @@ describe("local OpenAI-compatible mock fixture", () => {
     }
   });
 
+  it("streams a named markdown fixture in pieces", async () => {
+    const mock = await startMockModelServer();
+    try {
+      const response = await fetch(`${mock.baseUrl}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "Reply with the streamed markdown fixture owner-session" }],
+        }),
+      });
+      const pieces = (await response.text())
+        .split("\n")
+        .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+        .map((line) => JSON.parse(line.slice("data: ".length)).choices[0].delta.content)
+        .filter((content): content is string => typeof content === "string");
+      expect(pieces.length).toBeGreaterThan(50);
+      expect(pieces.join("")).toBe(MARKDOWN_REPLY_FIXTURES["owner-session"]);
+    } finally {
+      await mock.close();
+    }
+  });
+
   it("loads a tool the request does not list through tool search, then calls it", async () => {
     const mock = await startMockModelServer();
     try {

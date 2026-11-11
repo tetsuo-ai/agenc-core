@@ -6,7 +6,8 @@
  * or a CJK character in two cells, and a whole emoji cluster (joiners,
  * U+FE0F, skin tones) in two cells as well. A check that borders line up
  * needs the real columns, so this helper lays the same output out per
- * cluster: one cell for a narrow cluster, two for a wide one.
+ * cluster: one cell for a narrow cluster, two for a wide one. It can also
+ * lay it out the way terminals with other width rules do (WIDTH_PROFILES).
  *
  * The cell rules are written from Unicode properties of the JavaScript
  * engine, on purpose not from the width tables the product uses.
@@ -22,7 +23,7 @@ const EMOJI_FORM =
   /\p{Emoji_Presentation}|️|⃣|\p{Emoji_Modifier}|\p{Regional_Indicator}{2}/u;
 const NO_CELL = /^[\p{Mn}\p{Me}\p{Cf}]$/u;
 
-/** How many cells a terminal uses for one grapheme cluster. */
+/** How many cells a terminal uses for one grapheme cluster, by the Unicode data. */
 export function clusterCells(cluster) {
   if (EMOJI_FORM.test(cluster)) return 2;
   if (WIDE.test(cluster) && !HALFWIDTH.test(cluster)) return 2;
@@ -33,6 +34,37 @@ export function clusterCells(cluster) {
   return Math.min(cells, 2);
 }
 
+const SELECTORS = /[\ufe0e\ufe0f]/gu;
+const PICTOGRAPH = /\p{Extended_Pictographic}/u;
+
+/**
+ * Terminals do not agree on every cluster. Each profile is one way real
+ * terminals differ from the Unicode data. A frame must come out the same
+ * under each of them whether it was drawn in steps or at once.
+ */
+export const WIDTH_PROFILES = Object.freeze({
+  /** The Unicode data: wide and emoji clusters two cells, the rest one. */
+  unicode: clusterCells,
+  /** U+FE0F does not widen: a text symbol with a selector stays one cell. */
+  "selector-ignored": (cluster) => clusterCells(cluster.replace(SELECTORS, "")),
+  /** Every symbol that can be an emoji takes two cells, selector or not. */
+  "every-emoji-wide": (cluster) =>
+    PICTOGRAPH.test(cluster) ? 2 : clusterCells(cluster),
+  /**
+   * No cluster support: every code point is sized on its own. A joiner, a
+   * selector and a keycap mark take no cell, a skin tone takes two, and a
+   * regional indicator one. Terminal.app and xterm work this way.
+   */
+  "no-clusters": (cluster) => {
+    let cells = 0;
+    for (const char of cluster) {
+      if (/[\ufe0e\ufe0f\u200d\u20e3]/u.test(char)) continue;
+      cells += /\p{Regional_Indicator}/u.test(char) ? 1 : clusterCells(char);
+    }
+    return cells;
+  },
+});
+
 // Escape sequences pass through untouched: CSI, OSC, DCS, charset, keypad.
 const ESCAPE =
   /(\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][\s\S]*?(?:\x07|\x1b\\)|\x1bP[\s\S]*?\x1b\\|\x1b[()][\s\S]|\x1b[=>])/u;
@@ -40,28 +72,30 @@ const ESCAPE =
 // Stand-ins from the private use area: one code unit per cell.
 const FIRST_STAND_IN = 0xe000;
 const LAST_STAND_IN = 0xf8fe;
-const SECOND_CELL = "";
+const LATER_CELL = "\uf8ff";
+
+// One stand-in per cluster for the whole process, so the `cells` strings of
+// two frames can be compared with each other.
+const standIns = new Map();
+const clusters = [];
+function standInFor(cluster) {
+  let standIn = standIns.get(cluster);
+  if (standIn === undefined) {
+    const code = FIRST_STAND_IN + clusters.length;
+    if (code > LAST_STAND_IN) throw new Error("too many distinct clusters in one run");
+    standIn = String.fromCharCode(code);
+    standIns.set(cluster, standIn);
+    clusters.push(cluster);
+  }
+  return standIn;
+}
 
 /**
  * Rows of the frame. `cells` has exactly one character per terminal cell, so
  * string indexes are terminal columns; `text` is the same row as readable
  * text, with every cluster restored.
  */
-export function renderCellFrame(raw, { cols, rows }) {
-  const standIns = new Map();
-  const clusters = [];
-  const standInFor = (cluster) => {
-    let standIn = standIns.get(cluster);
-    if (standIn === undefined) {
-      const code = FIRST_STAND_IN + clusters.length;
-      if (code > LAST_STAND_IN) throw new Error("too many distinct clusters in one frame");
-      standIn = String.fromCharCode(code);
-      standIns.set(cluster, standIn);
-      clusters.push(cluster);
-    }
-    return standIn;
-  };
-
+export function renderCellFrame(raw, { cols, rows, cellsOf = clusterCells }) {
   let prepared = "";
   for (const [index, part] of raw.split(ESCAPE).entries()) {
     if (index % 2 === 1) {
@@ -73,19 +107,19 @@ export function renderCellFrame(raw, { cols, rows }) {
         prepared += segment;
         continue;
       }
-      const cells = clusterCells(segment);
+      const cells = cellsOf(segment);
       if (cells === 0) continue;
       if (cells === 1 && segment.length === 1) {
         prepared += segment;
       } else {
-        prepared += standInFor(segment) + (cells === 2 ? SECOND_CELL : "");
+        prepared += standInFor(segment) + LATER_CELL.repeat(cells - 1);
       }
     }
   }
 
   const restore = (row) =>
     Array.from(row, (char) => {
-      if (char === SECOND_CELL) return "";
+      if (char === LATER_CELL) return "";
       const code = char.charCodeAt(0);
       return code >= FIRST_STAND_IN && code <= LAST_STAND_IN
         ? clusters[code - FIRST_STAND_IN]
