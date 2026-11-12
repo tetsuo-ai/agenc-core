@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -1507,5 +1508,213 @@ describe("file-history capture before a tool call (#3436)", () => {
     delivery.release();
     await drain;
     expect(causes()).toEqual(["file_history_track_failed"]);
+  });
+});
+
+describe("file history of a system.move whose source cannot be backed up (#3437)", () => {
+  type SidecarEvent = Parameters<FileHistorySidecar["onEvent"]>[0];
+  const patiently = { timeout: 10_000, interval: 5 };
+
+  function event(id: string, type: string, payload: Record<string, unknown>): SidecarEvent {
+    return { id, msg: { type, payload } } as SidecarEvent;
+  }
+
+  function moveStarted(args: Record<string, unknown>): SidecarEvent {
+    return event("move-started", "tool_call_started", {
+      callId: "move",
+      toolName: "system.move",
+      args: JSON.stringify(args),
+    });
+  }
+
+  /** Make every backup of `source` fail in copyFile; other files are copied. */
+  function failCopiesOf(source: string, error: Error): void {
+    vi.mocked(copyFile).mockImplementation(async (from, to, mode) => {
+      if (from === source) throw error;
+      return actualCopyFile(from, to, mode);
+    });
+  }
+
+  /** The files handed to copyFile so far, in order. */
+  function copiedFrom(): string[] {
+    return vi.mocked(copyFile).mock.calls.map(([from]) => String(from));
+  }
+
+  /**
+   * Wait for what a start event set in motion: the sidecar looks at the two
+   * paths first and queues their backup afterwards, if it queues one.
+   */
+  async function startEventHandled(): Promise<void> {
+    let seen = -1;
+    while (seen !== vi.mocked(stat).mock.results.length) {
+      seen = vi.mocked(stat).mock.results.length;
+      await Promise.allSettled(vi.mocked(stat).mock.results.map((result) => result.value));
+      await new Promise((resolveTurn) => setImmediate(resolveTurn));
+      await history.flush();
+    }
+  }
+
+  test.each([
+    ["the disk is full", "ENOSPC", "file_history_degraded"],
+    ["the copy fails for a reason that is not retried", "EMFILE", "file_history_track_failed"],
+  ])(
+    "when %s the move is not recorded, and a rewind leaves the file at its destination",
+    async (_why, code, cause) => {
+      const sidecar = new FileHistorySidecar({ fileHistory: history, workspaceRoot: work });
+      const source = workFile("report.txt", "ONLY COPY\n");
+      const destination = join(work, "final.txt");
+      const args = { source, destination };
+      failCopiesOf(source, Object.assign(new Error(`${code}: copyfile`), { code }));
+
+      // The order the router keeps: the message, the start event, the wait
+      // for file history, the tool, the completion event.
+      sidecar.onEvent(event("user-1", "user_message", { message: "next prompt" }));
+      sidecar.onEvent(moveStarted(args));
+      // The start event's attempt comes first, so both are over when the
+      // tool runs.
+      await vi.waitFor(() => expect(copiedFrom()).toEqual([source]), patiently);
+      await sidecar.captureBeforeToolCall("system.move", args);
+      expect(copiedFrom()).toEqual([source, source]);
+      // Neither attempt got as far as the destination. On record as "did
+      // not exist", it would be removed by a rewind that has no source to
+      // put back.
+      expect(history.getState().trackedFiles.size).toBe(0);
+      renameSync(source, destination);
+      sidecar.onEvent(event("move-done", "tool_call_completed", {
+        callId: "move",
+        result: "",
+        isError: false,
+      }));
+      await history.flush();
+
+      expect(snapshotIds()).toEqual(["user-1", "move-done"]);
+      expect(history.getState().trackedFiles.size).toBe(0);
+      await expect(history.previewRewind("user-1")).resolves.toMatchObject({ filesChanged: [] });
+      await expect(history.rewindToMessage("user-1")).resolves.toEqual([]);
+
+      // Not undone, and not destroyed: the only copy is where the tool put it.
+      expect(existsSync(source)).toBe(false);
+      expect(readFileSync(destination, "utf8")).toBe("ONLY COPY\n");
+      expect(causes()).toEqual([cause, cause]);
+    },
+  );
+
+  test.each(["the start event", "the capture"])(
+    "%s records nothing of a move whose source stopped being a regular file",
+    async (route) => {
+      // The resolver saw a regular file there. What stat reports when the
+      // sidecar looks again is all it has to go by, so a mocked result
+      // stands in for a FIFO that took the file's place.
+      const sidecar = new FileHistorySidecar({ fileHistory: history, workspaceRoot: work });
+      const source = workFile("events.pipe", "must never be opened\n");
+      const destination = join(work, "moved.pipe");
+      const args = { source, destination };
+      statAsNotRegular(source);
+      const queue = history["pending"];
+
+      if (route === "the start event") {
+        sidecar.onEvent(moveStarted(args));
+        await startEventHandled();
+      } else {
+        await sidecar.captureBeforeToolCall("system.move", args);
+      }
+
+      expect(vi.mocked(stat).mock.calls.map(([path]) => path)).toEqual([source, destination]);
+      // Without its source the destination is left out as well: nothing was
+      // queued, so it is not on record as a file that "did not exist".
+      expect(history["pending"]).toBe(queue);
+      expect(history.getState().trackedFiles.size).toBe(0);
+      expect(copyFile).not.toHaveBeenCalled();
+      expect(diagnostics).toEqual([]);
+    },
+  );
+
+  test.each(["the start event", "the capture"])(
+    "%s still backs up the other files of a shell command when one backup fails",
+    async (route) => {
+      // Only the two sides of a move stand or fall together.
+      const sidecar = new FileHistorySidecar({ fileHistory: history, workspaceRoot: work });
+      const failing = workFile("a.txt", "a\n");
+      const plain = workFile("b.txt", "b\n");
+      const call = { cmd: "rm a.txt b.txt", workdir: work };
+      failCopiesOf(failing, ioError("copy"));
+
+      if (route === "the start event") {
+        sidecar.onEvent(event("rm-started", "tool_call_started", {
+          callId: "rm",
+          toolName: "exec_command",
+          args: JSON.stringify(call),
+        }));
+        await startEventHandled();
+      } else {
+        await sidecar.captureBeforeToolCall("exec_command", call);
+      }
+
+      expect(copiedFrom()).toEqual([failing, plain]);
+      expect([...history.getState().trackedFiles]).toEqual([plain]);
+      expect(causes()).toEqual(["file_history_degraded"]);
+    },
+  );
+
+  test("a system.move that the edit tool list names is an edit tool, and its files are backed up one by one", async () => {
+    const sidecar = new FileHistorySidecar({
+      fileHistory: history,
+      workspaceRoot: work,
+      editToolNames: ["system.move"],
+    });
+    const failing = workFile("a.txt", "a\n");
+    const plain = workFile("b.txt", "b\n");
+    const input = [
+      "*** Begin Patch",
+      ...[failing, plain].flatMap((file) => [`*** Update File: ${file}`, "@@", "-old", "+new"]),
+      "*** End Patch",
+    ].join("\n");
+    failCopiesOf(failing, ioError("copy"));
+
+    await sidecar.captureBeforeToolCall("system.move", { input });
+
+    expect(copiedFrom()).toEqual([failing, plain]);
+    expect([...history.getState().trackedFiles]).toEqual([plain]);
+    expect(causes()).toEqual(["file_history_degraded"]);
+  });
+
+  test("trackEdits with stopAtFirstUnrecorded ends at the first path that is not on record", async () => {
+    const failing = workFile("failing.txt", "failing\n");
+    const plain = workFile("plain.txt", "plain\n");
+    const other = workFile("other.txt", "other\n");
+    const absent = join(work, "absent.txt");
+    const late = join(work, "late.txt");
+    const chained = { stopAtFirstUnrecorded: true };
+    failCopiesOf(failing, ioError("copy"));
+
+    // The first path fails: the ones behind it are not attempted, and with
+    // nothing on record there is no snapshot and no index to write.
+    await history.trackEdits([failing, plain, absent], "m1", chained);
+    expect(history.getState().snapshots).toEqual([]);
+    expect(copiedFrom()).toEqual([failing]);
+    expect(indexWrites()).toBe(0);
+
+    // What comes before the failed path stays on record, a path that does
+    // not exist included. What comes after it is not attempted.
+    await history.trackEdits([absent, plain, failing, other], "m2", chained);
+    expect([...history.getState().trackedFiles]).toEqual([absent, plain]);
+    expect(latestEntry(absent)).toMatchObject({ backupFileName: null, version: 1 });
+    expect(copiedFrom()).toEqual([failing, plain, failing]);
+    expect(indexWrites()).toBe(1);
+
+    // A path that is on record from an earlier call does not end the operation.
+    await history.trackEdits([absent, plain, other], "m3", chained);
+    expect([...history.getState().trackedFiles]).toEqual([absent, plain, other]);
+    expect(copiedFrom()).toEqual([failing, plain, failing, other]);
+
+    // Without the option every path has its turn, whatever became of the
+    // one before it.
+    await history.trackEdits([failing, late], "m4");
+    expect([...history.getState().trackedFiles]).toEqual([absent, plain, other, late]);
+    expect(causes()).toEqual([
+      "file_history_degraded",
+      "file_history_degraded",
+      "file_history_degraded",
+    ]);
   });
 });

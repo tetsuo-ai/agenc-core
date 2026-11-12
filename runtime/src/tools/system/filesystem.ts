@@ -43,6 +43,7 @@ import {
   readFileSync,
   rmSync,
   writeFileSync,
+  type BigIntStats,
 } from "node:fs";
 import { resolve, dirname, basename, join, isAbsolute } from "node:path";
 // Imported from the defining module rather than the `memory/index.js` barrel.
@@ -934,7 +935,7 @@ function errorResult(message: string): ToolResult {
 /**
  * An error result for a refusal that happened before the tool touched the
  * filesystem: a bad argument, a path outside the allowed roots, a missing
- * source. It carries a confirmed
+ * source, a destination that already exists. It carries a confirmed
  * no-effect disposition; a bare error from a side-effecting tool is filed as
  * an unknown outcome and gates the session behind /resolve (#2190). Failures
  * after mkdir, rm or rename started keep the bare result.
@@ -1592,11 +1593,60 @@ function createDeleteTool(
   };
 }
 
+/**
+ * True when the two stats describe one file under two names: a case-only
+ * rename on a case-folding mount, a hard link, or a move onto itself.
+ * `rename` replaces nothing then. An inode number of 0 identifies no file,
+ * so two such stats never count as the same one.
+ */
+function isSameFile(source: BigIntStats, destination: BigIntStats): boolean {
+  return (
+    source.dev === destination.dev &&
+    source.ino === destination.ino &&
+    source.ino !== 0n
+  );
+}
+
+/**
+ * `system.move` onto a destination that exists and is another file than the
+ * source. `rename` would replace it without a word, so the move is refused
+ * here, from the two stats alone and before anything is touched, unless the
+ * call asks for the replacement. Returns the refusal, or `null` when the
+ * move may replace the destination.
+ *
+ * Two kinds can never succeed, whatever the flag says: `rename` does not put
+ * a file into a directory, and does not replace a file with a directory.
+ * Their messages say what to change and leave the flag out, so that the
+ * caller does not retry with it into a failure after the effect boundary.
+ */
+function existingDestinationRefusal(
+  source: BigIntStats,
+  destination: BigIntStats,
+  args: Record<string, unknown>,
+): ToolResult | null {
+  if (!source.isDirectory() && destination.isDirectory()) {
+    return preEffectErrorResult(
+      `Destination is an existing directory: ${args.destination}. Give the full destination path, including the file name.`,
+    );
+  }
+  if (source.isDirectory() && !destination.isDirectory()) {
+    return preEffectErrorResult(
+      `Cannot move a directory onto ${args.destination}: it exists and is not a directory.`,
+    );
+  }
+  if (args.overwrite !== true) {
+    return preEffectErrorResult(
+      `Destination already exists: ${args.destination}. Pass overwrite: true to replace it.`,
+    );
+  }
+  return null;
+}
+
 function createMoveTool(allowedPaths: readonly string[]): Tool {
   return {
     name: "system.move",
     description:
-      "Move or rename a file or directory. Both source and destination must be within allowed paths.",
+      "Move or rename a file or directory. Both source and destination must be within allowed paths. Refuses to replace an existing destination unless overwrite is true.",
     recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
@@ -1608,6 +1658,11 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
         destination: {
           type: "string",
           description: "Destination path",
+        },
+        overwrite: {
+          type: "boolean",
+          description:
+            "Replace an existing destination. Defaults to false: the move is refused when the destination exists.",
         },
       },
       required: ["source", "destination"],
@@ -1630,8 +1685,39 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
         );
         if (dstErr) return dstErr;
 
+        if (args.overwrite !== undefined && typeof args.overwrite !== "boolean") {
+          return preEffectErrorResult("overwrite must be a boolean");
+        }
+
         // Fail fast on a missing source before creating the destination parent.
-        await stat(src!);
+        const sourceStats = await stat(src!, { bigint: true });
+
+        // `dst` is canonical, so it is a symlink only when the link dangles.
+        // `stat` would call that link absent and `rename` would replace it.
+        let destinationStats: BigIntStats | null = null;
+        try {
+          destinationStats = await lstat(dst!, { bigint: true });
+        } catch (err) {
+          // No destination is the ordinary case. It is told apart here because
+          // the catch below reports every ENOENT as a missing source.
+          if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+            return preEffectErrorResult(safeError(err, "destination check"));
+          }
+        }
+        let overwritten = false;
+        if (
+          destinationStats !== null &&
+          !isSameFile(sourceStats, destinationStats)
+        ) {
+          const refusal = existingDestinationRefusal(
+            sourceStats,
+            destinationStats,
+            args,
+          );
+          if (refusal !== null) return refusal;
+          overwritten = true;
+        }
+
         await mkdir(dirname(dst!), { recursive: true });
         await rename(src!, dst!);
         return {
@@ -1639,6 +1725,7 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
             source: args.source,
             destination: args.destination,
             moved: true,
+            ...(overwritten ? { overwritten: true } : {}),
           }),
         };
       } catch (err) {

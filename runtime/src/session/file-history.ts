@@ -46,7 +46,7 @@
  * @module
  */
 
-import { createReadStream, type Stats } from "node:fs";
+import { createReadStream, statSync, type Stats } from "node:fs";
 import {
   copyFile,
   mkdir,
@@ -479,11 +479,29 @@ export class FileHistory {
    * operation, so nothing else on the queue runs between them. The index
    * is written at most once, after the last path, and only when the state
    * changed or an earlier index write is still owed.
+   *
+   * `stopAtFirstUnrecorded` is for paths that are only safe to record
+   * together, each one resting on those before it: the operation ends at
+   * the first path that is not on record once its turn is over, and the
+   * paths behind it are not attempted. A path is on record when the most
+   * recent snapshot has an entry for it, from this call or an earlier one;
+   * it is not when its backup failed.
    */
-  async trackEdits(paths: readonly string[], messageId: string): Promise<void> {
+  async trackEdits(
+    paths: readonly string[],
+    messageId: string,
+    options?: { readonly stopAtFirstUnrecorded?: boolean },
+  ): Promise<void> {
     return this.enqueue(async () => {
       for (const filePath of paths) {
-        if (await this.trackEditNow(filePath, messageId)) this.needsPersist = true;
+        if (await this.trackEditNow(filePath, messageId)) {
+          this.needsPersist = true;
+        } else if (
+          options?.stopAtFirstUnrecorded === true &&
+          this.state.snapshots.at(-1)?.trackedFileBackups[filePath] === undefined
+        ) {
+          break;
+        }
       }
       if (this.needsPersist) await this.persistAndPrune();
     });
@@ -1062,10 +1080,19 @@ export interface FileHistorySidecarOpts {
   /**
    * Workspace root used to resolve the files a shell command removes or
    * moves (`rm`, `rmdir`, `unlink`, `mv`), so they are backed up before the
-   * command runs the way Edit and Write targets are. Without it shell
-   * deletions are not tracked.
+   * call runs the way Edit and Write targets are. Without it neither shell
+   * deletions nor `system.move` and `system.delete` are tracked.
    */
   readonly workspaceRoot?: string;
+  /**
+   * The session's working directory at the moment it is asked. `system.move`
+   * and `system.delete` read a relative path against it
+   * (tools/system/filesystem.ts), and it stops being the workspace root when
+   * the session enters a worktree. Their paths are resolved the same way
+   * here, so that the file on record is the file the tool touches. Without
+   * it, and whenever it has no answer, `workspaceRoot` is used.
+   */
+  readonly workingDirectory?: () => string | undefined;
   /**
    * Longest time, in milliseconds, that `captureBeforeToolCall` makes a
    * tool call wait. Defaults to 5000.
@@ -1102,6 +1129,13 @@ const APPLY_PATCH_FILE_MARKERS = [
 ] as const;
 
 /**
+ * The filesystem tools that move or remove the file at a path they are
+ * given (tools/system/filesystem.ts).
+ */
+const MOVE_TOOL_NAME = "system.move";
+const DELETE_TOOL_NAME = "system.delete";
+
+/**
  * The files a tool call is about to change, worked out from its name and
  * its JSON args before it runs. The sidecar uses the one answer for both
  * of its jobs: backing a file up when the call's start event arrives, and
@@ -1115,16 +1149,25 @@ const APPLY_PATCH_FILE_MARKERS = [
  *   command would write, remove or move. Nothing without a root.
  *   `regularFilesOnly` is true: a caller backs up only the targets that
  *   are regular files or do not exist yet.
+ * - system.move: the source and the destination, when the source is a
+ *   regular file. system.delete: the path, when it is a regular file. A
+ *   leading `~` is the home directory, as in those tools, and a relative
+ *   path is relative to `workingDirectory` (the session's, which is where
+ *   the tools resolve it), or to `workspaceRoot` when that is not given.
+ *   Nothing without a root. `regularFilesOnly` is true.
  * - Any other tool: no paths.
  *
- * Synchronous. For a shell command it reads the file system (a move into a
- * directory resolves differently from a move onto a file), so two calls
- * with the same input can give different answers.
+ * Synchronous, but it reads the file system: for a shell command (a move
+ * into a directory resolves differently from a move onto a file) and for
+ * system.move and system.delete (what the source or the path is). Two calls
+ * with the same input can therefore give different answers.
  */
 export function resolveFileHistoryTargets(input: {
   toolName: string;
   args: Record<string, unknown> | null;
   workspaceRoot: string | undefined;
+  /** Base of a relative `system.move` or `system.delete` path. */
+  workingDirectory?: string;
   editToolNames?: readonly string[];
 }): { paths: string[]; regularFilesOnly: boolean } {
   const { toolName, args, workspaceRoot } = input;
@@ -1144,6 +1187,21 @@ export function resolveFileHistoryTargets(input: {
   if (shellKeys !== undefined) {
     return {
       paths: shellMutationPaths(toolName, shellKeys, args, workspaceRoot),
+      regularFilesOnly: true,
+    };
+  }
+  if (toolName === MOVE_TOOL_NAME || toolName === DELETE_TOOL_NAME) {
+    // Tracked only in a workspace. The base of a relative path is where the
+    // tool itself resolves it.
+    const base =
+      workspaceRoot === undefined
+        ? undefined
+        : (input.workingDirectory ?? workspaceRoot);
+    return {
+      paths:
+        toolName === MOVE_TOOL_NAME
+          ? moveToolPaths(args, base)
+          : deleteToolPaths(args, base),
       regularFilesOnly: true,
     };
   }
@@ -1205,11 +1263,127 @@ function shellMutationPaths(
   ];
 }
 
+/**
+ * The source and the destination of a `system.move` call, in that order,
+ * as absolute normalized paths. Empty when the root is unknown, when either
+ * argument is not a path, and when the source is not a regular file:
+ *
+ * - A missing source: the tool refuses the call.
+ * - A directory: its files are not tracked one by one. Tracking its new
+ *   name as a file that "did not exist" would fail in every later snapshot,
+ *   because the path is a directory from then on.
+ * - A FIFO, socket or device: it has no content to back up, so the source
+ *   could not be restored, while a destination on record as "did not exist"
+ *   would be removed by a rewind. The moved object would be gone from both
+ *   places.
+ *
+ * The destination is returned whatever it is. A caller leaves out one that
+ * exists and is not a regular file (`regularFilesOnly`), and records the
+ * two as a pair (`isMovePair`).
+ */
+function moveToolPaths(
+  args: Record<string, unknown> | null,
+  base: string | undefined,
+): string[] {
+  if (base === undefined || args === null) return [];
+  const source = filesystemToolPath(args.source, base);
+  const destination = filesystemToolPath(args.destination, base);
+  if (source === null || destination === null) return [];
+  return isRegularFile(source) ? [source, destination] : [];
+}
+
+/**
+ * True when `targets` are the two sides of a `system.move`, the source
+ * first (`moveToolPaths`). The sidecar records them as a pair: the
+ * destination only once the source is on record.
+ *
+ * A rewind removes a destination that is on record as "did not exist", and
+ * writes the old content back to one that the move replaced. Either way the
+ * moved file is gone from there afterwards, which is safe only while the
+ * same rewind can put it back at its source. When the source cannot be
+ * backed up (it cannot be read, or the history directory cannot be
+ * written), nothing of the move goes on record: a rewind then leaves the
+ * file where the tool put it and does not destroy its only copy.
+ *
+ * A source that is on record as absent counts as on record: the file was
+ * created after that snapshot, so a rewind to it rightly removes the file,
+ * wherever the move has put it.
+ */
+function isMovePair(
+  toolName: string,
+  targets: { readonly regularFilesOnly: boolean },
+): boolean {
+  // An edit tool list that names system.move makes it an edit tool, and its
+  // targets are then an edit tool's.
+  return targets.regularFilesOnly && toolName === MOVE_TOOL_NAME;
+}
+
+/**
+ * The path of a `system.delete` call as an absolute normalized path, when
+ * it names a regular file. Empty otherwise: a missing path is refused by
+ * the tool, and a directory is removed without its files being tracked one
+ * by one. Empty as well when the root is unknown.
+ */
+function deleteToolPaths(
+  args: Record<string, unknown> | null,
+  base: string | undefined,
+): string[] {
+  if (base === undefined || args === null) return [];
+  const target = filesystemToolPath(args.path, base);
+  return target !== null && isRegularFile(target) ? [target] : [];
+}
+
+/**
+ * The file a path argument of `system.move` or `system.delete` names: a
+ * leading `~` is the home directory and a relative path is relative to
+ * `base`, the session's working directory. Not resolved further: like the
+ * edit tools' paths, the key is the path as written and not its `realpath`.
+ * `null` when the argument is not a usable path.
+ */
+function filesystemToolPath(raw: unknown, base: string): string | null {
+  if (typeof raw !== "string" || raw.trim().length === 0) return null;
+  return resolve(base, expandHomeDirectory(raw));
+}
+
+/**
+ * `~` and `~/...` as the filesystem tools read them: HOME, or USERPROFILE
+ * when HOME is not set. The same rule as `expandHomeDirectory` in
+ * tools/system/filesystem.ts, repeated here because this module must not
+ * import that one. The edit tools do not expand `~`, and neither does the
+ * resolver for them.
+ */
+function expandHomeDirectory(rawPath: string): string {
+  if (
+    rawPath === "~" ||
+    rawPath.startsWith("~/") ||
+    rawPath.startsWith("~\\")
+  ) {
+    const home = process.env.HOME ?? process.env.USERPROFILE;
+    if (!home || home.trim().length === 0) return rawPath;
+    if (rawPath === "~") return home;
+    return resolve(home, rawPath.slice(2));
+  }
+  return rawPath;
+}
+
+/**
+ * True when `filePath` is a regular file, or a symlink to one. False for
+ * anything else and for a path that cannot be examined.
+ */
+function isRegularFile(filePath: string): boolean {
+  try {
+    return statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
 export class FileHistorySidecar implements Sidecar {
   readonly name = "file-history";
   private readonly history: FileHistory;
   private readonly editToolNames: ReadonlyArray<string>;
   private readonly workspaceRoot: string | undefined;
+  private readonly workingDirectory: (() => string | undefined) | undefined;
   private readonly captureTimeoutMs: number;
   private lastEditStartedAtMs: number | null = null;
   /**
@@ -1223,7 +1397,23 @@ export class FileHistorySidecar implements Sidecar {
     this.history = opts.fileHistory;
     this.editToolNames = opts.editToolNames ?? DEFAULT_EDIT_TOOL_NAMES;
     this.workspaceRoot = opts.workspaceRoot;
+    this.workingDirectory = opts.workingDirectory;
     this.captureTimeoutMs = opts.captureTimeoutMs ?? DEFAULT_CAPTURE_TIMEOUT_MS;
+  }
+
+  /**
+   * The session's working directory now, or `undefined` when nobody told
+   * the sidecar how to ask or the answer is unusable.
+   */
+  private currentWorkingDirectory(): string | undefined {
+    try {
+      const directory = this.workingDirectory?.();
+      return typeof directory === "string" && directory.trim().length > 0
+        ? directory
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async start(): Promise<void> {
@@ -1247,6 +1437,7 @@ export class FileHistorySidecar implements Sidecar {
         toolName,
         args: this.tryParseArgs(msg.payload.args),
         workspaceRoot: this.workspaceRoot,
+        workingDirectory: this.currentWorkingDirectory(),
         editToolNames: this.editToolNames,
       });
       // A call to an edit tool is an edit even when its args name no file.
@@ -1256,7 +1447,11 @@ export class FileHistorySidecar implements Sidecar {
       }
       if (targets.paths.length > 0) {
         if (targets.regularFilesOnly) {
-          void this.trackRegularFiles(targets.paths, event.id);
+          void this.trackRegularFiles(
+            targets.paths,
+            event.id,
+            isMovePair(toolName, targets),
+          );
         } else {
           // Queued before this handler returns. execute-tools announces the
           // calls of a batch in one loop without an await, so the backups
@@ -1337,7 +1532,11 @@ export class FileHistorySidecar implements Sidecar {
     if (targets.paths.length === 0 && barrier === null) return undefined;
     // An aborted call does not run, so there is nothing to capture for it.
     if (signal?.aborted) return Promise.resolve();
-    return this.settleWithin(toolName, signal, this.capture(targets, barrier));
+    return this.settleWithin(
+      toolName,
+      signal,
+      this.capture(targets, barrier, isMovePair(toolName, targets)),
+    );
   }
 
   /**
@@ -1353,6 +1552,7 @@ export class FileHistorySidecar implements Sidecar {
         toolName,
         args,
         workspaceRoot: this.workspaceRoot,
+        workingDirectory: this.currentWorkingDirectory(),
         editToolNames: this.editToolNames,
       });
     } catch {
@@ -1369,14 +1569,17 @@ export class FileHistorySidecar implements Sidecar {
   private async capture(
     targets: { paths: string[]; regularFilesOnly: boolean },
     barrier: Promise<void> | null,
+    movePair: boolean,
   ): Promise<void> {
     const paths = targets.regularFilesOnly
-      ? await this.regularOrMissing(targets.paths)
+      ? await this.regularOrMissing(targets.paths, movePair)
       : targets.paths;
     // One queued operation for all of the call's targets. The id only names
     // a first snapshot, when the engine has none to attach the backups to.
     const tracked = paths.length > 0
-      ? this.history.trackEdits(paths, `capture-${randomUUID()}`)
+      ? this.history.trackEdits(paths, `capture-${randomUUID()}`, {
+          stopAtFirstUnrecorded: movePair,
+        })
       : null;
     if (barrier !== null) await barrier;
     if (tracked !== null) await tracked;
@@ -1422,16 +1625,21 @@ export class FileHistorySidecar implements Sidecar {
   }
 
   /**
-   * Back up the targets of a shell call when its start event arrives:
-   * the same selection and the same single queued operation as in
-   * `captureBeforeToolCall`.
+   * Back up the targets of a shell, move or delete call when its start
+   * event arrives: the same selection and the same single queued operation
+   * as in `captureBeforeToolCall`.
    */
   private async trackRegularFiles(
     paths: readonly string[],
     messageId: string,
+    movePair: boolean,
   ): Promise<void> {
-    const kept = await this.regularOrMissing(paths);
-    if (kept.length > 0) await this.history.trackEdits(kept, messageId);
+    const kept = await this.regularOrMissing(paths, movePair);
+    if (kept.length > 0) {
+      await this.history.trackEdits(kept, messageId, {
+        stopAtFirstUnrecorded: movePair,
+      });
+    }
   }
 
   /**
@@ -1441,8 +1649,14 @@ export class FileHistorySidecar implements Sidecar {
    * creates there. A directory has no content to preserve, and opening a
    * FIFO, socket or device can block forever, so anything else that exists
    * is left out. A later snapshot records the removal of a tracked file.
+   *
+   * For the two sides of a move (`movePair`), a source that is left out
+   * takes its destination with it: see `isMovePair`.
    */
-  private async regularOrMissing(paths: readonly string[]): Promise<string[]> {
+  private async regularOrMissing(
+    paths: readonly string[],
+    movePair: boolean,
+  ): Promise<string[]> {
     const kept: string[] = [];
     for (const filePath of paths) {
       let regular = true;
@@ -1453,6 +1667,9 @@ export class FileHistorySidecar implements Sidecar {
       }
       if (regular) kept.push(filePath);
     }
+    // The source comes first. The resolver saw a regular file there, so it
+    // is left out only when it was replaced since.
+    if (movePair && kept[0] !== paths[0]) return [];
     return kept;
   }
 
@@ -1583,6 +1800,7 @@ export async function fileHistoryCanRestore(
  * Rewind the tracked files on disk to the snapshot identified by
  * `messageId`. Returns the list of files that changed. Throws when
  * the snapshot does not exist so callers can surface a clear error.
+ * A restored file gets its directory back when that is gone as well.
  */
 export async function fileHistoryRewind(
   state: FileHistoryState,
@@ -1613,6 +1831,11 @@ export async function fileHistoryRewind(
       }
       if (await checkOriginFileChanged(trackingPath, origin.backupFileName)) {
         const contents = await readFile(origin.backupFileName);
+        // The directory may be gone along with the file: a file is moved out
+        // of it and the emptied directory removed. Without it the write
+        // fails, and a move would end with the file in neither place, since
+        // its destination is removed all the same.
+        await mkdir(dirname(trackingPath), { recursive: true });
         await writeFile(trackingPath, contents);
         changed.push(trackingPath);
       }

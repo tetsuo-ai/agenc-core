@@ -3510,6 +3510,62 @@ required = true
     }
   });
 
+  it("tells the file-history sidecar the session's working directory, so a relative system.move path is recorded where the tool resolves it (#3437)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const worktree = await mkdtemp(join(tmpdir(), "agenc-bootstrap-wt-"));
+    await installBootstrapProviderStub();
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+      const sidecar = boot.sidecarManager.getSidecar("file-history") as FileHistorySidecar;
+      const inWorkspace = join(await realpath(workspace), "notes.txt");
+      const inWorktree = join(await realpath(worktree), "notes.txt");
+      await writeFile(inWorkspace, "in the workspace\n");
+      await writeFile(inWorktree, "in the worktree\n");
+
+      // Entering a worktree moves the session's working directory. The
+      // filesystem tools read a relative path against it from then on.
+      boot.session.setPendingWorktreeState({
+        handle: { path: await realpath(worktree) },
+        baseCommit: null,
+        originalCwd: await realpath(workspace),
+      } as Parameters<Session["setPendingWorktreeState"]>[0]);
+      await boot.session.captureFileStateBeforeToolCall("system.delete", {
+        path: "notes.txt",
+      });
+      expect([...sidecar.getSnapshotState().trackedFiles]).toEqual([inWorktree]);
+
+      // Leaving it moves the working directory back.
+      boot.session.setPendingWorktreeState(null);
+      await boot.session.captureFileStateBeforeToolCall("system.delete", {
+        path: "notes.txt",
+      });
+      expect([...sidecar.getSnapshotState().trackedFiles]).toEqual([
+        inWorktree,
+        inWorkspace,
+      ]);
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+      await rm(worktree, { recursive: true, force: true });
+    }
+  });
+
   it("strictly disposes root sandbox owners and retries retained failures", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));

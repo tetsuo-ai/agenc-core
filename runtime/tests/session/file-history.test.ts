@@ -1,18 +1,23 @@
+import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
+  rmdirSync,
   statSync,
+  symlinkSync,
   truncateSync,
   writeFileSync,
 } from "node:fs";
 import { getEventListeners } from "node:events";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   checkOriginFileChanged,
   computeDiffStats,
@@ -29,6 +34,11 @@ import {
   type FileHistorySnapshot,
 } from "./file-history.js";
 import { applyPatchText } from "../../src/tools/apply-patch/runtime.js";
+import { createFilesystemTools } from "../../src/tools/system/filesystem.js";
+import type { Tool, ToolResult } from "../../src/tools/types.js";
+import { runWithCurrentRuntimeSession } from "../../src/session/current-session.js";
+import type { Session } from "../../src/session/session.js";
+import { itWhen } from "../helpers/platform-registration.js";
 import type { RolloutItem } from "./rollout-item.js";
 import {
   acquireCanonicalCompactionLease,
@@ -1688,6 +1698,937 @@ describe("FileHistorySidecar capture before a tool call (#3436)", () => {
     expect(hist.getState().snapshots.map((snapshot) => snapshot.messageId))
       .toEqual(["write-nothing-done", "rm-done"]);
     expect(hist.getState().trackedFiles.has(join(work, "a.txt"))).toBe(true);
+  });
+});
+
+describe("resolveFileHistoryTargets for system.move and system.delete (#3437)", () => {
+  const NONE = { paths: [], regularFilesOnly: true };
+  const itOnPosix = itWhen(process.platform !== "win32");
+  let root = "";
+  let home = "";
+  let savedHome: string | undefined;
+  let savedUserProfile: string | undefined;
+
+  function setEnv(name: "HOME" | "USERPROFILE", value: string | undefined): void {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+
+  function move(args: Record<string, unknown> | null) {
+    return resolveFileHistoryTargets({ toolName: "system.move", args, workspaceRoot: root });
+  }
+
+  function remove(args: Record<string, unknown> | null) {
+    return resolveFileHistoryTargets({ toolName: "system.delete", args, workspaceRoot: root });
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "agenc-filehist-move-targets-"));
+    home = mkdtempSync(join(tmpdir(), "agenc-filehist-move-home-"));
+    savedHome = process.env.HOME;
+    savedUserProfile = process.env.USERPROFILE;
+  });
+  afterEach(() => {
+    setEnv("HOME", savedHome);
+    setEnv("USERPROFILE", savedUserProfile);
+    for (const directory of [root, home]) {
+      if (directory) rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("system.move names the source and the destination of a file", () => {
+    mkdirSync(join(root, "sub"));
+    writeFileSync(join(root, "old.txt"), "old", "utf8");
+    writeFileSync(join(root, "sub", "taken.txt"), "taken", "utf8");
+
+    // A destination that does not exist yet, one that does, and a directory:
+    // the destination is named whatever it is.
+    for (const [destination, resolved] of [
+      ["new.txt", join(root, "new.txt")],
+      ["sub/taken.txt", join(root, "sub", "taken.txt")],
+      ["sub", join(root, "sub")],
+    ] as const) {
+      expect(move({ source: "old.txt", destination })).toEqual({
+        paths: [join(root, "old.txt"), resolved],
+        regularFilesOnly: true,
+      });
+    }
+    // An absolute path is kept, every path is normalized, the flag is ignored.
+    expect(move({
+      source: join(root, "sub", "..", "old.txt"),
+      destination: "./sub/./deep/../new.txt",
+      overwrite: true,
+    }).paths).toEqual([join(root, "old.txt"), join(root, "sub", "new.txt")]);
+    // A move onto itself names the one file twice, which tracks it once.
+    expect(move({ source: "old.txt", destination: "./old.txt" }).paths)
+      .toEqual([join(root, "old.txt"), join(root, "old.txt")]);
+  });
+
+  test("system.move has no targets when the source is a directory or is missing", () => {
+    mkdirSync(join(root, "pkg"));
+    writeFileSync(join(root, "pkg", "index.js"), "export {};\n", "utf8");
+
+    expect(move({ source: "pkg", destination: "lib" })).toEqual(NONE);
+    expect(move({ source: "missing.txt", destination: "new.txt" })).toEqual(NONE);
+    // The destination plays no part in that.
+    expect(move({ source: "pkg", destination: "pkg/index.js" })).toEqual(NONE);
+  });
+
+  test("system.delete names the path only when it is a regular file", () => {
+    mkdirSync(join(root, "dir"));
+    writeFileSync(join(root, "notes.txt"), "notes", "utf8");
+
+    expect(remove({ path: "notes.txt" })).toEqual({
+      paths: [join(root, "notes.txt")],
+      regularFilesOnly: true,
+    });
+    expect(remove({ path: join(root, "dir", "..", "notes.txt"), recursive: true }).paths)
+      .toEqual([join(root, "notes.txt")]);
+    expect(remove({ path: "dir", recursive: true })).toEqual(NONE);
+    expect(remove({ path: "missing.txt" })).toEqual(NONE);
+  });
+
+  test("a leading ~ is the home directory, as it is for the two tools", () => {
+    writeFileSync(join(home, "a.txt"), "a", "utf8");
+    setEnv("HOME", home);
+    setEnv("USERPROFILE", undefined);
+
+    expect(move({ source: "~/a.txt", destination: "~/moved/b.txt" })).toEqual({
+      paths: [join(home, "a.txt"), join(home, "moved", "b.txt")],
+      regularFilesOnly: true,
+    });
+    expect(move({ source: "~/a.txt", destination: "~" }).paths)
+      .toEqual([join(home, "a.txt"), home]);
+    expect(remove({ path: "~/a.txt" }).paths).toEqual([join(home, "a.txt")]);
+    // "~" alone is the home directory itself: a directory, so no target.
+    expect(remove({ path: "~" })).toEqual(NONE);
+    expect(move({ source: "~", destination: "elsewhere" })).toEqual(NONE);
+
+    // USERPROFILE stands in when HOME is not set.
+    setEnv("HOME", undefined);
+    setEnv("USERPROFILE", home);
+    expect(remove({ path: "~/a.txt" }).paths).toEqual([join(home, "a.txt")]);
+    expect(move({ source: "~/a.txt", destination: "b.txt" }).paths)
+      .toEqual([join(home, "a.txt"), join(root, "b.txt")]);
+  });
+
+  test("only ~ and ~/ are expanded, and nothing is without a home directory", () => {
+    mkdirSync(join(root, "~other"));
+    mkdirSync(join(root, "~"));
+    writeFileSync(join(root, "~other", "a.txt"), "other", "utf8");
+    writeFileSync(join(root, "~", "a.txt"), "literal", "utf8");
+    writeFileSync(join(home, "a.txt"), "home", "utf8");
+    setEnv("HOME", home);
+    setEnv("USERPROFILE", undefined);
+
+    // Another user's home is an ordinary relative path.
+    expect(remove({ path: "~other/a.txt" }).paths).toEqual([join(root, "~other", "a.txt")]);
+    expect(remove({ path: "~/a.txt" }).paths).toEqual([join(home, "a.txt")]);
+
+    for (const blank of [undefined, "", "   "]) {
+      setEnv("HOME", blank);
+      setEnv("USERPROFILE", undefined);
+      // No home to expand to: the path is taken as written.
+      expect(remove({ path: "~/a.txt" }).paths).toEqual([join(root, "~", "a.txt")]);
+      expect(move({ source: "~/a.txt", destination: "~" }).paths)
+        .toEqual([join(root, "~", "a.txt"), join(root, "~")]);
+    }
+  });
+
+  test("neither tool has targets without a workspace root", () => {
+    writeFileSync(join(root, "old.txt"), "old", "utf8");
+
+    expect(resolveFileHistoryTargets({
+      toolName: "system.move",
+      args: { source: join(root, "old.txt"), destination: join(root, "new.txt") },
+      workspaceRoot: undefined,
+    })).toEqual(NONE);
+    expect(resolveFileHistoryTargets({
+      toolName: "system.delete",
+      args: { path: join(root, "old.txt") },
+      workspaceRoot: undefined,
+    })).toEqual(NONE);
+  });
+
+  test("arguments that are not paths give no targets", () => {
+    writeFileSync(join(root, "old.txt"), "old", "utf8");
+
+    for (const args of [
+      null,
+      {},
+      { source: "old.txt" },
+      { destination: "new.txt" },
+      { source: "old.txt", destination: "" },
+      { source: "old.txt", destination: "   " },
+      { source: "", destination: "new.txt" },
+      { source: 7, destination: "new.txt" },
+      { source: "old.txt", destination: ["new.txt"] },
+      { path: "old.txt" },
+    ]) {
+      expect(move(args)).toEqual(NONE);
+    }
+    for (const args of [
+      null,
+      {},
+      { path: "" },
+      { path: "   " },
+      { path: 7 },
+      { file_path: "old.txt" },
+      { source: "old.txt", destination: "new.txt" },
+    ]) {
+      expect(remove(args)).toEqual(NONE);
+    }
+  });
+
+  test("the edit tool list does not change what the two tools resolve to", () => {
+    writeFileSync(join(root, "old.txt"), "old", "utf8");
+
+    expect(resolveFileHistoryTargets({
+      toolName: "system.move",
+      args: { source: "old.txt", destination: "new.txt" },
+      workspaceRoot: root,
+      editToolNames: ["Write"],
+    })).toEqual({
+      paths: [join(root, "old.txt"), join(root, "new.txt")],
+      regularFilesOnly: true,
+    });
+    // The other filesystem tools change no file content.
+    for (const toolName of ["system.mkdir", "system.stat", "system.listDir"]) {
+      expect(resolveFileHistoryTargets({
+        toolName,
+        args: { path: "old.txt", source: "old.txt", destination: "new.txt" },
+        workspaceRoot: root,
+      })).toEqual({ paths: [], regularFilesOnly: false });
+    }
+  });
+
+  itOnPosix("a symlink is named as written and judged by what it leads to", () => {
+    mkdirSync(join(root, "dir"));
+    writeFileSync(join(root, "real.txt"), "real", "utf8");
+    symlinkSync(join(root, "real.txt"), join(root, "link.txt"));
+    symlinkSync(join(root, "dir"), join(root, "dir-link"));
+    symlinkSync(join(root, "nowhere"), join(root, "dangling"));
+
+    // To a file: tracked under the link's own path, not its target's.
+    expect(remove({ path: "link.txt" }).paths).toEqual([join(root, "link.txt")]);
+    expect(move({ source: "link.txt", destination: "moved.txt" }).paths)
+      .toEqual([join(root, "link.txt"), join(root, "moved.txt")]);
+    // To a directory, or to nothing: like a directory, or a missing path.
+    for (const name of ["dir-link", "dangling"]) {
+      expect(remove({ path: name })).toEqual(NONE);
+      expect(move({ source: name, destination: "moved.txt" })).toEqual(NONE);
+    }
+  });
+
+  itOnPosix("a FIFO is not a file to move or delete", () => {
+    execFileSync("mkfifo", [join(root, "events.pipe")]);
+
+    // Its destination must not go on record as "did not exist": a rewind
+    // would remove the moved pipe there and could not put it back here.
+    expect(move({ source: "events.pipe", destination: "moved.pipe" })).toEqual(NONE);
+    expect(remove({ path: "events.pipe" })).toEqual(NONE);
+  });
+
+  test("a relative path is read against the working directory, where the tools resolve it", () => {
+    // A session that entered a worktree: the workspace root stays, the
+    // working directory moves. The same relative name exists in both.
+    const worktree = mkdtempSync(join(tmpdir(), "agenc-filehist-move-cwd-"));
+    try {
+      writeFileSync(join(root, "old.txt"), "in the workspace root", "utf8");
+      writeFileSync(join(worktree, "old.txt"), "in the working directory", "utf8");
+      const inWorktree = (toolName: string, args: Record<string, unknown>) =>
+        resolveFileHistoryTargets({
+          toolName,
+          args,
+          workspaceRoot: root,
+          workingDirectory: worktree,
+        });
+
+      expect(inWorktree("system.move", { source: "old.txt", destination: "sub/new.txt" }))
+        .toEqual({
+          paths: [join(worktree, "old.txt"), join(worktree, "sub", "new.txt")],
+          regularFilesOnly: true,
+        });
+      expect(inWorktree("system.delete", { path: "./old.txt" })).toEqual({
+        paths: [join(worktree, "old.txt")],
+        regularFilesOnly: true,
+      });
+      // An absolute path is what it says, on either side.
+      expect(inWorktree("system.move", {
+        source: join(root, "old.txt"),
+        destination: "new.txt",
+      }).paths).toEqual([join(root, "old.txt"), join(worktree, "new.txt")]);
+      expect(inWorktree("system.move", {
+        source: "old.txt",
+        destination: join(root, "new.txt"),
+      }).paths).toEqual([join(worktree, "old.txt"), join(root, "new.txt")]);
+
+      // The source is judged where the tool will look for it: the file of
+      // that name in the workspace root does not stand in for it.
+      rmSync(join(worktree, "old.txt"));
+      expect(inWorktree("system.move", { source: "old.txt", destination: "new.txt" }))
+        .toEqual(NONE);
+      expect(inWorktree("system.delete", { path: "old.txt" })).toEqual(NONE);
+
+      // A working directory does not switch tracking on without a root.
+      expect(resolveFileHistoryTargets({
+        toolName: "system.delete",
+        args: { path: join(root, "old.txt") },
+        workspaceRoot: undefined,
+        workingDirectory: worktree,
+      })).toEqual(NONE);
+      // The edit tools keep resolving against the workspace root.
+      expect(resolveFileHistoryTargets({
+        toolName: "Write",
+        args: { file_path: "old.txt" },
+        workspaceRoot: root,
+        workingDirectory: worktree,
+      }).paths).toEqual([join(root, "old.txt")]);
+    } finally {
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("file history across system.move and system.delete (#3437)", () => {
+  type SidecarEvent = Parameters<FileHistorySidecar["onEvent"]>[0];
+  const itOnPosix = itWhen(process.platform !== "win32");
+  // Root reads a file and writes into a directory whatever their modes say.
+  const itUnprivileged = itWhen(process.platform !== "win32" && process.getuid?.() !== 0);
+  let project = "";
+  let work = "";
+  let hist: FileHistory;
+  let sidecar: FileHistorySidecar;
+  let diagnostics: string[] = [];
+
+  function userMessage(id: string): SidecarEvent {
+    return {
+      id,
+      msg: { type: "user_message", payload: { message: "next prompt" } },
+    } as SidecarEvent;
+  }
+
+  function started(id: string, toolName: string, args: Record<string, unknown>): SidecarEvent {
+    return {
+      id,
+      msg: {
+        type: "tool_call_started",
+        payload: { callId: id, toolName, args: JSON.stringify(args) },
+      },
+    } as SidecarEvent;
+  }
+
+  function completed(id: string): SidecarEvent {
+    return {
+      id,
+      msg: { type: "tool_call_completed", payload: { callId: id, result: "", isError: false } },
+    } as SidecarEvent;
+  }
+
+  /** The real tool, allowed to work in `work` and to delete. */
+  function toolNamed(name: string): Tool {
+    const tool = createFilesystemTools({ allowedPaths: [work], allowDelete: true })
+      .find((candidate) => candidate.name === name);
+    if (tool === undefined) throw new Error(`no tool ${name}`);
+    return tool;
+  }
+
+  /** Run a tool the way a session whose working directory is `work` does. */
+  function execute(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
+    const session = { sessionConfiguration: { cwd: work } } as unknown as Session;
+    return runWithCurrentRuntimeSession(session, () => toolNamed(toolName).execute({ ...args }));
+  }
+
+  /**
+   * One tool call in the order the router runs it: the start event, the
+   * wait for file history to record what the call is about to change, the
+   * tool, the completion event. `id` names the two events.
+   */
+  async function call(
+    id: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    sidecar.onEvent(started(`${id}-started`, toolName, args));
+    await sidecar.captureBeforeToolCall(toolName, args);
+    const result = await execute(toolName, args);
+    sidecar.onEvent(completed(`${id}-done`));
+    await hist.flush();
+    return {
+      ...(JSON.parse(String(result.content)) as Record<string, unknown>),
+      ...(result.isError === true ? { isError: true } : {}),
+    };
+  }
+
+  function snapshotFor(messageId: string): FileHistorySnapshot {
+    const snapshot = hist.getState().snapshots.find((candidate) =>
+      candidate.messageId === messageId);
+    if (snapshot === undefined) throw new Error(`no snapshot for ${messageId}`);
+    return snapshot;
+  }
+
+  function snapshotIds(): string[] {
+    return hist.getState().snapshots.map((snapshot) => snapshot.messageId);
+  }
+
+  /** Content of the backup that the snapshot `messageId` holds for `path`. */
+  function contentAt(messageId: string, path: string): string {
+    const entry = snapshotFor(messageId).trackedFileBackups[path];
+    if (entry === undefined || entry.backupFileName === null) {
+      throw new Error(`no backup of ${path} at ${messageId}`);
+    }
+    return readFileSync(entry.backupFileName, "utf8");
+  }
+
+  /**
+   * A move whose source cannot be backed up, in the order the router runs
+   * it, and then a rewind to the user message before it. The start event's
+   * own attempt at the backup is waited for, so that it is over, like the
+   * capture's, when the tool runs.
+   */
+  async function moveWithoutBackupThenRewind(
+    source: string,
+    destination: string,
+  ): Promise<void> {
+    const args = { source, destination };
+    sidecar.onEvent(started("move-started", "system.move", args));
+    await vi.waitFor(
+      () => expect(diagnostics).toEqual(["file_history_degraded"]),
+      { timeout: 10_000, interval: 5 },
+    );
+    await sidecar.captureBeforeToolCall("system.move", args);
+    expect(diagnostics).toEqual(["file_history_degraded", "file_history_degraded"]);
+    await expect(execute("system.move", args)).resolves.not.toMatchObject({ isError: true });
+    sidecar.onEvent(completed("move-done"));
+    await hist.flush();
+    expect(existsSync(source)).toBe(false);
+    expect(existsSync(destination)).toBe(true);
+
+    // Without a backup of the source nothing of the move is on record. A
+    // destination on record as "did not exist" would be removed now, and
+    // there would be nothing to put back at the source.
+    expect(hist.getState().trackedFiles.size).toBe(0);
+    expect(snapshotIds()).toEqual(["user-1", "move-done"]);
+    await expect(hist.previewRewind("user-1")).resolves.toMatchObject({ filesChanged: [] });
+    await expect(hist.rewindToMessage("user-1")).resolves.toEqual([]);
+    expect(existsSync(source)).toBe(false);
+  }
+
+  beforeEach(() => {
+    project = mkdtempSync(join(tmpdir(), "agenc-filehist-move-"));
+    work = join(project, "work");
+    mkdirSync(work);
+    diagnostics = [];
+    hist = new FileHistory({
+      projectDir: project,
+      sessionId: "move-and-delete",
+      onDiagnostic: ({ cause }) => { diagnostics.push(cause); },
+    });
+    sidecar = new FileHistorySidecar({ fileHistory: hist, workspaceRoot: work });
+  });
+  afterEach(() => {
+    hist.stop();
+    if (project) rmSync(project, { recursive: true, force: true });
+  });
+
+  describe("in a session whose working directory is not the workspace root", () => {
+    // What entering a worktree does. The tool runs with `work` as the
+    // session's working directory (`execute`), while the sidecar keeps the
+    // workspace root it was created with. The same relative name exists in
+    // both places.
+    let main = "";
+
+    beforeEach(() => {
+      main = join(project, "main");
+      mkdirSync(main);
+      writeFileSync(join(main, "draft.txt"), "MAIN\n", "utf8");
+      writeFileSync(join(work, "draft.txt"), "WORKTREE\n", "utf8");
+      sidecar = new FileHistorySidecar({
+        fileHistory: hist,
+        workspaceRoot: main,
+        workingDirectory: () => work,
+      });
+    });
+
+    test("a relative system.move is recorded where the tool makes it, and a rewind undoes it", async () => {
+      const source = join(work, "draft.txt");
+      const destination = join(work, "final.txt");
+
+      sidecar.onEvent(userMessage("user-1"));
+      // A relative source and an absolute destination: read against the
+      // workspace root, the source on record would be another file, and the
+      // rewind would remove the destination with nothing to put back.
+      await expect(call("move", "system.move", { source: "draft.txt", destination }))
+        .resolves.toMatchObject({ moved: true });
+      expect(existsSync(source)).toBe(false);
+      expect(readFileSync(destination, "utf8")).toBe("WORKTREE\n");
+
+      expect([...hist.getState().trackedFiles]).toEqual([source, destination]);
+      expect(contentAt("user-1", source)).toBe("WORKTREE\n");
+      expect(snapshotFor("user-1").trackedFileBackups[destination])
+        .toMatchObject({ backupFileName: null });
+
+      await expect(hist.rewindToMessage("user-1")).resolves.toEqual([source, destination]);
+      expect(readFileSync(source, "utf8")).toBe("WORKTREE\n");
+      expect(existsSync(destination)).toBe(false);
+      // The file of the same name in the workspace root was never involved.
+      expect(readFileSync(join(main, "draft.txt"), "utf8")).toBe("MAIN\n");
+      expect(diagnostics).toEqual([]);
+    });
+
+    test("a relative system.delete is recorded where the tool makes it, and a rewind undoes it", async () => {
+      const target = join(work, "draft.txt");
+
+      sidecar.onEvent(userMessage("user-1"));
+      await expect(call("delete", "system.delete", { path: "draft.txt" }))
+        .resolves.toMatchObject({ deleted: true });
+      expect(existsSync(target)).toBe(false);
+
+      expect([...hist.getState().trackedFiles]).toEqual([target]);
+      await expect(hist.rewindToMessage("user-1")).resolves.toEqual([target]);
+      expect(readFileSync(target, "utf8")).toBe("WORKTREE\n");
+      expect(readFileSync(join(main, "draft.txt"), "utf8")).toBe("MAIN\n");
+      expect(diagnostics).toEqual([]);
+    });
+
+    test("the working directory is asked for at each call", async () => {
+      let directory = main;
+      sidecar = new FileHistorySidecar({
+        fileHistory: hist,
+        workspaceRoot: main,
+        workingDirectory: () => directory,
+      });
+
+      await sidecar.captureBeforeToolCall("system.delete", { path: "draft.txt" });
+      expect([...hist.getState().trackedFiles]).toEqual([join(main, "draft.txt")]);
+      // The session enters the worktree between two calls. The start event
+      // and the capture both ask again.
+      directory = work;
+      sidecar.onEvent(started("delete-started", "system.delete", { path: "draft.txt" }));
+      await vi.waitFor(
+        () => expect([...hist.getState().trackedFiles])
+          .toEqual([join(main, "draft.txt"), join(work, "draft.txt")]),
+        { timeout: 10_000, interval: 5 },
+      );
+      writeFileSync(join(work, "notes.txt"), "NOTES\n", "utf8");
+      await sidecar.captureBeforeToolCall("system.delete", { path: "notes.txt" });
+      expect([...hist.getState().trackedFiles]).toEqual([
+        join(main, "draft.txt"),
+        join(work, "draft.txt"),
+        join(work, "notes.txt"),
+      ]);
+    });
+
+    test.each([
+      ["has no answer", (): string | undefined => undefined],
+      ["answers with an empty string", (): string | undefined => " "],
+      ["throws", (): string | undefined => { throw new Error("no session"); }],
+    ])("a working directory that %s leaves the workspace root as the base", async (_name, workingDirectory) => {
+      sidecar = new FileHistorySidecar({ fileHistory: hist, workspaceRoot: main, workingDirectory });
+
+      // The capture and the start event, each with a file of its own, so
+      // that each one's answer shows.
+      writeFileSync(join(main, "notes.txt"), "MAIN NOTES\n", "utf8");
+      writeFileSync(join(work, "notes.txt"), "WORKTREE NOTES\n", "utf8");
+      await sidecar.captureBeforeToolCall("system.delete", { path: "draft.txt" });
+      expect([...hist.getState().trackedFiles]).toEqual([join(main, "draft.txt")]);
+      sidecar.onEvent(started("delete-started", "system.delete", { path: "notes.txt" }));
+      await vi.waitFor(
+        () => expect([...hist.getState().trackedFiles])
+          .toEqual([join(main, "draft.txt"), join(main, "notes.txt")]),
+        { timeout: 10_000, interval: 5 },
+      );
+      expect(diagnostics).toEqual([]);
+    });
+  });
+
+  test("a rewind after system.move puts the file back and removes a destination that did not exist", async () => {
+    const source = join(work, "draft.txt");
+    const destination = join(work, "final.txt");
+    writeFileSync(source, "DRAFT\n", "utf8");
+
+    sidecar.onEvent(userMessage("user-1"));
+    await expect(call("move", "system.move", { source, destination }))
+      .resolves.toEqual({ source, destination, moved: true });
+    expect(existsSync(source)).toBe(false);
+    expect(readFileSync(destination, "utf8")).toBe("DRAFT\n");
+
+    // Both "before" states sit on the barrier of the user message: what the
+    // source held, and that there was no destination.
+    expect(snapshotIds()).toEqual(["user-1", "move-done"]);
+    expect([...hist.getState().trackedFiles]).toEqual([source, destination]);
+    expect(contentAt("user-1", source)).toBe("DRAFT\n");
+    expect(snapshotFor("user-1").trackedFileBackups[destination])
+      .toMatchObject({ backupFileName: null, version: 1 });
+    // The call counted as an edit: the snapshot of its completion holds the
+    // result, a source that is gone and a destination with its content.
+    expect(snapshotFor("move-done").trackedFileBackups[source])
+      .toMatchObject({ backupFileName: null, version: 2 });
+    expect(contentAt("move-done", destination)).toBe("DRAFT\n");
+
+    await expect(hist.previewRewind("user-1")).resolves.toMatchObject({
+      filesChanged: [source, destination],
+    });
+    await expect(hist.rewindToMessage("user-1")).resolves.toEqual([source, destination]);
+    expect(readFileSync(source, "utf8")).toBe("DRAFT\n");
+    expect(existsSync(destination)).toBe(false);
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("a rewind after an overwriting system.move restores the file that was replaced", async () => {
+    const source = join(work, "draft.txt");
+    const destination = join(work, "config.txt");
+    writeFileSync(source, "DRAFT\n", "utf8");
+    writeFileSync(destination, "IMPORTANT EXISTING CONTENT\n", "utf8");
+
+    sidecar.onEvent(userMessage("user-1"));
+    // Without the flag the tool refuses, and nothing is replaced.
+    const refused = await call("refused", "system.move", { source, destination });
+    expect(refused).toMatchObject({ isError: true });
+    expect(String(refused.error)).toContain("Destination already exists");
+    expect(readFileSync(destination, "utf8")).toBe("IMPORTANT EXISTING CONTENT\n");
+    // Both files went on record all the same, and there is nothing to undo.
+    expect([...hist.getState().trackedFiles]).toEqual([source, destination]);
+    await expect(hist.previewRewind("user-1")).resolves.toMatchObject({ filesChanged: [] });
+
+    await expect(call("move", "system.move", { source, destination, overwrite: true }))
+      .resolves.toEqual({ source, destination, moved: true, overwritten: true });
+    expect(existsSync(source)).toBe(false);
+    expect(readFileSync(destination, "utf8")).toBe("DRAFT\n");
+    expect(contentAt("user-1", destination)).toBe("IMPORTANT EXISTING CONTENT\n");
+    expect(contentAt("move-done", destination)).toBe("DRAFT\n");
+
+    await expect(hist.rewindToMessage("user-1")).resolves.toEqual([source, destination]);
+    expect(readFileSync(source, "utf8")).toBe("DRAFT\n");
+    expect(readFileSync(destination, "utf8")).toBe("IMPORTANT EXISTING CONTENT\n");
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("a file moved out of a directory that is then removed is put back by a rewind", async () => {
+    mkdirSync(join(work, "old"));
+    const source = join(work, "old", "a.txt");
+    const destination = join(work, "new", "a.txt");
+    writeFileSync(source, "PRECIOUS\n", "utf8");
+
+    sidecar.onEvent(userMessage("user-1"));
+    // Relative paths: the sidecar reads them against its workspace root, the
+    // tool against the session's working directory.
+    await expect(call("move", "system.move", { source: "old/a.txt", destination: "new/a.txt" }))
+      .resolves.toMatchObject({ moved: true });
+    expect([...hist.getState().trackedFiles]).toEqual([source, destination]);
+    expect(readFileSync(destination, "utf8")).toBe("PRECIOUS\n");
+    // The emptied directory goes too. Directories are not tracked.
+    rmdirSync(join(work, "old"));
+    await hist.makeSnapshot("turn-1");
+
+    await expect(hist.rewindToMessage("user-1")).resolves.toEqual([source, destination]);
+
+    // Without its directory the restore used to fail unnoticed, and the
+    // destination was removed all the same: the file was in neither place.
+    expect(readFileSync(source, "utf8")).toBe("PRECIOUS\n");
+    expect(existsSync(destination)).toBe(false);
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("a rewind after system.delete restores the file", async () => {
+    const notes = join(work, "notes.txt");
+    writeFileSync(notes, "NOTES\n", "utf8");
+
+    sidecar.onEvent(userMessage("user-1"));
+    await expect(call("delete", "system.delete", { path: "notes.txt" }))
+      .resolves.toEqual({ path: "notes.txt", deleted: true });
+    expect(existsSync(notes)).toBe(false);
+
+    expect(snapshotIds()).toEqual(["user-1", "delete-done"]);
+    expect(contentAt("user-1", notes)).toBe("NOTES\n");
+    expect(snapshotFor("delete-done").trackedFileBackups[notes])
+      .toMatchObject({ backupFileName: null, version: 2 });
+
+    await expect(hist.rewindToMessage("user-1")).resolves.toEqual([notes]);
+    expect(readFileSync(notes, "utf8")).toBe("NOTES\n");
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("the start event alone backs up both sides of a move", async () => {
+    // A session without the dispatch hook still hears the events.
+    const source = join(work, "draft.txt");
+    const destination = join(work, "final.txt");
+    writeFileSync(source, "DRAFT\n", "utf8");
+
+    sidecar.onEvent(started("move-started", "system.move", { source, destination }));
+    // The sidecar looks at the two paths first and queues their backup then.
+    await vi.waitFor(
+      () => expect([...hist.getState().trackedFiles]).toEqual([source, destination]),
+      { timeout: 10_000, interval: 5 },
+    );
+    await execute("system.move", { source, destination });
+    sidecar.onEvent(completed("move-done"));
+    await hist.flush();
+
+    expect(snapshotIds()).toEqual(["move-started", "move-done"]);
+    expect(contentAt("move-started", source)).toBe("DRAFT\n");
+    expect(contentAt("move-done", destination)).toBe("DRAFT\n");
+    await expect(hist.rewindToMessage("move-started")).resolves.toEqual([source, destination]);
+    expect(readFileSync(source, "utf8")).toBe("DRAFT\n");
+    expect(existsSync(destination)).toBe(false);
+  });
+
+  test("a move onto itself tracks the one file once", async () => {
+    const file = join(work, "same.txt");
+    writeFileSync(file, "SAME\n", "utf8");
+
+    sidecar.onEvent(userMessage("user-1"));
+    await expect(call("move", "system.move", { source: file, destination: "./same.txt" }))
+      .resolves.toMatchObject({ moved: true });
+
+    expect([...hist.getState().trackedFiles]).toEqual([file]);
+    expect(listBackupFiles(hist.historyDir)).toHaveLength(1);
+    await expect(hist.rewindToMessage("user-1")).resolves.toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe("SAME\n");
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("a file moved into an existing directory by name tracks the file and leaves the directory out", async () => {
+    const source = join(work, "notes.txt");
+    const directory = join(work, "docs");
+    writeFileSync(source, "NOTES\n", "utf8");
+    mkdirSync(directory);
+
+    // The tool refuses: rename does not put a file into a directory.
+    const refused = await call("move", "system.move", { source, destination: directory });
+    expect(refused).toMatchObject({ isError: true });
+    expect(String(refused.error)).toContain("Give the full destination path");
+
+    expect([...hist.getState().trackedFiles]).toEqual([source]);
+    await hist.makeSnapshot("turn-1");
+    // A tracked directory would fail every snapshot from here on.
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("moving or deleting a directory tracks nothing and is followed by no snapshot", async () => {
+    mkdirSync(join(work, "pkg"));
+    writeFileSync(join(work, "pkg", "index.js"), "export {};\n", "utf8");
+    const queue = hist["pending"];
+    const moveArgs = { source: join(work, "pkg"), destination: join(work, "lib") };
+    const deleteArgs = { path: join(work, "lib"), recursive: true };
+
+    expect(sidecar.captureBeforeToolCall("system.move", moveArgs)).toBeUndefined();
+    sidecar.onEvent(started("move-started", "system.move", moveArgs));
+    await expect(execute("system.move", moveArgs)).resolves.not.toMatchObject({ isError: true });
+    sidecar.onEvent(completed("move-done"));
+    expect(readFileSync(join(work, "lib", "index.js"), "utf8")).toBe("export {};\n");
+
+    expect(sidecar.captureBeforeToolCall("system.delete", deleteArgs)).toBeUndefined();
+    sidecar.onEvent(started("delete-started", "system.delete", deleteArgs));
+    await expect(execute("system.delete", deleteArgs)).resolves.not.toMatchObject({ isError: true });
+    sidecar.onEvent(completed("delete-done"));
+    expect(existsSync(join(work, "lib"))).toBe(false);
+
+    // Nothing was ever queued: no backup, and no completion snapshot.
+    expect(hist["pending"]).toBe(queue);
+    expect(hist.getState().snapshots).toEqual([]);
+    // The new name of the directory is not on record as a missing file,
+    // which every later snapshot would then fail on.
+    await hist.makeSnapshot("turn-1");
+    expect(hist.getState().trackedFiles.size).toBe(0);
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("a call the tool refuses for a missing source or path has nothing to capture", async () => {
+    const missing = join(work, "missing.txt");
+    const queue = hist["pending"];
+
+    expect(sidecar.captureBeforeToolCall("system.move", {
+      source: missing,
+      destination: join(work, "new.txt"),
+    })).toBeUndefined();
+    expect(sidecar.captureBeforeToolCall("system.delete", { path: missing })).toBeUndefined();
+    // A sidecar that was given no workspace root resolves nothing.
+    writeFileSync(join(work, "a.txt"), "a\n", "utf8");
+    const rootless = new FileHistorySidecar({ fileHistory: hist });
+    expect(rootless.captureBeforeToolCall("system.delete", { path: join(work, "a.txt") }))
+      .toBeUndefined();
+
+    expect(hist["pending"]).toBe(queue);
+    // The destination of the refused move is not on record as a file that
+    // "did not exist", so no rewind will ever remove something there.
+    expect(hist.getState().trackedFiles.size).toBe(0);
+  });
+
+  itOnPosix("a moved FIFO is left alone by snapshots and by a rewind", async () => {
+    const source = join(work, "events.pipe");
+    const destination = join(work, "moved.pipe");
+    execFileSync("mkfifo", [source]);
+
+    await hist.makeSnapshot("user-1");
+    const args = { source, destination };
+    expect(sidecar.captureBeforeToolCall("system.move", args)).toBeUndefined();
+    sidecar.onEvent(started("move-started", "system.move", args));
+    await expect(execute("system.move", args)).resolves.not.toMatchObject({ isError: true });
+    sidecar.onEvent(completed("move-done"));
+    await hist.makeSnapshot("turn-1");
+
+    await expect(hist.rewindToMessage("user-1")).resolves.toEqual([]);
+    // Not undone, and not destroyed either: the pipe is where the tool put it.
+    expect(lstatSync(destination).isFIFO()).toBe(true);
+    expect(snapshotIds()).toEqual(["user-1", "turn-1"]);
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("a file written and then moved in one batch is removed by a rewind, wherever the move put it", async () => {
+    const created = join(work, "new.txt");
+    const destination = join(work, "other.txt");
+    const write = { file_path: created, content: "NEW\n" };
+    const args = { source: created, destination };
+
+    sidecar.onEvent(userMessage("user-1"));
+    // Both calls are announced before either runs, and the move runs before
+    // the completion of the Write is on record.
+    sidecar.onEvent(started("write-started", "Write", write));
+    sidecar.onEvent(started("move-started", "system.move", args));
+    await sidecar.captureBeforeToolCall("Write", write);
+    writeFileSync(created, "NEW\n", "utf8");
+    await sidecar.captureBeforeToolCall("system.move", args);
+    await expect(execute("system.move", args)).resolves.not.toMatchObject({ isError: true });
+    sidecar.onEvent(completed("write-done"));
+    sidecar.onEvent(completed("move-done"));
+    await hist.flush();
+
+    // The source is on record as absent, which it was before the message.
+    // That is on record all the same, so the destination is recorded too.
+    for (const path of [created, destination]) {
+      expect(snapshotFor("user-1").trackedFileBackups[path])
+        .toMatchObject({ backupFileName: null, version: 1 });
+    }
+    await expect(hist.rewindToMessage("user-1")).resolves.toEqual([destination]);
+    expect(readdirSync(work)).toEqual([]);
+    expect(diagnostics).toEqual([]);
+  });
+
+  itUnprivileged("a rewind after the move of a file that cannot be read leaves it at its destination", async () => {
+    const source = join(work, "report.txt");
+    const destination = join(work, "final.txt");
+    writeFileSync(source, "ONLY COPY\n", "utf8");
+    chmodSync(source, 0o000);
+
+    sidecar.onEvent(userMessage("user-1"));
+    await moveWithoutBackupThenRewind(source, destination);
+
+    // Not undone, and not destroyed: the only copy is where the tool put it.
+    chmodSync(destination, 0o600);
+    expect(readFileSync(destination, "utf8")).toBe("ONLY COPY\n");
+    expect(diagnostics).toEqual(["file_history_degraded", "file_history_degraded"]);
+  });
+
+  itUnprivileged("a rewind after a move made while the history directory cannot be written leaves the file at its destination", async () => {
+    const source = join(work, "report.txt");
+    const destination = join(work, "final.txt");
+    writeFileSync(source, "ONLY COPY\n", "utf8");
+
+    sidecar.onEvent(userMessage("user-1"));
+    await hist.flush();
+    chmodSync(hist.historyDir, 0o555);
+    try {
+      await moveWithoutBackupThenRewind(source, destination);
+    } finally {
+      chmodSync(hist.historyDir, 0o755);
+    }
+
+    expect(readFileSync(destination, "utf8")).toBe("ONLY COPY\n");
+    // The index could not take the snapshot of the completion either.
+    expect(diagnostics).toEqual([
+      "file_history_degraded",
+      "file_history_degraded",
+      "file_history_save_failed",
+    ]);
+  });
+});
+
+describe("fileHistoryRewind restores into a directory that is gone (#3437)", () => {
+  let project = "";
+  let work = "";
+  let hist: FileHistory;
+
+  beforeEach(() => {
+    project = mkdtempSync(join(tmpdir(), "agenc-filehist-rewind-dirs-"));
+    work = join(project, "work");
+    mkdirSync(work);
+    hist = new FileHistory({ projectDir: project, sessionId: "rewind-directories" });
+  });
+  afterEach(() => {
+    hist.stop();
+    if (project) rmSync(project, { recursive: true, force: true });
+  });
+
+  test("every missing level of the directory is created again", async () => {
+    const file = join(work, "a", "b", "c", "deep.txt");
+    const sibling = join(work, "top.txt");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "DEEP\n", "utf8");
+    writeFileSync(sibling, "TOP\n", "utf8");
+    await hist.trackEdits([file, sibling], "m1");
+    await hist.makeSnapshot("m1");
+    rmSync(join(work, "a"), { recursive: true });
+    await hist.makeSnapshot("m2");
+
+    await expect(fileHistoryRewind(hist.getState(), "m1")).resolves.toEqual([file]);
+
+    expect(readFileSync(file, "utf8")).toBe("DEEP\n");
+    expect(readFileSync(sibling, "utf8")).toBe("TOP\n");
+  });
+
+  test("rewindToMessage does the same, and a preview creates nothing", async () => {
+    const file = join(work, "gone", "kept.txt");
+    mkdirSync(dirname(file));
+    writeFileSync(file, "KEPT\n", "utf8");
+    await hist.trackEdit(file, "m1");
+    await hist.makeSnapshot("m1");
+    rmSync(dirname(file), { recursive: true });
+    await hist.makeSnapshot("m2");
+
+    await expect(hist.previewRewind("m1")).resolves.toMatchObject({ filesChanged: [file] });
+    expect(existsSync(dirname(file))).toBe(false);
+
+    await expect(hist.rewindToMessage("m1")).resolves.toEqual([file]);
+    expect(readFileSync(file, "utf8")).toBe("KEPT\n");
+  });
+
+  test("no directory is created for a file that the rewind removes or leaves as it is", async () => {
+    const created = join(work, "later", "created.txt");
+    const steady = join(work, "steady.txt");
+    writeFileSync(steady, "STEADY\n", "utf8");
+    // On record as absent, then created, then removed with its directory.
+    await hist.trackEdits([created, steady], "m1");
+    await hist.makeSnapshot("m1");
+    mkdirSync(dirname(created));
+    writeFileSync(created, "CREATED\n", "utf8");
+    await hist.makeSnapshot("m2");
+    rmSync(dirname(created), { recursive: true });
+
+    await expect(fileHistoryRewind(hist.getState(), "m1")).resolves.toEqual([]);
+
+    expect(existsSync(dirname(created))).toBe(false);
+    expect(readdirSync(work)).toEqual(["steady.txt"]);
+  });
+
+  test("a directory that cannot be created skips that file and restores the others", async () => {
+    const blocked = join(work, "blocked", "inner.txt");
+    const other = join(work, "other.txt");
+    mkdirSync(dirname(blocked));
+    writeFileSync(blocked, "INNER\n", "utf8");
+    writeFileSync(other, "OTHER\n", "utf8");
+    await hist.trackEdits([blocked, other], "m1");
+    await hist.makeSnapshot("m1");
+    // A file now stands where the directory was.
+    rmSync(dirname(blocked), { recursive: true });
+    writeFileSync(dirname(blocked), "in the way\n", "utf8");
+    writeFileSync(other, "CHANGED\n", "utf8");
+    await hist.makeSnapshot("m2");
+
+    await expect(fileHistoryRewind(hist.getState(), "m1")).resolves.toEqual([other]);
+
+    expect(readFileSync(dirname(blocked), "utf8")).toBe("in the way\n");
+    expect(readFileSync(other, "utf8")).toBe("OTHER\n");
   });
 });
 
