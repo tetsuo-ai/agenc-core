@@ -52,6 +52,7 @@ import {
   readSandboxExecutionSurface,
 } from "../sandbox/execution-broker.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
+import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 
 function makeInvocation(callId: string, toolName: string): ToolInvocation {
   return {
@@ -2176,6 +2177,323 @@ describe("T11 W3-B — permission evaluator integration", () => {
     });
     expect(out.isError).toBe(false);
     expect(executed).toBe(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// #3436: file history captures a file's state before the tool writes
+// ─────────────────────────────────────────────────────────────────────
+
+describe("runToolUse: file-state capture before the tool runs (#3436)", () => {
+  type CaptureFn = (
+    toolName: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ) => unknown;
+
+  /** An invocation whose session shim also has the given members. */
+  function invocationWith(
+    members: Record<string, unknown>,
+    toolName = "Write",
+  ): ToolInvocation {
+    return {
+      ...makeInvocation("c1", toolName),
+      session: { services: {}, ...members } as never,
+    };
+  }
+
+  function writeTool(onExecute: (args: Record<string, unknown>) => void): Tool {
+    return {
+      name: "Write",
+      description: "",
+      inputSchema: {},
+      execute: async (args) => {
+        onExecute(args);
+        return { content: "wrote" };
+      },
+    };
+  }
+
+  /**
+   * What happens between the mode-change subscription, which is installed
+   * directly before the tool starts, and the tool itself. The subscription
+   * queues a microtask: it runs before the tool only when an await sits
+   * between the two.
+   */
+  async function orderOfStart(members: Record<string, unknown>): Promise<string[]> {
+    const order: string[] = [];
+    const modeChangeRegistry = {
+      subscribeToModeChange: () => {
+        order.push("subscribed");
+        queueMicrotask(() => order.push("microtask"));
+        return () => {};
+      },
+    } as unknown as PermissionModeRegistry;
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: writeTool(() => order.push("execute")),
+      invocation: invocationWith(members),
+      modeChangeRegistry,
+      abortController: new AbortController(),
+    });
+    expect(out.isError).toBe(false);
+    return order;
+  }
+
+  /** A real engine and sidecar whose queue is held, so that a capture has to wait. */
+  async function sidecarWithHeldQueue(captureTimeoutMs?: number) {
+    const project = await mkdtemp(join(tmpdir(), "agenc-exec-capture-"));
+    const diagnostics: string[] = [];
+    const fileHistory = new FileHistory({
+      projectDir: project,
+      sessionId: "capture",
+      onDiagnostic: ({ cause }) => { diagnostics.push(cause); },
+    });
+    const sidecar = new FileHistorySidecar({
+      fileHistory,
+      workspaceRoot: project,
+      ...(captureTimeoutMs !== undefined ? { captureTimeoutMs } : {}),
+    });
+    let releaseQueue = (): void => {};
+    const queueHeld = new Promise<void>((resolveHeld) => { releaseQueue = resolveHeld; });
+    void fileHistory["enqueue"](() => queueHeld);
+    // The barrier snapshot of a new user message is queued behind it, so
+    // every call waits, whatever its args.
+    sidecar.onEvent({
+      id: "user-1",
+      msg: { type: "user_message", payload: { message: "go" } },
+    } as Parameters<FileHistorySidecar["onEvent"]>[0]);
+    const capture = vi.fn<CaptureFn>((toolName, args, signal) =>
+      sidecar.captureBeforeToolCall(toolName, args, signal));
+    return {
+      fileHistory,
+      diagnostics,
+      capture,
+      async cleanup(): Promise<void> {
+        releaseQueue();
+        await fileHistory.flush();
+        fileHistory.stop();
+        await rm(project, { recursive: true, force: true });
+      },
+    };
+  }
+
+  test("a session without the capture method starts its tool without an extra await", async () => {
+    expect(await orderOfStart({})).toEqual(["subscribed", "execute", "microtask"]);
+    // A member of that name that is not callable is no method either.
+    expect(await orderOfStart({ captureFileStateBeforeToolCall: "not a function" }))
+      .toEqual(["subscribed", "execute", "microtask"]);
+  });
+
+  test("a capture with nothing to wait for adds no await either", async () => {
+    const capture = vi.fn<CaptureFn>(() => undefined);
+
+    expect(await orderOfStart({ captureFileStateBeforeToolCall: capture }))
+      .toEqual(["subscribed", "execute", "microtask"]);
+    expect(capture).toHaveBeenCalledOnce();
+  });
+
+  test("a capture that returns a promise is asked after the subscription and awaited before the tool", async () => {
+    const order: string[] = [];
+    let finishCapture = (): void => {};
+    const captured = new Promise<void>((resolveCaptured) => { finishCapture = resolveCaptured; });
+    const capture = vi.fn<CaptureFn>(() => {
+      order.push("capture");
+      return captured;
+    });
+    const modeChangeRegistry = {
+      subscribeToModeChange: () => {
+        order.push("subscribed");
+        return () => { order.push("unsubscribed"); };
+      },
+    } as unknown as PermissionModeRegistry;
+
+    const running = runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: writeTool(() => order.push("execute")),
+      invocation: invocationWith({ captureFileStateBeforeToolCall: capture }),
+      modeChangeRegistry,
+      abortController: new AbortController(),
+    });
+    await vi.waitFor(() => expect(capture).toHaveBeenCalled(), { timeout: 10_000, interval: 5 });
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    // Still waiting: the tool has not started.
+    expect(order).toEqual(["subscribed", "capture"]);
+
+    finishCapture();
+    const out = await running;
+    expect(out.isError).toBe(false);
+    expect(out.content).toBe("wrote");
+    expect(order).toEqual(["subscribed", "capture", "execute", "unsubscribed"]);
+  });
+
+  test("the capture gets the tool's canonical name, the final args and the effective signal", async () => {
+    const { context } = buildEvaluatorContext("default");
+    const finalArgs = { file_path: "final.txt", content: "final" };
+    const canUseTool = async () =>
+      ({ behavior: "allow" as const, updatedInput: finalArgs }) as PermissionResult;
+    const capture = vi.fn<CaptureFn>(() => undefined);
+    const session = { services: {}, captureFileStateBeforeToolCall: capture };
+    const callSignal = new AbortController().signal;
+    let seenArgs: Record<string, unknown> = {};
+
+    const out = await runToolUse('{"file_path":"model.txt","content":"model"}', {
+      signal: callSignal,
+      currentTurnId: "t1",
+      tool: writeTool((args) => { seenArgs = args; }),
+      // The model called the tool by another name than its canonical one.
+      invocation: { ...makeInvocation("c1", "write_file"), session: session as never },
+      canUseTool,
+      permissionContext: context,
+      abortController: new AbortController(),
+    });
+
+    expect(out.isError).toBe(false);
+    expect(capture).toHaveBeenCalledExactlyOnceWith("Write", finalArgs, callSignal);
+    // Called as a method of the session.
+    expect(capture.mock.contexts[0]).toBe(session);
+    // The args the permission step settled on, without the runtime's own
+    // hidden fields that the tool gets on its copy.
+    expect(seenArgs).toEqual(finalArgs);
+    expect(Object.getOwnPropertyNames(seenArgs)).toContain("__callId");
+    expect(Object.getOwnPropertyNames(capture.mock.calls[0]![1]).sort())
+      .toEqual(["content", "file_path"]);
+  });
+
+  test("without a call signal the capture gets the abort controller's signal", async () => {
+    const capture = vi.fn<CaptureFn>(() => undefined);
+    const abortController = new AbortController();
+
+    await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: writeTool(() => {}),
+      invocation: invocationWith({ captureFileStateBeforeToolCall: capture }),
+      abortController,
+    });
+    await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: writeTool(() => {}),
+      invocation: invocationWith({ captureFileStateBeforeToolCall: capture }),
+    });
+
+    expect(capture.mock.calls).toEqual([
+      ["Write", {}, abortController.signal],
+      ["Write", {}, undefined],
+    ]);
+  });
+
+  test.each<[string, CaptureFn]>([
+    ["throws", () => { throw new Error("capture exploded"); }],
+    ["rejects", () => Promise.reject(new Error("capture rejected"))],
+    ["returns something that is not a promise", () => "pending"],
+  ])("a capture that %s does not fail the call", async (_what, capture) => {
+    let executed = 0;
+    const log = new EventLog();
+    const problems: string[] = [];
+    log.subscribe((event) => {
+      if (event.msg.type === "error" || event.msg.type === "warning") {
+        problems.push(event.msg.payload.cause);
+      }
+    });
+
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: writeTool(() => { executed += 1; }),
+      invocation: invocationWith({ captureFileStateBeforeToolCall: capture }),
+      eventLog: log,
+    });
+
+    expect(out.isError).toBe(false);
+    expect(out.content).toBe("wrote");
+    expect(executed).toBe(1);
+    expect(problems).toEqual([]);
+  });
+
+  test("a call that the permission gate refuses is never captured", async () => {
+    const { context } = buildEvaluatorContext("default", {
+      alwaysDenyRules: { session: ["Write"] },
+    });
+    const capture = vi.fn<CaptureFn>(() => undefined);
+    let executed = 0;
+
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: writeTool(() => { executed += 1; }),
+      invocation: invocationWith({ captureFileStateBeforeToolCall: capture }),
+      canUseTool: hasPermissionsToUseTool,
+      permissionContext: context,
+    });
+
+    expect(out.isError).toBe(true);
+    expect(executed).toBe(0);
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  test("a switch to plan mode while the capture waits aborts the call before the tool runs", async () => {
+    const { context, registry } = buildEvaluatorContext("default", {
+      alwaysAllowRules: { session: ["Write"] },
+    });
+    const subscribers = (registry as unknown as { subscribers: Set<unknown> }).subscribers;
+    const subscribersBefore = subscribers.size;
+    const { capture, fileHistory, diagnostics, cleanup } = await sidecarWithHeldQueue();
+    const abortCtl = new AbortController();
+    let executed = 0;
+    try {
+      const running = runToolUse("{}", {
+        signal: abortCtl.signal,
+        currentTurnId: "t1",
+        tool: writeTool(() => { executed += 1; }),
+        invocation: invocationWith({ captureFileStateBeforeToolCall: capture }),
+        canUseTool: hasPermissionsToUseTool,
+        permissionContext: context,
+        modeChangeRegistry: registry,
+        abortController: abortCtl,
+      });
+      await vi.waitFor(() => expect(capture).toHaveBeenCalled(), { timeout: 10_000, interval: 5 });
+      // The real sidecar is waiting for the barrier snapshot.
+      expect(capture.mock.results[0]!.value).toBeInstanceOf(Promise);
+      expect(subscribers.size).toBe(subscribersBefore + 1);
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      expect(executed).toBe(0);
+
+      await registry.update({ ...registry.current(), mode: "plan" as PermissionMode });
+      const out = await running;
+
+      expect(out.isError).toBe(true);
+      // Aborted tools surface `INTERRUPT_MESSAGE_FOR_TOOL_USE`.
+      expect(out.content).toContain("interrupted by user");
+      expect(abortCtl.signal.aborted).toBe(true);
+      expect(executed).toBe(0);
+      // The existing cleanup ran: no subscription is left behind.
+      expect(subscribers.size).toBe(subscribersBefore);
+      // The barrier had not finished: the abort is what ended the wait.
+      expect(fileHistory.hasSnapshotFor("user-1")).toBe(false);
+      expect(diagnostics).toEqual([]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("a capture that runs into its timeout lets the tool run", async () => {
+    const { capture, fileHistory, diagnostics, cleanup } = await sidecarWithHeldQueue(20);
+    let executed = 0;
+    try {
+      const out = await runToolUse("{}", {
+        currentTurnId: "t1",
+        tool: writeTool(() => { executed += 1; }),
+        invocation: invocationWith({ captureFileStateBeforeToolCall: capture }),
+        abortController: new AbortController(),
+      });
+
+      expect(out.isError).toBe(false);
+      expect(out.content).toBe("wrote");
+      expect(executed).toBe(1);
+      expect(fileHistory.hasSnapshotFor("user-1")).toBe(false);
+      await fileHistory["pendingDiagnostics"];
+      expect(diagnostics).toEqual(["file_history_capture_timeout"]);
+    } finally {
+      await cleanup();
+    }
   });
 });
 

@@ -23,7 +23,9 @@ import { toolStage } from "./stage-timing.js";
  *      rule `deny` / `ask`.
  *   5. Compatibility approval-modal fallback (only when the evaluator path is
  *      unavailable).
- *   6. Execute under timeout + abort race (I-9 / I-21).
+ *   6. Execute under timeout + abort race (I-9 / I-21). Directly before,
+ *      the session's file history may hold the call back until it has
+ *      recorded the state of the files the call is about to change.
  *   7. PostToolUse hooks; emit the six hook-attachment kinds on the
  *      live path (`hook_cancelled`, `hook_blocking_error`,
  *      `hook_additional_context`, `hook_stopped_continuation`,
@@ -1316,6 +1318,46 @@ function noteUnproductiveCall(
   return advised;
 }
 
+/**
+ * Ask the session to record the state of the files this call is about to
+ * change, before the tool can write to them. Duck-typed, because a caller
+ * may pass a session shim that has no such method. Returns a promise only
+ * when there is something to wait for, so every other call starts its tool
+ * without an extra await. File history must never fail a tool call: a throw
+ * or a rejection counts as "nothing to wait for".
+ */
+function startFileStateCapture(
+  session: ToolInvocation["session"],
+  toolName: string,
+  args: Record<string, unknown>,
+  signal: AbortSignal | undefined,
+): Promise<void> | undefined {
+  const capturing = session as unknown as {
+    readonly captureFileStateBeforeToolCall?: (
+      toolName: string,
+      args: Record<string, unknown>,
+      signal?: AbortSignal,
+    ) => unknown;
+  };
+  if (typeof capturing.captureFileStateBeforeToolCall !== "function") {
+    return undefined;
+  }
+  try {
+    const pending = capturing.captureFileStateBeforeToolCall(
+      toolName,
+      args,
+      signal,
+    );
+    if (!(pending instanceof Promise)) return undefined;
+    return pending.then(
+      () => undefined,
+      () => undefined,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 export async function runToolUse(
   rawArgs: string,
   opts: RunToolUseOptions,
@@ -2298,6 +2340,17 @@ export async function runToolUse(
   let dispatch: ToolDispatchResult;
   let rawExecutionSettled = false;
   try {
+    // File history records what the tool is about to change before the tool
+    // can write. This comes after the mode-change subscription, so a switch
+    // to plan mode during the wait still aborts the call, and inside this
+    // try, so the catch below cleans up when the wait ends in an abort.
+    const fileStateCapture = startFileStateCapture(
+      invocation.session,
+      tool.name,
+      inputForTool,
+      effectiveSignal,
+    );
+    if (fileStateCapture !== undefined) await fileStateCapture;
     const rawDispatch = await withTimeoutAndAbort(executePhysical, {
       timeoutMs,
       toolName: tool.name,

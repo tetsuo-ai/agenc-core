@@ -9,6 +9,7 @@ import {
   truncateSync,
   writeFileSync,
 } from "node:fs";
+import { getEventListeners } from "node:events";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -23,6 +24,8 @@ import {
   fileHistoryHasAnyChanges,
   fileHistoryRestoreStateFromLog,
   fileHistoryRewind,
+  resolveFileHistoryTargets,
+  type FileHistoryBackup,
   type FileHistorySnapshot,
 } from "./file-history.js";
 import { applyPatchText } from "../../src/tools/apply-patch/runtime.js";
@@ -1049,6 +1052,642 @@ describe("FileHistorySidecar event wiring", () => {
     await new Promise((resolveWait) => setTimeout(resolveWait, 50));
 
     expect(hist.getState().trackedFiles.size).toBe(0);
+  });
+});
+
+describe("resolveFileHistoryTargets (#3436)", () => {
+  let root = "";
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "agenc-filehist-targets-"));
+  });
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  test.each([
+    ["Edit", { file_path: "src/a.ts", old_string: "a", new_string: "b" }, "src/a.ts"],
+    ["MultiEdit", { file_path: "src/b.ts", edits: [] }, "src/b.ts"],
+    ["Write", { file_path: "notes/c.md", content: "c\n" }, "notes/c.md"],
+    ["NotebookEdit", { notebook_path: "nb/d.ipynb", new_source: "" }, "nb/d.ipynb"],
+    ["Edit", { path: "legacy/e.ts" }, "legacy/e.ts"],
+    ["Write", { filePath: "legacy/f.ts" }, "legacy/f.ts"],
+  ])("%s names one file, resolved against the workspace root", (toolName, args, named) => {
+    expect(resolveFileHistoryTargets({ toolName, args, workspaceRoot: root })).toEqual({
+      paths: [join(root, named)],
+      regularFilesOnly: false,
+    });
+  });
+
+  test("an edit tool path is normalized, and an absolute one is kept", () => {
+    const elsewhere = join(dirname(root), "elsewhere", "g.ts");
+    expect(resolveFileHistoryTargets({
+      toolName: "Edit",
+      args: { file_path: "src/./deep/../a.ts" },
+      workspaceRoot: root,
+    }).paths).toEqual([join(root, "src", "a.ts")]);
+    expect(resolveFileHistoryTargets({
+      toolName: "Write",
+      args: { file_path: elsewhere },
+      workspaceRoot: root,
+    }).paths).toEqual([elsewhere]);
+  });
+
+  test("a Write of ~/x is keyed under the workspace: the home directory is not expanded", () => {
+    expect(resolveFileHistoryTargets({
+      toolName: "Write",
+      args: { file_path: "~/x" },
+      workspaceRoot: root,
+    })).toEqual({ paths: [join(root, "~", "x")], regularFilesOnly: false });
+  });
+
+  test("without a workspace root an edit tool path is returned as written", () => {
+    expect(resolveFileHistoryTargets({
+      toolName: "Edit",
+      args: { file_path: "src/../a.ts" },
+      workspaceRoot: undefined,
+    })).toEqual({ paths: ["src/../a.ts"], regularFilesOnly: false });
+    expect(resolveFileHistoryTargets({
+      toolName: "apply_patch",
+      args: { input: "*** Begin Patch\n*** Add File: new.txt\n+x\n*** End Patch" },
+      workspaceRoot: undefined,
+    })).toEqual({ paths: ["new.txt"], regularFilesOnly: false });
+  });
+
+  test("the first path key that is set wins, and an edit call that names no file has no targets", () => {
+    expect(resolveFileHistoryTargets({
+      toolName: "Edit",
+      args: { file_path: "first.ts", notebook_path: "second.ipynb", path: "third.ts", filePath: "fourth.ts" },
+      workspaceRoot: root,
+    }).paths).toEqual([join(root, "first.ts")]);
+    expect(resolveFileHistoryTargets({
+      toolName: "NotebookEdit",
+      args: { notebook_path: "second.ipynb", path: "third.ts" },
+      workspaceRoot: root,
+    }).paths).toEqual([join(root, "second.ipynb")]);
+    for (const args of [null, {}, { file_path: "" }, { file_path: 7 }, { input: 7 }]) {
+      expect(resolveFileHistoryTargets({ toolName: "Write", args, workspaceRoot: root }))
+        .toEqual({ paths: [], regularFilesOnly: false });
+    }
+  });
+
+  test("apply_patch names every file in its hunk headers, in order", () => {
+    const input = [
+      "*** Begin Patch",
+      "*** Add File: added.txt",
+      "+new",
+      "*** Update File: src/updated.txt",
+      "*** Move to: src/moved.txt",
+      "@@",
+      "-old",
+      "+new",
+      "*** Delete File: gone.txt",
+      "*** Update File:   ",
+      "*** End Patch",
+    ].join("\n");
+    expect(resolveFileHistoryTargets({
+      toolName: "apply_patch",
+      args: { input },
+      workspaceRoot: root,
+    })).toEqual({
+      paths: ["added.txt", "src/updated.txt", "src/moved.txt", "gone.txt"].map((named) =>
+        join(root, named)),
+      regularFilesOnly: false,
+    });
+  });
+
+  test.each([
+    ["exec_command", (cmd: string, cwd?: string) => ({ cmd, ...(cwd ? { workdir: cwd } : {}) })],
+    ["system.bash", (command: string, cwd?: string) => ({ command, ...(cwd ? { cwd } : {}) })],
+  ])("%s names the workspace files its command writes, removes or moves", (toolName, argsFor) => {
+    mkdirSync(join(root, "sub"));
+    writeFileSync(join(root, "old.js"), "old", "utf8");
+    writeFileSync(join(root, "sub", "inner.txt"), "inner", "utf8");
+    const targets = (command: string, cwd?: string) =>
+      resolveFileHistoryTargets({ toolName, args: argsFor(command, cwd), workspaceRoot: root });
+
+    expect(targets("rm old.js")).toEqual({
+      paths: [join(root, "old.js")],
+      regularFilesOnly: true,
+    });
+    expect(targets("mv old.js new.js").paths).toEqual([join(root, "old.js"), join(root, "new.js")]);
+    expect(targets("echo hi > created.txt").paths).toEqual([join(root, "created.txt")]);
+    // Relative to the call's working directory, and normalized.
+    expect(targets("rm inner.txt", "sub").paths).toEqual([join(root, "sub", "inner.txt")]);
+    expect(targets("rm ./sub/../old.js", root).paths).toEqual([join(root, "old.js")]);
+    // Outside the workspace, and commands whose targets cannot be read off them.
+    expect(targets("rm ../outside.txt").paths).toEqual([]);
+    expect(targets("git checkout -- old.js")).toEqual({ paths: [], regularFilesOnly: true });
+  });
+
+  test("system.bash also reads the operands it is given as an args array", () => {
+    writeFileSync(join(root, "old.js"), "old", "utf8");
+    expect(resolveFileHistoryTargets({
+      toolName: "system.bash",
+      args: { command: "rm", args: ["old.js"] },
+      workspaceRoot: root,
+    })).toEqual({ paths: [join(root, "old.js")], regularFilesOnly: true });
+  });
+
+  test("a shell tool has no targets without a workspace root or without a command", () => {
+    writeFileSync(join(root, "old.js"), "old", "utf8");
+    expect(resolveFileHistoryTargets({
+      toolName: "exec_command",
+      args: { cmd: `rm ${join(root, "old.js")}`, workdir: root },
+      workspaceRoot: undefined,
+    })).toEqual({ paths: [], regularFilesOnly: true });
+    // The process's own working directory does not stand in for the root.
+    expect(resolveFileHistoryTargets({
+      toolName: "system.bash",
+      args: { command: "rm relative-to-the-process.txt" },
+      workspaceRoot: undefined,
+    })).toEqual({ paths: [], regularFilesOnly: true });
+    for (const args of [null, {}, { cmd: "   " }, { cmd: 7 }, { command: "rm old.js" }]) {
+      expect(resolveFileHistoryTargets({ toolName: "exec_command", args, workspaceRoot: root }))
+        .toEqual({ paths: [], regularFilesOnly: true });
+    }
+  });
+
+  test("a shell command is resolved against the file system as it is at the time of the call", () => {
+    writeFileSync(join(root, "old.js"), "old", "utf8");
+    const resolveMove = () => resolveFileHistoryTargets({
+      toolName: "exec_command",
+      args: { cmd: "mv old.js dest", workdir: root },
+      workspaceRoot: root,
+    }).paths;
+
+    expect(resolveMove()).toEqual([join(root, "old.js"), join(root, "dest")]);
+    // Same call, different answer: the move now lands inside the directory.
+    mkdirSync(join(root, "dest"));
+    expect(resolveMove()).toEqual([join(root, "old.js"), join(root, "dest", "old.js")]);
+  });
+
+  test("a tool that is neither an edit tool nor a shell has no targets", () => {
+    for (const toolName of ["FileRead", "Grep", "write_stdin", "constructor"]) {
+      expect(resolveFileHistoryTargets({
+        toolName,
+        args: { file_path: "a.txt", cmd: "rm a.txt", command: "rm a.txt" },
+        workspaceRoot: root,
+      })).toEqual({ paths: [], regularFilesOnly: false });
+    }
+  });
+
+  test("editToolNames replaces the default edit tools and is looked at before the shell tools", () => {
+    writeFileSync(join(root, "old.js"), "old", "utf8");
+    const editToolNames = ["CustomWrite", "exec_command"];
+    expect(resolveFileHistoryTargets({
+      toolName: "CustomWrite",
+      args: { file_path: "a.txt" },
+      workspaceRoot: root,
+      editToolNames,
+    })).toEqual({ paths: [join(root, "a.txt")], regularFilesOnly: false });
+    expect(resolveFileHistoryTargets({
+      toolName: "Write",
+      args: { file_path: "a.txt" },
+      workspaceRoot: root,
+      editToolNames,
+    })).toEqual({ paths: [], regularFilesOnly: false });
+    expect(resolveFileHistoryTargets({
+      toolName: "exec_command",
+      args: { cmd: "rm old.js", file_path: "a.txt" },
+      workspaceRoot: root,
+      editToolNames,
+    })).toEqual({ paths: [join(root, "a.txt")], regularFilesOnly: false });
+  });
+});
+
+describe("FileHistorySidecar capture before a tool call (#3436)", () => {
+  let project = "";
+  let work = "";
+  let diagnostics: string[] = [];
+  const engines: FileHistory[] = [];
+
+  type SidecarEvent = Parameters<FileHistorySidecar["onEvent"]>[0];
+
+  /** An engine with an index on disk, so that every queued operation does real I/O. */
+  function engine(options: { enabled?: boolean } = {}): FileHistory {
+    const history = new FileHistory({
+      projectDir: project,
+      sessionId: "capture",
+      ...options,
+      onDiagnostic: ({ cause }) => { diagnostics.push(cause); },
+    });
+    engines.push(history);
+    return history;
+  }
+
+  function sidecarFor(history: FileHistory): FileHistorySidecar {
+    return new FileHistorySidecar({ fileHistory: history, workspaceRoot: work });
+  }
+
+  function userMessage(id: string): SidecarEvent {
+    return {
+      id,
+      msg: { type: "user_message", payload: { message: "next prompt" } },
+    } as SidecarEvent;
+  }
+
+  function started(id: string, toolName: string, args: Record<string, unknown>): SidecarEvent {
+    return {
+      id,
+      msg: {
+        type: "tool_call_started",
+        payload: { callId: id, toolName, args: JSON.stringify(args) },
+      },
+    } as SidecarEvent;
+  }
+
+  /** The first state file history recorded for `path`: what a rewind falls back to. */
+  function firstStateOf(history: FileHistory, path: string): FileHistoryBackup | undefined {
+    for (const snapshot of history.getState().snapshots) {
+      const entry = snapshot.trackedFileBackups[path];
+      if (entry !== undefined) return entry;
+    }
+    return undefined;
+  }
+
+  function snapshotFor(history: FileHistory, messageId: string): FileHistorySnapshot {
+    const snapshot = history.getState().snapshots.find((candidate) =>
+      candidate.messageId === messageId);
+    if (snapshot === undefined) throw new Error(`no snapshot for ${messageId}`);
+    return snapshot;
+  }
+
+  beforeEach(() => {
+    project = mkdtempSync(join(tmpdir(), "agenc-filehist-capture-"));
+    work = join(project, "work");
+    mkdirSync(work);
+    diagnostics = [];
+  });
+  afterEach(() => {
+    for (const history of engines.splice(0)) history.stop();
+    if (project) rmSync(project, { recursive: true, force: true });
+  });
+
+  test("returns undefined, and queues nothing, for a call with no targets while no barrier is pending", () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    writeFileSync(join(work, "a.txt"), "a\n", "utf8");
+    const state = hist.getState();
+    const queue = hist["pending"];
+
+    expect(sidecar.captureBeforeToolCall("FileRead", { file_path: "a.txt" })).toBeUndefined();
+    expect(sidecar.captureBeforeToolCall("exec_command", { cmd: "git status", workdir: work }))
+      .toBeUndefined();
+    // An edit tool whose args name no file has nothing to capture either.
+    expect(sidecar.captureBeforeToolCall("Write", { content: "x" })).toBeUndefined();
+
+    expect(hist["pending"]).toBe(queue);
+    expect(hist.getState()).toBe(state);
+  });
+
+  test("a new file is on record as absent, and an existing one with its content, before the capture resolves", async () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    const created = join(work, "brand-new.txt");
+    const existing = join(work, "existing.txt");
+    writeFileSync(existing, "BEFORE\n", "utf8");
+
+    const createCapture = sidecar.captureBeforeToolCall("Write", { file_path: "brand-new.txt", content: "NEW\n" });
+    expect(createCapture).toBeInstanceOf(Promise);
+    await expect(createCapture).resolves.toBeUndefined();
+    expect(firstStateOf(hist, created)).toMatchObject({ backupFileName: null, version: 1 });
+    // The tool runs only now.
+    writeFileSync(created, "NEW\n", "utf8");
+
+    await sidecar.captureBeforeToolCall("Edit", { file_path: existing, old_string: "BEFORE", new_string: "AFTER" });
+    const origin = firstStateOf(hist, existing)!;
+    expect(origin.version).toBe(1);
+    expect(readFileSync(origin.backupFileName!, "utf8")).toBe("BEFORE\n");
+    writeFileSync(existing, "AFTER\n", "utf8");
+
+    // The index on disk already names both, and one snapshot holds them.
+    const index = JSON.parse(readFileSync(join(hist.historyDir, "snapshots.json"), "utf8")) as {
+      snapshots: FileHistorySnapshot[];
+    };
+    expect(index.snapshots).toHaveLength(1);
+    expect(Object.keys(index.snapshots[0]!.trackedFileBackups)).toEqual([created, existing]);
+    expect(index.snapshots[0]!.messageId).toMatch(/^capture-[0-9a-f-]{36}$/);
+
+    // A rewind to that point removes the new file and restores the old one.
+    await hist.makeSnapshot("after-tools");
+    await expect(hist.rewindToMessage(index.snapshots[0]!.messageId)).resolves.toEqual([created, existing]);
+    expect(existsSync(created)).toBe(false);
+    expect(readFileSync(existing, "utf8")).toBe("BEFORE\n");
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("repeating the capture for a path that is already on record changes nothing", async () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    const file = join(work, "a.txt");
+    writeFileSync(file, "a\n", "utf8");
+    // The start event queues the backup; the capture waits for the same queue.
+    sidecar.onEvent(started("ev-1", "Write", { file_path: file, content: "b\n" }));
+    await sidecar.captureBeforeToolCall("Write", { file_path: file, content: "b\n" });
+
+    const state = hist.getState();
+    expect(state.snapshots.map((snapshot) => snapshot.messageId)).toEqual(["ev-1"]);
+    expect(readFileSync(firstStateOf(hist, file)!.backupFileName!, "utf8")).toBe("a\n");
+    expect(listBackupFiles(hist.historyDir)).toHaveLength(1);
+
+    await sidecar.captureBeforeToolCall("Write", { file_path: file, content: "c\n" });
+    expect(hist.getState()).toBe(state);
+    expect(listBackupFiles(hist.historyDir)).toHaveLength(1);
+  });
+
+  test("an untargeted shell call right behind user_message waits for the barrier snapshot", async () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    const notes = join(work, "notes.txt");
+    writeFileSync(notes, "FIRST TURN\n", "utf8");
+    await hist.trackEdit(notes, "turn-1-edit");
+    // Changed by hand between the turns: only the barrier can hold this.
+    writeFileSync(notes, "USER EDIT\n", "utf8");
+    const call = { cmd: "perl -pi -e 's/USER EDIT/CLOBBERED/' notes.txt", workdir: work };
+    expect(resolveFileHistoryTargets({ toolName: "exec_command", args: call, workspaceRoot: work }).paths)
+      .toEqual([]);
+    expect(sidecar.captureBeforeToolCall("exec_command", call)).toBeUndefined();
+
+    sidecar.onEvent(userMessage("user-2"));
+    expect(hist.hasSnapshotFor("user-2")).toBe(false);
+    const capture = sidecar.captureBeforeToolCall("exec_command", call);
+    expect(capture).toBeInstanceOf(Promise);
+    await capture;
+
+    // The barrier is complete, so the command can no longer get ahead of it.
+    expect(hist.hasSnapshotFor("user-2")).toBe(true);
+    writeFileSync(notes, "CLOBBERED\n", "utf8");
+    const barrier = snapshotFor(hist, "user-2").trackedFileBackups[notes]!;
+    expect(readFileSync(barrier.backupFileName!, "utf8")).toBe("USER EDIT\n");
+    await hist.makeSnapshot("command-done");
+    await expect(hist.rewindToMessage("user-2")).resolves.toEqual([notes]);
+    expect(readFileSync(notes, "utf8")).toBe("USER EDIT\n");
+
+    // With the barrier settled, a call without targets no longer waits.
+    expect(sidecar.captureBeforeToolCall("exec_command", call)).toBeUndefined();
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("a call with targets right behind user_message waits for the barrier and for its own backup", async () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    const tracked = join(work, "tracked.txt");
+    const fresh = join(work, "fresh.txt");
+    writeFileSync(tracked, "TRACKED BEFORE\n", "utf8");
+    await hist.trackEdit(tracked, "turn-1-edit");
+    writeFileSync(tracked, "TRACKED AT USER-2\n", "utf8");
+
+    sidecar.onEvent(userMessage("user-2"));
+    const input = [
+      "*** Begin Patch", "*** Update File: tracked.txt", "@@", "-TRACKED AT USER-2", "+PATCHED",
+      "*** Add File: fresh.txt", "+FRESH", "*** End Patch",
+    ].join("\n");
+    await sidecar.captureBeforeToolCall("apply_patch", { input });
+
+    expect(hist.hasSnapshotFor("user-2")).toBe(true);
+    await applyPatchText(input, { cwd: work, allowedPaths: [work] });
+    expect(readFileSync(tracked, "utf8")).toBe("PATCHED\n");
+    expect(readFileSync(fresh, "utf8")).toBe("FRESH\n");
+
+    // Both "before" states sit on the barrier itself.
+    const barrier = snapshotFor(hist, "user-2");
+    expect(readFileSync(barrier.trackedFileBackups[tracked]!.backupFileName!, "utf8"))
+      .toBe("TRACKED AT USER-2\n");
+    expect(barrier.trackedFileBackups[fresh]).toMatchObject({ backupFileName: null, version: 1 });
+    await hist.makeSnapshot("patch-done");
+    await hist.rewindToMessage("user-2");
+    expect(readFileSync(tracked, "utf8")).toBe("TRACKED AT USER-2\n");
+    expect(existsSync(fresh)).toBe(false);
+  });
+
+  test("the newest barrier stays pending when an older one settles", async () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    const file = join(work, "a.txt");
+    writeFileSync(file, "a\n", "utf8");
+    await hist.trackEdit(file, "m0");
+    expect(sidecar["pendingBarrier"]).toBeNull();
+
+    sidecar.onEvent(userMessage("user-1"));
+    const first = sidecar["pendingBarrier"];
+    sidecar.onEvent(userMessage("user-2"));
+    const second = sidecar["pendingBarrier"];
+    expect(first).toBeInstanceOf(Promise);
+    expect(second).toBeInstanceOf(Promise);
+    expect(second).not.toBe(first);
+
+    await first;
+    // The second snapshot still has its index to write.
+    expect(hist.hasSnapshotFor("user-2")).toBe(false);
+    expect(sidecar["pendingBarrier"]).toBe(second);
+    const capture = sidecar.captureBeforeToolCall("FileRead", { file_path: file });
+    expect(capture).toBeInstanceOf(Promise);
+
+    await capture;
+    expect(hist.hasSnapshotFor("user-2")).toBe(true);
+    expect(sidecar["pendingBarrier"]).toBeNull();
+  });
+
+  test("a disabled engine never makes a call wait", async () => {
+    const hist = engine({ enabled: false });
+    const sidecar = sidecarFor(hist);
+    const file = join(work, "a.txt");
+    writeFileSync(file, "a\n", "utf8");
+
+    sidecar.onEvent(userMessage("user-1"));
+    expect(sidecar["pendingBarrier"]).toBeInstanceOf(Promise);
+    expect(sidecar.captureBeforeToolCall("Write", { file_path: file, content: "b\n" })).toBeUndefined();
+    expect(sidecar.captureBeforeToolCall("exec_command", { cmd: "rm a.txt", workdir: work }))
+      .toBeUndefined();
+
+    await hist.flush();
+    expect(hist.getState().trackedFiles.size).toBe(0);
+  });
+
+  test("a call whose signal is already aborted gets a resolved promise and no backup", async () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    const file = join(work, "a.txt");
+    writeFileSync(file, "a\n", "utf8");
+    const queue = hist["pending"];
+    const signal = AbortSignal.abort("stopped before dispatch");
+
+    const capture = sidecar.captureBeforeToolCall("Write", { file_path: file, content: "b\n" }, signal);
+
+    expect(capture).toBeInstanceOf(Promise);
+    await expect(capture).resolves.toBeUndefined();
+    expect(hist["pending"]).toBe(queue);
+    expect(hist.getState().trackedFiles.size).toBe(0);
+    expect(getEventListeners(signal, "abort")).toEqual([]);
+  });
+
+  test("an abort ends the wait at once and leaves no listener behind", async () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    const file = join(work, "a.txt");
+    writeFileSync(file, "a\n", "utf8");
+    await hist.trackEdit(file, "m0");
+    const controller = new AbortController();
+
+    sidecar.onEvent(userMessage("user-1"));
+    const capture = sidecar.captureBeforeToolCall(
+      "Write",
+      { file_path: file, content: "b\n" },
+      controller.signal,
+    );
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(1);
+    controller.abort("plan mode");
+    await expect(capture).resolves.toBeUndefined();
+
+    // It did not wait for the barrier, which still has its index to write.
+    expect(hist.hasSnapshotFor("user-1")).toBe(false);
+    expect(getEventListeners(controller.signal, "abort")).toEqual([]);
+    await hist.flush();
+    expect(hist.hasSnapshotFor("user-1")).toBe(true);
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("a capture that finishes leaves no listener on the signal", async () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    const controller = new AbortController();
+
+    const capture = sidecar.captureBeforeToolCall(
+      "Write",
+      { file_path: "new.txt", content: "x\n" },
+      controller.signal,
+    );
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(1);
+    await capture;
+
+    expect(getEventListeners(controller.signal, "abort")).toEqual([]);
+    expect(hist.getState().trackedFiles.has(join(work, "new.txt"))).toBe(true);
+  });
+
+  test("a shell call's directory target is skipped, and its files and new paths are tracked", async () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    const scratch = join(work, "scratch");
+    const doomed = join(work, "doomed.js");
+    const created = join(work, "created.txt");
+    mkdirSync(scratch);
+    writeFileSync(join(scratch, "inner.txt"), "inner\n", "utf8");
+    writeFileSync(doomed, "doomed\n", "utf8");
+    const call = { cmd: "rm -r scratch && rm doomed.js && echo hi > created.txt", workdir: work };
+    expect(resolveFileHistoryTargets({ toolName: "exec_command", args: call, workspaceRoot: work }))
+      .toEqual({ paths: [created, scratch, doomed], regularFilesOnly: true });
+
+    await sidecar.captureBeforeToolCall("exec_command", call);
+
+    expect([...hist.getState().trackedFiles]).toEqual([created, doomed]);
+    expect(firstStateOf(hist, created)).toMatchObject({ backupFileName: null, version: 1 });
+    expect(readFileSync(firstStateOf(hist, doomed)!.backupFileName!, "utf8")).toBe("doomed\n");
+    // Skipped before the engine saw it: no failed backup is reported.
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("a shell call with only a directory target resolves without queueing anything", async () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    mkdirSync(join(work, "scratch"));
+    const queue = hist["pending"];
+
+    const capture = sidecar.captureBeforeToolCall("exec_command", { cmd: "rm -r scratch", workdir: work });
+
+    expect(capture).toBeInstanceOf(Promise);
+    await expect(capture).resolves.toBeUndefined();
+    expect(hist["pending"]).toBe(queue);
+    expect(hist.getState().trackedFiles.size).toBe(0);
+  });
+
+  test("args that cannot be read give no targets, and the call still waits for a pending barrier", async () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    const unreadable = Object.defineProperty({}, "file_path", {
+      enumerable: true,
+      get: () => { throw new Error("args proxy revoked"); },
+    }) as Record<string, unknown>;
+
+    expect(sidecar.captureBeforeToolCall("Write", unreadable)).toBeUndefined();
+
+    sidecar.onEvent(userMessage("user-1"));
+    const capture = sidecar.captureBeforeToolCall("Write", unreadable);
+    expect(capture).toBeInstanceOf(Promise);
+    await capture;
+    expect(hist.hasSnapshotFor("user-1")).toBe(true);
+    expect(hist.getState().trackedFiles.size).toBe(0);
+  });
+
+  test("an edit tool's start event queues one backup operation for all of its files before it returns", async () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    const a = join(work, "a.txt");
+    const b = join(work, "b.txt");
+    writeFileSync(a, "A0\n", "utf8");
+    writeFileSync(b, "B0\n", "utf8");
+    const input = [
+      "*** Begin Patch", "*** Update File: a.txt", "@@", "-A0", "+A1",
+      "*** Update File: b.txt", "@@", "-B0", "+B1", "*** End Patch",
+    ].join("\n");
+    const queue = hist["pending"];
+
+    sidecar.onEvent(started("ev-patch", "apply_patch", { input }));
+    // Already queued. Anything queued from here on runs behind it.
+    const queued = hist["pending"];
+    expect(queued).not.toBe(queue);
+    const later = hist.makeSnapshot("queued-later");
+    writeFileSync(a, "A1\n", "utf8");
+    writeFileSync(b, "B1\n", "utf8");
+    await later;
+
+    const [first, second] = hist.getState().snapshots;
+    expect([first!.messageId, second!.messageId]).toEqual(["ev-patch", "queued-later"]);
+    expect(Object.keys(first!.trackedFileBackups)).toEqual([a, b]);
+    expect(first!.trackedFileBackups[a]!.version).toBe(1);
+    expect(first!.trackedFileBackups[b]!.version).toBe(1);
+  });
+
+  test("a call that names no file queues nothing when its start event arrives", () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    const queue = hist["pending"];
+
+    sidecar.onEvent(started("ev-1", "Write", { content: "x" }));
+    sidecar.onEvent(started("ev-2", "exec_command", { cmd: "git status", workdir: work }));
+    sidecar.onEvent(started("ev-3", "FileRead", { file_path: "a.txt" }));
+
+    expect(hist["pending"]).toBe(queue);
+  });
+
+  test("only an edit, or a call with targets, is followed by a completion snapshot", async () => {
+    const hist = engine();
+    const sidecar = sidecarFor(hist);
+    writeFileSync(join(work, "a.txt"), "a\n", "utf8");
+    const completed = (id: string): SidecarEvent => ({
+      id,
+      msg: { type: "tool_call_completed", payload: { callId: id, result: "", isError: false } },
+    } as SidecarEvent);
+
+    for (const [id, toolName, args] of [
+      ["read", "FileRead", { file_path: "a.txt" }],
+      ["status", "exec_command", { cmd: "git status", workdir: work }],
+      // An edit tool counts even when its args name no file.
+      ["write-nothing", "Write", { content: "x" }],
+      ["rm", "exec_command", { cmd: "rm a.txt", workdir: work }],
+    ] as const) {
+      sidecar.onEvent(started(`${id}-started`, toolName, args));
+      sidecar.onEvent(completed(`${id}-done`));
+    }
+    await hist.flush();
+    // The backup for `rm` joins the queue after its stat, behind the snapshots.
+    for (let i = 0; i < 50 && !hist.getState().trackedFiles.has(join(work, "a.txt")); i += 1) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    }
+
+    expect(hist.getState().snapshots.map((snapshot) => snapshot.messageId))
+      .toEqual(["write-nothing-done", "rm-done"]);
+    expect(hist.getState().trackedFiles.has(join(work, "a.txt"))).toBe(true);
   });
 });
 

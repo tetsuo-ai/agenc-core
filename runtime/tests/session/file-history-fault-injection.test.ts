@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { getEventListeners } from "node:events";
 import {
   createReadStream,
   existsSync,
@@ -18,7 +19,9 @@ import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   FileHistory,
+  FileHistorySidecar,
   sha256OfFile,
+  type FileHistoryBackup,
   type FileHistoryOptions,
 } from "../../src/session/file-history.js";
 
@@ -1069,5 +1072,440 @@ describe("file-history deletion passes", () => {
       cause,
       message: `prune ${dirname(evicted)}: ${error.message}`,
     })));
+  });
+});
+
+describe("file-history capture before a tool call (#3436)", () => {
+  type SidecarEvent = Parameters<FileHistorySidecar["onEvent"]>[0];
+
+  function newSidecar(
+    engine: FileHistory = history,
+    captureTimeoutMs?: number,
+  ): FileHistorySidecar {
+    return new FileHistorySidecar({
+      fileHistory: engine,
+      workspaceRoot: work,
+      ...(captureTimeoutMs !== undefined ? { captureTimeoutMs } : {}),
+    });
+  }
+
+  function started(id: string, toolName: string, args: Record<string, unknown>): SidecarEvent {
+    return {
+      id,
+      msg: {
+        type: "tool_call_started",
+        payload: { callId: id, toolName, args: JSON.stringify(args) },
+      },
+    } as SidecarEvent;
+  }
+
+  function completed(id: string): SidecarEvent {
+    return {
+      id,
+      msg: { type: "tool_call_completed", payload: { callId: id, result: "", isError: false } },
+    } as SidecarEvent;
+  }
+
+  function userMessage(id: string): SidecarEvent {
+    return {
+      id,
+      msg: { type: "user_message", payload: { message: "next prompt" } },
+    } as SidecarEvent;
+  }
+
+  /** The first state on record for `path`: what a rewind falls back to. */
+  function firstStateOf(path: string, engine: FileHistory = history): FileHistoryBackup {
+    for (const snapshot of engine.getState().snapshots) {
+      const entry = snapshot.trackedFileBackups[path];
+      if (entry !== undefined) return entry;
+    }
+    throw new Error(`nothing on record for ${path}`);
+  }
+
+  /** Whether `promise` has settled once the event loop has had time to turn. */
+  async function settlesSoon(promise: Promise<unknown>): Promise<boolean> {
+    let settled = false;
+    const mark = (): void => { settled = true; };
+    void promise.then(mark, mark);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    return settled;
+  }
+
+  /**
+   * Wait for what a start event set in motion: the sidecar looks at a shell
+   * call's targets first and queues their backup afterwards.
+   */
+  async function startEventsHandled(engine: FileHistory = history): Promise<void> {
+    let seen = -1;
+    while (seen !== vi.mocked(stat).mock.results.length) {
+      seen = vi.mocked(stat).mock.results.length;
+      await Promise.allSettled(vi.mocked(stat).mock.results.map((result) => result.value));
+      await new Promise((resolveTurn) => setImmediate(resolveTurn));
+      await engine.flush();
+    }
+  }
+
+  /**
+   * A file that an earlier tool call changed, and the snapshot of that
+   * call's completion held in place while it copies the file.
+   */
+  async function snapshotStillRunning(
+    sidecar: FileHistorySidecar,
+    engine: FileHistory = history,
+  ): Promise<{ copying: Hold; earlier: string }> {
+    const earlier = workFile("earlier.txt", "one\n");
+    sidecar.onEvent(started("ev-0", "Write", { file_path: earlier, content: "two\n" }));
+    await engine.flush();
+    writeFileSync(earlier, "two\n", "utf8");
+    const copying = holdNextCopyOf(earlier);
+    sidecar.onEvent(completed("ev-0-done"));
+    await copying.entered;
+    return { copying, earlier };
+  }
+
+  /** The timers a capture with this timeout started, in order. */
+  function captureTimers(
+    setTimer: { mock: { calls: unknown[][]; results: Array<{ value: unknown }> } },
+    timeoutMs: number,
+  ): NodeJS.Timeout[] {
+    return setTimer.mock.calls.flatMap(([, delay], index) =>
+      delay === timeoutMs ? [setTimer.mock.results[index]!.value as NodeJS.Timeout] : []);
+  }
+
+  test.each([
+    ["creates", null],
+    ["overwrites", "BEFORE\n"],
+  ])(
+    "a file the tool %s keeps its pre-edit state as origin when the call starts while a snapshot is running",
+    async (_verb, before) => {
+      const sidecar = newSidecar();
+      const { copying, earlier } = await snapshotStillRunning(sidecar);
+      const target = join(work, "target.txt");
+      if (before !== null) writeFileSync(target, before, "utf8");
+
+      // The next call starts and is dispatched: the event, then the capture.
+      const args = { file_path: target, content: "NEW\n" };
+      sidecar.onEvent(started("ev-1", "Write", args));
+      const capture = sidecar.captureBeforeToolCall("Write", args);
+      expect(capture).toBeInstanceOf(Promise);
+      // The tool may not run yet: its backup waits behind the snapshot.
+      expect(await settlesSoon(capture!)).toBe(false);
+      expect(history.getState().trackedFiles.has(target)).toBe(false);
+
+      copying.release();
+      await capture;
+      // On record before the tool has written a byte.
+      const origin = firstStateOf(target);
+      expect(origin.version).toBe(1);
+      if (before === null) expect(origin.backupFileName).toBeNull();
+      else expect(readFileSync(origin.backupFileName!, "utf8")).toBe(before);
+
+      writeFileSync(target, "NEW\n", "utf8");
+      sidecar.onEvent(completed("ev-1-done"));
+      await history.flush();
+
+      expect(firstStateOf(target)).toEqual(origin);
+      expect(snapshotIds()).toEqual(["ev-0", "ev-0-done", "ev-1-done"]);
+      await expect(history.rewindToMessage("ev-0-done")).resolves.toEqual([target]);
+      if (before === null) expect(existsSync(target)).toBe(false);
+      else expect(readFileSync(target, "utf8")).toBe(before);
+      expect(readFileSync(earlier, "utf8")).toBe("two\n");
+      expect(diagnostics).toEqual([]);
+    },
+  );
+
+  test("a barrier snapshot that is still running holds back a call without targets", async () => {
+    const sidecar = newSidecar();
+    const notes = workFile("notes.txt", "FIRST TURN\n");
+    await history.trackEdit(notes, "turn-1-edit");
+    writeFileSync(notes, "USER EDIT\n", "utf8");
+    const copying = holdNextCopyOf(notes);
+    sidecar.onEvent(userMessage("user-2"));
+    await copying.entered;
+
+    const capture = sidecar.captureBeforeToolCall("exec_command", {
+      cmd: "git checkout -- notes.txt",
+      workdir: work,
+    });
+    expect(capture).toBeInstanceOf(Promise);
+    expect(await settlesSoon(capture!)).toBe(false);
+    expect(history.hasSnapshotFor("user-2")).toBe(false);
+
+    copying.release();
+    await capture;
+    expect(history.hasSnapshotFor("user-2")).toBe(true);
+    // The command runs now, and the barrier already holds what it destroys.
+    writeFileSync(notes, "FIRST TURN\n", "utf8");
+    expect(readFileSync(latestEntry(notes).backupFileName!, "utf8")).toBe("USER EDIT\n");
+    // Nothing of its own to back up: the queue was only waited for.
+    expect(snapshotIds()).toEqual(["turn-1-edit", "user-2"]);
+    expect(indexWrites()).toBe(2);
+  });
+
+  test("all targets of one call are backed up by one queued operation with one index write", async () => {
+    const sidecar = newSidecar();
+    const files = ["a.txt", "b.txt", "c.txt"].map((name) => workFile(name, `${name}\n`));
+    const input = [
+      "*** Begin Patch",
+      ...files.flatMap((file) => [`*** Update File: ${file}`, "@@", "-old", "+new"]),
+      "*** End Patch",
+    ].join("\n");
+
+    await sidecar.captureBeforeToolCall("apply_patch", { input });
+
+    expect(indexWrites()).toBe(1);
+    expect(copyFile).toHaveBeenCalledTimes(3);
+    expect(Object.keys(history.getState().snapshots[0]!.trackedFileBackups)).toEqual(files);
+    expect(indexedSnapshots()).toHaveLength(1);
+  });
+
+  test("the start event and the capture of one call write the index once between them", async () => {
+    const sidecar = newSidecar();
+    const files = ["a.txt", "b.txt", "c.txt"].map((name) => workFile(name, `${name}\n`));
+    const input = [
+      "*** Begin Patch",
+      ...files.flatMap((file) => [`*** Update File: ${file}`, "@@", "-old", "+new"]),
+      "*** End Patch",
+    ].join("\n");
+
+    sidecar.onEvent(started("ev-patch", "apply_patch", { input }));
+    await sidecar.captureBeforeToolCall("apply_patch", { input });
+
+    expect(indexWrites()).toBe(1);
+    expect(copyFile).toHaveBeenCalledTimes(3);
+
+    // The same for a shell call, whichever of the two gets to the queue first.
+    const doomed = ["d.txt", "e.txt"].map((name) => workFile(name, `${name}\n`));
+    const call = { cmd: "rm d.txt e.txt", workdir: work };
+    sidecar.onEvent(started("ev-rm", "exec_command", call));
+    await sidecar.captureBeforeToolCall("exec_command", call);
+    await startEventsHandled();
+
+    expect(indexWrites()).toBe(2);
+    expect(copyFile).toHaveBeenCalledTimes(5);
+    expect([...history.getState().trackedFiles]).toEqual([...files, ...doomed]);
+    expect(snapshotIds()).toEqual(["ev-patch"]);
+    expect(diagnostics).toEqual([]);
+  });
+
+  test.each(["the start event", "the capture"])(
+    "%s leaves out a shell target that exists and is not a regular file",
+    async (route) => {
+      // What stat reports is all the sidecar has to go by, so a mocked
+      // result stands in for a FIFO, which must never be opened.
+      const sidecar = newSidecar();
+      const pipe = workFile("build.pipe", "must never be opened\n");
+      const plain = workFile("plain.txt", "plain\n");
+      const created = join(work, "created.txt");
+      statAsNotRegular(pipe);
+      const call = { cmd: "rm build.pipe plain.txt && echo hi > created.txt", workdir: work };
+
+      if (route === "the start event") {
+        sidecar.onEvent(started("ev-rm", "exec_command", call));
+        await startEventsHandled();
+      } else {
+        await sidecar.captureBeforeToolCall("exec_command", call);
+      }
+
+      expect([...history.getState().trackedFiles].sort()).toEqual([created, plain].sort());
+      expect(firstStateOf(created)).toMatchObject({ backupFileName: null, version: 1 });
+      expect(vi.mocked(copyFile).mock.calls.map(([from]) => from)).toEqual([plain]);
+      expect(hashedPaths()).toEqual([latestEntry(plain).backupFileName]);
+      // Never handed to the engine, so there is no failed backup to report.
+      expect(diagnostics).toEqual([]);
+    },
+  );
+
+  test("a start event whose shell targets are all left out queues nothing", async () => {
+    const sidecar = newSidecar();
+    const scratch = join(work, "scratch");
+    mkdirSync(scratch);
+    const queue = history["pending"];
+
+    sidecar.onEvent(started("ev-rm", "exec_command", { cmd: "rm -r scratch", workdir: work }));
+    await startEventsHandled();
+
+    expect(vi.mocked(stat).mock.calls.map(([path]) => path)).toEqual([scratch]);
+    expect(history["pending"]).toBe(queue);
+    expect(history.getState().trackedFiles.size).toBe(0);
+  });
+
+  test("an edit tool's target is handed to the engine whatever it is", async () => {
+    const sidecar = newSidecar();
+    const pipe = workFile("build.pipe", "must never be opened\n");
+    statAsNotRegular(pipe);
+
+    await sidecar.captureBeforeToolCall("Write", { file_path: pipe, content: "x\n" });
+
+    // The engine refuses it, as it does for a start event.
+    expect(diagnostics).toEqual([{
+      cause: "file_history_track_failed",
+      message: `trackEdit ${pipe}: not a regular file`,
+    }]);
+    expect(copyFile).not.toHaveBeenCalled();
+    expect(history.getState().trackedFiles.size).toBe(0);
+  });
+
+  test("a capture that outlasts the timeout resolves, reports it once and lets the tool proceed", async () => {
+    const sidecar = newSidecar(history, 40);
+    const { copying } = await snapshotStillRunning(sidecar);
+    const controller = new AbortController();
+    const created = join(work, "created.txt");
+    const other = join(work, "other.txt");
+
+    const capture = sidecar.captureBeforeToolCall(
+      "Write",
+      { file_path: created, content: "NEW\n" },
+      controller.signal,
+    );
+    // It waits first: half the timeout has passed and nothing is reported.
+    expect(await settlesSoon(capture!)).toBe(false);
+    expect(diagnostics).toEqual([]);
+    await expect(capture).resolves.toBeUndefined();
+
+    expect(diagnostics).toEqual([{
+      cause: "file_history_capture_timeout",
+      message:
+        "capture before Write did not finish within 40 ms: " +
+        "the tool ran anyway, so a rewind may not undo its file changes",
+    }]);
+    expect(getEventListeners(controller.signal, "abort")).toEqual([]);
+    // The queue has not moved: the snapshot is still running.
+    expect(snapshotIds()).toEqual(["ev-0"]);
+    expect(history.getState().trackedFiles.has(created)).toBe(false);
+
+    // A later call that times out too is not reported again.
+    await sidecar.captureBeforeToolCall("Edit", { file_path: other, old_string: "a", new_string: "b" });
+    expect(diagnostics).toHaveLength(1);
+
+    // The queue is not damaged by any of it.
+    copying.release();
+    await history.flush();
+    expect(snapshotIds()).toEqual(["ev-0", "ev-0-done"]);
+    expect(history.getState().trackedFiles.has(created)).toBe(true);
+    expect(history.getState().trackedFiles.has(other)).toBe(true);
+    expect(diagnostics).toHaveLength(1);
+  });
+
+  test("the timeout is reported once per engine, whichever sidecar hits it", async () => {
+    const first = newSidecar(history, 20);
+    const second = newSidecar(history, 30);
+    const { copying } = await snapshotStillRunning(first);
+
+    await first.captureBeforeToolCall("Write", { file_path: "a.txt", content: "a\n" });
+    await second.captureBeforeToolCall("Write", { file_path: "b.txt", content: "b\n" });
+
+    expect(causes()).toEqual(["file_history_capture_timeout"]);
+    expect(diagnostics[0]!.message).toContain("within 20 ms");
+    copying.release();
+    await history.flush();
+
+    // Another engine reports its own.
+    const otherEngine = newEngine({ sessionId: "other-engine" });
+    const otherSidecar = newSidecar(otherEngine, 20);
+    const held = await snapshotStillRunning(otherSidecar, otherEngine);
+    await otherSidecar.captureBeforeToolCall("Write", { file_path: "c.txt", content: "c\n" });
+    expect(causes()).toEqual(["file_history_capture_timeout", "file_history_capture_timeout"]);
+    held.copying.release();
+    await otherEngine.flush();
+  });
+
+  test("a timeout whose report cannot be delivered still ends the wait", async () => {
+    const engine = new FileHistory({
+      projectDir: project,
+      sessionId: "closed-sink",
+      onDiagnostic: () => { throw new Error("diagnostic sink is closed"); },
+    });
+    engines.push(engine);
+    const sidecar = newSidecar(engine, 20);
+    const { copying } = await snapshotStillRunning(sidecar, engine);
+
+    await expect(
+      sidecar.captureBeforeToolCall("Write", { file_path: "a.txt", content: "a\n" }),
+    ).resolves.toBeUndefined();
+
+    expect(snapshotIds(engine)).toEqual(["ev-0"]);
+    copying.release();
+    await engine.flush();
+    expect(snapshotIds(engine)).toEqual(["ev-0", "ev-0-done"]);
+  });
+
+  test("a capture that finishes in time clears its timer and reports nothing", async () => {
+    const timeoutMs = 4321;
+    const sidecar = newSidecar(history, timeoutMs);
+    const setTimer = vi.spyOn(globalThis, "setTimeout");
+    const clearTimer = vi.spyOn(globalThis, "clearTimeout");
+
+    const capture = sidecar.captureBeforeToolCall("Write", { file_path: "new.txt", content: "x\n" });
+    const [timer, ...more] = captureTimers(setTimer, timeoutMs);
+    expect(timer).toBeDefined();
+    expect(more).toEqual([]);
+    // A pending capture alone does not keep the process alive.
+    expect(timer!.hasRef()).toBe(false);
+    expect(clearTimer).not.toHaveBeenCalledWith(timer);
+    await capture;
+
+    expect(clearTimer).toHaveBeenCalledWith(timer);
+    expect(history.getState().trackedFiles.has(join(work, "new.txt"))).toBe(true);
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("an abort ends a capture that waits behind a running snapshot, and clears its timer", async () => {
+    const timeoutMs = 4321;
+    const sidecar = newSidecar(history, timeoutMs);
+    const { copying } = await snapshotStillRunning(sidecar);
+    const controller = new AbortController();
+    const setTimer = vi.spyOn(globalThis, "setTimeout");
+    const clearTimer = vi.spyOn(globalThis, "clearTimeout");
+
+    const capture = sidecar.captureBeforeToolCall(
+      "Write",
+      { file_path: "new.txt", content: "x\n" },
+      controller.signal,
+    );
+    const [timer] = captureTimers(setTimer, timeoutMs);
+    expect(await settlesSoon(capture!)).toBe(false);
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(1);
+
+    controller.abort("permission mode changed to plan");
+    await expect(capture).resolves.toBeUndefined();
+
+    expect(snapshotIds()).toEqual(["ev-0"]);
+    expect(clearTimer).toHaveBeenCalledWith(timer);
+    expect(getEventListeners(controller.signal, "abort")).toEqual([]);
+    copying.release();
+    await history.flush();
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("a capture does not wait for diagnostics that canonical background work holds back", async () => {
+    const delivery = hold();
+    const engine = newEngine({
+      sessionId: "compacting",
+      withCanonicalBackgroundWork: async (run) => {
+        await delivery.reach();
+        return run();
+      },
+    });
+    const sidecar = newSidecar(engine);
+    // A failed backup: its diagnostic now waits for the journal's owner.
+    await engine.trackEdit(work, "not-a-file");
+    await delivery.entered;
+    let flushed = false;
+    const drain = engine.flush().then(() => { flushed = true; });
+    const created = join(work, "created.txt");
+
+    sidecar.onEvent(userMessage("user-1"));
+    await sidecar.captureBeforeToolCall("Write", { file_path: created, content: "NEW\n" });
+
+    // Both things the call waits for are done; the diagnostic is not.
+    expect(engine.hasSnapshotFor("user-1")).toBe(true);
+    expect(firstStateOf(created, engine)).toMatchObject({ backupFileName: null, version: 1 });
+    expect(flushed).toBe(false);
+    expect(diagnostics).toEqual([]);
+
+    delivery.release();
+    await drain;
+    expect(causes()).toEqual(["file_history_track_failed"]);
   });
 });

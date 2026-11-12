@@ -35,6 +35,7 @@ import {
 } from "../agents/role.js";
 import { findAgentDefinitionByType } from "../tools/AgentTool/loadAgentsDir.js";
 import { SidecarManager } from "../session/sidecar.js";
+import { FileHistorySidecar } from "../session/file-history.js";
 import { getCurrentRuntimeSession } from "./_deps/current-session.js";
 import {
   isSandboxExecutionBrokerDisposed,
@@ -3447,6 +3448,59 @@ required = true
       await boot.shutdown();
 
       expect(getCurrentRuntimeSession()).toBeNull();
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("hands the session the file-history sidecar, so a tool call captures a file's state before it runs (#3436)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    await installBootstrapProviderStub();
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+      const sidecar = boot.sidecarManager.getSidecar("file-history");
+      expect(sidecar).toBeInstanceOf(FileHistorySidecar);
+      const edited = join(await realpath(workspace), "notes.txt");
+      await writeFile(edited, "before the tool\n");
+
+      // The path as a model writes it: relative to the workspace.
+      const capture = boot.session.captureFileStateBeforeToolCall("Write", {
+        file_path: "notes.txt",
+        content: "after the tool\n",
+      });
+
+      expect(capture).toBeInstanceOf(Promise);
+      await capture;
+      const state = (sidecar as FileHistorySidecar).getSnapshotState();
+      expect([...state.trackedFiles]).toEqual([edited]);
+      const origin = state.snapshots.at(-1)?.trackedFileBackups[edited];
+      expect(origin?.version).toBe(1);
+      await expect(readFile(origin!.backupFileName!, "utf8")).resolves.toBe(
+        "before the tool\n",
+      );
+      // A call with nothing to capture does not wait.
+      expect(
+        boot.session.captureFileStateBeforeToolCall("FileRead", {
+          file_path: "notes.txt",
+        }),
+      ).toBeUndefined();
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */

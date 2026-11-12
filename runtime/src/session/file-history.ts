@@ -329,6 +329,7 @@ export class FileHistory {
    */
   private activeReaders = 0;
   private pruneFailureReported = false;
+  private captureTimeoutReported = false;
 
   constructor(opts: FileHistoryOptions) {
     this.projectDir = opts.projectDir;
@@ -756,6 +757,23 @@ export class FileHistory {
   }
 
   /**
+   * For the sidecar: a tool call waited `timeoutMs` for the capture of its
+   * "before" state and then ran without it. Delivered like the engine's
+   * own diagnostics. One `file_history_capture_timeout` per engine; later
+   * timeouts are silent.
+   */
+  reportCaptureTimeout(toolName: string, timeoutMs: number): void {
+    if (this.captureTimeoutReported) return;
+    this.captureTimeoutReported = true;
+    this.emitDiagnostic({
+      cause: "file_history_capture_timeout",
+      message:
+        `capture before ${toolName} did not finish within ${timeoutMs} ms: ` +
+        "the tool ran anyway, so a rewind may not undo its file changes",
+    });
+  }
+
+  /**
    * Dry-run of `rewindToMessage`: report which files would change on
    * disk (and line-level diff stats vs their current contents) without
    * touching anything. Returns `null` when no snapshot exists for
@@ -1048,6 +1066,11 @@ export interface FileHistorySidecarOpts {
    * deletions are not tracked.
    */
   readonly workspaceRoot?: string;
+  /**
+   * Longest time, in milliseconds, that `captureBeforeToolCall` makes a
+   * tool call wait. Defaults to 5000.
+   */
+  readonly captureTimeoutMs?: number;
 }
 
 const DEFAULT_EDIT_TOOL_NAMES: ReadonlyArray<string> = [
@@ -1057,6 +1080,8 @@ const DEFAULT_EDIT_TOOL_NAMES: ReadonlyArray<string> = [
   "NotebookEdit",
   "apply_patch",
 ];
+
+const DEFAULT_CAPTURE_TIMEOUT_MS = 5000;
 
 /**
  * Shell tools whose command text names the files they delete, and where each
@@ -1077,15 +1102,62 @@ const APPLY_PATCH_FILE_MARKERS = [
 ] as const;
 
 /**
- * Extract the file path(s) a mutating tool call touches from its raw
- * JSON args. The live tool schemas use `file_path` (Edit / MultiEdit /
- * Write) and `notebook_path` (NotebookEdit); `path`/`filePath` are kept
- * for legacy callers. `apply_patch` carries a multi-file patch payload
- * in `input` — its hunk headers name every touched file.
+ * The files a tool call is about to change, worked out from its name and
+ * its JSON args before it runs. The sidecar uses the one answer for both
+ * of its jobs: backing a file up when the call's start event arrives, and
+ * holding the call back in `captureBeforeToolCall` until that is done.
+ *
+ * - Edit tools (`editToolNames`, by default Edit, MultiEdit, Write,
+ *   NotebookEdit and apply_patch): the path or paths named in the args,
+ *   resolved against `workspaceRoot`. Without a root the path is returned
+ *   as written. A leading `~` is not expanded. `regularFilesOnly` is false.
+ * - Shell tools (exec_command, system.bash): the workspace paths the
+ *   command would write, remove or move. Nothing without a root.
+ *   `regularFilesOnly` is true: a caller backs up only the targets that
+ *   are regular files or do not exist yet.
+ * - Any other tool: no paths.
+ *
+ * Synchronous. For a shell command it reads the file system (a move into a
+ * directory resolves differently from a move onto a file), so two calls
+ * with the same input can give different answers.
  */
-function extractEditedFilePaths(
-  args: Record<string, unknown> | null,
-): ReadonlyArray<string> {
+export function resolveFileHistoryTargets(input: {
+  toolName: string;
+  args: Record<string, unknown> | null;
+  workspaceRoot: string | undefined;
+  editToolNames?: readonly string[];
+}): { paths: string[]; regularFilesOnly: boolean } {
+  const { toolName, args, workspaceRoot } = input;
+  if ((input.editToolNames ?? DEFAULT_EDIT_TOOL_NAMES).includes(toolName)) {
+    // Daemon cwd is AGENC_HOME, while tool paths are relative to the
+    // session workspace. Backups and restores must use the tool path.
+    return {
+      paths: editToolPaths(args).map((filePath) =>
+        workspaceRoot === undefined ? filePath : resolve(workspaceRoot, filePath)),
+      regularFilesOnly: false,
+    };
+  }
+  // Own keys only: a tool may be called "constructor".
+  const shellKeys = Object.hasOwn(SHELL_TOOL_ARG_KEYS, toolName)
+    ? SHELL_TOOL_ARG_KEYS[toolName]
+    : undefined;
+  if (shellKeys !== undefined) {
+    return {
+      paths: shellMutationPaths(toolName, shellKeys, args, workspaceRoot),
+      regularFilesOnly: true,
+    };
+  }
+  return { paths: [], regularFilesOnly: false };
+}
+
+/**
+ * The file path(s) in the raw JSON args of an edit tool call. The live tool
+ * schemas use `file_path` (Edit / MultiEdit / Write) and `notebook_path`
+ * (NotebookEdit); `path`/`filePath` are kept for legacy callers.
+ * `apply_patch` carries a multi-file patch payload in `input`, and its hunk
+ * headers name every touched file.
+ */
+function editToolPaths(args: Record<string, unknown> | null): string[] {
   if (args === null) return [];
   const single =
     args.file_path ?? args.notebook_path ?? args.path ?? args.filePath;
@@ -1105,17 +1177,53 @@ function extractEditedFilePaths(
   return [];
 }
 
+/**
+ * Workspace paths a shell tool call is about to write, remove or move, as
+ * absolute normalized paths. Resolved against the call's working directory
+ * under the workspace root; empty when the root is unknown.
+ */
+function shellMutationPaths(
+  toolName: string,
+  keys: { readonly command: string; readonly cwd: string },
+  args: Record<string, unknown> | null,
+  workspaceRoot: string | undefined,
+): string[] {
+  if (workspaceRoot === undefined || args === null) return [];
+  const command = args[keys.command];
+  if (typeof command !== "string" || command.trim().length === 0) return [];
+  const cwd = args[keys.cwd];
+  return [
+    ...collectShellWorkspaceMutationTargets({
+      toolName,
+      args: {
+        command,
+        ...(Array.isArray(args.args) ? { args: args.args } : {}),
+        ...(typeof cwd === "string" ? { cwd } : {}),
+      },
+      workspaceRoot,
+    }),
+  ];
+}
+
 export class FileHistorySidecar implements Sidecar {
   readonly name = "file-history";
   private readonly history: FileHistory;
   private readonly editToolNames: ReadonlyArray<string>;
   private readonly workspaceRoot: string | undefined;
+  private readonly captureTimeoutMs: number;
   private lastEditStartedAtMs: number | null = null;
+  /**
+   * The newest `user_message` barrier snapshot while it is still queued or
+   * running, `null` once it has settled. `captureBeforeToolCall` holds a
+   * tool call back for as long as this is set.
+   */
+  private pendingBarrier: Promise<void> | null = null;
 
   constructor(opts: FileHistorySidecarOpts) {
     this.history = opts.fileHistory;
     this.editToolNames = opts.editToolNames ?? DEFAULT_EDIT_TOOL_NAMES;
     this.workspaceRoot = opts.workspaceRoot;
+    this.captureTimeoutMs = opts.captureTimeoutMs ?? DEFAULT_CAPTURE_TIMEOUT_MS;
   }
 
   async start(): Promise<void> {
@@ -1134,23 +1242,29 @@ export class FileHistorySidecar implements Sidecar {
   onEvent(event: Event): void {
     const msg = event.msg;
     if (msg.type === "tool_call_started") {
-      if (this.editToolNames.includes(msg.payload.toolName)) {
+      const toolName = msg.payload.toolName;
+      const targets = resolveFileHistoryTargets({
+        toolName,
+        args: this.tryParseArgs(msg.payload.args),
+        workspaceRoot: this.workspaceRoot,
+        editToolNames: this.editToolNames,
+      });
+      // A call to an edit tool is an edit even when its args name no file.
+      // A call to any other tool is one when it has targets.
+      if (targets.paths.length > 0 || this.editToolNames.includes(toolName)) {
         this.lastEditStartedAtMs = monotonicMs();
-        const args = this.tryParseArgs(msg.payload.args);
-        for (const filePath of extractEditedFilePaths(args)) {
-          // Daemon cwd is AGENC_HOME, while tool paths are relative to the
-          // session workspace. Backups and restores must use the tool path.
-          void this.history.trackEdit(this.workspaceRoot === undefined
-            ? filePath : resolve(this.workspaceRoot, filePath), event.id);
-        }
-      } else {
-        const deleted = this.shellDeletionPaths(
-          msg.payload.toolName,
-          this.tryParseArgs(msg.payload.args),
-        );
-        if (deleted.length > 0) {
-          this.lastEditStartedAtMs = monotonicMs();
-          void this.trackShellDeletions(deleted, event.id);
+      }
+      if (targets.paths.length > 0) {
+        if (targets.regularFilesOnly) {
+          void this.trackRegularFiles(targets.paths, event.id);
+        } else {
+          // Queued before this handler returns. execute-tools announces the
+          // calls of a batch in one loop without an await, so the backups
+          // for all of them are queued before the first call gets as far as
+          // `captureBeforeToolCall`, which then waits for the lot: a call
+          // that also changes a file of a later call cannot get ahead of
+          // that file's backup.
+          void this.history.trackEdits(targets.paths, event.id);
         }
       }
     } else if (msg.type === "tool_call_completed") {
@@ -1161,15 +1275,142 @@ export class FileHistorySidecar implements Sidecar {
     } else if (msg.type === "turn_complete") {
       void this.history.makeSnapshot(`turn-${event.id}`);
     } else if (msg.type === "user_message") {
-      // Barrier snapshot: capture the tracked files' state at the
-      // moment a user message arrives, keyed by the event id that
-      // `runTurn` also stamps into the seed LLMMessage's
-      // `runtimeOnly.userMessageId`. Conversation rewind restores to
-      // this barrier — "the files as they were before you sent this
-      // message". Tool execution starts only after a full sampling
-      // round-trip, so the async backup always wins the race.
-      void this.history.makeSnapshot(event.id);
+      // Barrier snapshot: the tracked files as they are when a user message
+      // arrives, keyed by the event id that `runTurn` also stamps into the
+      // seed LLMMessage's `runtimeOnly.userMessageId`. Conversation rewind
+      // restores to this barrier: "the files as they were before you sent
+      // this message".
+      //
+      // The snapshot only joins the queue here. What makes it a true
+      // "before" state is `captureBeforeToolCall`: every tool call the
+      // router dispatches waits there for this snapshot, and for the backup
+      // of the files it is itself about to change, before it executes. The
+      // promise is kept until it settles so that a call with no file target
+      // of its own (`git checkout -- f`, a formatter run) waits as well.
+      //
+      // The wait is bounded: after `captureTimeoutMs` the call runs anyway
+      // and `file_history_capture_timeout` is reported. And it exists on
+      // the router's dispatch path only. The one-shot fast loop calls its
+      // tools directly and emits their events afterwards, so there every
+      // snapshot still trails the tools. Sub-agent sessions have no file
+      // history at all.
+      const barrier = this.history.makeSnapshot(event.id);
+      this.pendingBarrier = barrier;
+      const settled = (): void => {
+        // A newer user message may have replaced it in the meantime.
+        if (this.pendingBarrier === barrier) this.pendingBarrier = null;
+      };
+      void barrier.then(settled, settled);
     }
+  }
+
+  /**
+   * Call directly before a tool runs, and start the tool only once the
+   * returned promise has resolved. By then file history has on record,
+   * ahead of the tool's first write:
+   *
+   * - the barrier snapshot of the latest user message, if that was still
+   *   queued or running, and
+   * - the state of every file the call is about to change (its targets,
+   *   see `resolveFileHistoryTargets`): a backup, or the fact that the
+   *   file does not exist.
+   *
+   * Returns `undefined`, and no promise, when there is nothing to wait
+   * for: the engine is disabled, or the call has no targets and no barrier
+   * snapshot is pending. Most calls are of that kind and start without an
+   * extra await.
+   *
+   * The promise never rejects. It also resolves when `signal` aborts (the
+   * caller then stops the call), and after `captureTimeoutMs`. In that case
+   * the tool runs although its capture has not finished, which is reported
+   * as `file_history_capture_timeout`, once. Without that bound a queue
+   * that is stuck would hold up every later tool call for good.
+   */
+  captureBeforeToolCall(
+    toolName: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<void> | undefined {
+    if (!this.history.enabled) return undefined;
+    const targets = this.targetsOf(toolName, args);
+    const barrier = this.pendingBarrier;
+    if (targets.paths.length === 0 && barrier === null) return undefined;
+    // An aborted call does not run, so there is nothing to capture for it.
+    if (signal?.aborted) return Promise.resolve();
+    return this.settleWithin(toolName, signal, this.capture(targets, barrier));
+  }
+
+  /**
+   * The targets of a call that is about to run. A failure to work them out
+   * counts as "no targets": the call must still wait for a pending barrier.
+   */
+  private targetsOf(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): { paths: string[]; regularFilesOnly: boolean } {
+    try {
+      return resolveFileHistoryTargets({
+        toolName,
+        args,
+        workspaceRoot: this.workspaceRoot,
+        editToolNames: this.editToolNames,
+      });
+    } catch {
+      return { paths: [], regularFilesOnly: false };
+    }
+  }
+
+  /**
+   * The work `captureBeforeToolCall` waits for. It awaits queue promises
+   * only, never `flush()`: that also waits for diagnostics, and those are
+   * delivered behind canonical background work such as a compaction, which
+   * can take as long as it likes.
+   */
+  private async capture(
+    targets: { paths: string[]; regularFilesOnly: boolean },
+    barrier: Promise<void> | null,
+  ): Promise<void> {
+    const paths = targets.regularFilesOnly
+      ? await this.regularOrMissing(targets.paths)
+      : targets.paths;
+    // One queued operation for all of the call's targets. The id only names
+    // a first snapshot, when the engine has none to attach the backups to.
+    const tracked = paths.length > 0
+      ? this.history.trackEdits(paths, `capture-${randomUUID()}`)
+      : null;
+    if (barrier !== null) await barrier;
+    if (tracked !== null) await tracked;
+  }
+
+  /**
+   * Resolves when `work` settles, when `signal` aborts or when
+   * `captureTimeoutMs` has passed, whichever comes first. Never rejects.
+   * The timer and the abort listener are gone by the time it resolves.
+   */
+  private settleWithin(
+    toolName: string,
+    signal: AbortSignal | undefined,
+    work: Promise<void>,
+  ): Promise<void> {
+    return new Promise<void>((resolveCapture) => {
+      const finish = (): void => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", finish);
+        resolveCapture();
+      };
+      const timer = setTimeout(() => {
+        try {
+          this.history.reportCaptureTimeout(toolName, this.captureTimeoutMs);
+        } catch {
+          // A report that cannot be delivered must not keep the tool waiting.
+        }
+        finish();
+      }, this.captureTimeoutMs);
+      // A pending capture alone must not keep the process alive.
+      timer.unref();
+      signal?.addEventListener("abort", finish, { once: true });
+      void work.then(finish, finish);
+    });
   }
 
   private tryParseArgs(raw: string): Record<string, unknown> | null {
@@ -1181,50 +1422,38 @@ export class FileHistorySidecar implements Sidecar {
   }
 
   /**
-   * Workspace files a shell tool call is about to remove or move. Resolved
-   * against the call's working directory under the sidecar's workspace root;
-   * empty when the root is unknown or the tool is not a shell.
+   * Back up the targets of a shell call when its start event arrives:
+   * the same selection and the same single queued operation as in
+   * `captureBeforeToolCall`.
    */
-  private shellDeletionPaths(
-    toolName: string,
-    args: Record<string, unknown> | null,
-  ): ReadonlyArray<string> {
-    const keys = SHELL_TOOL_ARG_KEYS[toolName];
-    if (keys === undefined || this.workspaceRoot === undefined || args === null) {
-      return [];
-    }
-    const command = args[keys.command];
-    if (typeof command !== "string" || command.trim().length === 0) return [];
-    const cwd = args[keys.cwd];
-    return collectShellWorkspaceMutationTargets({
-      toolName,
-      args: {
-        command,
-        ...(Array.isArray(args.args) ? { args: args.args } : {}),
-        ...(typeof cwd === "string" ? { cwd } : {}),
-      },
-      workspaceRoot: this.workspaceRoot,
-    });
+  private async trackRegularFiles(
+    paths: readonly string[],
+    messageId: string,
+  ): Promise<void> {
+    const kept = await this.regularOrMissing(paths);
+    if (kept.length > 0) await this.history.trackEdits(kept, messageId);
   }
 
   /**
-   * Back up the regular files among `paths` before the shell removes them.
-   * Directories and missing paths have no content to preserve; a later
-   * snapshot records the removal itself, as it does for any tracked file.
+   * The paths among `paths` to track for a tool whose targets are
+   * `regularFilesOnly`: regular files, and paths that do not exist, which
+   * are tracked as "did not exist" so that a rewind removes what the tool
+   * creates there. A directory has no content to preserve, and opening a
+   * FIFO, socket or device can block forever, so anything else that exists
+   * is left out. A later snapshot records the removal of a tracked file.
    */
-  private async trackShellDeletions(
-    paths: ReadonlyArray<string>,
-    messageId: string,
-  ): Promise<void> {
+  private async regularOrMissing(paths: readonly string[]): Promise<string[]> {
+    const kept: string[] = [];
     for (const filePath of paths) {
-      let isDirectory = false;
+      let regular = true;
       try {
-        isDirectory = (await stat(filePath)).isDirectory();
+        regular = (await stat(filePath)).isFile();
       } catch {
         // Missing paths must be tracked so rewind removes new shell files.
       }
-      if (!isDirectory) await this.history.trackEdit(filePath, messageId);
+      if (regular) kept.push(filePath);
     }
+    return kept;
   }
 
   getSnapshotState(): FileHistoryState {

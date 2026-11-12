@@ -2227,7 +2227,9 @@ async function bootstrapLocalRuntimeSessionScoped(
         await fileHistory.loadFromDisk();
         const fileHistorySidecar = new FileHistorySidecar({ fileHistory, workspaceRoot });
         sidecarManager.register(deferredFileHistory?.attach(fileHistorySidecar) ?? fileHistorySidecar);
-        s.attachFileHistory(fileHistory);
+        // The sidecar itself, not the deferred wrapper: tool dispatch asks it
+        // to capture a file's state before the tool writes.
+        s.attachFileHistory(fileHistory, fileHistorySidecar);
 
         errorLogSidecar = new ErrorLogSidecar({
           projectDir,

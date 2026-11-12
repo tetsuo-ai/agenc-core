@@ -4632,10 +4632,39 @@ export class Session {
   private attachedFileHistory: import("./file-history.js").FileHistory | null =
     null;
 
+  /**
+   * The sidecar that drives the attached engine. Null when the session was
+   * given the engine alone, or nothing at all.
+   */
+  private attachedFileHistorySidecar:
+    | import("./file-history.js").FileHistorySidecar
+    | null = null;
+
   attachFileHistory(
     fileHistory: import("./file-history.js").FileHistory,
+    sidecar?: import("./file-history.js").FileHistorySidecar,
   ): void {
     this.attachedFileHistory = fileHistory;
+    this.attachedFileHistorySidecar = sidecar ?? null;
+  }
+
+  /**
+   * Tool dispatch calls this directly before a tool runs, so that file
+   * history records the "before" state of the files the tool is about to
+   * change ahead of the tool's first write. A returned promise must be
+   * awaited before the tool starts; it never rejects. `undefined` means
+   * there is nothing to wait for, and is also the answer when no file
+   * history is attached.
+   */
+  captureFileStateBeforeToolCall(
+    toolName: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<void> | undefined {
+    const sidecar = this.attachedFileHistorySidecar;
+    // Undefined, not null, on a session a test built without the constructor.
+    if (sidecar === null || sidecar === undefined) return undefined;
+    return sidecar.captureBeforeToolCall(toolName, args, signal);
   }
 
   /**
