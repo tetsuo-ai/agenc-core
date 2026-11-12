@@ -34,10 +34,10 @@ test("malformed range-note switch uses the on default", async () => {
   expect((await read("a\nb", { limit: 1 }, { AGENC_READ_RANGE_NOTE: "invalid" })).content)
     .toBe("1→a\n[lines 1-1 of 2; next offset 2]");
 });
-test("large streaming ranges count the whole file including a trailing empty line", async () => {
+test("large streaming ranges count physical lines without inventing a trailing line", async () => {
   const result = await read("a\n".repeat(100), { offset: 2, limit: 2 }, {}, 16);
-  expect(result.metadata?.totalLines).toBe(101);
-  expect(result.content).toBe("2→a\n3→a\n[lines 2-3 of 101; next offset 4]");
+  expect(result.metadata?.totalLines).toBe(100);
+  expect(result.content).toBe("2→a\n3→a\n[lines 2-3 of 100; next offset 4]");
 });
 test("over-cap whole-file reads return a bounded window", async () => {
   const result = await read("aaaa\nbbbb\ncccc\ndddd", {}, {}, 10);
@@ -72,9 +72,9 @@ test("token-limited reads return a fitting prefix and preserve legacy errors whe
 for (const bound of [false, true]) {
   test.each([
     { name: "CRLF split across chunks", text: `${"x".repeat(65535)}\r\né😀\r\nlast`, offset: 2, limit: 2, maxBytes: 16, content: "é😀\nlast", totalLines: 3 },
-    { name: "UTF-8 split across chunks", text: `${"x".repeat(65534)}\né😀\nlast\n`, offset: 2, limit: 1, maxBytes: 16, content: "é😀", totalLines: 4 },
+    { name: "UTF-8 split across chunks", text: `${"x".repeat(65534)}\né😀\nlast\n`, offset: 2, limit: 1, maxBytes: 16, content: "é😀", totalLines: 3 },
     { name: "blank lines at the byte cap", text: `a\n\n${"x".repeat(64)}`, offset: 1, limit: 20, maxBytes: 2, content: "a\n", totalLines: 3 },
-    { name: "trailing blank line beyond the byte cap", text: "aaaa\nbbbb\n", offset: 1, limit: 20, maxBytes: 9, content: "aaaa\nbbbb", totalLines: 3 },
+    { name: "trailing blank line beyond the byte cap", text: "aaaa\nbbbb\n", offset: 1, limit: 20, maxBytes: 9, content: "aaaa\nbbbb", totalLines: 2 },
     { name: "selected line spanning chunks", text: `${"x".repeat(65535)}\n${"é".repeat(40000)}\nlast`, offset: 2, limit: 1, maxBytes: 80000, content: "é".repeat(40000), totalLines: 3 },
   ])(`streamed windows preserve $name (bound=${bound})`, async fixture => {
     const numLines = fixture.content.split("\n").length;
@@ -112,3 +112,10 @@ for (const bound of [false, true]) {
     }
   });
 }
+
+test.each(["a\nb\nc\n", "a\r\nb\r\nc\r\n"])("a final newline does not offer an empty next window", async text => {
+  const result = await read(text, { limit: 3 });
+  expect(result.content).toBe("1→a\n2→b\n3→c");
+  expect(result.metadata?.totalLines).toBe(3);
+  expect((await read(text, { offset: 4 })).content).toContain("shorter than the provided offset (4)");
+});

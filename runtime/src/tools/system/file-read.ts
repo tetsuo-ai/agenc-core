@@ -429,6 +429,9 @@ function sliceLines(
   limit: number | undefined,
 ): SliceResult {
   const lines = text.length === 0 ? [] : text.split(/\r?\n/);
+  // A terminal delimiter ends the preceding line; it does not create one.
+  // Preserve the legacy switch's existing result bytes.
+  if (readRangeNoteEnabled() && text.endsWith("\n")) lines.pop();
   const totalLines = lines.length;
   const startLine = Math.max(1, offset);
   const effectiveLimit = limit ?? DEFAULT_LINE_LIMIT;
@@ -503,7 +506,6 @@ async function sliceTextFileByLineStream(
   let totalLines = 0;
 
   const input = createReadStream(filePath, { encoding: "utf8", highWaterMark: 64 * 1024 });
-  let endsWithNewline = false;
   let countedBytes = 0;
   let totalLinesIsLowerBound: true | undefined;
   let selectedBytes = 0;
@@ -553,7 +555,6 @@ async function sliceTextFileByLineStream(
         break;
       }
       countedBytes += Buffer.byteLength(chunk, "utf8");
-      endsWithNewline = chunk.endsWith("\n");
       let start: number = skipLF && chunk.startsWith("\n") ? 1 : 0;
       skipLF = false;
       const breaks = /\r\n|\r|\n/g;
@@ -569,10 +570,6 @@ async function sliceTextFileByLineStream(
       append(chunk.slice(start));
     }
     if (hasLineContent) finishLine();
-    if (countAll && !totalLinesIsLowerBound && endsWithNewline) {
-      append("");
-      finishLine();
-    }
   } finally {
     input.destroy();
   }
@@ -841,8 +838,9 @@ async function readTextFile(
   // auto-injected processed partial views; AgenC does not populate that
   // path here.
   opts.readGuard?.();
+  const observedContent = !sliced.isPartial && text !== undefined ? text : sliced.content;
   recordSessionRead(sessionId, resolvedPath.canonical, {
-    content: sliced.content,
+    content: observedContent,
     timestamp:
       fileStats !== null &&
       typeof fileStats.mtimeMs === "number" &&
@@ -902,7 +900,7 @@ async function readTextFile(
       ? `${sliced.startLine}→`
       : formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers), sliced),
     metadata: {
-      ...(rawFileStats !== null && snapshot?.content === sliced.content &&
+      ...(rawFileStats !== null && snapshot?.content === observedContent &&
           snapshot.timestamp === rawFileStats.mtimeMs ? {
         readObservationKey: createHash("sha256").update(JSON.stringify([
           resolvedPath.canonical, rawFileStats.dev, rawFileStats.ino, rawFileStats.size,

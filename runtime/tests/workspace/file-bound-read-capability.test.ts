@@ -86,7 +86,7 @@ describe("descriptor-bound file reads", () => {
       expect(legacy.totalLines).toBe(2);
       const counted = await capability.readTextWindow(2, 100, 10, true);
       expect(counted.content).toBe("bbbb\ncccc");
-      expect(counted.totalLines).toBe(5);
+      expect(counted.totalLines).toBe(4);
       expect(counted.endLine).toBe(3);
     } finally { await capability.dispose(); }
   });

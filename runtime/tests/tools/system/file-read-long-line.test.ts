@@ -86,6 +86,6 @@ for (const reader of ["file", "bound"]) {
       ? { code: expected.code }
       : { content: expected.content, numLines: expected.numLines,
         startLine: expected.offset, endLine: expected.offset,
-        ...(expected.offset === 1 ? { totalLinesIsLowerBound: true, totalLines: 2 } : { totalLines: 4 }) });
+        ...(expected.offset === 1 ? { totalLinesIsLowerBound: true, totalLines: 2 } : { totalLines: 3 }) });
   });
 }

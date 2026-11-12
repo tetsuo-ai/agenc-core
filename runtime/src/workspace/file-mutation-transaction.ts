@@ -1723,7 +1723,6 @@ try {
       const input = opened.handle.createReadStream({
         encoding: "utf8", highWaterMark: 64 * 1024, autoClose: false, start: 0,
       });
-      let endsWithNewline = false;
       let countedBytes = 0;
       let totalLinesIsLowerBound;
       let selectedBytes = 0;
@@ -1772,7 +1771,6 @@ try {
             break;
           }
           countedBytes += Buffer.byteLength(chunk, "utf8");
-          endsWithNewline = chunk.endsWith("\n");
           let start = skipLF && chunk.startsWith("\n") ? 1 : 0;
           skipLF = false;
           const breaks = /\r\n|\r|\n/g;
@@ -1788,10 +1786,6 @@ try {
           append(chunk.slice(start));
         }
         if (hasLineContent) finishLine();
-        if (command.completeLineCount && !totalLinesIsLowerBound && endsWithNewline) {
-          append("");
-          finishLine();
-        }
       } finally {
         input.destroy();
       }
