@@ -439,6 +439,111 @@ describe("startGateway", () => {
     await handle.stop();
   });
 
+  test("telegram: an owner's /stop is answered while a group turn is still running", async () => {
+    writeConfig({});
+    // startGateway builds this adapter itself, so the Bot API is faked at
+    // fetch: the test covers the production wiring of the owner control lane.
+    const sent: { chatId: string; text: string }[] = [];
+    const batches: unknown[][] = [];
+    const answer = (result: unknown): Response =>
+      new Response(JSON.stringify({ ok: true, result }), {
+        headers: { "content-type": "application/json" },
+      });
+    vi.stubGlobal(
+      "fetch",
+      async (input: unknown, init?: { readonly body?: unknown }) => {
+        const url = String(input);
+        const method = url.slice(url.lastIndexOf("/") + 1);
+        const body = (
+          typeof init?.body === "string" ? JSON.parse(init.body) : {}
+        ) as {
+          chat_id?: unknown;
+          text?: unknown;
+          rich_message?: { markdown?: unknown };
+        };
+        if (method === "getMe") {
+          return answer({ id: 1, is_bot: true, username: "agenc_test_bot" });
+        }
+        if (method === "getUpdates") {
+          // A short long-poll, so stop() never waits on a hanging request.
+          if (batches.length === 0) await new Promise((r) => setTimeout(r, 5));
+          return answer(batches.shift() ?? []);
+        }
+        if (method === "sendMessage" || method === "sendRichMessage") {
+          // Private chats get Rich Messages, groups plain sendMessage.
+          sent.push({
+            chatId: String(body.chat_id),
+            text: String(body.rich_message?.markdown ?? body.text),
+          });
+          return answer({ message_id: 900 + sent.length });
+        }
+        return answer(true);
+      },
+    );
+    const turnStarted = Promise.withResolvers<void>();
+    const finishTurn = Promise.withResolvers<GatewayPromptResult>();
+    const session: GatewaySession = {
+      sessionId: "group-session",
+      prompt: async () => {
+        turnStarted.resolve();
+        return finishTurn.promise;
+      },
+    };
+    const client: GatewayDaemonClient = {
+      createSession: async () => session,
+      attachSession: async () => session,
+      close: async () => {},
+    };
+    try {
+      const handle = await startGateway({
+        agencHome: home,
+        clientFactory: async () => client,
+        telegramToken: "123456:TEST-token",
+        env: { AGENC_TELEGRAM_ADMIN_PEER_IDS: "555" },
+      });
+      try {
+        // Four group turns fill every slot the adapter has, and none ends.
+        batches.push(
+          [1, 2, 3, 4].map((id) => ({
+            update_id: id,
+            message: {
+              message_id: id,
+              from: { id: 7000 + id, first_name: "member" },
+              chat: { id: -1000 - id, type: "supergroup" },
+              text: "a very long question",
+            },
+          })),
+        );
+        await turnStarted.promise;
+        // The owner pauses the bot. The answer arrives although no slot is free.
+        batches.push([
+          {
+            update_id: 5,
+            message: {
+              message_id: 5,
+              from: { id: 555, first_name: "owner" },
+              chat: { id: 555, type: "private" },
+              text: "/stop",
+            },
+          },
+        ]);
+        await vi.waitFor(() => {
+          expect(sent).toEqual([
+            {
+              chatId: "555",
+              text: "Public group replies are PAUSED. Use /start to resume.",
+            },
+          ]);
+        });
+      } finally {
+        finishTurn.resolve({ stopReason: "completed", finalMessage: "done" });
+        await handle.stop();
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   test("unpaired telegram sender gets pairing-gated (no turn)", async () => {
     // No policy → fail-closed pairing default.
     writeConfig({});

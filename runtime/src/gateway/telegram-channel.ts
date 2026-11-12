@@ -171,6 +171,7 @@ export interface TelegramTransport {
     markdown: string,
     options?: TelegramRichMessageOptions,
   ): Promise<void>;
+  deleteMessage?(chatId: string, messageId: number): Promise<void>;
 }
 
 interface BotApiResponse<T> {
@@ -405,6 +406,13 @@ export class FetchTelegramTransport implements TelegramTransport {
     });
   }
 
+  async deleteMessage(chatId: string, messageId: number): Promise<void> {
+    await this.#call("deleteMessage", {
+      chat_id: chatId,
+      message_id: messageId,
+    });
+  }
+
   async editRichMessage(
     chatId: string,
     messageId: number,
@@ -459,17 +467,26 @@ export interface TelegramChannelOptions {
    */
   readonly autoPoll?: boolean;
   /**
-   * Most update handlers (agent turns) running at the same time. Commands
-   * from a private chat are not counted. Default 4.
+   * Most update handlers (agent turns) running at the same time. Owner
+   * control commands (see isControlMessage) are not counted. Default 4.
    */
   readonly maxConcurrentUpdates?: number;
   /**
    * Most accepted updates waiting for a free handler or for an earlier update
-   * of their own conversation. When full, the newest update is dropped with
-   * one log line and no reply. Default 100.
+   * of their own conversation. When full, one update is dropped with one log
+   * line and no reply: the newest one of the chat that holds the most waiting
+   * places, so one busy chat cannot push the others out. Default 100.
    */
   readonly maxQueuedUpdates?: number;
-  /** Test seam: the wait before the one retry of a rate-limited final edit. */
+  /**
+   * Says whether a private-chat command is an owner control command that is
+   * answered without a turn (TelegramOwnerControl.isOwnerControlMessage).
+   * Such a message is handled at once: it skips the limit, the queue and its
+   * conversation's order, because /stop exists to interrupt running work.
+   * Without this option no message skips them.
+   */
+  readonly isControlMessage?: (message: InboundChannelMessage) => boolean;
+  /** Test seam: the wait before the one retry of a rate-limited final edit or send. */
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
@@ -479,6 +496,8 @@ const DEFAULT_MAX_QUEUED_UPDATES = 100;
 /** An update that passed addressing and is waiting for, or running, its handler. */
 interface PendingUpdate {
   readonly updateId: number;
+  /** The chat it came from; forum topics of one chat share it. */
+  readonly chatId: string;
   readonly message: InboundChannelMessage;
 }
 
@@ -500,7 +519,15 @@ const TELEGRAM_PART_BUDGET = 3600;
  * be quadratic work on a long reply.
  */
 const TELEGRAM_WHOLE_FIT_CHECK = 2 * TELEGRAM_MESSAGE_LIMIT;
-/** Longest wait before the one retry of a rate-limited final edit. */
+/**
+ * Most messages one reply is split into. A longer reply ends with a
+ * truncation note, so a single prompt cannot make the bot post without end.
+ * The owner bot stops at the same six messages (owner-telegram.ts).
+ */
+export const TELEGRAM_MAX_REPLY_PARTS = 6;
+/** Closes the last message of a reply that was cut (as slack-channel.ts does). */
+const TELEGRAM_TRUNCATION_NOTE = "\n\u2026 (truncated)";
+/** Longest wait before the one retry of a rate-limited final edit or send. */
 const TELEGRAM_MAX_RETRY_WAIT_MS = 10_000;
 /** Wait used when a flood-limit error names no retry_after. */
 const TELEGRAM_DEFAULT_RETRY_WAIT_MS = 1_000;
@@ -542,6 +569,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   readonly #maxConcurrentUpdates: number;
   readonly #maxQueuedUpdates: number;
   readonly #sleep: (ms: number) => Promise<void>;
+  readonly #isControlMessage: (message: InboundChannelMessage) => boolean;
   readonly #editTargets = new Map<string, EditTarget>();
   /** Accepted updates that could not start yet, oldest first. */
   readonly #waitingUpdates: PendingUpdate[] = [];
@@ -586,6 +614,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       0,
     );
     this.#sleep = options.sleep ?? sleepDefault;
+    this.#isControlMessage = options.isControlMessage ?? (() => false);
     const configuredBotUsername = options.botUsername?.trim().replace(/^@/, "");
     if (configuredBotUsername !== undefined && configuredBotUsername.length > 0) {
       this.#botIdentity = { id: -1, username: configuredBotUsername };
@@ -720,12 +749,13 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     if (inbound === null) return;
     const pending: PendingUpdate = {
       updateId: update.update_id,
+      chatId: inbound.chatId,
       message: inbound.message,
     };
     if (inbound.control) {
-      // Owner controls such as /stop exist to interrupt running work, so a
-      // private-chat command skips the limit, the queue and its own
-      // conversation's order.
+      // Owner controls such as /stop exist to interrupt running work, so an
+      // owner control command skips the limit, the queue and its own
+      // conversation's order. It is answered without a turn.
       this.#runUpdate(pending, "control");
       return;
     }
@@ -734,12 +764,41 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       return;
     }
     if (this.#waitingUpdates.length >= this.#maxQueuedUpdates) {
+      const dropped = this.#makeRoomFor(pending);
       this.#log(
-        `telegram: update queue full (${this.#maxQueuedUpdates} waiting), dropped update ${pending.updateId}`,
+        `telegram: update queue full (${this.#maxQueuedUpdates} waiting), dropped update ${dropped.updateId}`,
       );
-      return;
+      if (dropped === pending) return;
     }
     this.#waitingUpdates.push(pending);
+  }
+
+  /**
+   * The waiting queue is full: pick the update to drop. It is the newest one
+   * of the chat that would hold the most waiting places, so a chat that
+   * floods the bot loses its own messages instead of pushing other chats
+   * out. The incoming update is dropped when its own chat is that chat.
+   */
+  #makeRoomFor(incoming: PendingUpdate): PendingUpdate {
+    const places = new Map<string, number>();
+    for (const waiting of this.#waitingUpdates) {
+      places.set(waiting.chatId, (places.get(waiting.chatId) ?? 0) + 1);
+    }
+    let busiestChat = incoming.chatId;
+    let busiest = (places.get(incoming.chatId) ?? 0) + 1;
+    for (const [chatId, count] of places) {
+      if (count > busiest) {
+        busiestChat = chatId;
+        busiest = count;
+      }
+    }
+    if (busiestChat === incoming.chatId) return incoming;
+    for (let index = this.#waitingUpdates.length - 1; index >= 0; index -= 1) {
+      if (this.#waitingUpdates[index].chatId === busiestChat) {
+        return this.#waitingUpdates.splice(index, 1)[0];
+      }
+    }
+    return incoming;
   }
 
   #canRunNow(pending: PendingUpdate): boolean {
@@ -802,7 +861,11 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   /** Map an update to the gateway's inbound shape, or null to ignore it. */
   #inboundFromUpdate(
     update: TelegramUpdate,
-  ): { readonly message: InboundChannelMessage; readonly control: boolean } | null {
+  ): {
+    readonly message: InboundChannelMessage;
+    readonly chatId: string;
+    readonly control: boolean;
+  } | null {
     const updateKind = telegramUpdateKind(update);
     const message =
       update.message ??
@@ -832,25 +895,32 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     );
     const text = this.#normalizedTextForAddressing(rawText, message);
     if (text === null) return null;
-    return {
-      control: isPrivate && text.trimStart().startsWith("/"),
-      message: {
-        channelId: this.id,
-        sender: {
-          peerId,
-          ...(sender?.username !== undefined
-            ? { displayName: sender.username }
-            : sender?.first_name !== undefined
-              ? { displayName: sender.first_name }
-              : senderChat?.username !== undefined
-                ? { displayName: senderChat.username }
-                : senderChat?.title !== undefined
-                  ? { displayName: senderChat.title }
-                  : {}),
-        },
-        conversation: { kind: isPrivate ? "dm" : "group", id: conversationId },
-        text,
+    const inbound: InboundChannelMessage = {
+      channelId: this.id,
+      sender: {
+        peerId,
+        ...(sender?.username !== undefined
+          ? { displayName: sender.username }
+          : sender?.first_name !== undefined
+            ? { displayName: sender.first_name }
+            : senderChat?.username !== undefined
+              ? { displayName: senderChat.username }
+              : senderChat?.title !== undefined
+                ? { displayName: senderChat.title }
+                : {}),
       },
+      conversation: { kind: isPrivate ? "dm" : "group", id: conversationId },
+      text,
+    };
+    return {
+      message: inbound,
+      chatId,
+      // Only a private-chat command can be an owner control command, so the
+      // question is not even asked for anything else.
+      control:
+        isPrivate &&
+        text.trimStart().startsWith("/") &&
+        this.#isControlMessage(inbound),
     };
   }
 
@@ -930,10 +1000,15 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   }
 
   async send(message: OutboundChannelMessage): Promise<string> {
+    const final = message.final === true;
     if (message.editMessageId !== undefined) {
       const reply = this.#editTargets.get(message.editMessageId);
       if (reply !== undefined) {
-        await this.#editReply(reply, message.text, message.final === true);
+        // A reply that is still being edited is the newest entry again, so
+        // sends to other chats cannot evict it in the middle of a turn.
+        this.#editTargets.delete(message.editMessageId);
+        this.#editTargets.set(message.editMessageId, reply);
+        await this.#editReply(reply, message.text, final);
         return message.editMessageId;
       }
     }
@@ -988,8 +1063,10 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       });
     } else {
       // One Telegram message per part, in reading order.
-      for (const part of splitTelegramText(message.text)) {
-        reply.messages.push(await this.#sendPart(reply, part));
+      const parts = splitTelegramText(message.text);
+      if (final) this.#logTruncation(parts, message.text);
+      for (const part of parts) {
+        reply.messages.push(await this.#sendPartOrRetry(reply, part, final));
       }
     }
     const handle = `${this.id}-out-${++this.#outCounter}`;
@@ -1005,14 +1082,20 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
   /**
    * Bring an already sent reply up to `text`: edit the messages whose part
-   * changed, send parts that have no message yet as follow-ups in the same
-   * thread, and never delete a message.
+   * changed and send parts that have no message yet as follow-ups in the
+   * same thread.
    *
    * A streaming edit is best effort, because the next edit carries newer
    * text: a failure is logged and skipped. The final edit must land: a
-   * rate-limited edit is retried once, and if it still fails the text from
-   * that part on is sent as new messages. Only when that fails too does the
-   * error reach the caller, which records the turn as not delivered.
+   * rate-limited edit or send is retried once, and if an edit still fails
+   * the text from that part on is sent as new messages. Only when that fails
+   * too does the error reach the caller, which records the turn as not
+   * delivered.
+   *
+   * The final text can need fewer messages than the streamed draft did (a
+   * turn streams all of its text, and the final answer is its last message
+   * only). The messages left over are then deleted, so the answer is not
+   * followed by a stale piece of the draft.
    */
   async #editReply(
     reply: EditTarget,
@@ -1020,11 +1103,12 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     final: boolean,
   ): Promise<void> {
     const parts = splitTelegramText(text);
+    if (final) this.#logTruncation(parts, text);
     for (const [index, part] of parts.entries()) {
       const delivered = reply.messages[index];
       if (delivered === undefined) {
         try {
-          reply.messages.push(await this.#sendPart(reply, part));
+          reply.messages.push(await this.#sendPartOrRetry(reply, part, final));
         } catch (error) {
           if (final) throw error;
           // Stop here so the parts stay in order; the next edit sends them.
@@ -1051,13 +1135,72 @@ export class TelegramChannelAdapter implements ChannelAdapter {
         );
         const resent: DeliveredPart[] = [];
         for (const rest of parts.slice(index)) {
-          resent.push(await this.#sendPart(reply, rest));
+          resent.push(await this.#sendPartOrRetry(reply, rest, true));
         }
         // The messages that could not be edited stay in the chat as they are;
         // the handle now points at the ones that carry the final text.
         reply.messages.splice(index, reply.messages.length - index, ...resent);
         return;
       }
+    }
+    if (final && reply.messages.length > parts.length) {
+      await this.#deleteLeftovers(
+        reply,
+        reply.messages.splice(parts.length, reply.messages.length - parts.length),
+      );
+    }
+  }
+
+  /** One log line when the final text of a reply had to be cut. */
+  #logTruncation(parts: readonly TelegramTextPart[], text: string): void {
+    if (!isTruncatedTelegramReply(parts)) return;
+    this.#log(
+      `telegram: reply of ${text.length} characters truncated to ${TELEGRAM_MAX_REPLY_PARTS} messages`,
+    );
+  }
+
+  /**
+   * Remove the messages a shorter final text no longer needs. Best effort:
+   * the answer itself is delivered, so a failure is logged, not thrown.
+   */
+  async #deleteLeftovers(
+    reply: EditTarget,
+    leftovers: readonly DeliveredPart[],
+  ): Promise<void> {
+    for (const leftover of leftovers) {
+      if (this.#transport.deleteMessage === undefined) {
+        this.#log(
+          `telegram: draft message ${leftover.messageId} left in the chat: the transport cannot delete`,
+        );
+        continue;
+      }
+      try {
+        await this.#transport.deleteMessage(reply.chatId, leftover.messageId);
+      } catch (error) {
+        this.#log(
+          `telegram: draft message ${leftover.messageId} left in the chat: ${String(error)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Send one part as a new message. On the final flush a flood limit is
+   * waited out and the send retried once, like a final edit.
+   */
+  async #sendPartOrRetry(
+    reply: EditTarget,
+    part: TelegramTextPart,
+    final: boolean,
+  ): Promise<DeliveredPart> {
+    try {
+      return await this.#sendPart(reply, part);
+    } catch (error) {
+      const waitMs = final ? telegramRetryWaitMs(error) : null;
+      if (waitMs === null) throw error;
+      this.#log(`telegram: final send rate limited, retrying in ${waitMs} ms`);
+      await this.#sleep(waitMs);
+      return this.#sendPart(reply, part);
     }
   }
 
@@ -1322,6 +1465,9 @@ function fitsTelegramMessage(html: string): boolean {
  * A cut depends only on the text before it. While a streamed reply grows,
  * its earlier parts therefore stay the same and only the last one changes,
  * so their messages need no further edit.
+ *
+ * A reply takes at most TELEGRAM_MAX_REPLY_PARTS messages. Text beyond that
+ * is left out and the last part ends with a truncation note.
  */
 export function splitTelegramText(text: string): TelegramTextPart[] {
   const parts: TelegramTextPart[] = [];
@@ -1339,10 +1485,49 @@ export function splitTelegramText(text: string): TelegramTextPart[] {
       }
     }
     const taken = takeTelegramPart(rest);
+    rest = rest.slice(taken.next);
+    if (
+      parts.length === TELEGRAM_MAX_REPLY_PARTS - 1 &&
+      rest.trim().length > 0
+    ) {
+      // The last message this reply may take, and the text goes on after it.
+      parts.push(truncatedTelegramPart(taken.markdown));
+      return parts;
+    }
     if (taken.markdown.length > 0) {
       parts.push({ markdown: taken.markdown, html: taken.html });
     }
-    rest = rest.slice(taken.next);
+  }
+}
+
+/** Whether `parts` came out of a reply that had to be cut. */
+export function isTruncatedTelegramReply(
+  parts: readonly TelegramTextPart[],
+): boolean {
+  return (
+    parts.length === TELEGRAM_MAX_REPLY_PARTS &&
+    parts[parts.length - 1].markdown.endsWith(TELEGRAM_TRUNCATION_NOTE)
+  );
+}
+
+/**
+ * The last part of a reply that is cut: `markdown` plus the truncation note,
+ * shortened from the end until the rendering fits one message.
+ */
+function truncatedTelegramPart(markdown: string): TelegramTextPart {
+  let kept = markdown;
+  for (;;) {
+    const candidate = `${kept}${TELEGRAM_TRUNCATION_NOTE}`;
+    const html = telegramRichText(candidate);
+    if (fitsTelegramMessage(html) || kept.length === 0) {
+      return { markdown: candidate, html };
+    }
+    // Make room for the note: drop the last tenth, never half of a
+    // surrogate pair.
+    let end = kept.length - Math.max(1, Math.ceil(kept.length / 10));
+    const last = kept.charCodeAt(end - 1);
+    if (end > 0 && last >= 0xd800 && last <= 0xdbff) end -= 1;
+    kept = kept.slice(0, end).trimEnd();
   }
 }
 

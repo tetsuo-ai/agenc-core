@@ -66,6 +66,7 @@ import type {
   GatewayChannelPolicy,
   GatewayConfig,
   GatewayDaemonClient,
+  InboundChannelMessage,
 } from "./types.js";
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 
@@ -273,6 +274,20 @@ export async function startGateway(
     ...publicTelegramCommands,
   ];
 
+  const controlPlane =
+    telegramAdminPeerIds.length > 0 ||
+    (telegramOwnerClaimCode !== undefined && telegramOwnerClaimCode.length > 0)
+      ? new TelegramOwnerControl({
+          agencHome: options.agencHome,
+          adminPeerIds: telegramAdminPeerIds,
+          ...(telegramOwnerClaimCode !== undefined &&
+          telegramOwnerClaimCode.length > 0
+            ? { ownerClaimCode: telegramOwnerClaimCode }
+            : {}),
+          log,
+        })
+      : undefined;
+
   const telegramToken =
     options.telegramToken ?? env.AGENC_TELEGRAM_BOT_TOKEN?.trim();
   if (telegramToken !== undefined && telegramToken.length > 0) {
@@ -302,6 +317,15 @@ export async function startGateway(
         richMessages: envTelegramRichMessages(env.AGENC_TELEGRAM_RICH_MESSAGES),
         ...(env.AGENC_TELEGRAM_BOT_USERNAME !== undefined
           ? { botUsername: env.AGENC_TELEGRAM_BOT_USERNAME.trim() }
+          : {}),
+        // An owner's /stop, /start, /status or /help is answered by the
+        // control plane without a turn, so it does not wait for running
+        // turns. Nothing else skips the adapter's limit and queue.
+        ...(controlPlane !== undefined
+          ? {
+              isControlMessage: (message: InboundChannelMessage) =>
+                controlPlane.isOwnerControlMessage(message),
+            }
           : {}),
         log,
       }),
@@ -465,20 +489,6 @@ export async function startGateway(
         unattendedDeny:
           envOptionalList(env.AGENC_GATEWAY_AGENT_UNATTENDED_DENY) ?? [],
       }));
-
-  const controlPlane =
-    telegramAdminPeerIds.length > 0 ||
-    (telegramOwnerClaimCode !== undefined && telegramOwnerClaimCode.length > 0)
-      ? new TelegramOwnerControl({
-          agencHome: options.agencHome,
-          adminPeerIds: telegramAdminPeerIds,
-          ...(telegramOwnerClaimCode !== undefined &&
-          telegramOwnerClaimCode.length > 0
-            ? { ownerClaimCode: telegramOwnerClaimCode }
-            : {}),
-          log,
-        })
-      : undefined;
 
   const gateway = new ChannelGateway({
     agencHome: options.agencHome,

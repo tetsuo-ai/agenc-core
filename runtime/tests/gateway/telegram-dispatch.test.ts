@@ -1,7 +1,7 @@
 // Telegram adapter update dispatch (#3439): pollOnce() hands updates over
 // without waiting for the agent turn. One conversation stays in arrival
 // order, different conversations run side by side under a limit, a
-// private-chat command is never held back, and stop() waits for what is
+// owner control command is never held back, and stop() waits for what is
 // running. Handlers are held open with promises the test settles, so nothing
 // here waits on a clock.
 
@@ -30,6 +30,11 @@ const GROUP_A = -1001;
 const GROUP_B = -1002;
 const GROUP_C = -1003;
 const OWNER = 555;
+const STRANGER = 777;
+
+/** Stands in for the owner control plane: the owner's private-chat commands. */
+const ownerCommands = (message: InboundChannelMessage): boolean =>
+  message.sender.peerId === String(OWNER);
 
 function update(
   id: number,
@@ -260,7 +265,7 @@ describe("TelegramChannelAdapter update dispatch", () => {
     await adapter.stop();
   });
 
-  test("a private /stop is handled while another chat's turn is still running", async () => {
+  test("the owner's private /stop is handled while another chat's turn is still running", async () => {
     const transport = new BatchTransport();
     transport.batches.push(
       [update(1, GROUP_A, "long question"), update(2, GROUP_B, "queued question")],
@@ -271,6 +276,7 @@ describe("TelegramChannelAdapter update dispatch", () => {
       transport,
       autoPoll: false,
       maxConcurrentUpdates: 1,
+      isControlMessage: ownerCommands,
     });
     const held = heldHandlers();
     await adapter.start(held.context);
@@ -293,14 +299,18 @@ describe("TelegramChannelAdapter update dispatch", () => {
     await adapter.stop();
   });
 
-  test("a private command does not wait for its own chat either", async () => {
+  test("an owner command does not wait for its own chat either", async () => {
     const transport = new BatchTransport();
     transport.batches.push([
       update(1, OWNER, "summarize the repo"),
       update(2, OWNER, "and the tests"),
       update(3, OWNER, "  /status"),
     ]);
-    const adapter = new TelegramChannelAdapter({ transport, autoPoll: false });
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      isControlMessage: ownerCommands,
+    });
     const held = heldHandlers();
     await adapter.start(held.context);
 
@@ -340,6 +350,122 @@ describe("TelegramChannelAdapter update dispatch", () => {
     await held.release("long question");
     expect(held.started).toEqual(["long question", "/stop"]);
 
+    held.releaseAll();
+    await adapter.whenIdle();
+    await adapter.stop();
+  });
+
+  test("a private command from anyone else takes its turn", async () => {
+    const transport = new BatchTransport();
+    transport.batches.push([
+      update(1, GROUP_A, "long question"),
+      update(2, STRANGER, "/stop"),
+      update(3, OWNER, "/stop"),
+    ]);
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      maxConcurrentUpdates: 1,
+      isControlMessage: ownerCommands,
+    });
+    const held = heldHandlers();
+    await adapter.start(held.context);
+
+    await poll(adapter);
+    // Only the owner's command skips the limit; the stranger's waits.
+    expect(held.started).toEqual(["long question", "/stop"]);
+    expect(held.peak()).toBe(2);
+
+    held.releaseAll();
+    await nextEventLoopTurn();
+    held.releaseAll();
+    await adapter.whenIdle();
+    expect(held.finished).toHaveLength(3);
+    await adapter.stop();
+  });
+
+  test("without a control predicate no message skips the limit", async () => {
+    const transport = new BatchTransport();
+    transport.batches.push([
+      update(1, GROUP_A, "long question"),
+      update(2, OWNER, "/stop"),
+    ]);
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      maxConcurrentUpdates: 1,
+    });
+    const held = heldHandlers();
+    await adapter.start(held.context);
+
+    await poll(adapter);
+    expect(held.started).toEqual(["long question"]);
+    await held.release("long question");
+    expect(held.started).toEqual(["long question", "/stop"]);
+
+    held.releaseAll();
+    await adapter.whenIdle();
+    await adapter.stop();
+  });
+
+  test("a flood of private commands from strangers stays within the limit and the queue", async () => {
+    const transport = new BatchTransport();
+    transport.batches.push(
+      Array.from({ length: 50 }, (_, index) =>
+        update(index + 1, 9000 + index, `/x${index}`),
+      ),
+    );
+    const logs: string[] = [];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      maxConcurrentUpdates: 1,
+      maxQueuedUpdates: 0,
+      isControlMessage: ownerCommands,
+      log: (line) => logs.push(line),
+    });
+    const held = heldHandlers();
+    await adapter.start(held.context);
+
+    await poll(adapter);
+    expect(held.started).toEqual(["/x0"]);
+    expect(held.peak()).toBe(1);
+    expect(logs).toHaveLength(49);
+    expect(logs[0]).toBe(
+      "telegram: update queue full (0 waiting), dropped update 2",
+    );
+
+    held.releaseAll();
+    await adapter.whenIdle();
+    await adapter.stop();
+  });
+
+  test("the control predicate is asked only about private-chat commands", async () => {
+    const transport = new BatchTransport();
+    transport.batches.push([
+      update(1, GROUP_A, "/stop"),
+      update(2, OWNER, "plain text"),
+      update(3, OWNER, "/status"),
+    ]);
+    const asked: string[] = [];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      isControlMessage: (message) => {
+        asked.push(`${message.conversation.kind}:${message.text}`);
+        return false;
+      },
+    });
+    const held = heldHandlers();
+    await adapter.start(held.context);
+
+    await poll(adapter);
+    expect(asked).toEqual(["dm:/status"]);
+    // Refused by the predicate, so it keeps its place behind "plain text".
+    expect(held.started).toEqual(["/stop", "plain text"]);
+
+    held.releaseAll();
+    await nextEventLoopTurn();
     held.releaseAll();
     await adapter.whenIdle();
     await adapter.stop();
@@ -490,6 +616,86 @@ describe("TelegramChannelAdapter update dispatch", () => {
     await adapter.stop();
   });
 
+  test("a chat that floods the queue loses its own messages, not the other chats'", async () => {
+    const transport = new BatchTransport();
+    transport.batches.push([
+      update(1, GROUP_A, "A1"),
+      update(2, GROUP_A, "A2", 11),
+      update(3, GROUP_A, "A3", 12),
+      update(4, GROUP_A, "A4", 13),
+      // The queue (3 places) is full of group A, two of them in forum topics.
+      update(5, GROUP_B, "B1"),
+      update(6, GROUP_C, "C1"),
+      // Now A, B and C hold one place each: the newcomer's own chat is as
+      // busy as any other, so the newcomer is the one dropped.
+      update(7, GROUP_B, "B2"),
+      update(8, OWNER, "plain owner text"),
+    ]);
+    const logs: string[] = [];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      maxConcurrentUpdates: 1,
+      maxQueuedUpdates: 3,
+      log: (line) => logs.push(line),
+    });
+    const held = heldHandlers();
+    await adapter.start(held.context);
+
+    await poll(adapter);
+    expect(held.started).toEqual(["A1"]);
+    expect(logs).toEqual([
+      // B1 arrives: group A holds 3 places, so its newest (A4) goes.
+      "telegram: update queue full (3 waiting), dropped update 4",
+      // C1 arrives: group A still holds 2, so A3 goes.
+      "telegram: update queue full (3 waiting), dropped update 3",
+      "telegram: update queue full (3 waiting), dropped update 7",
+      "telegram: update queue full (3 waiting), dropped update 8",
+    ]);
+
+    // What is left runs in arrival order.
+    await held.release("A1");
+    await held.release("A2");
+    await held.release("B1");
+    await held.release("C1");
+    await adapter.whenIdle();
+    expect(held.started).toEqual(["A1", "A2", "B1", "C1"]);
+    await adapter.stop();
+  });
+
+  test("by default a hundred updates wait and the next one is dropped", async () => {
+    const transport = new BatchTransport();
+    transport.batches.push(
+      Array.from({ length: 105 }, (_, index) =>
+        update(index + 1, -5000 - index, `chat ${index + 1}`),
+      ),
+    );
+    const logs: string[] = [];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      log: (line) => logs.push(line),
+    });
+    const held = heldHandlers();
+    await adapter.start(held.context);
+
+    await poll(adapter);
+    expect(held.started).toHaveLength(4);
+    expect(logs).toEqual([
+      "telegram: update queue full (100 waiting), dropped update 105",
+    ]);
+
+    // The hundred that waited all run once slots free up.
+    for (let round = 0; round < 110 && held.finished.length < 104; round += 1) {
+      held.releaseAll();
+      await nextEventLoopTurn();
+    }
+    await adapter.whenIdle();
+    expect(held.finished).toHaveLength(104);
+    expect(held.peak()).toBe(4);
+    await adapter.stop();
+  });
+
   test("the offset advances once per update, whatever happens to the update", async () => {
     const transport = new BatchTransport();
     transport.batches.push([
@@ -505,6 +711,7 @@ describe("TelegramChannelAdapter update dispatch", () => {
       autoPoll: false,
       maxConcurrentUpdates: 1,
       maxQueuedUpdates: 0,
+      isControlMessage: ownerCommands,
       log: (line) => logs.push(line),
     });
     const held = heldHandlers();
@@ -617,6 +824,35 @@ describe("TelegramChannelAdapter update dispatch", () => {
     await adapter.stop();
   });
 
+  test("a malformed update at the end of a batch is not fetched again", async () => {
+    const transport = new BatchTransport();
+    const malformed = {
+      update_id: 2,
+      message: { message_id: 2, from: { id: 9 }, text: "no chat" },
+    } as unknown as TelegramUpdate;
+    transport.batches.push([update(1, GROUP_A, "well formed"), malformed]);
+    const logs: string[] = [];
+    const adapter = new TelegramChannelAdapter({
+      transport,
+      autoPoll: false,
+      log: (line) => logs.push(line),
+    });
+    const held = heldHandlers();
+    await adapter.start(held.context);
+
+    await poll(adapter);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(/^telegram: update 2 skipped: TypeError: /);
+    // Nothing after the malformed update moves the offset past it: it has to
+    // have moved before the update was looked at.
+    await poll(adapter);
+    expect(transport.offsets).toEqual([0, 3]);
+
+    held.releaseAll();
+    await adapter.whenIdle();
+    await adapter.stop();
+  });
+
   test("the poll loop keeps polling during a turn and after a handler error", async () => {
     const transport = new LongPollTransport();
     const logs: string[] = [];
@@ -664,6 +900,7 @@ describe("TelegramChannelAdapter update dispatch", () => {
       transport,
       autoPoll: false,
       maxConcurrentUpdates: 1,
+      isControlMessage: ownerCommands,
       log: (line) => logs.push(line),
     });
     const held = heldHandlers();
@@ -749,20 +986,25 @@ describe("Telegram owner control through the gateway", () => {
       close: async () => {},
     };
     const transport = new BatchTransport();
+    const controlLogs: string[] = [];
+    const controlPlane = new TelegramOwnerControl({
+      agencHome: home,
+      adminPeerIds: [String(OWNER)],
+      log: (line) => controlLogs.push(line),
+    });
     // One slot, held by the group turn: only the control lane gets /stop in.
+    // Wired as in run.ts: the control plane says what an owner command is.
     const adapter = new TelegramChannelAdapter({
       transport,
       autoPoll: false,
       maxConcurrentUpdates: 1,
+      isControlMessage: (message) => controlPlane.isOwnerControlMessage(message),
     });
     const gateway = new ChannelGateway({
       agencHome: home,
       client,
       config: { channels: {}, bindings: [], defaultAgent: "default" },
-      controlPlane: new TelegramOwnerControl({
-        agencHome: home,
-        adminPeerIds: [String(OWNER)],
-      }),
+      controlPlane,
     });
     await gateway.registerAdapter(adapter);
     const publicEnabled = (): unknown =>
@@ -778,6 +1020,14 @@ describe("Telegram owner control through the gateway", () => {
     await promptStarted.promise;
     expect(prompts).toHaveLength(1);
     expect(prompts[0]).toContain("a very long question");
+
+    // A stranger's private /stop is not an owner command: it waits for the
+    // slot like any other message, so nobody has looked at it yet.
+    transport.batches.push([update(9, STRANGER, "/stop")]);
+    await adapter.pollOnce();
+    await nextEventLoopTurn();
+    expect(controlLogs).toEqual([]);
+    expect(transport.sent).toEqual([]);
 
     // The owner pauses the bot from the private chat. The reply and the
     // saved state are there although the group turn is still open.
@@ -806,6 +1056,11 @@ describe("Telegram owner control through the gateway", () => {
         text: "Public group replies are PAUSED. Use /start to resume.",
       },
       { chatId: String(GROUP_A), text: "the answer" },
+    ]);
+    // The stranger's command got its turn after the group turn, and was
+    // refused there without a reply.
+    expect(controlLogs).toEqual([
+      `telegram-control: denied owner command '/stop' from '${STRANGER}'`,
     ]);
     await gateway.stop();
   });

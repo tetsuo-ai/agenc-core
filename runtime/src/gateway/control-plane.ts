@@ -197,6 +197,27 @@ export class TelegramOwnerControl {
   }
 
   /**
+   * Whether this message is an owner control command (/start, /stop, /status,
+   * /help and their aliases) sent in the private chat by an owner. Such a
+   * message is answered here and never starts a turn, so the Telegram adapter
+   * may handle it ahead of running turns. /owner is not one: it comes from an
+   * account that is not an owner yet.
+   */
+  isOwnerControlMessage(message: InboundChannelMessage): boolean {
+    if (message.channelId !== TELEGRAM_CHANNEL_ID) return false;
+    if (message.conversation.kind !== "dm") return false;
+    const command = parseCommand(message.text);
+    if (
+      command === undefined ||
+      command.name === "owner" ||
+      !CONTROL_COMMANDS.has(command.name)
+    ) {
+      return false;
+    }
+    return this.#isOwner(message.sender, this.#load());
+  }
+
+  /**
    * Three outcomes:
    * - no file: a first run, so the defaults apply (public replies on, no
    *   stored owners, the bot can be claimed);

@@ -184,6 +184,27 @@ describe("SessionRouter delivery failures", () => {
     ]);
   });
 
+  it("keeps editing the message an adapter returns when the edit target was lost", async () => {
+    const sent: OutboundChannelMessage[] = [];
+    // The second send is an edit of "first-id"; the adapter no longer holds
+    // that target, posts a new message and returns its handle.
+    const handles = ["first-id", "replacement-id", "replacement-id"];
+    const run = setup(async (message) => { sent.push(message); return handles[sent.length - 1]; });
+    const outcome = run();
+    const handlers = await handlersReady.promise;
+    handlers.onEvent({ type: "text", delta: "first" });
+    await nextEventLoopTurn();
+    handlers.onEvent({ type: "text", delta: " second" });
+    await nextEventLoopTurn();
+    finishPrompt.resolve(completed);
+    await expect(outcome).resolves.toEqual({ kind: "completed", value: completed });
+    expect(sent).toStrictEqual([
+      { conversationId: "conversation", text: "first" },
+      { conversationId: "conversation", text: "first second", editMessageId: "first-id" },
+      { conversationId: "conversation", text: "final answer", editMessageId: "replacement-id", final: true },
+    ]);
+  });
+
   it.each([true, false])("marks a last flush that is also the first send as final (supportsEdit %s)", async (supportsEdit) => {
     const sent: OutboundChannelMessage[] = [];
     const run = setup(async (message) => { sent.push(message); return "message-id"; }, supportsEdit);

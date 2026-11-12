@@ -987,9 +987,10 @@ describe("TelegramChannelAdapter", () => {
     const { ctx } = collector();
     await adapter.start(ctx);
     const handle = await adapter.send({ conversationId: "42", text: "a" });
-    // Should resolve, not throw.
+    // A different text, so the edit reaches the transport (an edit to the
+    // same text is skipped before it). Should resolve, not throw.
     await expect(
-      adapter.send({ conversationId: "42", text: "a", editMessageId: handle }),
+      adapter.send({ conversationId: "42", text: "b", editMessageId: handle }),
     ).resolves.toBe(handle);
     await adapter.stop();
   });

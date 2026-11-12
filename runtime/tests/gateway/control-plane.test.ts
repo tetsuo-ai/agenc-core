@@ -230,6 +230,94 @@ function unreadableLogs(logs: readonly string[]): string[] {
   return logs.filter((line) => line.includes("is unreadable"));
 }
 
+describe("isOwnerControlMessage", () => {
+  function isControl(
+    control: TelegramOwnerControl,
+    peerId: string,
+    kind: "dm" | "group",
+    text: string,
+    channelId: string = TELEGRAM_CHANNEL_ID,
+  ): boolean {
+    return control.isOwnerControlMessage({
+      channelId,
+      sender: { peerId },
+      conversation: { kind, id: kind === "dm" ? `dm-${peerId}` : "group-1" },
+      text,
+    });
+  }
+
+  test("is true for an owner's control command in the private chat", () => {
+    const control = ownerControl({ adminPeerIds: ["admin"] });
+    for (const text of [
+      "/stop",
+      "/start",
+      "/status",
+      "/help",
+      "/pause",
+      "/resume",
+      "  /stop  ",
+      "/STOP",
+      "/stop@agenc_bot",
+      "/stop now please",
+    ]) {
+      expect(isControl(control, "admin", "dm", text)).toBe(true);
+    }
+  });
+
+  test("is false for anyone who is not an owner", () => {
+    const control = ownerControl({
+      adminPeerIds: ["admin"],
+      ownerClaimCode: CLAIM_CODE,
+    });
+    expect(isControl(control, "guest", "dm", "/stop")).toBe(false);
+    expect(isControl(control, "", "dm", "/stop")).toBe(false);
+  });
+
+  test("is false for anything that is answered with a turn or by a claim", () => {
+    const control = ownerControl({ adminPeerIds: ["admin"] });
+    for (const text of [
+      "stop",
+      "please /stop",
+      "/image a cat",
+      "/unknown",
+      "/",
+      "",
+      // A claim comes from an account that is not an owner yet.
+      `/owner ${CLAIM_CODE}`,
+    ]) {
+      expect(isControl(control, "admin", "dm", text)).toBe(false);
+    }
+  });
+
+  test("is false in a group and on another channel", () => {
+    const control = ownerControl({ adminPeerIds: ["admin"] });
+    expect(isControl(control, "admin", "group", "/stop")).toBe(false);
+    expect(isControl(control, "admin", "dm", "/stop", "discord")).toBe(false);
+  });
+
+  test("knows an owner who claimed the bot", async () => {
+    const control = ownerControl({ ownerClaimCode: CLAIM_CODE });
+    expect(isControl(control, "owner", "dm", "/stop")).toBe(false);
+    await send(control, "owner", "dm", `/owner ${CLAIM_CODE}`);
+    expect(isControl(control, "owner", "dm", "/stop")).toBe(true);
+    expect(isControl(control, "guest", "dm", "/stop")).toBe(false);
+  });
+
+  test("with unreadable state only owners from adminPeerIds count", async () => {
+    const control = ownerControl({
+      adminPeerIds: ["admin"],
+      ownerClaimCode: CLAIM_CODE,
+    });
+    await send(control, "admin", "dm", "/start");
+    writeFileSync(statePath, JSON.stringify({ ownerPeerIds: ["stored"] }));
+    expect(isControl(control, "stored", "dm", "/stop")).toBe(true);
+
+    writeFileSync(statePath, "");
+    expect(isControl(control, "stored", "dm", "/stop")).toBe(false);
+    expect(isControl(control, "admin", "dm", "/stop")).toBe(true);
+  });
+});
+
 describe("first run: no state file", () => {
   test("keeps the open defaults and writes nothing until an owner command saves", async () => {
     const logs: string[] = [];

@@ -84,7 +84,10 @@ async function streamPromptToAdapter(options: {
     flushing = flushing.then(async () => {
       if (delivery.failure !== undefined) return;
       if (options.adapter.supportsEdit && sentMessageId !== null) {
-        await options.adapter.send({
+        // An adapter that no longer holds the edit target posts a new
+        // message and returns its handle; later flushes then edit that one
+        // instead of posting the whole text again.
+        sentMessageId = await options.adapter.send({
           conversationId: options.conversationId,
           text,
           editMessageId: sentMessageId,

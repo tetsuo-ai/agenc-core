@@ -1,8 +1,8 @@
 // Telegram reply delivery (#3440): a reply longer than one message is split
-// and kept up to date part by part, and a failed edit is no longer reported
-// as delivered. The fake Bot API keeps the chat as a list of messages and
-// refuses what the real one refuses: text over 4096 characters, empty text,
-// and an edit that changes nothing.
+// (into six messages at most) and kept up to date part by part, and a failed
+// edit is no longer reported as delivered. The fake Bot API keeps the chat as
+// a list of messages and refuses what the real one refuses: text over 4096
+// characters, empty text, and an edit that changes nothing.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,9 +13,11 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { SessionRouter } from "../../src/gateway/session-router.js";
 import {
   FetchTelegramTransport,
+  TELEGRAM_MAX_REPLY_PARTS,
   TELEGRAM_MESSAGE_LIMIT,
   TelegramBotApiError,
   TelegramChannelAdapter,
+  isTruncatedTelegramReply,
   splitTelegramText,
   type TelegramRichMessageOptions,
   type TelegramSendOptions,
@@ -45,9 +47,12 @@ function botError(
   });
 }
 
-function rateLimited(seconds: number): TelegramBotApiError {
+function rateLimited(
+  seconds: number,
+  method = "editMessageText",
+): TelegramBotApiError {
   return botError(
-    "editMessageText",
+    method,
     429,
     `Too Many Requests: retry after ${seconds}`,
     seconds,
@@ -79,15 +84,17 @@ interface ChatMessage {
   rich: boolean;
 }
 
-/** Bot API stand-in without Rich Messages: sendMessage and editMessageText only. */
+/** Bot API stand-in without Rich Messages: sendMessage, editMessageText and deleteMessage. */
 class FakeBotApi implements TelegramTransport {
   readonly messages: ChatMessage[] = [];
-  /** Every attempt in call order: "send", "edit:<id>", "rich-send", "rich-edit:<id>". */
+  /** Every attempt in call order: "send", "edit:<id>", "delete:<id>", "rich-send", "rich-edit:<id>". */
   readonly calls: string[] = [];
   /** Scripted outcome of the next editMessageText calls: a rejection or PASS. */
   readonly editErrors: unknown[] = [];
   /** Scripted outcome of the next sendMessage calls: a rejection or PASS. */
   readonly sendErrors: unknown[] = [];
+  /** Scripted outcome of the next deleteMessage calls: a rejection or PASS. */
+  readonly deleteErrors: unknown[] = [];
   #nextId = 100;
 
   async getUpdates(): Promise<TelegramUpdate[]> {
@@ -126,6 +133,13 @@ class FakeBotApi implements TelegramTransport {
     message.rich = false;
     if (options.parseMode !== undefined) message.parseMode = options.parseMode;
     else delete message.parseMode;
+  }
+
+  async deleteMessage(chatId: string, messageId: number): Promise<void> {
+    this.calls.push(`delete:${messageId}`);
+    rejectIfScripted(this.deleteErrors);
+    const message = this.find("deleteMessage", chatId, messageId);
+    this.messages.splice(this.messages.indexOf(message), 1);
   }
 
   protected add(
@@ -388,6 +402,62 @@ describe("splitTelegramText", () => {
     expect(blank[0].markdown.trim()).toBe("");
     expect(splitTelegramText("")).toEqual([{ markdown: "", html: "" }]);
   });
+  test("a reply takes at most six messages and the last one says it was cut", () => {
+    const answer = longAnswer(40_000);
+    const parts = splitTelegramText(answer);
+
+    expect(parts).toHaveLength(TELEGRAM_MAX_REPLY_PARTS);
+    expect(isTruncatedTelegramReply(parts)).toBe(true);
+    for (const part of parts) {
+      expect(part.html.length).toBeLessThanOrEqual(TELEGRAM_MESSAGE_LIMIT);
+    }
+    const last = parts[parts.length - 1].markdown;
+    expect(last).toMatch(/\n\u2026 \(truncated\)$/);
+    // What is shown is the start of the answer, whole lines, nothing reordered.
+    const shown = [
+      ...parts.slice(0, -1).map((part) => part.markdown),
+      last.slice(0, last.lastIndexOf("\n")),
+    ].join("\n");
+    expect(answer.startsWith(shown)).toBe(true);
+    expect(shown.length).toBeGreaterThan(5 * 3000);
+  });
+
+  test("a reply that needs exactly six messages is not marked", () => {
+    const answer = longAnswer(21_000);
+    const parts = splitTelegramText(answer);
+
+    expect(parts).toHaveLength(TELEGRAM_MAX_REPLY_PARTS);
+    expect(isTruncatedTelegramReply(parts)).toBe(false);
+    expect(parts.map((part) => part.markdown).join("\n")).toBe(answer);
+    // Blank space after the sixth message is not a cut either, however much
+    // of it there is (9,000 spaces are too many to be measured as one
+    // message, so the sixth part is cut off them like any other part).
+    for (const blank of ["\n\n   \n", `\n${" ".repeat(9000)}`]) {
+      const padded = splitTelegramText(`${answer}${blank}`);
+      expect(padded).toHaveLength(TELEGRAM_MAX_REPLY_PARTS);
+      expect(isTruncatedTelegramReply(padded)).toBe(false);
+    }
+  });
+
+  test("a cut reply keeps the same six parts while it grows", () => {
+    const answer = longAnswer(80_000);
+    const cut = splitTelegramText(answer.slice(0, 30_000));
+    expect(isTruncatedTelegramReply(cut)).toBe(true);
+    expect(splitTelegramText(answer.slice(0, 55_000))).toEqual(cut);
+    expect(splitTelegramText(answer)).toEqual(cut);
+  });
+
+  test("the cut last part fits one message even when its text renders long", () => {
+    // Every "&" renders as five characters, so the note needs room made for it.
+    const parts = splitTelegramText("&".repeat(20_000));
+
+    expect(parts).toHaveLength(TELEGRAM_MAX_REPLY_PARTS);
+    expect(isTruncatedTelegramReply(parts)).toBe(true);
+    for (const part of parts) {
+      expect(part.html.length).toBeLessThanOrEqual(TELEGRAM_MESSAGE_LIMIT);
+    }
+    expect(parts[parts.length - 1].markdown).toMatch(/^&+\n\u2026 \(truncated\)$/);
+  });
 });
 
 describe("TelegramChannelAdapter long replies", () => {
@@ -488,12 +558,13 @@ describe("TelegramChannelAdapter long replies", () => {
     expect(api.calls).toHaveLength(5);
   });
 
-  test("a shorter final text leaves the extra messages in place", async () => {
+  test("a shorter final text removes the messages it no longer needs", async () => {
     const api = new FakeBotApi();
-    const { adapter } = setup(api);
-    const draft = longAnswer(5000);
+    const { adapter, logs } = setup(api);
+    const draft = longAnswer(9000);
 
     const handle = await adapter.send({ conversationId: GROUP, text: draft });
+    expect(api.calls).toEqual(["send", "send", "send"]);
     await adapter.send({
       conversationId: GROUP,
       text: "short final answer",
@@ -501,12 +572,179 @@ describe("TelegramChannelAdapter long replies", () => {
       final: true,
     });
 
-    // Nothing is deleted: the first message carries the final text.
+    // The first message carries the final text; the two that held the rest
+    // of the draft are gone.
+    expect(api.calls.slice(3)).toEqual(["edit:101", "delete:102", "delete:103"]);
+    expect(api.texts(GROUP)).toEqual(["short final answer"]);
+    expect(logs).toEqual([]);
+
+    // The handle follows: growing again sends a new follow-up message.
+    const longer = longAnswer(5000);
+    await adapter.send({
+      conversationId: GROUP,
+      text: longer,
+      editMessageId: handle,
+      final: true,
+    });
+    expect(api.calls.slice(6)).toEqual(["edit:101", "send"]);
+    expect(api.texts(GROUP).join("\n")).toBe(longer);
+  });
+
+  test("a streaming edit to shorter text keeps the extra messages until the final flush", async () => {
+    const api = new FakeBotApi();
+    const { adapter } = setup(api);
+    const draft = longAnswer(5000);
+
+    const handle = await adapter.send({ conversationId: GROUP, text: draft });
+    await adapter.send({
+      conversationId: GROUP,
+      text: "shorter draft",
+      editMessageId: handle,
+    });
     expect(api.calls).toEqual(["send", "send", "edit:101"]);
-    expect(api.texts(GROUP)).toEqual([
-      "short final answer",
-      splitTelegramText(draft)[1].markdown,
+    expect(api.texts(GROUP)).toHaveLength(2);
+  });
+
+  test("a draft message that cannot be deleted is left in the chat and logged", async () => {
+    const api = new FakeBotApi();
+    const { adapter, logs } = setup(api);
+    const refusal = botError(
+      "deleteMessage",
+      400,
+      "Bad Request: message can't be deleted",
+    );
+    api.deleteErrors.push(refusal);
+
+    const handle = await adapter.send({
+      conversationId: GROUP,
+      text: longAnswer(5000),
+    });
+    await expect(
+      adapter.send({
+        conversationId: GROUP,
+        text: "short final answer",
+        editMessageId: handle,
+        final: true,
+      }),
+    ).resolves.toBe(handle);
+
+    // The answer is delivered; the leftover is only reported.
+    expect(api.texts(GROUP)).toHaveLength(2);
+    expect(api.texts(GROUP)[0]).toBe("short final answer");
+    expect(logs).toEqual([
+      `telegram: draft message 102 left in the chat: ${String(refusal)}`,
     ]);
+  });
+
+  test("a transport that cannot delete leaves the draft message and says so", async () => {
+    const api = new FakeBotApi();
+    const transport: TelegramTransport = {
+      getUpdates: () => api.getUpdates(),
+      sendMessage: (chatId, text, options) => api.sendMessage(chatId, text, options),
+      editMessageText: (chatId, messageId, text, options) =>
+        api.editMessageText(chatId, messageId, text, options),
+    };
+    const { adapter, logs } = setup(transport);
+
+    const handle = await adapter.send({
+      conversationId: GROUP,
+      text: longAnswer(5000),
+    });
+    await adapter.send({
+      conversationId: GROUP,
+      text: "short final answer",
+      editMessageId: handle,
+      final: true,
+    });
+
+    expect(api.calls).toEqual(["send", "send", "edit:101"]);
+    expect(logs).toEqual([
+      "telegram: draft message 102 left in the chat: the transport cannot delete",
+    ]);
+  });
+
+  test("a reply that is still being edited is not evicted by sends to other chats", async () => {
+    const api = new FakeBotApi();
+    const { adapter } = setup(api);
+
+    const handle = await adapter.send({ conversationId: GROUP, text: "draft" });
+    // 512 handles are kept. After these the reply's handle is the oldest.
+    for (let other = 0; other < 511; other += 1) {
+      await adapter.send({ conversationId: PRIVATE, text: `other ${other}` });
+    }
+    await adapter.send({
+      conversationId: GROUP,
+      text: "draft, longer",
+      editMessageId: handle,
+    });
+    // Every one of these evicts the oldest handle. The edit above made the
+    // reply's handle the newest, so it outlives all of them.
+    for (let other = 0; other < 511; other += 1) {
+      await adapter.send({ conversationId: PRIVATE, text: `more ${other}` });
+    }
+
+    const before = api.calls.length;
+    await expect(
+      adapter.send({
+        conversationId: GROUP,
+        text: "the final answer",
+        editMessageId: handle,
+        final: true,
+      }),
+    ).resolves.toBe(handle);
+    expect(api.calls.slice(before)).toEqual(["edit:101"]);
+    expect(api.texts(GROUP)).toEqual(["the final answer"]);
+  });
+
+  test("an edit whose handle was evicted posts a new message and returns its handle", async () => {
+    const api = new FakeBotApi();
+    const { adapter } = setup(api);
+
+    const stale = await adapter.send({ conversationId: GROUP, text: "draft" });
+    for (let other = 0; other < 512; other += 1) {
+      await adapter.send({ conversationId: PRIVATE, text: `other ${other}` });
+    }
+    const fresh = await adapter.send({
+      conversationId: GROUP,
+      text: "draft, longer",
+      editMessageId: stale,
+    });
+    expect(fresh).not.toBe(stale);
+    expect(api.texts(GROUP)).toEqual(["draft", "draft, longer"]);
+
+    // The returned handle edits the message that replaced the lost one.
+    await adapter.send({
+      conversationId: GROUP,
+      text: "the final answer",
+      editMessageId: fresh,
+      final: true,
+    });
+    expect(api.texts(GROUP)).toEqual(["draft", "the final answer"]);
+  });
+
+  test("a reply over six messages is cut, marked and logged once on the final flush", async () => {
+    const api = new FakeBotApi();
+    const { adapter, logs } = setup(api);
+    const answer = longAnswer(40_000);
+
+    const handle = await adapter.send({ conversationId: GROUP, text: answer });
+    expect(api.calls).toHaveLength(TELEGRAM_MAX_REPLY_PARTS);
+    // A streaming send does not log: the final flush does, once.
+    expect(logs).toEqual([]);
+
+    await adapter.send({
+      conversationId: GROUP,
+      text: answer,
+      editMessageId: handle,
+      final: true,
+    });
+    expect(api.calls).toHaveLength(TELEGRAM_MAX_REPLY_PARTS);
+    expect(logs).toEqual([
+      "telegram: reply of 40000 characters truncated to 6 messages",
+    ]);
+    const shown = api.texts(GROUP);
+    expect(shown).toHaveLength(TELEGRAM_MAX_REPLY_PARTS);
+    expect(shown[shown.length - 1]).toMatch(/\n\u2026 \(truncated\)$/);
   });
 
   test("text that renders much longer than its source still goes out as HTML", async () => {
@@ -800,10 +1038,56 @@ describe("TelegramChannelAdapter edit failures", () => {
     expect(api.texts(GROUP)).toEqual(["partial"]);
   });
 
-  test("a final follow-up that is rejected rejects the send", async () => {
+  test("a rate-limited final follow-up is retried once after retry_after", async () => {
     const api = new FakeBotApi();
-    const { adapter } = setup(api);
-    const rejection = botError("sendMessage", 429, "Too Many Requests: retry after 9", 9);
+    const { adapter, logs, sleeps } = setup(api);
+    const answer = longAnswer(5000);
+
+    const handle = await adapter.send({ conversationId: GROUP, text: "start" });
+    api.sendErrors.push(rateLimited(9, "sendMessage"));
+    await expect(
+      adapter.send({
+        conversationId: GROUP,
+        text: answer,
+        editMessageId: handle,
+        final: true,
+      }),
+    ).resolves.toBe(handle);
+
+    expect(sleeps).toEqual([9000]);
+    expect(api.calls).toEqual(["send", "edit:101", "send", "send"]);
+    expect(api.texts(GROUP).join("\n")).toBe(answer);
+    expect(logs).toEqual([
+      "telegram: final send rate limited, retrying in 9000 ms",
+    ]);
+  });
+
+  test("a final follow-up that is still rejected after the retry rejects the send", async () => {
+    const api = new FakeBotApi();
+    const { adapter, sleeps } = setup(api);
+    const second = rateLimited(9, "sendMessage");
+
+    const handle = await adapter.send({ conversationId: GROUP, text: "start" });
+    api.sendErrors.push(rateLimited(9, "sendMessage"), second);
+    await expect(
+      adapter.send({
+        conversationId: GROUP,
+        text: longAnswer(5000),
+        editMessageId: handle,
+        final: true,
+      }),
+    ).rejects.toBe(second);
+    expect(sleeps).toEqual([9000]);
+  });
+
+  test("a final follow-up rejected for another reason rejects at once", async () => {
+    const api = new FakeBotApi();
+    const { adapter, sleeps } = setup(api);
+    const rejection = botError(
+      "sendMessage",
+      403,
+      "Forbidden: bot was kicked from the supergroup chat",
+    );
 
     const handle = await adapter.send({ conversationId: GROUP, text: "start" });
     api.sendErrors.push(rejection);
@@ -815,6 +1099,51 @@ describe("TelegramChannelAdapter edit failures", () => {
         final: true,
       }),
     ).rejects.toBe(rejection);
+    expect(sleeps).toEqual([]);
+  });
+
+  test("a rate-limited first send waits and retries only on the final flush", async () => {
+    const streaming = new FakeBotApi();
+    const first = setup(streaming);
+    const rejection = rateLimited(3, "sendMessage");
+    streaming.sendErrors.push(rejection);
+    await expect(
+      first.adapter.send({ conversationId: GROUP, text: "a draft" }),
+    ).rejects.toBe(rejection);
+    expect(first.sleeps).toEqual([]);
+
+    const last = new FakeBotApi();
+    const second = setup(last);
+    last.sendErrors.push(rateLimited(3, "sendMessage"));
+    await second.adapter.send({
+      conversationId: GROUP,
+      text: "the whole answer",
+      final: true,
+    });
+    expect(second.sleeps).toEqual([3000]);
+    expect(last.calls).toEqual(["send", "send"]);
+    expect(last.texts(GROUP)).toEqual(["the whole answer"]);
+  });
+
+  test("the fallback after a failed final edit waits out a flood limit too", async () => {
+    const api = new FakeBotApi();
+    const { adapter, sleeps } = setup(api);
+
+    const handle = await adapter.send({ conversationId: GROUP, text: "partial" });
+    api.editErrors.push(new Error("socket hang up"));
+    api.sendErrors.push(rateLimited(3, "sendMessage"));
+    await expect(
+      adapter.send({
+        conversationId: GROUP,
+        text: "the complete answer",
+        editMessageId: handle,
+        final: true,
+      }),
+    ).resolves.toBe(handle);
+
+    expect(sleeps).toEqual([3000]);
+    expect(api.calls).toEqual(["send", "edit:101", "send", "send"]);
+    expect(api.texts(GROUP)).toEqual(["partial", "the complete answer"]);
   });
 
   test("\"message is not modified\" counts as delivered, final or not", async () => {
