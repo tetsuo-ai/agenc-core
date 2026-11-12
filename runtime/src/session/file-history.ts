@@ -17,20 +17,28 @@
  * On-disk layout:
  *
  *   ~/.agenc/projects/<slug>/file-history/
- *     <pathHash>/
- *       v1                              # original contents
- *       v2                              # after first edit
- *       v3                              # etc
+ *     session-<sessionHash>/            # one directory per conversation
+ *       snapshots.json                  # published snapshot index
+ *       <pathHash>/                     # one directory per tracked file
+ *         v1-<uuid>                     # contents when first tracked
+ *         v2-<uuid>                     # contents after a later change
  *
- * `pathHash` is a short hex digest of the absolute file path. The
- * backup files are content-addressable within a tracked file (same
- * hash → same content), so parallel edits to the same path never
- * corrupt each other.
+ * `sessionHash` and `pathHash` are the first 16 hex digits of the
+ * SHA-256 of the session id and of the absolute file path. An engine
+ * created without a session id writes no index and keeps the
+ * `<pathHash>` directories directly under `file-history/`.
+ *
+ * Backups are not content-addressed. Every backup is a new file with a
+ * unique name (`v<version>-<uuid>`) that is never written again, and a
+ * snapshot entry names its backup by absolute path. A snapshot copies
+ * only the files whose content changed since their latest backup; for
+ * an unchanged file it repeats the previous entry, so consecutive
+ * snapshots can share one backup file.
  *
  * @module
  */
 
-import type { Stats } from "node:fs";
+import { createReadStream, type Stats } from "node:fs";
 import {
   copyFile,
   mkdir,
@@ -61,8 +69,10 @@ export interface FileHistoryBackup {
   readonly version: number;
   readonly backupTimeMs: number;
   /** Per-snapshot diff stats against the previous version. Undefined
-   *  on v1 (no prior version to diff against) and when the file was
-   *  newly created (backupFileName === null). */
+   *  on v1 (no prior version to diff against), when the file was
+   *  newly created (backupFileName === null), and when the entry
+   *  repeats the previous snapshot's backup because the file did not
+   *  change. */
   readonly diffStats?: DiffStats;
 }
 
@@ -126,6 +136,28 @@ function emptyFileHistoryState(): FileHistoryState {
 
 function pathHash(absPath: string): string {
   return createHash("sha256").update(absPath).digest("hex").slice(0, 16);
+}
+
+/** Content of one backup file: its SHA-256 (hex) and its size in bytes. */
+interface BackupDigest {
+  readonly sha256: string;
+  readonly size: number;
+}
+
+/**
+ * SHA-256 (hex) of a file's bytes. The file is read as a stream, so
+ * memory use stays fixed and there is no size limit. Returns `null` on
+ * any error. Only pass regular files: opening a FIFO can block forever.
+ */
+export async function sha256OfFile(filePath: string): Promise<string | null> {
+  try {
+    const hash = createHash("sha256");
+    const chunks: AsyncIterable<Buffer> = createReadStream(filePath);
+    for await (const chunk of chunks) hash.update(chunk);
+    return hash.digest("hex");
+  } catch {
+    return null;
+  }
 }
 
 function countLines(text: string): number {
@@ -249,6 +281,20 @@ export class FileHistory {
   private pending: Promise<void> = Promise.resolve();
   private pendingDiagnostics: Promise<void> = Promise.resolve();
   private readonly withCanonicalBackgroundWork: FileHistoryOptions["withCanonicalBackgroundWork"];
+  /**
+   * Digest of each backup this engine copied or read back, keyed by
+   * `backupFileName`. Lets a snapshot tell that a file still equals its
+   * latest backup without reading the backup again. Never persisted: after
+   * a reload `digestFor` recomputes an entry from the backup file.
+   */
+  private readonly backupDigests = new Map<string, BackupDigest>();
+  /**
+   * True while the index on disk may not match the state: set when the
+   * state changes and when an index write fails, cleared when one
+   * succeeds. A `trackEdits` that changed nothing skips the index write
+   * only while this is clear.
+   */
+  private needsPersist = false;
 
   constructor(opts: FileHistoryOptions) {
     this.projectDir = opts.projectDir;
@@ -335,7 +381,13 @@ export class FileHistory {
   }
 
   private async persistState(): Promise<void> {
-    if (this.statePath === undefined) return;
+    if (this.statePath === undefined) {
+      this.needsPersist = false;
+      return;
+    }
+    // Stays set unless every step below succeeds, so that the next queued
+    // operation retries a failed index write even when it changes nothing.
+    this.needsPersist = true;
     await mkdir(this.historyDir, { recursive: true });
     const tmp = `${this.statePath}.${randomUUID()}.tmp`;
     try {
@@ -348,26 +400,43 @@ export class FileHistory {
       await rename(tmp, this.statePath);
       await syncDirectory(this.historyDir);
     } finally { await rm(tmp, { force: true }); }
+    this.needsPersist = false;
   }
 
   /**
-   * Call BEFORE a file edit so the current contents are preserved as
-   * v1 (or the current-max-version+1) in the backup store. Idempotent
-   * within the same messageId/snapshot.
+   * Call BEFORE a file edit so the file's current contents are kept as
+   * its origin: a version 1 backup attached to the most recent snapshot
+   * (a first snapshot keyed by `messageId` is created when there is
+   * none). A file that does not exist is recorded as absent, with no
+   * backup. A path that already has an entry in the most recent snapshot
+   * is left alone, so repeating the call is a no-op.
    */
-  async trackEdit(filePath: string, messageId: string): Promise<void> {
+  trackEdit(filePath: string, messageId: string): Promise<void> {
+    return this.trackEdits([filePath], messageId);
+  }
+
+  /**
+   * `trackEdit` for every path in `paths`, in order, as ONE queued
+   * operation, so nothing else on the queue runs between them. The index
+   * is written at most once, after the last path, and only when the state
+   * changed or an earlier index write is still owed.
+   */
+  async trackEdits(paths: readonly string[], messageId: string): Promise<void> {
     return this.enqueue(async () => {
-      await this.trackEditNow(filePath, messageId);
-      await this.persistState();
+      for (const filePath of paths) {
+        if (await this.trackEditNow(filePath, messageId)) this.needsPersist = true;
+      }
+      if (this.needsPersist) await this.persistState();
     });
   }
 
-  private async trackEditNow(filePath: string, messageId: string): Promise<void> {
-    if (!this.enabled) return;
+  /** Returns whether the state changed. */
+  private async trackEditNow(filePath: string, messageId: string): Promise<boolean> {
+    if (!this.enabled) return false;
     const mostRecent = this.state.snapshots.at(-1);
     if (mostRecent && mostRecent.trackedFileBackups[filePath]) {
       // Already tracked in the current snapshot.
-      return;
+      return false;
     }
     let backup: FileHistoryBackup;
     try {
@@ -394,7 +463,7 @@ export class FileHistory {
               : String(err),
         });
       }
-      return;
+      return false;
     }
     // Ensure there's at least one snapshot to attach the backup to.
     const updatedSnapshots: FileHistorySnapshot[] = [...this.state.snapshots];
@@ -419,12 +488,18 @@ export class FileHistory {
       snapshots: updatedSnapshots,
       trackedFiles: updatedTracked,
     };
+    return true;
   }
 
   /**
-   * Append a new snapshot row keyed by messageId. Call AFTER tool
-   * calls finish for the iteration. Back up any tracked file whose
-   * mtime changed since the last snapshot.
+   * Append a new snapshot row keyed by messageId, with one entry per
+   * tracked file. Call AFTER tool calls finish for the iteration. A
+   * file whose content still equals its latest backup (same size and
+   * SHA-256) repeats that backup's entry and is not copied again. A
+   * changed file gets a new backup with the next version, plus diff
+   * stats. A file that is gone gets an entry without a backup. A file
+   * whose backup fails is reported as `file_history_snapshot_failed`
+   * and has no entry in this snapshot.
    *
    * I-28 LRU eviction applies here: when snapshots exceed
    * `maxSnapshots`, evict the oldest and flip `isFileHistoryComplete=false`.
@@ -448,13 +523,14 @@ export class FileHistory {
       try {
         const latest = mostRecent?.trackedFileBackups[trackingPath];
         const nextVersion = latest ? latest.version + 1 : 1;
-        let fileExists = true;
-        try {
-          await stat(trackingPath);
-        } catch {
-          fileExists = false;
-        }
-        if (!fileExists) {
+        // Any stat failure counts as "the file is gone".
+        const sourceStats = await safeStat(trackingPath);
+        if (sourceStats === null) {
+          if (latest !== undefined && latest.backupFileName === null) {
+            // Still missing: the latest entry already says so. Keep it.
+            trackedFileBackups[trackingPath] = latest;
+            continue;
+          }
           // Treat deletion as "all lines removed".
           let priorLines = 0;
           if (latest?.backupFileName) {
@@ -475,6 +551,25 @@ export class FileHistory {
           aggInsertions += diffStats.insertions;
           aggDeletions += diffStats.deletions;
           if (priorLines > 0) filesChanged.push(trackingPath);
+          continue;
+        }
+        if (
+          latest !== undefined &&
+          latest.backupFileName !== null &&
+          sourceStats.isFile() &&
+          (await this.matchesBackup(
+            trackingPath,
+            sourceStats.size,
+            latest.backupFileName,
+          ))
+        ) {
+          // Unchanged since its latest backup: share that backup instead
+          // of copying the file again. No copy, no diff.
+          trackedFileBackups[trackingPath] = {
+            backupFileName: latest.backupFileName,
+            version: latest.version,
+            backupTimeMs: latest.backupTimeMs,
+          };
           continue;
         }
         const backup = await this.createBackup(trackingPath, nextVersion);
@@ -559,6 +654,7 @@ export class FileHistory {
       isFileHistoryComplete: complete,
       evictedCount: evicted,
     };
+    this.needsPersist = true;
   }
 
   /**
@@ -649,8 +745,9 @@ export class FileHistory {
     filePath: string,
     version: number,
   ): Promise<FileHistoryBackup> {
+    let sourceStats: Stats;
     try {
-      await stat(filePath);
+      sourceStats = await stat(filePath);
     } catch {
       return {
         backupFileName: null,
@@ -658,17 +755,63 @@ export class FileHistory {
         backupTimeMs: Date.now(),
       };
     }
+    // Opening a FIFO, socket or device can block forever, which would stall
+    // every later queued operation. A directory still reaches copyFile and
+    // fails there with EISDIR, as it always did.
+    if (!sourceStats.isFile() && !sourceStats.isDirectory()) {
+      throw new Error("not a regular file");
+    }
     const backupDir = join(this.historyDir, pathHash(filePath));
     await mkdir(backupDir, { recursive: true });
     // Published snapshots must never point at a file overwritten by a later
     // snapshot, rewind, or another engine. Version is logical, not a filename.
     const backupFileName = join(backupDir, `v${version}-${randomUUID()}`);
     await copyFile(filePath, backupFileName);
+    // Remember what was copied. A failed stat or hash keeps the backup and
+    // stores nothing; the next snapshot then tries again.
+    await this.digestFor(backupFileName);
     return {
       backupFileName,
       version,
       backupTimeMs: Date.now(),
     };
+  }
+
+  /**
+   * Digest of a backup file: the cached one, or one computed from the file
+   * (stat plus hash) and then cached. Returns `null` when the backup is
+   * missing, is not a regular file or cannot be read.
+   */
+  private async digestFor(backupFileName: string): Promise<BackupDigest | null> {
+    const cached = this.backupDigests.get(backupFileName);
+    if (cached !== undefined) return cached;
+    const backupStats = await safeStat(backupFileName);
+    if (backupStats === null || !backupStats.isFile()) return null;
+    const sha256 = await sha256OfFile(backupFileName);
+    if (sha256 === null) return null;
+    const digest: BackupDigest = { sha256, size: backupStats.size };
+    this.backupDigests.set(backupFileName, digest);
+    return digest;
+  }
+
+  /**
+   * True when the regular file at `sourcePath` (`sourceSize` bytes) still
+   * has the content of the backup `backupFileName`, so a snapshot can
+   * share that backup. Any check that fails or cannot be made means
+   * "changed", and the caller takes a fresh backup.
+   */
+  private async matchesBackup(
+    sourcePath: string,
+    sourceSize: number,
+    backupFileName: string,
+  ): Promise<boolean> {
+    const digest = await this.digestFor(backupFileName);
+    if (digest === null || sourceSize !== digest.size) return false;
+    // The digest may be older than the file it describes. One stat keeps a
+    // backup that was truncated or deleted since from being shared again.
+    const backupStats = await safeStat(backupFileName);
+    if (backupStats === null || backupStats.size !== digest.size) return false;
+    return (await sha256OfFile(sourcePath)) === digest.sha256;
   }
 
   private emitDiagnostic(d: { cause: string; message: string }): void {
@@ -930,12 +1073,12 @@ function findSnapshotByMessageId(
 }
 
 /**
- * Locate the first (earliest) tracked backup for `trackingPath` across
- * the snapshot log, used when rewinding to a target where the file has
- * not yet been tracked. Returns `null` when v1 recorded that the file
- * did not exist, or `undefined` when no v1 entry can be found at all
- * (the latter is a hard "unknown origin" and callers must not touch
- * the file).
+ * Locate the origin entry for `trackingPath`: the earliest version 1
+ * entry in the snapshot log, used when rewinding to a target where the
+ * file has not yet been tracked. A file that did not exist at tracking
+ * time still has an origin entry; its `backupFileName` is `null`.
+ * Returns `undefined` when no version 1 entry can be found at all (a
+ * hard "unknown origin": callers must not touch the file).
  */
 function getOriginBackup(
   state: FileHistoryState,

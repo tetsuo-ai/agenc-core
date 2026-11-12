@@ -1,8 +1,12 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
+  statSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -319,6 +323,261 @@ describe("FileHistory (I-28)", () => {
     await hist.makeSnapshot("msg-1");
     expect(hist.hasSnapshotFor("msg-1")).toBe(true);
     expect(hist.hasSnapshotFor("msg-2")).toBe(false);
+  });
+});
+
+/** Every backup file below a history directory; the index is not a backup. */
+function listBackupFiles(directory: string): string[] {
+  if (!existsSync(directory)) return [];
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return listBackupFiles(path);
+    return entry.name === "snapshots.json" ? [] : [path];
+  });
+}
+
+describe("FileHistory unchanged files (#3434)", () => {
+  let project = "";
+  const engines: FileHistory[] = [];
+
+  function engine(sessionId?: string): FileHistory {
+    const history = new FileHistory({ projectDir: project, sessionId });
+    engines.push(history);
+    return history;
+  }
+
+  beforeEach(() => {
+    project = mkdtempSync(join(tmpdir(), "agenc-filehist-carry-"));
+  });
+  afterEach(() => {
+    for (const history of engines.splice(0)) history.stop();
+    if (project) rmSync(project, { recursive: true, force: true });
+  });
+
+  test("an unchanged tracked file is not copied again by later snapshots", async () => {
+    const file = join(project, "steady.txt");
+    writeFileSync(file, "line1\nline2\n", "utf8");
+    const hist = engine("carry");
+    await hist.trackEdit(file, "m0");
+    const origin = hist.getState().snapshots[0]!.trackedFileBackups[file]!;
+    expect(origin.version).toBe(1);
+    expect(listBackupFiles(hist.historyDir)).toEqual([origin.backupFileName]);
+
+    for (let i = 1; i <= 4; i += 1) await hist.makeSnapshot(`m${i}`);
+
+    // Still the one backup file, shared by every snapshot.
+    expect(listBackupFiles(hist.historyDir)).toEqual([origin.backupFileName]);
+    const snapshots = hist.getState().snapshots;
+    expect(snapshots.map((snapshot) => snapshot.messageId)).toEqual([
+      "m0", "m1", "m2", "m3", "m4",
+    ]);
+    for (const snapshot of snapshots.slice(1)) {
+      const entry = snapshot.trackedFileBackups[file];
+      expect(entry).toEqual({
+        backupFileName: origin.backupFileName,
+        version: 1,
+        backupTimeMs: origin.backupTimeMs,
+      });
+      expect(entry).not.toHaveProperty("diffStats");
+      expect(snapshot.aggregateDiffStats).toBeUndefined();
+    }
+    // The index on disk says the same: one entry per snapshot, one backup.
+    const index = JSON.parse(
+      readFileSync(join(hist.historyDir, "snapshots.json"), "utf8"),
+    ) as { snapshots: FileHistorySnapshot[] };
+    expect(
+      index.snapshots.map((snapshot) => snapshot.trackedFileBackups[file]?.backupFileName),
+    ).toEqual(Array.from({ length: 5 }, () => origin.backupFileName));
+
+    // A shared backup still restores the file.
+    writeFileSync(file, "edited\n", "utf8");
+    await expect(hist.rewindToMessage("m3")).resolves.toEqual([file]);
+    expect(readFileSync(file, "utf8")).toBe("line1\nline2\n");
+  });
+
+  test("a same-size rewrite gets a new backup and diff stats", async () => {
+    const file = join(project, "same-size.txt");
+    writeFileSync(file, "aaaa\nbbbb\n", "utf8");
+    const sizeBefore = statSync(file).size;
+    const hist = engine();
+    await hist.trackEdit(file, "m0");
+    await hist.makeSnapshot("m1");
+    writeFileSync(file, "aaaa\ncccc\n", "utf8");
+    expect(statSync(file).size).toBe(sizeBefore);
+    await hist.makeSnapshot("m2");
+
+    const [, m1, m2] = hist.getState().snapshots;
+    const before = m1!.trackedFileBackups[file]!;
+    const after = m2!.trackedFileBackups[file]!;
+    expect(before.version).toBe(1);
+    expect(after.version).toBe(2);
+    expect(after.backupFileName).not.toBe(before.backupFileName);
+    expect(readFileSync(before.backupFileName!, "utf8")).toBe("aaaa\nbbbb\n");
+    expect(readFileSync(after.backupFileName!, "utf8")).toBe("aaaa\ncccc\n");
+    expect(after.diffStats).toEqual({ insertions: 1, deletions: 1 });
+    expect(m2!.aggregateDiffStats).toEqual({
+      insertions: 1,
+      deletions: 1,
+      filesChanged: [file],
+    });
+    expect(listBackupFiles(hist.historyDir)).toHaveLength(2);
+
+    // Unchanged again: the new backup is shared, without its diff stats.
+    await hist.makeSnapshot("m3");
+    const m3 = hist.getState().snapshots.at(-1)!;
+    expect(m3.trackedFileBackups[file]).toEqual({
+      backupFileName: after.backupFileName,
+      version: 2,
+      backupTimeMs: after.backupTimeMs,
+    });
+    expect(m3.trackedFileBackups[file]).not.toHaveProperty("diffStats");
+    expect(m3.aggregateDiffStats).toBeUndefined();
+    expect(listBackupFiles(hist.historyDir)).toHaveLength(2);
+  });
+
+  test.each([
+    ["truncated", "the same engine"],
+    ["deleted", "the same engine"],
+    ["truncated", "a reloaded engine"],
+    ["deleted", "a reloaded engine"],
+  ])(
+    "a %s backup is not carried into the next snapshot by %s",
+    async (damage, engineKind) => {
+      const file = join(project, "notes.txt");
+      writeFileSync(file, "IMPORTANT CONTENT\n", "utf8");
+      let hist = engine("damaged");
+      await hist.trackEdit(file, "m0");
+      await hist.makeSnapshot("m1");
+      const carried = hist.getState().snapshots.at(-1)!.trackedFileBackups[file]!;
+      // m1 shares the origin backup.
+      expect(carried.backupFileName).toBe(
+        hist.getState().snapshots[0]!.trackedFileBackups[file]!.backupFileName,
+      );
+
+      if (damage === "truncated") truncateSync(carried.backupFileName!, 4);
+      else rmSync(carried.backupFileName!);
+      if (engineKind === "a reloaded engine") {
+        // No digest in memory: this engine reads the backup as it is now.
+        hist = engine("damaged");
+        await hist.loadFromDisk();
+      }
+
+      await hist.makeSnapshot("m2");
+      const fresh = hist.getState().snapshots.at(-1)!.trackedFileBackups[file]!;
+      expect(fresh.backupFileName).not.toBe(carried.backupFileName);
+      expect(fresh.version).toBe(2);
+      expect(readFileSync(fresh.backupFileName!, "utf8")).toBe("IMPORTANT CONTENT\n");
+
+      // From here on the intact backup is the one that is shared.
+      await hist.makeSnapshot("m3");
+      expect(
+        hist.getState().snapshots.at(-1)!.trackedFileBackups[file]!.backupFileName,
+      ).toBe(fresh.backupFileName);
+      writeFileSync(file, "edited by the agent\n", "utf8");
+      await expect(hist.rewindToMessage("m3")).resolves.toEqual([file]);
+      expect(readFileSync(file, "utf8")).toBe("IMPORTANT CONTENT\n");
+    },
+  );
+
+  test("a file that stays missing keeps its one entry across snapshots", async () => {
+    const neverCreated = join(project, "never-created.txt");
+    const removed = join(project, "removed.txt");
+    writeFileSync(removed, "one\ntwo\n", "utf8");
+    const hist = engine();
+    await hist.trackEdits([neverCreated, removed], "m0");
+    rmSync(removed);
+    await hist.makeSnapshot("m1");
+
+    const m1 = hist.getState().snapshots.at(-1)!;
+    const absentEntry = m1.trackedFileBackups[neverCreated]!;
+    const removedEntry = m1.trackedFileBackups[removed]!;
+    expect(absentEntry).toMatchObject({ backupFileName: null, version: 1 });
+    expect(removedEntry).toMatchObject({
+      backupFileName: null,
+      version: 2,
+      diffStats: { insertions: 0, deletions: 2 },
+    });
+    expect(m1.aggregateDiffStats).toEqual({
+      insertions: 0,
+      deletions: 2,
+      filesChanged: [removed],
+    });
+
+    await hist.makeSnapshot("m2");
+    await hist.makeSnapshot("m3");
+    for (const snapshot of hist.getState().snapshots.slice(-2)) {
+      // Same entries, same versions: nothing happened to either path.
+      expect(snapshot.trackedFileBackups[neverCreated]).toEqual(absentEntry);
+      expect(snapshot.trackedFileBackups[removed]).toEqual(removedEntry);
+      expect(Object.keys(snapshot.trackedFileBackups)).toHaveLength(2);
+      expect(snapshot.aggregateDiffStats).toBeUndefined();
+    }
+    // Only the removed file's origin was ever copied.
+    expect(listBackupFiles(hist.historyDir)).toHaveLength(1);
+
+    // A file that comes back gets the next version.
+    writeFileSync(removed, "back\n", "utf8");
+    await hist.makeSnapshot("m4");
+    const returned = hist.getState().snapshots.at(-1)!.trackedFileBackups[removed]!;
+    expect(returned.version).toBe(3);
+    expect(readFileSync(returned.backupFileName!, "utf8")).toBe("back\n");
+  });
+
+  test("an unchanged file is still carried forward after a reload from disk", async () => {
+    const file = join(project, "steady.txt");
+    writeFileSync(file, "kept\n", "utf8");
+    const first = engine("reload");
+    await first.trackEdit(file, "m0");
+    await first.makeSnapshot("m1");
+    first.stop();
+    const origin = first.getState().snapshots[0]!.trackedFileBackups[file]!;
+
+    // A new engine has no digest in memory; it reads the backup once.
+    const resumed = engine("reload");
+    await resumed.loadFromDisk();
+    await resumed.makeSnapshot("m2");
+    await resumed.makeSnapshot("m3");
+    expect(listBackupFiles(resumed.historyDir)).toEqual([origin.backupFileName]);
+    for (const snapshot of resumed.getState().snapshots.slice(-2)) {
+      const entry = snapshot.trackedFileBackups[file];
+      expect(entry).toEqual({
+        backupFileName: origin.backupFileName,
+        version: 1,
+        backupTimeMs: origin.backupTimeMs,
+      });
+      expect(entry).not.toHaveProperty("diffStats");
+    }
+
+    // A change made after the reload is still seen, at the same size.
+    writeFileSync(file, "KEPT\n", "utf8");
+    await resumed.makeSnapshot("m4");
+    const changed = resumed.getState().snapshots.at(-1)!.trackedFileBackups[file]!;
+    expect(changed.version).toBe(2);
+    expect(changed.backupFileName).not.toBe(origin.backupFileName);
+    expect(listBackupFiles(resumed.historyDir)).toHaveLength(2);
+  });
+
+  test("trackEdits tracks every path in one call and repeats are no-ops", async () => {
+    const a = join(project, "a.txt");
+    const b = join(project, "b.txt");
+    writeFileSync(a, "a\n", "utf8");
+    writeFileSync(b, "b\n", "utf8");
+    const hist = engine();
+    await hist.trackEdits([a, b, a], "m0");
+
+    const state = hist.getState();
+    expect(state.snapshots).toHaveLength(1);
+    expect(state.snapshots[0]!.messageId).toBe("m0");
+    expect(Object.keys(state.snapshots[0]!.trackedFileBackups)).toEqual([a, b]);
+    expect(state.snapshots[0]!.trackedFileBackups[a]!.version).toBe(1);
+    expect(state.snapshots[0]!.trackedFileBackups[b]!.version).toBe(1);
+    expect(listBackupFiles(hist.historyDir)).toHaveLength(2);
+
+    await hist.trackEdits([b, a], "m1");
+    await hist.trackEdit(a, "m1");
+    await hist.trackEdits([], "m1");
+    expect(hist.getState()).toBe(state);
+    expect(listBackupFiles(hist.historyDir)).toHaveLength(2);
   });
 });
 
