@@ -1783,7 +1783,10 @@ spared by newest-rollout mtime and by a live rollout lock.
   file backups that rewind restores from), removed the same way right
   after the session directory. `<hash>` is the first 16 hex digits of the
   SHA-256 of the session id. A session without one, such as a subagent
-  session, is not an error
+  session, is not an error. A removal that fails is logged once as
+  `daemon snapshot policy failed` and is not tried again: the session is
+  gone by then, so no later sweep visits its file history. What is left
+  can carry the name `session-<hash>.pruning-<pid>-<time>`
 - `thread_rollout_items` mirror rows for those rollout paths
 - Journal bindings retired with reason `retention` before the files go
 

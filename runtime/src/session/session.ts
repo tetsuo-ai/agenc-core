@@ -1729,7 +1729,14 @@ export interface SessionFileRewindParams {
 }
 
 export type SessionFileRewindErrorCode =
-  "ACTIVE_TURN" | "MESSAGE_NOT_FOUND" | "NO_FILE_HISTORY";
+  | "ACTIVE_TURN"
+  | "MESSAGE_NOT_FOUND"
+  | "NO_FILE_HISTORY"
+  /**
+   * The rewind ran and could not put every file back. It restored what it
+   * could and removed nothing; the message names the files.
+   */
+  | "RESTORE_INCOMPLETE";
 
 export type SessionPreviewFileRewindResult =
   | {
@@ -4813,9 +4820,22 @@ export class Session {
           message: "No file history is available for the selected message.",
         };
       }
-      const restoredFiles = await fileHistory.rewindToMessage(
-        target.userMessageId,
-      );
+      const rewind = await fileHistory.rewindWithReport(target.userMessageId);
+      const restoredFiles = rewind.changed;
+      if (rewind.notRestored.length > 0) {
+        // Not a success: the caller would otherwise take the workspace for
+        // the selected point, and the TUI shows a message only on failure.
+        return {
+          ok: false,
+          sessionId: this.conversationId,
+          code: "RESTORE_INCOMPLETE",
+          message:
+            (restoredFiles.length === 0
+              ? "No file was restored. "
+              : `Restored ${restoredFiles.length} file${restoredFiles.length === 1 ? "" : "s"}. `) +
+            `${fileHistory.describeIncompleteRewind(rewind)} Fix the cause and restore again.`,
+        };
+      }
       return {
         ok: true,
         sessionId: this.conversationId,

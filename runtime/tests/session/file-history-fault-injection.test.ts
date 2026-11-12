@@ -9,6 +9,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
   type ReadStream,
   type Stats,
@@ -25,6 +26,7 @@ import {
   type FileHistoryBackup,
   type FileHistoryOptions,
 } from "../../src/session/file-history.js";
+import { itWhen } from "../helpers/platform-registration.js";
 
 // Reload helpers imported by test setup so filesystem fault injection reaches them.
 vi.hoisted(() => vi.resetModules());
@@ -872,6 +874,24 @@ describe("file-history eviction while a rewind or preview is reading", () => {
     expect(existsSync(lateOrigin)).toBe(false);
   });
 
+  test.each(["previewRewind", "rewindToMessage"] as const)(
+    "%s counts itself as a reader in the step in which it reads the state",
+    async (reader) => {
+      const { engine, evicted } = await engineAtTheCap("counted");
+      const reading = holdNextReadOf(evicted);
+      await engine.flush();
+      const result = engine[reader]("m0");
+      // What flush() waits for has settled, so the reader goes on within
+      // microtasks: no event-loop turn may pass before it is counted.
+      for (let i = 0; i < 20; i += 1) await Promise.resolve();
+      expect(engine["activeReaders"]).toBe(1);
+      await reading.entered;
+      reading.release();
+      await result;
+      expect(engine["activeReaders"]).toBe(0);
+    },
+  );
+
   test("a reader that fails or finds no snapshot still lets deletions proceed", async () => {
     const { engine, file, evicted } = await engineAtTheCap("ended");
 
@@ -1367,16 +1387,21 @@ describe("file-history capture before a tool call (#3436)", () => {
     expect(diagnostics).toEqual([{
       cause: "file_history_capture_timeout",
       message:
-        "capture before Write did not finish within 40 ms: " +
-        "the tool ran anyway, so a rewind may not undo its file changes",
+        "File history is behind: the backup before Write did not finish " +
+        "within 40 ms, so the tool ran without it. Until file history " +
+        "catches up, tool calls do not wait for it and a rewind may not " +
+        "undo their file changes.",
     }]);
     expect(getEventListeners(controller.signal, "abort")).toEqual([]);
     // The queue has not moved: the snapshot is still running.
     expect(snapshotIds()).toEqual(["ev-0"]);
     expect(history.getState().trackedFiles.has(created)).toBe(false);
 
-    // A later call that times out too is not reported again.
-    await sidecar.captureBeforeToolCall("Edit", { file_path: other, old_string: "a", new_string: "b" });
+    // A later call is not held back while the queue stands, and nothing
+    // more is reported.
+    expect(
+      sidecar.captureBeforeToolCall("Edit", { file_path: other, old_string: "a", new_string: "b" }),
+    ).toBeUndefined();
     expect(diagnostics).toHaveLength(1);
 
     // The queue is not damaged by any of it.
@@ -1429,6 +1454,51 @@ describe("file-history capture before a tool call (#3436)", () => {
     copying.release();
     await engine.flush();
     expect(snapshotIds(engine)).toEqual(["ev-0", "ev-0-done"]);
+  });
+
+  test("after one timeout no call is held back until the queue has caught up", async () => {
+    const sidecar = newSidecar(history, 40);
+    const { copying } = await snapshotStillRunning(sidecar);
+    const a = join(work, "a.txt");
+    const b = join(work, "b.txt");
+    const c = join(work, "c.txt");
+
+    // The first call waits out the timeout, and that is reported.
+    const first = sidecar.captureBeforeToolCall("Write", { file_path: a, content: "a\n" });
+    expect(first).toBeInstanceOf(Promise);
+    await first;
+    expect(causes()).toEqual(["file_history_capture_timeout"]);
+
+    // The queue still stands. A second call with a target is not held back,
+    // and neither is a read-only call behind the next user message.
+    expect(sidecar.captureBeforeToolCall("Write", { file_path: b, content: "b\n" })).toBeUndefined();
+    sidecar.onEvent(userMessage("user-2"));
+    expect(sidecar.captureBeforeToolCall("FileRead", { file_path: a })).toBeUndefined();
+
+    // Once the queue has caught up nothing that was queued is lost, and
+    // calls wait for their capture again.
+    copying.release();
+    await history.flush();
+    expect(history.getState().trackedFiles.has(a)).toBe(true);
+    expect(history.getState().trackedFiles.has(b)).toBe(true);
+    expect(history.hasSnapshotFor("user-2")).toBe(true);
+    sidecar.onEvent(userMessage("user-3"));
+    const later = sidecar.captureBeforeToolCall("Write", { file_path: c, content: "c\n" });
+    expect(later).toBeInstanceOf(Promise);
+    await later;
+    expect(history.hasSnapshotFor("user-3")).toBe(true);
+    expect(history.getState().trackedFiles.has(c)).toBe(true);
+    expect(causes()).toEqual(["file_history_capture_timeout"]);
+  });
+
+  test("without the option a capture waits 5000 ms at most", async () => {
+    const sidecar = newSidecar(history);
+    const setTimer = vi.spyOn(globalThis, "setTimeout");
+
+    const capture = sidecar.captureBeforeToolCall("Write", { file_path: "new.txt", content: "x\n" });
+
+    expect(captureTimers(setTimer, 5000)).toHaveLength(1);
+    await capture;
   });
 
   test("a capture that finishes in time clears its timer and reports nothing", async () => {
@@ -1716,5 +1786,150 @@ describe("file history of a system.move whose source cannot be backed up (#3437)
       "file_history_degraded",
       "file_history_degraded",
     ]);
+  });
+
+  test("stopAtFirstUnrecorded reads 'on record' from the newest snapshot, not the oldest", async () => {
+    const chained = { stopAtFirstUnrecorded: true };
+    const early = workFile("early.txt", "early\n");
+    const source = workFile("source.txt", "source\n");
+    const destination = join(work, "destination.txt");
+    await history.trackEdit(early, "m0");
+    await history.makeSnapshot("m1");
+    // On record in the newest snapshot only: the oldest one never saw it.
+    await history.trackEdit(source, "m1-edit");
+
+    await history.trackEdits([source, destination], "m2", chained);
+    expect([...history.getState().trackedFiles]).toEqual([early, source, destination]);
+
+    // The other way round: on record in the oldest snapshot only, because
+    // its backup failed in the newest one, and it still fails.
+    const flaky = workFile("flaky.txt", "flaky 0\n");
+    const other = join(work, "other.txt");
+    const engine = newEngine({ sessionId: "oldest-only" });
+    await engine.trackEdit(flaky, "n0");
+    writeFileSync(flaky, "flaky 1 and longer\n", "utf8");
+    failCopiesOf(flaky, ioError("copy"));
+    await engine.makeSnapshot("n1");
+    expect(engine.getState().snapshots.at(-1)!.trackedFileBackups[flaky]).toBeUndefined();
+    expect(engine.getState().snapshots[0]!.trackedFileBackups[flaky]).toBeDefined();
+
+    await engine.trackEdits([flaky, other], "n2", chained);
+    expect(engine.getState().trackedFiles.has(other)).toBe(false);
+  });
+});
+
+describe("file-history rewind to a snapshot without an entry for a file", () => {
+  const itOnPosix = itWhen(process.platform !== "win32");
+
+  function failCopiesOf(source: string, error: Error): void {
+    vi.mocked(copyFile).mockImplementation(async (from, to, mode) => {
+      if (from === source) throw error;
+      return actualCopyFile(from, to, mode);
+    });
+  }
+
+  test.each([
+    ["that existed when it was first tracked", "ORIGINAL\n"],
+    ["that did not exist when it was first tracked", null],
+  ])("a file %s is left alone when its backup failed at the target", async (_name, original) => {
+    const file = join(work, "main.ts");
+    if (original !== null) writeFileSync(file, original, "utf8");
+    // First tracked in "m1". "m2" repeats that entry, version 1 included,
+    // so it would still be there once "m1" is evicted.
+    await history.trackEdit(file, "m1");
+    await history.makeSnapshot("m2");
+    writeFileSync(file, "EDITED IN TURN 3\n", "utf8");
+    await history.makeSnapshot("m3");
+    writeFileSync(file, "EDITED IN TURN 4, AND LONGER\n", "utf8");
+    failCopiesOf(file, ioError("copy"));
+    await history.makeSnapshot("m4");
+    expect(history.getState().snapshots.at(-1)!.trackedFileBackups[file]).toBeUndefined();
+    expect(history.getState().snapshots[0]!.trackedFileBackups[file]).toMatchObject({ version: 1 });
+
+    // Nothing is known about the file at "m4". Its first state is older
+    // than that and is not what the rewind was asked for.
+    await expect(history.previewRewind("m4")).resolves.toMatchObject({ filesChanged: [] });
+    await expect(history.rewindWithReport("m4")).resolves.toEqual({
+      changed: [],
+      notRestored: [],
+      notRemoved: [],
+    });
+    expect(readFileSync(file, "utf8")).toBe("EDITED IN TURN 4, AND LONGER\n");
+  });
+
+  test("a file first tracked after the target is still taken back to its first state", async () => {
+    const early = workFile("early.txt", "early\n");
+    const late = workFile("late.txt", "LATE ORIGINAL\n");
+    await history.trackEdit(early, "m1");
+    await history.makeSnapshot("m2");
+    await history.trackEdit(late, "m2-edit");
+    writeFileSync(late, "LATE EDITED\n", "utf8");
+    await history.makeSnapshot("m3");
+
+    await expect(history.rewindToMessage("m1")).resolves.toEqual([late]);
+    expect(readFileSync(late, "utf8")).toBe("LATE ORIGINAL\n");
+  });
+
+  test("a rewind puts back a file that readFile refuses as too large", async () => {
+    const file = workFile("big.bin", "BEFORE\n");
+    await history.trackEdit(file, "m1");
+    // The same size, so that the two are compared by content.
+    writeFileSync(file, "AFTER!\n", "utf8");
+    await history.makeSnapshot("m2");
+    vi.mocked(readFile).mockRejectedValue(Object.assign(
+      new Error("File size (2306867200) is greater than 2 GiB"),
+      { code: "ERR_FS_FILE_TOO_LARGE" },
+    ));
+
+    await expect(history.rewindWithReport("m1")).resolves.toEqual({
+      changed: [file],
+      notRestored: [],
+      notRemoved: [],
+    });
+    expect(readFileSync(file, "utf8")).toBe("BEFORE\n");
+  });
+
+  test("a backup that cannot be opened leaves the file as it is", async () => {
+    const file = workFile("kept.txt", "BEFORE\n");
+    await history.trackEdit(file, "m1");
+    const backup = latestEntry(file).backupFileName!;
+    writeFileSync(file, "AFTER, AND LONGER\n", "utf8");
+    await history.makeSnapshot("m2");
+    vi.mocked(open).mockImplementation(async (path, flags, mode) => {
+      if (path === backup) throw ioError("open");
+      return actualOpen(path, flags, mode);
+    });
+
+    await expect(history.rewindWithReport("m1")).resolves.toEqual({
+      changed: [],
+      notRestored: [{ path: file, reason: "open: EIO" }],
+      notRemoved: [],
+    });
+    // Not truncated: the backup is opened before the file is.
+    expect(readFileSync(file, "utf8")).toBe("AFTER, AND LONGER\n");
+  });
+
+  itOnPosix("a file that a removal took away and that cannot be written again is reported", async () => {
+    const readme = workFile("README.md", "README\n");
+    const moved = join(work, "docs", "README.md");
+    await history.trackEdits([readme, moved], "m1");
+    const backup = latestEntry(readme).backupFileName!;
+    await history.makeSnapshot("m1");
+    // The file moves, and a link to it takes its old name.
+    mkdirSync(dirname(moved));
+    renameSync(readme, moved);
+    symlinkSync(moved, readme);
+    await history.makeSnapshot("m2");
+    vi.mocked(open).mockImplementation(async (path, flags, mode) => {
+      if (path === backup) throw ioError("open");
+      return actualOpen(path, flags, mode);
+    });
+
+    await expect(history.rewindWithReport("m1")).resolves.toEqual({
+      changed: [moved],
+      notRestored: [{ path: readme, reason: "open: EIO" }],
+      notRemoved: [],
+    });
+    expect(causes()).toContain("file_history_restore_failed");
   });
 });

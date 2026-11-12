@@ -179,6 +179,11 @@ Legacy `system.*` utilities (not the primary edit surface):
 | `system.delete` |
 | `system.move` |
 
+`system.move` refuses a destination that already exists unless `overwrite`
+is `true`. That holds for a file and for an empty directory. A directory
+that is not empty is never replaced, and neither is a directory by a file
+or a file by a directory.
+
 ### Shell / process
 
 | Name | Notes |
@@ -762,7 +767,9 @@ The shell write policy permits workspace content writes in `bypassPermissions`,
 `acceptEdits` and `auto`, and after approval otherwise. Default mode presents
 an approval card for a shell edit rather than rejecting an edit the user can
 approve. Literal shell mutation targets are tracked for file-history restore,
-including newly created files; dynamic targets may not be fully tracked.
+including newly created files; dynamic targets may not be fully tracked. The
+source and destination of `system.move` and the path of `system.delete` are
+tracked as well, when they are regular files or do not exist.
 Read operands, globs, pipes and redirects to `/dev/null` do not count as writes.
 Read-only substitutions such as `$(pwd)` run without a write approval. Embedded
 literal writes are classified, including protected targets. Opaque substitutions

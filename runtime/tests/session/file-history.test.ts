@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   rmdirSync,
   statSync,
@@ -28,7 +29,9 @@ import {
   fileHistoryGetDiffStats,
   fileHistoryHasAnyChanges,
   fileHistoryRestoreStateFromLog,
+  describeIncompleteRewind,
   fileHistoryRewind,
+  fileHistoryRewindWithReport,
   resolveFileHistoryTargets,
   type FileHistoryBackup,
   type FileHistorySnapshot,
@@ -1082,7 +1085,7 @@ describe("resolveFileHistoryTargets (#3436)", () => {
     ["NotebookEdit", { notebook_path: "nb/d.ipynb", new_source: "" }, "nb/d.ipynb"],
     ["Edit", { path: "legacy/e.ts" }, "legacy/e.ts"],
     ["Write", { filePath: "legacy/f.ts" }, "legacy/f.ts"],
-  ])("%s names one file, resolved against the workspace root", (toolName, args, named) => {
+  ])("%s with %j names one file, resolved against the workspace root", (toolName, args, named) => {
     expect(resolveFileHistoryTargets({ toolName, args, workspaceRoot: root })).toEqual({
       paths: [join(root, named)],
       regularFilesOnly: false,
@@ -1329,7 +1332,9 @@ describe("FileHistorySidecar capture before a tool call (#3436)", () => {
     mkdirSync(work);
     diagnostics = [];
   });
-  afterEach(() => {
+  afterEach(async () => {
+    // An index write still in flight would fail once the directory is gone.
+    for (const history of engines) await history.flush();
     for (const history of engines.splice(0)) history.stop();
     if (project) rmSync(project, { recursive: true, force: true });
   });
@@ -1629,7 +1634,7 @@ describe("FileHistorySidecar capture before a tool call (#3436)", () => {
     expect(hist.getState().trackedFiles.size).toBe(0);
   });
 
-  test("an edit tool's start event queues one backup operation for all of its files before it returns", async () => {
+  test("an edit tool's start event queues the backups of all of its files before it returns", async () => {
     const hist = engine();
     const sidecar = sidecarFor(hist);
     const a = join(work, "a.txt");
@@ -2126,7 +2131,10 @@ describe("file history across system.move and system.delete (#3437)", () => {
     });
     sidecar = new FileHistorySidecar({ fileHistory: hist, workspaceRoot: work });
   });
-  afterEach(() => {
+  afterEach(async () => {
+    // An index write still in flight would fail once the directory is gone,
+    // and report that into the next test's diagnostics.
+    await hist.flush();
     hist.stop();
     if (project) rmSync(project, { recursive: true, force: true });
   });
@@ -2238,6 +2246,9 @@ describe("file history across system.move and system.delete (#3437)", () => {
           .toEqual([join(main, "draft.txt"), join(main, "notes.txt")]),
         { timeout: 10_000, interval: 5 },
       );
+      // The path shows in the state before its index write is over. A
+      // failure of that write belongs to this test.
+      await hist.flush();
       expect(diagnostics).toEqual([]);
     });
   });
@@ -2273,6 +2284,144 @@ describe("file history across system.move and system.delete (#3437)", () => {
     expect(readFileSync(source, "utf8")).toBe("DRAFT\n");
     expect(existsSync(destination)).toBe(false);
     expect(diagnostics).toEqual([]);
+  });
+
+  test("a rewind that cannot put a moved file back under its old name leaves it under the new one", async () => {
+    const source = join(work, "notes");
+    const destination = join(work, "notes.md");
+    writeFileSync(source, "ONLY COPY\n", "utf8");
+
+    sidecar.onEvent(userMessage("user-1"));
+    await expect(call("move", "system.move", { source, destination }))
+      .resolves.toMatchObject({ moved: true });
+    // The old name is a directory now: the file cannot be written back there.
+    mkdirSync(source);
+
+    await expect(hist.rewindWithReport("user-1")).resolves.toEqual({
+      changed: [],
+      notRestored: [{ path: source, reason: "the path is not a regular file any more" }],
+      notRemoved: [destination],
+    });
+    expect(readFileSync(destination, "utf8")).toBe("ONLY COPY\n");
+    expect(statSync(source).isDirectory()).toBe(true);
+    await hist.flush();
+    expect(diagnostics).toEqual(["file_history_restore_failed"]);
+
+    // Once the old name is free again the same rewind undoes the move.
+    rmdirSync(source);
+    await expect(hist.rewindToMessage("user-1")).resolves.toEqual([source, destination]);
+    expect(readFileSync(source, "utf8")).toBe("ONLY COPY\n");
+    expect(existsSync(destination)).toBe(false);
+    await hist.flush();
+    expect(diagnostics).toEqual(["file_history_restore_failed"]);
+  });
+
+  test("a rewind whose backup of a moved file is gone leaves the file under its new name", async () => {
+    const source = join(work, "report.txt");
+    const destination = join(work, "final.txt");
+    writeFileSync(source, "ONLY COPY\n", "utf8");
+
+    sidecar.onEvent(userMessage("user-1"));
+    await expect(call("move", "system.move", { source, destination }))
+      .resolves.toMatchObject({ moved: true });
+    rmSync(snapshotFor("user-1").trackedFileBackups[source]!.backupFileName!);
+
+    await expect(hist.rewindWithReport("user-1")).resolves.toEqual({
+      changed: [],
+      notRestored: [{ path: source, reason: "its backup is missing" }],
+      notRemoved: [destination],
+    });
+    expect(existsSync(source)).toBe(false);
+    expect(readFileSync(destination, "utf8")).toBe("ONLY COPY\n");
+  });
+
+  itUnprivileged("a rewind into a directory that cannot be written leaves a moved file at its destination", async () => {
+    const source = join(work, "src", "report.txt");
+    const destination = join(work, "out", "final.txt");
+    mkdirSync(dirname(source));
+    writeFileSync(source, "ONLY COPY\n", "utf8");
+
+    sidecar.onEvent(userMessage("user-1"));
+    await expect(call("move", "system.move", { source, destination }))
+      .resolves.toMatchObject({ moved: true });
+    chmodSync(dirname(source), 0o555);
+    try {
+      const result = await hist.rewindWithReport("user-1");
+      expect(result.changed).toEqual([]);
+      expect(result.notRestored).toEqual([
+        { path: source, reason: expect.stringContaining("EACCES") },
+      ]);
+      expect(result.notRemoved).toEqual([destination]);
+      expect(existsSync(source)).toBe(false);
+      expect(readFileSync(destination, "utf8")).toBe("ONLY COPY\n");
+    } finally {
+      chmodSync(dirname(source), 0o755);
+    }
+  });
+
+  test("a destination on record before its source is not removed either when the source cannot be put back", async () => {
+    const source = join(work, "a.txt");
+    const destination = join(work, "b.txt");
+    writeFileSync(source, "ONLY COPY\n", "utf8");
+
+    sidecar.onEvent(userMessage("user-1"));
+    // An earlier call named the destination, which was not there.
+    await hist.trackEdit(destination, "earlier-call");
+    await expect(call("move", "system.move", { source, destination }))
+      .resolves.toMatchObject({ moved: true });
+    // The path to remove comes first in the order of tracking.
+    expect([...hist.getState().trackedFiles]).toEqual([destination, source]);
+    mkdirSync(source);
+
+    await expect(hist.rewindWithReport("user-1")).resolves.toMatchObject({
+      changed: [],
+      notRemoved: [destination],
+    });
+    expect(readFileSync(destination, "utf8")).toBe("ONLY COPY\n");
+
+    rmdirSync(source);
+    await expect(hist.rewindToMessage("user-1")).resolves.toEqual([destination, source]);
+    expect(readFileSync(source, "utf8")).toBe("ONLY COPY\n");
+    expect(existsSync(destination)).toBe(false);
+  });
+
+  itOnPosix("a rewind gives a moved script its permission bits back", async () => {
+    const source = join(work, "run.sh");
+    const destination = join(work, "bin", "run.sh");
+    writeFileSync(source, "#!/bin/sh\n", "utf8");
+    chmodSync(source, 0o755);
+
+    sidecar.onEvent(userMessage("user-1"));
+    await expect(call("move", "system.move", { source, destination }))
+      .resolves.toMatchObject({ moved: true });
+    await expect(hist.rewindToMessage("user-1")).resolves.toEqual([source, destination]);
+
+    // A new file: the bits of the original, less what the umask takes.
+    expect(statSync(source).mode & 0o777).toBe(0o755 & ~process.umask());
+    expect(statSync(source).mode & 0o100).toBe(0o100);
+  });
+
+  itOnPosix("a rewind leaves a symbolic link that leads nowhere where it is", async () => {
+    const source = join(work, "draft.txt");
+    const destination = join(work, "link.txt");
+    writeFileSync(source, "DRAFT\n", "utf8");
+    symlinkSync(join(work, "nowhere.txt"), destination);
+
+    sidecar.onEvent(userMessage("user-1"));
+    // The tool refuses to replace the link and touches nothing.
+    await expect(call("refused", "system.move", { source, destination }))
+      .resolves.toMatchObject({ isError: true });
+    // `stat` calls such a link absent, and that is what went on record.
+    expect(snapshotFor("user-1").trackedFileBackups[destination])
+      .toMatchObject({ backupFileName: null });
+
+    await expect(hist.rewindWithReport("user-1")).resolves.toEqual({
+      changed: [],
+      notRestored: [],
+      notRemoved: [],
+    });
+    expect(lstatSync(destination).isSymbolicLink()).toBe(true);
+    expect(readFileSync(source, "utf8")).toBe("DRAFT\n");
   });
 
   test("a rewind after an overwriting system.move restores the file that was replaced", async () => {
@@ -2625,10 +2774,172 @@ describe("fileHistoryRewind restores into a directory that is gone (#3437)", () 
     writeFileSync(other, "CHANGED\n", "utf8");
     await hist.makeSnapshot("m2");
 
-    await expect(fileHistoryRewind(hist.getState(), "m1")).resolves.toEqual([other]);
+    await expect(fileHistoryRewindWithReport(hist.getState(), "m1")).resolves.toEqual({
+      changed: [other],
+      notRestored: [{ path: blocked, reason: expect.stringMatching(/EEXIST|ENOTDIR/) }],
+      notRemoved: [],
+    });
 
     expect(readFileSync(dirname(blocked), "utf8")).toBe("in the way\n");
     expect(readFileSync(other, "utf8")).toBe("OTHER\n");
+  });
+});
+
+describe("fileHistoryRewind and a file it cannot put back (#3437)", () => {
+  const itOnPosix = itWhen(process.platform !== "win32");
+  let project = "";
+  let work = "";
+  let hist: FileHistory;
+  let diagnostics: Array<{ cause: string; message: string }> = [];
+
+  beforeEach(() => {
+    project = mkdtempSync(join(tmpdir(), "agenc-filehist-rewind-failed-"));
+    work = join(project, "work");
+    mkdirSync(work);
+    diagnostics = [];
+    hist = new FileHistory({
+      projectDir: project,
+      sessionId: "rewind-failures",
+      onDiagnostic: (diagnostic) => { diagnostics.push(diagnostic); },
+    });
+  });
+  afterEach(async () => {
+    await hist.flush();
+    hist.stop();
+    if (project) rmSync(project, { recursive: true, force: true });
+  });
+
+  test("a file created since is not removed while another file cannot be restored, and is once the restore works", async () => {
+    const edited = join(work, "edited");
+    const created = join(work, "created.txt");
+    const other = join(work, "other.txt");
+    writeFileSync(edited, "BEFORE\n", "utf8");
+    writeFileSync(other, "OTHER\n", "utf8");
+    await hist.trackEdits([edited, created, other], "m1");
+    await hist.makeSnapshot("m1");
+    rmSync(edited);
+    mkdirSync(edited);
+    writeFileSync(created, "NEW\n", "utf8");
+    writeFileSync(other, "CHANGED\n", "utf8");
+    await hist.makeSnapshot("m2");
+
+    // Every file that can be put back is, and nothing is removed.
+    await expect(hist.rewindWithReport("m1")).resolves.toEqual({
+      changed: [other],
+      notRestored: [{ path: edited, reason: "the path is not a regular file any more" }],
+      notRemoved: [created],
+    });
+    expect(readFileSync(created, "utf8")).toBe("NEW\n");
+    expect(readFileSync(other, "utf8")).toBe("OTHER\n");
+    await hist.flush();
+    // The snapshot "m2" reported the directory as well, as a failed backup.
+    expect(diagnostics.filter(({ cause }) => cause === "file_history_restore_failed")).toEqual([{
+      cause: "file_history_restore_failed",
+      message:
+        `rewind to m1: Could not restore ${edited} (the path is not a regular file any more). ` +
+        `Nothing was removed, so that no content is lost: ${created} is still there.`,
+    }]);
+
+    rmdirSync(edited);
+    await expect(fileHistoryRewind(hist.getState(), "m1")).resolves.toEqual([edited, created]);
+    expect(readFileSync(edited, "utf8")).toBe("BEFORE\n");
+    expect(existsSync(created)).toBe(false);
+  });
+
+  test("a path on record as absent that is gone already is not listed as left in place", async () => {
+    const edited = join(work, "edited");
+    const created = join(work, "created.txt");
+    writeFileSync(edited, "BEFORE\n", "utf8");
+    await hist.trackEdits([edited, created], "m1");
+    await hist.makeSnapshot("m1");
+    rmSync(edited);
+    mkdirSync(edited);
+
+    await expect(hist.rewindWithReport("m1")).resolves.toMatchObject({
+      changed: [],
+      notRemoved: [],
+    });
+    await hist.flush();
+    expect(diagnostics.map(({ message }) => message)).toEqual([
+      `rewind to m1: Could not restore ${edited} (the path is not a regular file any more).`,
+    ]);
+  });
+
+  itOnPosix("a rewind and its preview do not open a FIFO that took a tracked file's place", async () => {
+    const file = join(work, "data.txt");
+    writeFileSync(file, "DATA\n", "utf8");
+    await hist.trackEdit(file, "m1");
+    await hist.makeSnapshot("m1");
+    rmSync(file);
+    execFileSync("mkfifo", [file]);
+
+    // Opening the FIFO for reading or for writing would never return.
+    await expect(hist.previewRewind("m1")).resolves.toMatchObject({ filesChanged: [] });
+    await expect(hist.rewindWithReport("m1")).resolves.toEqual({
+      changed: [],
+      notRestored: [{ path: file, reason: "the path is not a regular file any more" }],
+      notRemoved: [],
+    });
+    expect(statSync(file).isFIFO()).toBe(true);
+  });
+
+  itOnPosix("a restored file that a removal takes away through a symbolic link is written again", async () => {
+    const readme = join(work, "README.md");
+    const moved = join(work, "docs", "README.md");
+    writeFileSync(readme, "README\n", "utf8");
+    // On record: the file with its content, and no docs/README.md.
+    await hist.trackEdits([readme, moved], "m1");
+    await hist.makeSnapshot("m1");
+    // The file moves, and a link to it takes its old name.
+    mkdirSync(dirname(moved));
+    renameSync(readme, moved);
+    symlinkSync(moved, readme);
+    await hist.makeSnapshot("m2");
+
+    // Read through the link, the old name has its content already. Removing
+    // docs/README.md then takes that content away, so it is written again.
+    await expect(hist.rewindWithReport("m1")).resolves.toEqual({
+      changed: [readme, moved],
+      notRestored: [],
+      notRemoved: [],
+    });
+    expect(readFileSync(readme, "utf8")).toBe("README\n");
+  });
+});
+
+describe("describeIncompleteRewind", () => {
+  const failure = (n: number): { path: string; reason: string } =>
+    ({ path: `/w/f${n}`, reason: `reason ${n}` });
+
+  test("names the file that could not be restored", () => {
+    expect(describeIncompleteRewind({
+      changed: [],
+      notRestored: [failure(1)],
+      notRemoved: [],
+    })).toBe("Could not restore /w/f1 (reason 1).");
+  });
+
+  test("names a file that was left in place for that reason", () => {
+    expect(describeIncompleteRewind({
+      changed: [],
+      notRestored: [failure(1)],
+      notRemoved: ["/w/new"],
+    })).toBe(
+      "Could not restore /w/f1 (reason 1). Nothing was removed, so that no " +
+      "content is lost: /w/new is still there.",
+    );
+  });
+
+  test("names three files of each kind and counts the rest", () => {
+    expect(describeIncompleteRewind({
+      changed: [],
+      notRestored: [1, 2, 3, 4, 5].map(failure),
+      notRemoved: ["/w/a", "/w/b", "/w/c", "/w/d"],
+    })).toBe(
+      "Could not restore /w/f1 (reason 1), /w/f2 (reason 2), /w/f3 (reason 3) " +
+      "and 2 more. Nothing was removed, so that no content is lost: /w/a, /w/b, " +
+      "/w/c and 1 more are still there.",
+    );
   });
 });
 

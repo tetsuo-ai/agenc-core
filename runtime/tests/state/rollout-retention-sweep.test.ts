@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -782,6 +783,58 @@ describe("pruneRolloutSessions and file-history directories", () => {
       expect(existsSync(oldPath)).toBe(true);
       expect(readFileSync(old.backup, "utf8")).toBe("tracked by thread-old\n");
       expect(existsSync(join(old.historyDir, "snapshots.json"))).toBe(true);
+    },
+  );
+
+  it("keeps the file history when the session directory cannot be moved aside, whoever runs the sweep", async () => {
+    const oldPath = seedSession("thread-old", 60);
+    const old = await seedFileHistory("thread-old");
+    const sessionDir = join(driver.projectDir, "sessions", "thread-old");
+    // A directory that is not empty already stands at the aside name, so the
+    // rename fails for root as well.
+    const stamp = 1_800_000_000_000;
+    const aside = `${sessionDir}.pruning-${process.pid}-${stamp.toString(36)}`;
+    mkdirSync(aside);
+    writeFileSync(join(aside, "in-the-way"), "x");
+    const onError = vi.fn();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(stamp);
+    try {
+      expect(sweep(onError).prunedSessions).toBe(0);
+    } finally {
+      clock.mockRestore();
+    }
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ syscall: "rename" }),
+    );
+    expect(existsSync(oldPath)).toBe(true);
+    expect(readFileSync(old.backup, "utf8")).toBe("tracked by thread-old\n");
+    expect(existsSync(join(old.historyDir, "snapshots.json"))).toBe(true);
+  });
+
+  itWhen(process.platform !== "win32")(
+    "removes a symbolic link that stands where the history directory belongs and leaves its target alone",
+    () => {
+      const oldPath = seedSession("thread-old", 60);
+      const outside = mkdtempSync(join(tmpdir(), "agenc-retention-outside-"));
+      try {
+        writeFileSync(join(outside, "keep.txt"), "not a backup\n");
+        const historyRoot = join(driver.projectDir, "file-history");
+        mkdirSync(historyRoot, { recursive: true });
+        symlinkSync(outside, join(historyRoot, fileHistorySessionDirName("thread-old")));
+        const onError = vi.fn();
+
+        const report = sweep(onError);
+
+        expect(report).toEqual(fullReport("thread-old"));
+        expect(existsSync(oldPath)).toBe(false);
+        expect(onError).not.toHaveBeenCalled();
+        // The link is gone, and nothing it led to was touched.
+        expect(readdirSync(historyRoot)).toEqual([]);
+        expect(readFileSync(join(outside, "keep.txt"), "utf8")).toBe("not a backup\n");
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
     },
   );
 

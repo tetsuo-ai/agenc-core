@@ -259,6 +259,27 @@ describe("filesystem refusals before mkdir, rm or rename", () => {
     expect(await readdir(destination)).toEqual([]);
   });
 
+  test.each([
+    ["without the flag", {}],
+    ["with overwrite: true", { overwrite: true }],
+  ])("a directory onto a directory that is not empty, %s", async (_label, flag) => {
+    const source = join(root, "build");
+    const destination = join(root, "dist");
+    await mkdir(source);
+    await writeFile(join(source, "out.js"), "OUT\n");
+    await mkdir(destination);
+    await writeFile(join(destination, "kept.js"), "KEPT\n");
+
+    // rename would fail with ENOTEMPTY, after the effect boundary.
+    expectNoEffect(
+      await toolNamed("system.move").execute({ source, destination, ...flag }),
+      "Destination directory is not empty",
+    );
+
+    expect(await readdir(source)).toEqual(["out.js"]);
+    expect(await readdir(destination)).toEqual(["kept.js"]);
+  });
+
   itWhen(process.platform !== "win32")(
     "a dangling symlink at the destination",
     async () => {

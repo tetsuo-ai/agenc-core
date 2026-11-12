@@ -46,9 +46,15 @@
  * @module
  */
 
-import { createReadStream, statSync, type Stats } from "node:fs";
+import {
+  createReadStream,
+  createWriteStream,
+  statSync,
+  type Stats,
+} from "node:fs";
 import {
   copyFile,
+  lstat,
   mkdir,
   open,
   readFile,
@@ -57,10 +63,10 @@ import {
   rmdir,
   stat,
   unlink,
-  writeFile,
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { syncDirectory } from "../utils/durable-atomic-file.js";
 import { collectShellWorkspaceMutationTargets } from "../llm/shell-write-policy.js";
 import { monotonicMs } from "./_deps/utils.js";
@@ -120,6 +126,27 @@ export interface FileHistoryRewindPreview {
   readonly perFile: Readonly<Record<string, DiffStats>>;
 }
 
+/**
+ * What a rewind did, and what it could not do. The rewind is complete when
+ * `notRestored` is empty.
+ */
+export interface FileHistoryRewindResult {
+  /** The files whose state on disk the rewind changed, in tracking order. */
+  readonly changed: ReadonlyArray<string>;
+  /** The files that could not be put back, each with the reason. */
+  readonly notRestored: ReadonlyArray<{
+    readonly path: string;
+    readonly reason: string;
+  }>;
+  /**
+   * The files that exist although the target records them as absent, and
+   * that were left in place because a file could not be put back. One of
+   * them may hold the only copy of that file's content: a move is recorded
+   * as its source, to put back, and its destination, to remove.
+   */
+  readonly notRemoved: ReadonlyArray<string>;
+}
+
 export interface FileHistoryState {
   readonly snapshots: ReadonlyArray<FileHistorySnapshot>;
   readonly trackedFiles: ReadonlySet<string>;
@@ -145,7 +172,7 @@ function emptyFileHistoryState(): FileHistoryState {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Path hashing (content-addressable backup dir per tracked file)
+// Path hashing (one backup directory per tracked file, named by its path)
 // ─────────────────────────────────────────────────────────────────────
 
 function pathHash(absPath: string): string {
@@ -750,14 +777,31 @@ export class FileHistory {
    * after X. Returns the list of files that changed on disk.
    *
    * Canonical restore entrypoint — delegates to the module-level
-   * `fileHistoryRewind`, which owns the origin-fallback semantics.
+   * `fileHistoryRewindWithReport`, which owns the origin-fallback
+   * semantics. `rewindWithReport` also says what could not be done.
    */
   async rewindToMessage(messageId: string): Promise<ReadonlyArray<string>> {
+    return (await this.rewindWithReport(messageId)).changed;
+  }
+
+  /**
+   * `rewindToMessage` with the full result. A rewind that could not put
+   * every file back is reported as `file_history_restore_failed` and
+   * removes nothing: see `fileHistoryRewindWithReport`.
+   */
+  async rewindWithReport(messageId: string): Promise<FileHistoryRewindResult> {
     await this.flush();
-    if (!this.enabled) return [];
+    if (!this.enabled) return { changed: [], notRestored: [], notRemoved: [] };
     const state = this.acquireReader();
     try {
-      return await fileHistoryRewind(state, messageId);
+      const result = await fileHistoryRewindWithReport(state, messageId);
+      if (result.notRestored.length > 0) {
+        this.emitDiagnostic({
+          cause: "file_history_restore_failed",
+          message: `rewind to ${messageId}: ${describeIncompleteRewind(result)}`,
+        });
+      }
+      return result;
     } catch (err) {
       this.emitDiagnostic({
         cause: "file_history_restore_failed",
@@ -769,6 +813,14 @@ export class FileHistory {
     }
   }
 
+  /**
+   * `describeIncompleteRewind`, for a caller that holds the engine and
+   * does not import this module.
+   */
+  describeIncompleteRewind(result: FileHistoryRewindResult): string {
+    return describeIncompleteRewind(result);
+  }
+
   /** True when a snapshot keyed by `messageId` exists. */
   hasSnapshotFor(messageId: string): boolean {
     return findSnapshotByMessageId(this.state, messageId) !== undefined;
@@ -778,7 +830,7 @@ export class FileHistory {
    * For the sidecar: a tool call waited `timeoutMs` for the capture of its
    * "before" state and then ran without it. Delivered like the engine's
    * own diagnostics. One `file_history_capture_timeout` per engine; later
-   * timeouts are silent.
+   * timeouts are silent. The TUI shows this one to the user.
    */
   reportCaptureTimeout(toolName: string, timeoutMs: number): void {
     if (this.captureTimeoutReported) return;
@@ -786,8 +838,10 @@ export class FileHistory {
     this.emitDiagnostic({
       cause: "file_history_capture_timeout",
       message:
-        `capture before ${toolName} did not finish within ${timeoutMs} ms: ` +
-        "the tool ran anyway, so a rewind may not undo its file changes",
+        `File history is behind: the backup before ${toolName} did not ` +
+        `finish within ${timeoutMs} ms, so the tool ran without it. Until ` +
+        "file history catches up, tool calls do not wait for it and a " +
+        "rewind may not undo their file changes.",
     });
   }
 
@@ -811,10 +865,13 @@ export class FileHistory {
       let insertions = 0;
       let deletions = 0;
       for (const trackingPath of state.trackedFiles) {
-        const targetBackup = target.trackedFileBackups[trackingPath];
-        const origin = targetBackup ?? getOriginBackup(state, trackingPath);
+        const origin = restorePointFor(state, target, trackingPath);
         if (origin === undefined) continue;
         try {
+          // A rewind does not write to a directory, FIFO, socket or device,
+          // and reading some of these never returns.
+          const onDisk = await safeStat(trackingPath);
+          if (onDisk !== null && !onDisk.isFile()) continue;
           const diskContent = await readFileOrEmpty(trackingPath);
           const targetContent =
             origin.backupFileName === null
@@ -1392,6 +1449,13 @@ export class FileHistorySidecar implements Sidecar {
    * tool call back for as long as this is set.
    */
   private pendingBarrier: Promise<void> | null = null;
+  /**
+   * True from the moment a call's capture runs into `captureTimeoutMs`
+   * until that capture settles after all: the queue is stuck, or far
+   * behind. While it is set, `captureBeforeToolCall` queues the backups
+   * and does not make the call wait for them.
+   */
+  private captureStalled = false;
 
   constructor(opts: FileHistorySidecarOpts) {
     this.history = opts.fileHistory;
@@ -1520,6 +1584,11 @@ export class FileHistorySidecar implements Sidecar {
    * the tool runs although its capture has not finished, which is reported
    * as `file_history_capture_timeout`, once. Without that bound a queue
    * that is stuck would hold up every later tool call for good.
+   *
+   * One call pays that wait, not every call behind it. Until the capture
+   * that timed out settles, later calls get `undefined` as well: their
+   * backups are queued as usual and the tools run without waiting, as
+   * they would without this step.
    */
   captureBeforeToolCall(
     toolName: string,
@@ -1532,11 +1601,12 @@ export class FileHistorySidecar implements Sidecar {
     if (targets.paths.length === 0 && barrier === null) return undefined;
     // An aborted call does not run, so there is nothing to capture for it.
     if (signal?.aborted) return Promise.resolve();
-    return this.settleWithin(
-      toolName,
-      signal,
-      this.capture(targets, barrier, isMovePair(toolName, targets)),
-    );
+    const work = this.capture(targets, barrier, isMovePair(toolName, targets));
+    if (this.captureStalled) {
+      void work.catch(() => undefined);
+      return undefined;
+    }
+    return this.settleWithin(toolName, signal, work);
   }
 
   /**
@@ -1602,6 +1672,12 @@ export class FileHistorySidecar implements Sidecar {
         resolveCapture();
       };
       const timer = setTimeout(() => {
+        // Later calls stop waiting until this capture has settled.
+        this.captureStalled = true;
+        const caughtUp = (): void => {
+          this.captureStalled = false;
+        };
+        void work.then(caughtUp, caughtUp);
         try {
           this.history.reportCaptureTimeout(toolName, this.captureTimeoutMs);
         } catch {
@@ -1683,9 +1759,10 @@ export class FileHistorySidecar implements Sidecar {
 //
 // These helpers reuse
 // the existing FileHistory on-disk layout (`backupFileName` is the
-// absolute path to the backup artifact under `projectDir/file-history/
-// <pathHash>/v<N>`), so a snapshot carries the fully-resolved backup
-// path and these helpers can operate without knowing `projectDir`.
+// absolute path to the backup artifact, `v<version>-<uuid>` in the
+// `<pathHash>` directory described at the top of this file), so a
+// snapshot carries the fully-resolved backup path and these helpers can
+// operate without knowing `projectDir`.
 // ─────────────────────────────────────────────────────────────────────
 
 function findSnapshotByMessageId(
@@ -1710,7 +1787,7 @@ function findSnapshotByMessageId(
 function getOriginBackup(
   state: FileHistoryState,
   trackingPath: string,
-): FileHistoryBackup | null | undefined {
+): FileHistoryBackup | undefined {
   for (const snapshot of state.snapshots) {
     const backup = snapshot.trackedFileBackups[trackingPath];
     if (backup !== undefined && backup.version === 1) {
@@ -1718,6 +1795,34 @@ function getOriginBackup(
     }
   }
   return undefined;
+}
+
+/**
+ * The entry a rewind to `target` takes `trackingPath` back to: its entry
+ * in the target snapshot or, for a file first tracked after the target,
+ * its origin entry. `undefined` means "leave the file alone".
+ *
+ * That is also the answer when the target has no entry for the file while
+ * an older retained snapshot has one. The file was tracked by then, so its
+ * backup failed when the target was taken, and its origin is an older
+ * state than the one asked for. An unchanged file keeps its version from
+ * snapshot to snapshot, so its version 1 entry can outlive the snapshot it
+ * was first tracked in and would otherwise be taken for the target state.
+ */
+function restorePointFor(
+  state: FileHistoryState,
+  target: FileHistorySnapshot,
+  trackingPath: string,
+): FileHistoryBackup | undefined {
+  const atTarget = target.trackedFileBackups[trackingPath];
+  if (atTarget !== undefined) return atTarget;
+  for (const snapshot of state.snapshots) {
+    if (snapshot === target) break;
+    if (snapshot.trackedFileBackups[trackingPath] !== undefined) {
+      return undefined;
+    }
+  }
+  return getOriginBackup(state, trackingPath);
 }
 
 async function safeStat(filePath: string): Promise<Stats | null> {
@@ -1801,49 +1906,202 @@ export async function fileHistoryCanRestore(
  * `messageId`. Returns the list of files that changed. Throws when
  * the snapshot does not exist so callers can surface a clear error.
  * A restored file gets its directory back when that is gone as well.
+ * `fileHistoryRewindWithReport` also says what could not be done.
  */
 export async function fileHistoryRewind(
   state: FileHistoryState,
   messageId: string,
 ): Promise<ReadonlyArray<string>> {
+  return (await fileHistoryRewindWithReport(state, messageId)).changed;
+}
+
+/**
+ * `fileHistoryRewind` with the full result.
+ *
+ * The files to put back come first, and the files the target records as
+ * absent are removed only when every one of the first kind is in place. A
+ * move is on record as two separate files: its source, to put back, and
+ * its destination, to remove. Removing the destination while the source
+ * could not be written would leave the content in neither place, so a
+ * rewind that cannot put a file back removes nothing and says so in
+ * `notRestored` and `notRemoved`. It still puts back every file it can.
+ */
+export async function fileHistoryRewindWithReport(
+  state: FileHistoryState,
+  messageId: string,
+): Promise<FileHistoryRewindResult> {
   const target = findSnapshotByMessageId(state, messageId);
   if (!target) {
     throw new Error(
       `FileHistory: Snapshot for messageId=${messageId} not found`,
     );
   }
-  const changed: string[] = [];
+  const toRestore: Array<{ path: string; backupFileName: string }> = [];
+  const toRemove: string[] = [];
   for (const trackingPath of state.trackedFiles) {
-    const targetBackup = target.trackedFileBackups[trackingPath];
-    const origin = targetBackup ?? getOriginBackup(state, trackingPath);
-    if (origin === undefined) continue;
-
-    try {
-      if (origin.backupFileName === null) {
-        // Target said "file did not exist" — delete if present.
-        try {
-          await rm(trackingPath);
-          changed.push(trackingPath);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        }
-        continue;
-      }
-      if (await checkOriginFileChanged(trackingPath, origin.backupFileName)) {
-        const contents = await readFile(origin.backupFileName);
-        // The directory may be gone along with the file: a file is moved out
-        // of it and the emptied directory removed. Without it the write
-        // fails, and a move would end with the file in neither place, since
-        // its destination is removed all the same.
-        await mkdir(dirname(trackingPath), { recursive: true });
-        await writeFile(trackingPath, contents);
-        changed.push(trackingPath);
-      }
-    } catch {
-      // Rewind is best-effort: a path that cannot be restored is skipped.
+    const point = restorePointFor(state, target, trackingPath);
+    if (point === undefined) continue;
+    if (point.backupFileName === null) {
+      toRemove.push(trackingPath);
+    } else {
+      toRestore.push({
+        path: trackingPath,
+        backupFileName: point.backupFileName,
+      });
     }
   }
-  return changed;
+
+  const changed = new Set<string>();
+  const notRestored: Array<{ path: string; reason: string }> = [];
+  const notRemoved: string[] = [];
+  const failed = (path: string, error: unknown): void => {
+    notRestored.push({
+      path,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  };
+
+  for (const { path, backupFileName } of toRestore) {
+    try {
+      if (await restoreFromBackup(path, backupFileName)) changed.add(path);
+    } catch (error) {
+      failed(path, error);
+    }
+  }
+
+  if (notRestored.length > 0) {
+    for (const path of toRemove) {
+      if ((await safeStat(path)) !== null) notRemoved.push(path);
+    }
+  } else {
+    let removedSome = false;
+    for (const path of toRemove) {
+      if (await removeRecordedAsAbsent(path)) {
+        changed.add(path);
+        removedSome = true;
+      }
+    }
+    if (removedSome) {
+      // A removal takes a restored file with it when one of the two paths
+      // leads to the other through a symbolic link. Such a file is written
+      // again, so that its content is not lost.
+      for (const { path, backupFileName } of toRestore) {
+        if ((await safeStat(path)) !== null) continue;
+        try {
+          await writeBackupTo(backupFileName, path);
+          changed.add(path);
+        } catch (error) {
+          failed(path, error);
+        }
+      }
+    }
+  }
+
+  return {
+    changed: [...state.trackedFiles].filter((path) => changed.has(path)),
+    notRestored,
+    notRemoved,
+  };
+}
+
+/**
+ * Put `filePath` back to the content of its backup. Returns whether the
+ * file on disk changed. Throws when it could not be done.
+ */
+async function restoreFromBackup(
+  filePath: string,
+  backupFileName: string,
+): Promise<boolean> {
+  // A directory, FIFO, socket or device where the file should be cannot
+  // take the content, and opening some of these never returns.
+  const onDisk = await safeStat(filePath);
+  if (onDisk !== null && !onDisk.isFile()) {
+    throw new Error("the path is not a regular file any more");
+  }
+  // Without this, a file that is gone along with its backup would count
+  // as unchanged.
+  if ((await safeStat(backupFileName)) === null) {
+    throw new Error("its backup is missing");
+  }
+  if (!(await checkOriginFileChanged(filePath, backupFileName))) return false;
+  await writeBackupTo(backupFileName, filePath);
+  return true;
+}
+
+/**
+ * Write the content of the backup `backupFileName` to `filePath`, with the
+ * directory when that is gone as well: a file is moved out of it and the
+ * emptied directory removed.
+ *
+ * The backup is opened before anything is touched, so a backup that cannot
+ * be read changes nothing. The content is streamed, because `readFile`
+ * refuses a file of 2 GiB or more. A file that has to be created gets the
+ * permission bits of the backup, which `copyFile` took from the original.
+ * `copyFile` is not used for the way back: it also resets the mode of a
+ * file that exists and unlinks the destination when it fails.
+ */
+async function writeBackupTo(
+  backupFileName: string,
+  filePath: string,
+): Promise<void> {
+  const backup = await open(backupFileName, "r");
+  try {
+    const { mode } = await backup.stat();
+    await mkdir(dirname(filePath), { recursive: true });
+    await pipeline(
+      backup.createReadStream({ autoClose: false }),
+      createWriteStream(filePath, { mode: mode & 0o777 }),
+    );
+  } finally {
+    await backup.close();
+  }
+}
+
+/**
+ * Remove `filePath`, which the target records as absent. Returns whether
+ * it was removed; a path that is not there or cannot be removed is
+ * skipped.
+ *
+ * A symbolic link that leads nowhere stays. `stat` calls such a link
+ * absent, so the record does not say that the link was not there.
+ */
+async function removeRecordedAsAbsent(filePath: string): Promise<boolean> {
+  try {
+    if (
+      (await lstat(filePath)).isSymbolicLink() &&
+      (await safeStat(filePath)) === null
+    ) {
+      return false;
+    }
+    await rm(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** At most three of `items`, and how many more there are. */
+function listed(items: ReadonlyArray<string>): string {
+  const shown = items.slice(0, 3).join(", ");
+  return items.length > 3 ? `${shown} and ${items.length - 3} more` : shown;
+}
+
+/**
+ * What an incomplete rewind could not do, in words: for the diagnostic and
+ * for the user.
+ */
+export function describeIncompleteRewind(
+  result: FileHistoryRewindResult,
+): string {
+  const failures = listed(
+    result.notRestored.map(({ path, reason }) => `${path} (${reason})`),
+  );
+  if (result.notRemoved.length === 0) return `Could not restore ${failures}.`;
+  return (
+    `Could not restore ${failures}. Nothing was removed, so that no content ` +
+    `is lost: ${listed(result.notRemoved)} ` +
+    `${result.notRemoved.length === 1 ? "is" : "are"} still there.`
+  );
 }
 
 /**

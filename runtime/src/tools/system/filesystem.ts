@@ -1618,6 +1618,8 @@ function isSameFile(source: BigIntStats, destination: BigIntStats): boolean {
  * a file into a directory, and does not replace a file with a directory.
  * Their messages say what to change and leave the flag out, so that the
  * caller does not retry with it into a failure after the effect boundary.
+ * A third such kind needs a look into the destination and is refused by the
+ * caller: a directory onto a directory that is not empty.
  */
 function existingDestinationRefusal(
   source: BigIntStats,
@@ -1642,11 +1644,24 @@ function existingDestinationRefusal(
   return null;
 }
 
+/**
+ * True when the directory at `path` has an entry. `rename` replaces a
+ * directory only while it is empty.
+ */
+async function directoryHasEntries(path: string): Promise<boolean> {
+  const directory = await opendir(path);
+  try {
+    return (await directory.read()) !== null;
+  } finally {
+    await directory.close();
+  }
+}
+
 function createMoveTool(allowedPaths: readonly string[]): Tool {
   return {
     name: "system.move",
     description:
-      "Move or rename a file or directory. Both source and destination must be within allowed paths. Refuses to replace an existing destination unless overwrite is true.",
+      "Move or rename a file or directory. Both source and destination must be within allowed paths. Refuses to replace an existing destination unless overwrite is true. A directory can replace only an empty directory.",
     recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
@@ -1662,7 +1677,7 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
         overwrite: {
           type: "boolean",
           description:
-            "Replace an existing destination. Defaults to false: the move is refused when the destination exists.",
+            "Replace an existing destination. Defaults to false: the move is refused when the destination exists. A directory that is not empty is never replaced.",
         },
       },
       required: ["source", "destination"],
@@ -1709,6 +1724,22 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
           destinationStats !== null &&
           !isSameFile(sourceStats, destinationStats)
         ) {
+          if (sourceStats.isDirectory() && destinationStats.isDirectory()) {
+            // `rename` fails with ENOTEMPTY here, with or without the flag.
+            // Refused before the flag is looked at, so that the answer is
+            // not the advice to pass it.
+            let occupied: boolean;
+            try {
+              occupied = await directoryHasEntries(dst!);
+            } catch (err) {
+              return preEffectErrorResult(safeError(err, "destination check"));
+            }
+            if (occupied) {
+              return preEffectErrorResult(
+                `Destination directory is not empty: ${args.destination}. Only an empty directory can be replaced.`,
+              );
+            }
+          }
           const refusal = existingDestinationRefusal(
             sourceStats,
             destinationStats,

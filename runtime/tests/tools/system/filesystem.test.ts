@@ -72,6 +72,7 @@ function createMockDir(
         },
       };
     },
+    read: vi.fn(async () => (index < entries.length ? entries[index++] : null)),
     close: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -737,6 +738,7 @@ describe("system.move", () => {
     mockStat.mockReset();
     mockMkdir.mockReset();
     mockRename.mockReset();
+    mockOpendir.mockReset();
     mockRealpath.mockImplementation(async (p: string) => p as never);
     tool = findTool(createFilesystemTools(CONFIG), "system.move");
   });
@@ -818,7 +820,7 @@ describe("system.move", () => {
     // Anything that is not a directory: rename cannot put it into one.
     ["a FIFO", "fifo", { overwrite: true }],
   ] as const)(
-    "refuses %s onto an existing directory (%j)",
+    "refuses %s onto an existing directory (%s, %j)",
     async (_label, source, flag) => {
       sourceAndDestination(source, "directory");
 
@@ -838,7 +840,7 @@ describe("system.move", () => {
     ["a dangling symlink", "symlink", { overwrite: true }],
     ["a FIFO", "fifo", { overwrite: true }],
   ] as const)(
-    "refuses a directory onto %s (%j)",
+    "refuses a directory onto %s (%s, %j)",
     async (_label, destination, flag) => {
       sourceAndDestination("directory", destination);
 
@@ -851,15 +853,57 @@ describe("system.move", () => {
     },
   );
 
-  it("moves a directory onto a directory only with overwrite", async () => {
+  it("moves a directory onto an empty directory only with overwrite", async () => {
     sourceAndDestination("directory", "directory");
+    const empty = createMockDir([]);
+    mockOpendir.mockResolvedValueOnce(empty as never);
     const refused = await tool.execute({ ...MOVE });
     expect(expectRefusedBeforeAnyEffect(refused)).toContain("overwrite: true");
+    expect(mockOpendir).toHaveBeenCalledWith("/workspace/new.txt");
+    expect(empty.close).toHaveBeenCalledTimes(1);
 
     sourceAndDestination("directory", "directory");
+    mockOpendir.mockResolvedValueOnce(createMockDir([]) as never);
     const replaced = await tool.execute({ ...MOVE, overwrite: true });
     expect(replaced.isError).toBeUndefined();
     expect(parseResult(replaced)).toEqual({ ...MOVE, moved: true, overwritten: true });
+  });
+
+  it.each([
+    ["without the flag", {}],
+    ["with overwrite: true", { overwrite: true }],
+  ])("refuses a directory onto a directory that is not empty, %s", async (_label, flag) => {
+    sourceAndDestination("directory", "directory");
+    const occupied = createMockDir([
+      { name: "kept.txt", isDirectory: () => false, isFile: () => true },
+    ]);
+    mockOpendir.mockResolvedValueOnce(occupied as never);
+
+    const result = await tool.execute({ ...MOVE, ...flag });
+
+    const error = expectRefusedBeforeAnyEffect(result);
+    expect(error).toBe(
+      "Destination directory is not empty: /workspace/new.txt. Only an empty directory can be replaced.",
+    );
+    // rename fails with ENOTEMPTY whatever the flag says, so it is not offered.
+    expect(error).not.toContain("overwrite");
+    expect(occupied.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a directory onto a directory it cannot look into", async () => {
+    sourceAndDestination("directory", "directory");
+    mockOpendir.mockRejectedValueOnce(errno("EACCES"));
+
+    const result = await tool.execute({ ...MOVE, overwrite: true });
+
+    expect(expectRefusedBeforeAnyEffect(result)).toContain("destination check");
+  });
+
+  it("does not look into the destination unless both are directories", async () => {
+    sourceAndDestination("file", "file");
+    const replaced = await tool.execute({ ...MOVE, overwrite: true });
+    expect(replaced.isError).toBeUndefined();
+    expect(mockOpendir).not.toHaveBeenCalled();
   });
 
   it("a dangling symlink at the destination counts as an existing destination", async () => {
@@ -934,8 +978,10 @@ describe("system.move", () => {
   });
 
   it("keeps a failure of the rename itself a bare error", async () => {
-    // Past the effect boundary: a non-empty directory cannot be replaced.
+    // Past the effect boundary: the directory was empty when the tool looked
+    // into it and has an entry by the time of the rename.
     sourceAndDestination("directory", "directory");
+    mockOpendir.mockResolvedValueOnce(createMockDir([]) as never);
     mockRename.mockRejectedValueOnce(errno("ENOTEMPTY"));
 
     const result = await tool.execute({ ...MOVE, overwrite: true });
