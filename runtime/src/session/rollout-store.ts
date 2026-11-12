@@ -1058,7 +1058,7 @@ export class RolloutStore {
   }
 
   append(event: Event, opts: AppendOptions = {}): boolean {
-    this.appendLinesAfterCompactionWindow();
+    this.appendLinesAfterCompactionWindowBestEffort();
     return this.store.append(event, opts);
   }
 
@@ -3577,7 +3577,7 @@ export class RolloutStore {
       this.linesAfterCompactionWindow.push({ item, opts });
       return;
     }
-    this.appendLinesAfterCompactionWindow();
+    this.appendLinesAfterCompactionWindowBestEffort();
     if (item.type === "response_item") {
       this.validateLiveResponseItem(item.payload);
     } else if (item.type === "compacted") {
@@ -3608,7 +3608,7 @@ export class RolloutStore {
     item: PersistedCompactionRolloutItem,
     opts: AppendOptions,
   ): void {
-    this.appendLinesAfterCompactionWindow();
+    this.appendLinesAfterCompactionWindowBestEffort();
     // Persisted manifest rows deliberately differ from the hydrated in-memory
     // RolloutItem view. The strict persisted readers above are the sole cast
     // boundary; SessionStore hydration restores the public runtime shape.
@@ -3650,7 +3650,7 @@ export class RolloutStore {
       const { item, opts } = this.linesAfterCompactionWindow[0]!;
       const offer = this.store.offerRollout(item, opts);
       if (offer.appended || offer.taken) this.linesAfterCompactionWindow.shift();
-      if (!offer.appended) throw offer.error;
+      if (!offer.appended && !offer.taken) throw offer.error;
     }
   }
 
@@ -3658,12 +3658,13 @@ export class RolloutStore {
    * The same, for a terminal record or an ended attempt: the compaction's
    * outcome is already settled, so a failed write of a held line must not
    * fail it. A line the session store did not take stays for the next write.
+   * Ordinary appends use this too, so held rows cannot consume their sequence.
    */
   private appendLinesAfterCompactionWindowBestEffort(): void {
     try {
       this.appendLinesAfterCompactionWindow();
     } catch {
-      // The next append, durable flush or close reports a store that still fails.
+      // The caller's own append still reaches the store. Durable flush and close report persisting failures.
     }
   }
 
@@ -4205,7 +4206,7 @@ export class RolloutStore {
   /** Force an immediate flush (durable=true). */
   flushDurable(): void {
     this.appendLinesAfterCompactionWindow();
-    if (!this.store.flushBatch(true)) {
+    if (!this.store.flushBatch(true) || this.store.isDegraded) {
       throw new Error("rollout flush was not fsync-committed");
     }
   }

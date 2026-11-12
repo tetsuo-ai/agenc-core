@@ -338,6 +338,49 @@ test("a held line that meets a full disk waits in the degraded buffer and is wri
   expectWrittenOnceBefore(store().readAll(), 8);
 });
 
+test("two failed held lines do not consume the next event's sequence without storing it", async () => {
+  const store = () => harness!.store;
+  harnessWriting(() => {
+    store().appendRollout(heldLine(11), { durable: true });
+    store().appendRollout(heldLine(12), { durable: true });
+  });
+  store().store.setWriteImplForTest((fd, buffer, offset, length) => {
+    if (/"generation":1[12]/.test(writtenText(buffer, offset, length))) {
+      throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    }
+    return writeSync(fd, buffer, offset, length);
+  });
+  await compactConversation(SOURCE, harness!.context);
+  expect(store().store.isDegraded).toBe(true);
+  try {
+    harness!.session.emit({ id: "after-failed-held", eventId: "after-failed-held", msg: { type: "warning", payload: { message: "after held rows", cause: "test" } } });
+  } catch { /* A durable error is allowed only after the caller's event is taken. */ }
+  let flushError: unknown;
+  try { store().flushDurable(); } catch (error) { flushError = error; }
+  store().store.setWriteImplForTest(writeSync);
+  await (store().store as unknown as { degraded: { tryFlush(): Promise<boolean> } }).degraded.tryFlush();
+  harness!.session.emit({ id: "after-recovery", eventId: "after-recovery", msg: { type: "warning", payload: { message: "recovered", cause: "test" } } }, { durable: true });
+  const items = reopen(store());
+  const events = items.flatMap(item => item.type === "event_msg" ? [item.payload] : []);
+  expect(events.some(event => event.id === "after-failed-held")).toBe(true);
+  expect(events.map(event => event.seq)).toEqual(events.map((_, index) => index + 1));
+  for (const generation of [11, 12]) expect(items.filter(isHeldLine(generation))).toHaveLength(1);
+  expect(flushError).toBeDefined();
+});
+
+test("close reports held rows that remain unwritable", async () => {
+  const store = () => harness!.store;
+  harnessWriting(() => store().appendRollout(heldLine(13), { durable: true }));
+  store().store.setWriteImplForTest((fd, buffer, offset, length) => {
+    if (writtenText(buffer, offset, length).includes('"generation":13')) {
+      throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    }
+    return writeSync(fd, buffer, offset, length);
+  });
+  await compactConversation(SOURCE, harness!.context);
+  expect(() => store().close()).toThrow("no space left on device");
+});
+
 test("a memory mode change inside a window keeps the metadata line the window holds before it", async () => {
   const threadId = () => harness!.store.sessionId;
   harnessWriting(() => {

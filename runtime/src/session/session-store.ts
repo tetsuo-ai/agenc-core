@@ -4465,8 +4465,8 @@ export class SessionStore {
     // I-12/I-38 failure but the 30s retry tick has not yet fired, those
     // buffered durable events (turn_complete, error, context_compacted,
     // response_item) would otherwise be silently dropped on shutdown.
-    // Drain + one synchronous append; on persistent failure accept the
-    // loss (the disk is genuinely still unavailable).
+    // Drain + one synchronous append; persistent failure is reported after
+    // canonical resources are released, so shutdown cannot claim durability.
     capture(() => {
       if (this.degraded.isDegraded) {
         const remaining = this.degraded.drain();
@@ -4483,6 +4483,7 @@ export class SessionStore {
               cause: "rollout_degraded",
               message: `${(err as { code?: string }).code ?? "unknown"} during close drain: ${remaining.length} buffered events lost`,
             });
+            throw err;
           }
         }
       }
