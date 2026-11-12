@@ -1,7 +1,0 @@
-{
-  "git": {
-    "deploymentEnabled": {
-      "feat/agenc-login-model-access-20260910": false
-    }
-  }
-}

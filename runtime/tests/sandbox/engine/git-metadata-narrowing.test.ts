@@ -15,7 +15,7 @@ import { createExecCommandTool } from "../../../src/tools/system/exec-command.js
 // index, HEAD, logs, pseudo-refs, message files) succeed without an escalation
 // while hooks/config/info/objects-info/modules/worktrees/commondir stay
 // read-only. A `.git` gitfile or `.git` symlink is a pointer, not a directory,
-// and stays fully protected. See round4/jobs/gt/REPORT.md for the threat analysis.
+// and stays fully protected.
 
 let root: string;
 beforeEach(() => {

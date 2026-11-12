@@ -783,7 +783,6 @@ function defaultReadOnlySubpathsForWritableRoot(root: string): string[] {
  * those paths stay read-only, so `refs`, `objects`, the `index`, `HEAD`, the
  * reflogs, the pseudo-refs and the message files are writable in the default
  * sandbox without an escalation. `.agenc` and `.agents` are never narrowed.
- * Threat analysis and git-documentation sources: round4/jobs/gt/REPORT.md.
  */
 const GIT_METADATA_DIR_NAME = ".git";
 
