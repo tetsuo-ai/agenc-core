@@ -223,6 +223,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
 
     expect(messages).toHaveLength(1);
@@ -285,6 +286,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(messages[0].conversation).toEqual({ kind: "group", id: "-100200" });
     expect(messages[0].sender.displayName).toBe("Bob");
@@ -310,6 +312,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.send({
       conversationId: messages[0].conversation.id,
       text: "topic reply",
@@ -351,6 +354,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(messages).toHaveLength(0);
   });
@@ -378,6 +382,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(messages).toHaveLength(1);
     expect(messages[0].text).toBe("hi there");
@@ -410,6 +415,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(messages).toHaveLength(1);
     expect(messages[0].text).toBe(
@@ -449,6 +455,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(messages).toHaveLength(1);
     expect(messages[0].text).toBe("can you explain the top holder data?");
@@ -487,6 +494,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(transport.getMeCalls).toBe(1);
     expect(messages).toHaveLength(1);
@@ -520,6 +528,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(messages).toHaveLength(1);
     expect(messages[0].text).toBe("explain this");
@@ -552,6 +561,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(messages).toHaveLength(1);
     expect(messages[0].text).toBe(
@@ -592,6 +602,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(messages).toHaveLength(1);
     expect(messages[0].sender).toEqual({
@@ -628,6 +639,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(messages).toHaveLength(1);
     expect(messages[0].conversation).toEqual({ kind: "group", id: "-100300" });
@@ -661,6 +673,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(messages).toHaveLength(0);
   });
@@ -688,6 +701,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(messages).toHaveLength(1);
     expect(messages[0].text).toBe("explain this image");
@@ -719,6 +733,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(messages).toHaveLength(1);
     expect(messages[0].text).toBe("answer this");
@@ -749,6 +764,7 @@ describe("TelegramChannelAdapter", () => {
     await adapter.start(ctx);
     await adapter.pollOnce();
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(offsets).toEqual([0, 11]);
   });
@@ -997,6 +1013,7 @@ describe("TelegramChannelAdapter", () => {
     const { ctx, messages } = collector();
     await adapter.start(ctx);
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await adapter.stop();
     expect(messages).toHaveLength(0);
   });

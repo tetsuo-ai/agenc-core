@@ -8,11 +8,17 @@
  * The HTTP transport is injectable so the adapter logic is unit-tested
  * against a fake Bot API. The production transport uses global fetch (Node
  * 25); no HTTP dependency.
+ *
+ * Inbound updates are handed to the gateway without waiting for the agent
+ * turn: one conversation (chat + topic) is handled in arrival order, different
+ * conversations run side by side up to a fixed limit, and a private-chat
+ * command such as the owner's /stop is never held behind running turns.
  */
 
 import type {
   ChannelAdapter,
   ChannelAdapterContext,
+  InboundChannelMessage,
   OutboundChannelMessage,
 } from "./types.js";
 
@@ -419,6 +425,26 @@ export interface TelegramChannelOptions {
    * false to drive pollOnce() deterministically without a competing loop.
    */
   readonly autoPoll?: boolean;
+  /**
+   * Most update handlers (agent turns) running at the same time. Commands
+   * from a private chat are not counted. Default 4.
+   */
+  readonly maxConcurrentUpdates?: number;
+  /**
+   * Most accepted updates waiting for a free handler or for an earlier update
+   * of their own conversation. When full, the newest update is dropped with
+   * one log line and no reply. Default 100.
+   */
+  readonly maxQueuedUpdates?: number;
+}
+
+const DEFAULT_MAX_CONCURRENT_UPDATES = 4;
+const DEFAULT_MAX_QUEUED_UPDATES = 100;
+
+/** An update that passed addressing and is waiting for, or running, its handler. */
+interface PendingUpdate {
+  readonly updateId: number;
+  readonly message: InboundChannelMessage;
 }
 
 /** Maps a Telegram sent-message id back to its chat for later edits. */
@@ -442,11 +468,20 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   readonly #debugUpdates: boolean;
   readonly #groupAddressing: "all" | "mentions";
   readonly #richMessages: TelegramRichMessageMode;
+  readonly #maxConcurrentUpdates: number;
+  readonly #maxQueuedUpdates: number;
   readonly #editTargets = new Map<string, EditTarget>();
+  /** Accepted updates that could not start yet, oldest first. */
+  readonly #waitingUpdates: PendingUpdate[] = [];
+  /** Conversations whose handler holds one of the counted slots. */
+  readonly #busyConversations = new Set<string>();
+  /** Every handler still running, private-chat commands included. */
+  readonly #handlers = new Set<Promise<void>>();
   #botIdentity: TelegramBotIdentity | null = null;
   #context: ChannelAdapterContext | null = null;
   #offset = 0;
   #running = false;
+  #stopped = false;
   #loop: Promise<void> | null = null;
   #outCounter = 0;
 
@@ -468,6 +503,16 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     this.#debugUpdates = options.debugUpdates ?? false;
     this.#groupAddressing = options.groupAddressing ?? "all";
     this.#richMessages = options.richMessages ?? "private";
+    this.#maxConcurrentUpdates = countOption(
+      options.maxConcurrentUpdates,
+      DEFAULT_MAX_CONCURRENT_UPDATES,
+      1,
+    );
+    this.#maxQueuedUpdates = countOption(
+      options.maxQueuedUpdates,
+      DEFAULT_MAX_QUEUED_UPDATES,
+      0,
+    );
     const configuredBotUsername = options.botUsername?.trim().replace(/^@/, "");
     if (configuredBotUsername !== undefined && configuredBotUsername.length > 0) {
       this.#botIdentity = { id: -1, username: configuredBotUsername };
@@ -476,6 +521,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
   async start(context: ChannelAdapterContext): Promise<void> {
     this.#context = context;
+    this.#stopped = false;
     await this.#resolveBotIdentity();
     await this.#installCommands();
     if (this.#autoPoll) {
@@ -484,22 +530,55 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     }
   }
 
+  /**
+   * Stop polling, drop the updates that have not started, and wait for the
+   * handlers that are running.
+   */
   async stop(): Promise<void> {
+    this.#stopped = true;
     this.#running = false;
+    const dropped = this.#waitingUpdates.splice(0).length;
+    if (dropped > 0) {
+      this.#log(`telegram: stop dropped ${dropped} waiting update(s)`);
+    }
     await this.#loop?.catch(() => {});
     this.#loop = null;
+    await this.whenIdle();
     this.#context = null;
   }
 
-  /** Run one long-poll iteration; exposed for deterministic tests. */
+  /**
+   * Run one long-poll iteration; exposed for deterministic tests. Resolves
+   * once the batch is handed over, not when its turns finish: await
+   * whenIdle() for that.
+   */
   async pollOnce(): Promise<void> {
     const updates = await this.#transport.getUpdates(
       this.#offset,
       this.#pollTimeout,
     );
+    // stop() ran while this request was in flight. The offset stays put, so
+    // Telegram delivers the batch again after the next start.
+    if (this.#stopped) return;
     for (const update of updates) {
+      // The offset moves exactly once per update, in arrival order, before
+      // anything can go wrong with it: a failing update is never fetched twice.
       this.#offset = Math.max(this.#offset, update.update_id + 1);
-      await this.#handleUpdate(update);
+      try {
+        this.#acceptUpdate(update);
+      } catch (error) {
+        this.#log(
+          `telegram: update ${update.update_id} skipped: ${String(error)}`,
+        );
+      }
+    }
+  }
+
+  /** Resolves once no update is waiting or being handled. */
+  async whenIdle(): Promise<void> {
+    // A finished handler may start a waiting one, so look again after each wait.
+    while (this.#handlers.size > 0) {
+      await Promise.all(this.#handlers);
     }
   }
 
@@ -562,7 +641,95 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     }
   }
 
-  async #handleUpdate(update: TelegramUpdate): Promise<void> {
+  /** Route one update: ignore it, run it now, queue it, or drop it. */
+  #acceptUpdate(update: TelegramUpdate): void {
+    const inbound = this.#inboundFromUpdate(update);
+    if (inbound === null) return;
+    const pending: PendingUpdate = {
+      updateId: update.update_id,
+      message: inbound.message,
+    };
+    if (inbound.control) {
+      // Owner controls such as /stop exist to interrupt running work, so a
+      // private-chat command skips the limit, the queue and its own
+      // conversation's order.
+      this.#runUpdate(pending, "control");
+      return;
+    }
+    if (this.#canRunNow(pending)) {
+      this.#runUpdate(pending, "counted");
+      return;
+    }
+    if (this.#waitingUpdates.length >= this.#maxQueuedUpdates) {
+      this.#log(
+        `telegram: update queue full (${this.#maxQueuedUpdates} waiting), dropped update ${pending.updateId}`,
+      );
+      return;
+    }
+    this.#waitingUpdates.push(pending);
+  }
+
+  #canRunNow(pending: PendingUpdate): boolean {
+    return (
+      this.#busyConversations.size < this.#maxConcurrentUpdates &&
+      !this.#busyConversations.has(pending.message.conversation.id)
+    );
+  }
+
+  /**
+   * Hand one update to the gateway without awaiting the turn. A "counted"
+   * handler holds its conversation and one of the limited slots until it
+   * settles; a "control" handler holds neither.
+   */
+  #runUpdate(pending: PendingUpdate, lane: "counted" | "control"): void {
+    const context = this.#context;
+    if (context === null) return;
+    const conversationId = pending.message.conversation.id;
+    if (lane === "counted") this.#busyConversations.add(conversationId);
+    const handler: Promise<void> = Promise.resolve()
+      .then(() => context.onMessage(pending.message))
+      .catch((error: unknown) => {
+        this.#log(
+          `telegram: update ${pending.updateId} handler failed: ${String(error)}`,
+        );
+      })
+      // Whatever happened above, even a throwing logger, the slot is returned.
+      .catch(() => {})
+      .then(() => {
+        this.#handlers.delete(handler);
+        if (lane === "counted") {
+          this.#busyConversations.delete(conversationId);
+          this.#startWaitingUpdates();
+        }
+      });
+    this.#handlers.add(handler);
+  }
+
+  /**
+   * Start the waiting updates that now have a free slot and an idle
+   * conversation. Scanning oldest first keeps one conversation in arrival
+   * order while a busy conversation never holds back the others.
+   */
+  #startWaitingUpdates(): void {
+    let index = 0;
+    while (
+      index < this.#waitingUpdates.length &&
+      this.#busyConversations.size < this.#maxConcurrentUpdates
+    ) {
+      const pending = this.#waitingUpdates[index];
+      if (this.#busyConversations.has(pending.message.conversation.id)) {
+        index += 1;
+        continue;
+      }
+      this.#waitingUpdates.splice(index, 1);
+      this.#runUpdate(pending, "counted");
+    }
+  }
+
+  /** Map an update to the gateway's inbound shape, or null to ignore it. */
+  #inboundFromUpdate(
+    update: TelegramUpdate,
+  ): { readonly message: InboundChannelMessage; readonly control: boolean } | null {
     const updateKind = telegramUpdateKind(update);
     const message =
       update.message ??
@@ -576,12 +743,12 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       message === undefined ||
       rawText === undefined
     ) {
-      return;
+      return null;
     }
     const sender = message.from;
     const senderChat = message.sender_chat;
     if (sender === undefined && senderChat === undefined) {
-      return;
+      return null;
     }
     const peerId = String(sender?.id ?? senderChat?.id);
     const chatId = String(message.chat.id);
@@ -591,24 +758,27 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       isPrivate ? undefined : message.message_thread_id,
     );
     const text = this.#normalizedTextForAddressing(rawText, message);
-    if (text === null) return;
-    await this.#context.onMessage({
-      channelId: this.id,
-      sender: {
-        peerId,
-        ...(sender?.username !== undefined
-          ? { displayName: sender.username }
-          : sender?.first_name !== undefined
-            ? { displayName: sender.first_name }
-            : senderChat?.username !== undefined
-              ? { displayName: senderChat.username }
-              : senderChat?.title !== undefined
-                ? { displayName: senderChat.title }
-                : {}),
+    if (text === null) return null;
+    return {
+      control: isPrivate && text.trimStart().startsWith("/"),
+      message: {
+        channelId: this.id,
+        sender: {
+          peerId,
+          ...(sender?.username !== undefined
+            ? { displayName: sender.username }
+            : sender?.first_name !== undefined
+              ? { displayName: sender.first_name }
+              : senderChat?.username !== undefined
+                ? { displayName: senderChat.username }
+                : senderChat?.title !== undefined
+                  ? { displayName: senderChat.title }
+                  : {}),
+        },
+        conversation: { kind: isPrivate ? "dm" : "group", id: conversationId },
+        text,
       },
-      conversation: { kind: isPrivate ? "dm" : "group", id: conversationId },
-      text,
-    });
+    };
   }
 
   #debugUpdate(
@@ -792,6 +962,16 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     }
     return handle;
   }
+}
+
+/** A count option: the fallback when unset or NaN, never below `minimum`. */
+function countOption(
+  value: number | undefined,
+  fallback: number,
+  minimum: number,
+): number {
+  if (value === undefined || Number.isNaN(value)) return fallback;
+  return Math.max(minimum, Math.floor(value));
 }
 
 function escapeRegExp(value: string): string {

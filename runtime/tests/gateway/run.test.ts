@@ -419,6 +419,7 @@ describe("startGateway", () => {
     expect(handle.channels).toContain("telegram");
 
     await adapter.pollOnce();
+    await adapter.whenIdle();
     // Allow the turn's async delivery to settle.
     await new Promise((r) => setTimeout(r, 10));
 
@@ -456,6 +457,7 @@ describe("startGateway", () => {
       extraAdapters: [adapter],
     });
     await adapter.pollOnce();
+    await adapter.whenIdle();
     await new Promise((r) => setTimeout(r, 10));
 
     expect(client.sessions).toHaveLength(0);
