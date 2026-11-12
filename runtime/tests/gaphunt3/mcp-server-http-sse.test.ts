@@ -20,6 +20,9 @@ import { McpServerFramework } from "src/mcp-server/framework";
  * `#sessions`.
  */
 
+const TOKEN = "gaphunt3-sse-test-token-0123456789";
+const AUTHORIZATION = { authorization: `Bearer ${TOKEN}` } as const;
+
 function initializeBody(id = 1): string {
   return JSON.stringify({ jsonrpc: "2.0", id, method: "initialize" });
 }
@@ -28,6 +31,7 @@ function streamablePostHeaders(): Record<string, string> {
   return {
     accept: "application/json, text/event-stream",
     "content-type": "application/json",
+    ...AUTHORIZATION,
   };
 }
 
@@ -79,6 +83,7 @@ describe("gaphunt3 #22 — streamable-http session eviction on disconnect", () =
 
   it("evicts a streamable-http session whose client disconnects without a DELETE", async () => {
     transport = new McpHttpSseServerTransport({
+      token: TOKEN,
       serverFactory: () =>
         new McpServerFramework({ serverInfo: { version: "1.0.0" } }),
       streamableIdleMs: 40,
@@ -116,6 +121,7 @@ describe("gaphunt3 #22 — streamable-http session eviction on disconnect", () =
 
   it("does not evict within the idle grace window (protects clients between POSTs)", async () => {
     transport = new McpHttpSseServerTransport({
+      token: TOKEN,
       serverFactory: () =>
         new McpServerFramework({ serverInfo: { version: "1.0.0" } }),
       // Large window so the session must survive the immediate post-POST tick.
@@ -140,6 +146,7 @@ describe("gaphunt3 #22 — streamable-http session eviction on disconnect", () =
 
   it("keeps an explicit DELETE working and cancels the pending idle reaper", async () => {
     transport = new McpHttpSseServerTransport({
+      token: TOKEN,
       serverFactory: () =>
         new McpServerFramework({ serverInfo: { version: "1.0.0" } }),
       streamableIdleMs: 40,
@@ -156,7 +163,7 @@ describe("gaphunt3 #22 — streamable-http session eviction on disconnect", () =
 
     const deleted = await fetch(`${server.baseUrl}/mcp`, {
       method: "DELETE",
-      headers: { "mcp-session-id": sessionId },
+      headers: { "mcp-session-id": sessionId, ...AUTHORIZATION },
     });
     expect(deleted.status).toBe(204);
     expect(transport.snapshots()).toHaveLength(0);

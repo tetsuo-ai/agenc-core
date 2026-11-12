@@ -196,7 +196,10 @@ import {
   startMcpServerFromConfig,
 } from "../mcp/server/configured-start.js";
 import { resolveMcpServeDefaults } from "../mcp/server/defaults.js";
-import type { StartedMcpSseServer } from "../mcp/server/start.js";
+import type {
+  McpServerStartOptions,
+  StartedMcpSseServer,
+} from "../mcp/server/start.js";
 
 import {
   recoverDaemonStateOnStartup,
@@ -1310,6 +1313,15 @@ async function runAgenCDaemonForegroundLocked(
         runner.resolveRealtimeThread?.(threadId) ?? null,
     });
     let activeMcpServer = inactiveDaemonMcpServerHandle(activeConfig);
+    // The MCP SSE listener resolves its bearer token from the daemon's own
+    // environment or the native secure storage of the daemon's home, and
+    // only when a listener actually starts. The daemon never prints it.
+    const mcpServerStartOptions: McpServerStartOptions = Object.freeze({
+      environment: Object.freeze({
+        ...host.env,
+        AGENC_HOME: authStartup.daemonHome,
+      }),
+    });
     let reloadChain = Promise.resolve<DaemonReloadResult | null>(null);
     const reloadConfig = (): Promise<DaemonReloadResult> => {
       reloadChain = reloadChain
@@ -1332,6 +1344,7 @@ async function runAgenCDaemonForegroundLocked(
               previousMcpServer,
               next.config,
               io,
+              mcpServerStartOptions,
             );
           let adopted = false;
           let revocationFailure: Error | undefined;
@@ -1924,6 +1937,7 @@ async function runAgenCDaemonForegroundLocked(
         activeMcpServer = await startConfiguredDaemonMcpServer(
           activeConfig,
           io,
+          mcpServerStartOptions,
         );
         writeAgenCDaemonStartupDebug(
           host,
@@ -2280,6 +2294,7 @@ async function prepareConfiguredDaemonMcpServerChange(
   active: AgenCDaemonMcpServerHandle,
   config: AgenCConfig,
   io: AgenCDaemonCliIo,
+  startOptions: McpServerStartOptions,
 ): Promise<PreparedDaemonMcpServerChange> {
   const fingerprint = daemonMcpServerFingerprint(config);
   if (active.fingerprint === fingerprint) {
@@ -2316,7 +2331,7 @@ async function prepareConfiguredDaemonMcpServerChange(
     };
   }
 
-  const next = await startConfiguredDaemonMcpServer(config, io);
+  const next = await startConfiguredDaemonMcpServer(config, io, startOptions);
   return {
     closePreviousAfterAdoption: next !== active,
     adopt: () => next,
@@ -2327,9 +2342,10 @@ async function prepareConfiguredDaemonMcpServerChange(
 async function startConfiguredDaemonMcpServer(
   config: AgenCConfig,
   io: AgenCDaemonCliIo,
+  startOptions: McpServerStartOptions,
 ): Promise<AgenCDaemonMcpServerHandle> {
   try {
-    const result = await startMcpServerFromConfig(config);
+    const result = await startMcpServerFromConfig(config, startOptions);
     if (result.kind === "disabled") {
       return inactiveDaemonMcpServerHandle(config, "disabled");
     }
@@ -2341,6 +2357,11 @@ async function startConfiguredDaemonMcpServer(
     }
 
     io.stderr.write(`AgenC MCP server listening on ${result.server.url}\n`);
+    // This stream is a log, so it names where the token is shown and never
+    // the token itself.
+    io.stderr.write(
+      "AgenC MCP server requires a bearer token; print it with `agenc mcp serve --print-token`\n",
+    );
     return listeningDaemonMcpServerHandle(config, result.server);
   } catch (error) {
     io.stderr.write(

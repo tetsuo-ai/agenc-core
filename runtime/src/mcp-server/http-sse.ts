@@ -3,11 +3,14 @@
  * processing.
  *
  * Why this lives here:
- *   - MS-04 owns server-side remote transport only. CLI binding, auth, and
+ *   - MS-04 owns server-side remote transport only. CLI binding and
  *     permission integration are later MS-* items.
+ *   - Admission is part of the transport: a loopback port is reachable by
+ *     every local process and user, so each request must present the bearer
+ *     token before a route, a session or its body is looked at.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
@@ -18,6 +21,7 @@ import {
   McpServerFramework,
   ensureMcpOutgoingSerializable,
 } from "./framework.js";
+import { normalizeMcpServerAllowedOrigins } from "./origin.js";
 import type { McpOutgoingMessage, McpRequestId } from "./types.js";
 
 const DEFAULT_HTTP_PATH = "/mcp";
@@ -34,11 +38,22 @@ const SUPPORTED_PROTOCOL_VERSIONS = new Set(["2025-06-18", "2025-03-26"]);
 
 export interface McpHttpSseServerTransportOptions {
   readonly serverFactory: () => McpServerFramework;
+  /**
+   * Bearer token every request must present as `Authorization: Bearer
+   * <token>`. There is no unauthenticated mode: the transport refuses to be
+   * constructed without a non-empty token.
+   */
+  readonly token: string;
+  /**
+   * Exact origins a request carrying an `Origin` header may come from. A
+   * request without the header (a non-browser MCP client) needs only the
+   * token; every other origin is refused, loopback origins included.
+   */
+  readonly allowedOrigins?: readonly string[];
   readonly httpPath?: string;
   readonly ssePath?: string;
   readonly legacyMessagePath?: string;
   readonly maxBodyBytes?: number;
-  readonly validateOrigin?: (origin: string | null) => boolean;
   readonly onError?: (error: Error) => void;
   // gaphunt3 #22: idle grace (ms) before a stream-less streamable-http session
   // is evicted on disconnect. 0 defers eviction to the next event-loop tick.
@@ -84,10 +99,16 @@ type JsonRpcBodyKind =
 
 class HttpError extends Error {
   readonly statusCode: number;
+  readonly headers: Readonly<Record<string, string>>;
 
-  constructor(statusCode: number, message: string) {
+  constructor(
+    statusCode: number,
+    message: string,
+    headers: Readonly<Record<string, string>> = {},
+  ) {
     super(message);
     this.statusCode = statusCode;
+    this.headers = headers;
   }
 }
 
@@ -97,15 +118,31 @@ export class McpHttpSseServerTransport {
     readonly ssePath: string;
     readonly legacyMessagePath: string;
     readonly maxBodyBytes: number;
-    readonly validateOrigin: (origin: string | null) => boolean;
     readonly onError?: (error: Error) => void;
     readonly streamableIdleMs: number;
   };
+  // Only a digest is kept. The transport can check a presented token without
+  // holding the secret, and digests of one fixed length keep the comparison
+  // from revealing how long the real token is.
+  readonly #tokenDigest: Buffer;
+  #allowedOrigins: ReadonlySet<string>;
   #serverFactory: () => McpServerFramework;
   readonly #sessions = new Map<string, McpHttpSseSession>();
   #closed = false;
 
   constructor(options: McpHttpSseServerTransportOptions) {
+    if (
+      typeof options.token !== "string" ||
+      options.token.trim().length === 0
+    ) {
+      throw new Error(
+        "MCP HTTP/SSE transport requires a non-empty bearer token",
+      );
+    }
+    this.#tokenDigest = bearerTokenDigest(options.token);
+    this.#allowedOrigins = new Set(
+      normalizeMcpServerAllowedOrigins(options.allowedOrigins ?? []),
+    );
     this.#serverFactory = options.serverFactory;
     this.#options = {
       httpPath: options.httpPath ?? DEFAULT_HTTP_PATH,
@@ -113,7 +150,6 @@ export class McpHttpSseServerTransport {
       legacyMessagePath:
         options.legacyMessagePath ?? DEFAULT_LEGACY_MESSAGE_PATH,
       maxBodyBytes: options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
-      validateOrigin: options.validateOrigin ?? isLocalOrMissingOrigin,
       onError: options.onError,
       streamableIdleMs:
         options.streamableIdleMs ?? DEFAULT_STREAMABLE_IDLE_MS,
@@ -140,6 +176,19 @@ export class McpHttpSseServerTransport {
     return this.#revokeSessions();
   }
 
+  /**
+   * Replaces the origin allowlist for every later request and revokes every
+   * session admitted under the previous list, so a stream opened from an
+   * origin that is no longer allowed does not stay attached. An invalid entry
+   * throws before anything changes.
+   */
+  replaceAllowedOrigins(allowedOrigins: readonly string[]): number {
+    this.#allowedOrigins = new Set(
+      normalizeMcpServerAllowedOrigins(allowedOrigins),
+    );
+    return this.#revokeSessions();
+  }
+
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
@@ -160,12 +209,16 @@ export class McpHttpSseServerTransport {
     request: IncomingMessage,
     response: ServerResponse,
   ): Promise<boolean> {
-    const url = requestUrl(request);
     try {
+      // Admission comes first and reads headers only. Without the token a
+      // caller learns nothing about routes, sessions or the shutdown state,
+      // and this handler never reads its body.
+      this.#requireBearerToken(request);
       if (this.#closed) {
         throw new HttpError(503, "MCP HTTP/SSE server is shutting down");
       }
       this.#validateOrigin(request);
+      const url = requestUrl(request);
       if (request.method === "POST" && url.pathname === this.#options.httpPath) {
         await this.#handleHttpPost(request, response);
         return true;
@@ -198,6 +251,7 @@ export class McpHttpSseServerTransport {
           response,
           error instanceof HttpError ? error.statusCode : 500,
           err.message,
+          error instanceof HttpError ? error.headers : {},
         );
       } else {
         response.end();
@@ -287,9 +341,25 @@ export class McpHttpSseServerTransport {
     return sessionIds.length;
   }
 
+  #requireBearerToken(request: IncomingMessage): void {
+    const presented = bearerCredential(request.headers.authorization);
+    if (
+      presented === null ||
+      !timingSafeEqual(bearerTokenDigest(presented), this.#tokenDigest)
+    ) {
+      throw new HttpError(
+        401,
+        "MCP HTTP/SSE requests require Authorization: Bearer <token>",
+        { "www-authenticate": "Bearer" },
+      );
+    }
+  }
+
   #validateOrigin(request: IncomingMessage): void {
+    // No Origin header: a non-browser MCP client, admitted on the token. Any
+    // header that is present, an empty one included, must be listed exactly.
     const origin = singleHeader(request.headers.origin);
-    if (!this.#options.validateOrigin(origin)) {
+    if (origin !== null && !this.#allowedOrigins.has(origin)) {
       throw new HttpError(403, "MCP HTTP/SSE origin is not allowed");
     }
   }
@@ -785,23 +855,35 @@ function headerIncludes(
     .some((part) => part === expected);
 }
 
-function isLocalOrMissingOrigin(origin: string | null): boolean {
-  if (origin === null || origin.length === 0) return true;
-  try {
-    const url = new URL(origin);
-    return (
-      url.hostname === "localhost" ||
-      url.hostname === "127.0.0.1" ||
-      url.hostname === "[::1]" ||
-      url.hostname === "::1"
-    );
-  } catch {
-    return false;
-  }
+function bearerTokenDigest(token: string): Buffer {
+  return createHash("sha256").update(token, "utf8").digest();
+}
+
+const BEARER_SCHEME_PREFIX = "bearer ";
+
+// HTTP's optional whitespace is the space and the tab. `String.trim()` would
+// also drop characters such as a non-breaking space, so a credential that is
+// not the token byte for byte could compare equal to it.
+const BEARER_CREDENTIAL_PADDING = /^[ \t]+|[ \t]+$/gu;
+
+function bearerCredential(header: string | undefined): string | null {
+  if (header === undefined) return null;
+  const scheme = header.slice(0, BEARER_SCHEME_PREFIX.length);
+  if (scheme.toLowerCase() !== BEARER_SCHEME_PREFIX) return null;
+  const credential = header
+    .slice(BEARER_SCHEME_PREFIX.length)
+    .replace(BEARER_CREDENTIAL_PADDING, "");
+  return credential.length > 0 ? credential : null;
 }
 
 function requestUrl(request: IncomingMessage): URL {
-  return new URL(request.url ?? "/", "http://127.0.0.1");
+  try {
+    return new URL(request.url ?? "/", "http://127.0.0.1");
+  } catch {
+    // A request target such as `//` has no URL form. Answer it instead of
+    // letting the parse failure escape the request handler.
+    throw new HttpError(400, "MCP HTTP/SSE request target is invalid");
+  }
 }
 
 function singleHeader(value: string | readonly string[] | undefined): string | null {
@@ -823,8 +905,12 @@ function writeTextResponse(
   response: ServerResponse,
   statusCode: number,
   body: string,
+  headers: Readonly<Record<string, string>> = {},
 ): void {
-  response.writeHead(statusCode, { "content-type": "text/plain; charset=utf-8" });
+  response.writeHead(statusCode, {
+    ...headers,
+    "content-type": "text/plain; charset=utf-8",
+  });
   response.end(body);
 }
 

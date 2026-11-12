@@ -74,9 +74,10 @@ describe("CLI cold executor boundary", () => {
   // Exact UTF-8 output pinned from the pre-extraction facade implementations at
   // aaf332b45d0ec7b2f6f7b6e223b5648c8bab2d6d, not generated from the new leaves.
   // The doctor and trajectories hashes were re-pinned when their help copy
-  // dropped em dashes on purpose.
+  // dropped em dashes on purpose. The MCP hash was re-pinned when the
+  // `serve --print-token` option line was added on purpose (#3448).
   it.each([
-    [mcpArgs.formatAgenCMcpCliHelpText, "21613cd36317296cb82c71adc4d5b409c5cf335237eb48f721421e93b68e3a8e"],
+    [mcpArgs.formatAgenCMcpCliHelpText, "b6751f9b3f21371fc5c8caf0c786311d1ec96ae91f0f1881e6008e1f6cd59be9"],
     [doctorArgs.formatAgenCDoctorCliHelpText, "bfca5950e52f64e51e1886c1e054101f17024f3302c6b493b7f31bdd4fa08b8a"],
     [trajectoryArgs.formatAgenCTrajectoriesCliHelpText, "f277b4824a353d6a57f219703f57118accf06a89e3334c9c5e1d3c80a55f5552"],
     [skillsArgs.formatAgenCSkillsCliHelpText, "b5c2fecf62ce0cfe2fd1e41a46a32ad638724ae581c02a3bb7837bfa574e6902"],

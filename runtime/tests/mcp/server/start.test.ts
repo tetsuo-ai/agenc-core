@@ -27,10 +27,14 @@ const UNREACHABLE_REGISTRY: ToolRegistry = {
   },
 };
 
+const TOKEN = "mcp-start-test-token-0123456789";
+const AUTHORIZATION = { authorization: `Bearer ${TOKEN}` } as const;
+
 function mcpHeaders(sessionId?: string): Record<string, string> {
   return {
     accept: "application/json, text/event-stream",
     "content-type": "application/json",
+    ...AUTHORIZATION,
     ...(sessionId === undefined ? {} : { "mcp-session-id": sessionId }),
   };
 }
@@ -209,7 +213,7 @@ describe("mcp server start config", () => {
           },
         },
       },
-      { toolRegistry: UNREACHABLE_REGISTRY },
+      { toolRegistry: UNREACHABLE_REGISTRY, token: TOKEN },
     );
     if (result.kind !== "started") {
       throw new Error(`expected started result, got ${result.kind}`);
@@ -218,7 +222,7 @@ describe("mcp server start config", () => {
       expect(result.server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
       const response = await fetch(result.server.url, {
         method: "GET",
-        headers: { accept: "text/event-stream" },
+        headers: { accept: "text/event-stream", ...AUTHORIZATION },
       });
       expect(response.status).toBe(400);
 
@@ -266,7 +270,7 @@ describe("mcp server start config", () => {
               },
             },
           },
-          { toolRegistry: UNREACHABLE_REGISTRY },
+          { toolRegistry: UNREACHABLE_REGISTRY, token: TOKEN },
         );
         if (result.kind !== "started") {
           throw new Error(`expected started result, got ${result.kind}`);
@@ -370,7 +374,9 @@ describe("mcp server start config", () => {
     });
     const originalAgencHome = process.env.AGENC_HOME;
     process.env.AGENC_HOME = globalHome;
-    const result = await startMcpServerFromConfig(configFor(workspaceA));
+    const result = await startMcpServerFromConfig(configFor(workspaceA), {
+      token: TOKEN,
+    });
     if (result.kind !== "started") {
       throw new Error(`expected started result, got ${result.kind}`);
     }
@@ -522,11 +528,10 @@ describe("mcp server start config", () => {
     let started: Awaited<ReturnType<typeof startMcpSseServe>> | undefined;
     try {
       process.chdir(workspaceA);
-      const starting = startMcpSseServe({
-        transport: "sse",
-        host: "127.0.0.1",
-        port: 0,
-      });
+      const starting = startMcpSseServe(
+        { transport: "sse", host: "127.0.0.1", port: 0 },
+        { token: TOKEN },
+      );
       process.chdir(workspaceB);
       started = await starting;
 
@@ -581,11 +586,10 @@ describe("mcp server start config", () => {
   });
 
   test("close settles with a live SSE client and ignores a second close", async () => {
-    const started = await startMcpSseServe({
-      transport: "sse",
-      host: "127.0.0.1",
-      port: 0,
-    });
+    const started = await startMcpSseServe(
+      { transport: "sse", host: "127.0.0.1", port: 0 },
+      { token: TOKEN },
+    );
     const sseUrl = new URL("/sse", started.url).href;
     const live = await new Promise<{
       readonly statusCode: number;
@@ -593,7 +597,7 @@ describe("mcp server start config", () => {
     }>((resolve, reject) => {
       const req = httpRequest(
         sseUrl,
-        { headers: { accept: "text/event-stream" } },
+        { headers: { accept: "text/event-stream", ...AUTHORIZATION } },
         (response) => {
           response.resume();
           resolve({
@@ -615,7 +619,9 @@ describe("mcp server start config", () => {
     await expect(second).resolves.toBeUndefined();
     await live.ended;
     await expect(
-      fetch(sseUrl, { headers: { accept: "text/event-stream" } }),
+      fetch(sseUrl, {
+        headers: { accept: "text/event-stream", ...AUTHORIZATION },
+      }),
     ).rejects.toThrow();
   }, 2000);
 });

@@ -161,6 +161,9 @@ export const HERMETIC_RUNTIME_AUTH_ENV_VARS = Object.freeze([
   'AGENC_SLACK_BOT_TOKEN',
   'AGENC_SLACK_APP_TOKEN',
   'AGENC_HOOKS_TOKEN',
+  // inbound MCP SSE server bearer (an ambient value would override the
+  // token each test resolves from its hermetic native secure storage)
+  'AGENC_MCP_SERVER_TOKEN',
   // CI credentials inherited by raw child-process tests
   'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
   'ACTIONS_ID_TOKEN_REQUEST_URL',

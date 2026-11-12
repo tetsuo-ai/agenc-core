@@ -68,7 +68,18 @@ export async function prepareMcpSseServerReconfigurationFromConfig(
   }
 
   const workspace = await resolveMcpServeWorkspace(defaults.workspace);
-  const apply = server.prepareContextReplacement(workspace);
-  return { defaults, apply };
+  const applyContext = server.prepareContextReplacement(workspace);
+  const applyAllowedOrigins = server.prepareAllowedOriginsReplacement(
+    defaults.allowedOrigins ?? [],
+  );
+  return {
+    defaults,
+    apply() {
+      // The context swap comes first: if it cannot be applied, the previous
+      // origin allowlist stays in force together with the previous context.
+      const revokedSessions = applyContext();
+      return revokedSessions + applyAllowedOrigins();
+    },
+  };
 }
 

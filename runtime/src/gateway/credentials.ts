@@ -1,6 +1,8 @@
-import { randomBytes } from "node:crypto";
-
 import type { HomeContext } from "../config/home.js";
+import {
+  resolveGeneratedSurfaceToken,
+  type GeneratedSurfaceTokenSlot,
+} from "../utils/secureStorage/generatedToken.js";
 import {
   readNativeSecureStorage,
   updateNativeSecureStorage,
@@ -102,38 +104,34 @@ export function readGatewayGeneratedToken(
   return nonEmpty(readGatewayCredentialSnapshot(home).generatedTokens[name]);
 }
 
+function gatewayGeneratedTokenSlot(
+  name: GatewayGeneratedTokenName,
+): GeneratedSurfaceTokenSlot {
+  return {
+    read: (current) => current.gateway?.generatedTokens?.[name],
+    write: (current, token) => ({
+      ...current,
+      gateway: {
+        ...current.gateway,
+        generatedTokens: {
+          ...current.gateway?.generatedTokens,
+          [name]: token,
+        },
+      },
+    }),
+    unavailableMessage:
+      "Native secure storage is required for gateway surface tokens",
+  };
+}
+
 export function resolveGatewayGeneratedToken(
   home: HomeContext,
   name: GatewayGeneratedTokenName,
   environmentValue: string | undefined,
 ): string {
-  const explicit = nonEmpty(environmentValue);
-  if (explicit !== undefined && explicit.length >= 16) return explicit;
-
-  let resolved: string | undefined;
-  updateNativeSecureStorage(
+  return resolveGeneratedSurfaceToken(
     home,
-    (current) => {
-      const existing = nonEmpty(current.gateway?.generatedTokens?.[name]);
-      resolved = existing !== undefined && existing.length >= 16
-        ? existing
-        : randomBytes(24).toString("base64url");
-      if (existing === resolved) return structuredClone(current);
-      return {
-        ...current,
-        gateway: {
-          ...current.gateway,
-          generatedTokens: {
-            ...current.gateway?.generatedTokens,
-            [name]: resolved,
-          },
-        },
-      };
-    },
-    "Native secure storage is required for gateway surface tokens",
+    gatewayGeneratedTokenSlot(name),
+    environmentValue,
   );
-  if (resolved === undefined) {
-    throw new Error("Gateway token resolution completed without a token");
-  }
-  return resolved;
 }

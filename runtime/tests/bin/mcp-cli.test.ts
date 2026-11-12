@@ -159,10 +159,13 @@ function createIo(
   return { stdin, stdout, stderr };
 }
 
+const SSE_TOKEN = "mcp-cli-test-token-0123456789";
+
 function streamablePostHeaders(sessionId?: string): Record<string, string> {
   return {
     accept: "application/json, text/event-stream",
     "content-type": "application/json",
+    authorization: `Bearer ${SSE_TOKEN}`,
     ...(sessionId !== undefined ? { "mcp-session-id": sessionId } : {}),
   };
 }
@@ -610,7 +613,10 @@ describe("AgenC MCP CLI", () => {
         host: "127.0.0.1",
         port: 0,
       },
-      { toolRegistry: createToolRegistry({ ...SAMPLE_TOOL, execute }) },
+      {
+        toolRegistry: createToolRegistry({ ...SAMPLE_TOOL, execute }),
+        token: SSE_TOKEN,
+      },
     );
     try {
       expect(started.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
