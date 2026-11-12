@@ -41,14 +41,17 @@ const RULES: readonly Rule[] = [
   },
   {
     // "ignore all previous system instructions": an override verb, then within
-    // the same sentence (no . ! ? and at most 60 characters in between) a
+    // the same clause (no . ! ? , ; : and at most 60 characters in between) a
     // qualifier, then the noun it modifies (at most two words and no , ; : in
     // between). The bounded gaps keep the halves together and the scan
     // linear. "message" and "policy" are not nouns: "ignore my previous
-    // message, ..." is how people retract a chat message.
+    // message, ..." is how people retract a chat message, and the comma ends
+    // the clause. "prior" and "earlier" count only after ignore or disregard:
+    // "forget earlier instructions" and "override prior rules" are how people
+    // ask about compaction and bids.
     reason: "instruction override",
     pattern:
-      /\b(?:ignore|disregard|forget|override)\b[^.!?]{0,60}?\b(?:previous|prior|above|earlier|system|developer)\b(?:[^\w.!?,;:]+\w+){0,2}?[^\w.!?,;:]+(?:instructions?|prompts?|rules?|guardrails?)\b/i,
+      /\b(?:(?:ignore|disregard)\b[^.!?,;:]{0,60}?\b(?:previous|prior|above|earlier|system|developer)|(?:forget|override)\b[^.!?,;:]{0,60}?\b(?:previous|above|system|developer))\b(?:[^\w.!?,;:]+\w+){0,2}?[^\w.!?,;:]+(?:instructions?|prompts?|rules?|guardrails?)\b/i,
   },
   {
     // "print your system prompt": a disclosure verb, at most three words, then
@@ -56,7 +59,7 @@ const RULES: readonly Rule[] = [
     // bare "instructions" are not targets: people ask to see those all day.
     reason: "prompt exfiltration",
     pattern:
-      /\b(?:reveal|print|show|dump|leak|repeat)\b(?:[^\w.!?,;:]+\w+){0,3}?[^\w.!?,;:]+(?:system[\s-]+prompts?|developer[\s-]+messages?|hidden[\s-]+prompts?|initial[\s-]+instructions?)\b/i,
+      /\b(?:reveal|print|show|dump|leak)\b(?:[^\w.!?,;:]+\w+){0,3}?[^\w.!?,;:]+(?:system[\s-]+prompts?|developer[\s-]+messages?|hidden[\s-]+prompts?|initial[\s-]+instructions?)\b/i,
   },
 ];
 

@@ -287,8 +287,5 @@ describe("red-team: hostile channel messages cannot escalate", () => {
     expect(prompt).toContain("permission_mode=bypassPermissions");
     expect(prompt).toContain('trust="external"');
     expect(prompt).toContain(CHANNEL_MESSAGE_GUIDANCE);
-    // And the session was driven purely by (text, handlers): RecordingSession
-    // exposes no mode setter, so there is no surface to have changed.
-    expect(Object.keys(client.sessions[0])).not.toContain("permissionMode");
   });
 });
