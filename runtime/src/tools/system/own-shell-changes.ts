@@ -29,8 +29,10 @@
  * A file a command wrote whole from a here-document whose delimiter is quoted
  * (no expansion) is recorded too, when its bytes after the command equal that
  * body exactly, whether the command created it or rewrote it: the model wrote
- * every byte of it in the command. While the file keeps exactly that state, a
- * Write, Edit or apply_patch may count it as read ({@link proveOwnShellWrite}).
+ * every byte of it in the command. When there is no earlier read and the file
+ * keeps exactly that state, a Write, Edit or apply_patch may count it as read
+ * ({@link proveOwnShellWrite}). An existing read takes precedence: rewriting
+ * its bytes leaves that read stale, so an edit requires a fresh Read first.
  * A file a command created any other way (a redirect of other output, a copy,
  * a download, another writer while the command ran), changed, appended to, or
  * changed again after writing it, still needs a read: the model has not seen
