@@ -1,4 +1,5 @@
-import { FullOutputLog, logOutputEnabled, reduceLogsTogether } from "./log-output.js";
+import { resolveHomeContext } from "../config/home.js";
+import { FullOutputLog, MAX_FULL_OUTPUT_LOG_BYTES, MAX_RETAINED_OUTPUT_LOGS, logOutputEnabled, reduceLogsTogether } from "./log-output.js";
 import { OneShotProcessServer, OneShotProcessServerCleanupError } from "./one-shot-process-server.js";
 import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { SessionSandbox, SessionSandboxCleanupError, type SessionSandboxAvailability } from "../sandbox/linux-launcher/session-sandbox.js";
@@ -689,6 +690,7 @@ function createResult(params: {
   readonly processState?: string;
   readonly logMode?: boolean;
   readonly fullLogPath?: string;
+  readonly fullLogTruncated?: boolean;
   readonly bufferTruncated?: boolean;
 }): ExecCommandToolOutput {
   // max_output_tokens bounds the whole result, so stdout and stderr share it.
@@ -696,7 +698,7 @@ function createResult(params: {
     ? Math.min(maxCharsForTokens(params.maxOutputTokens), 8_000)
     : maxCharsForTokens(params.maxOutputTokens);
   const savedNote = params.logMode === true
-    ? params.fullLogPath === undefined ? "\n[full output log unavailable]" : `\n[full output: ${params.fullLogPath}]`
+    ? params.fullLogPath === undefined ? "\n[full output log unavailable]" : params.fullLogTruncated ? `\n[output log (first ${MAX_FULL_OUTPUT_LOG_BYTES} bytes): ${params.fullLogPath}]` : `\n[full output: ${params.fullLogPath}]`
     : "";
   const reducer = params.logMode === true && params.fullLogPath !== undefined ? reduceLogsTogether : truncateHeadTailTogether;
   const [stdout, stderr] = reducer(
@@ -785,6 +787,33 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly env?: Record<string, string>;
   private readonly baseEnv: Readonly<Record<string, string | undefined>>;
   private readonly sessionTempRoot: string;
+  private readonly outputLogs = new Map<FullOutputLog, string | undefined>();
+
+  private createOutputLog(ownerId: string | undefined): FullOutputLog | undefined {
+    try {
+      // The broker protects AgenC home even when a workspace or TMPDIR grant
+      // contains it. Child command environment overrides never choose this root.
+      const log = new FullOutputLog(resolveHomeContext(this.baseEnv).path);
+      this.outputLogs.set(log, ownerId);
+      return log;
+    } catch { return undefined; }
+  }
+
+  private disposeOutputLogs(ownerId?: string): void {
+    for (const [log, owner] of this.outputLogs) {
+      if (ownerId !== undefined && owner !== ownerId) continue;
+      log.dispose();
+      this.outputLogs.delete(log);
+    }
+  }
+
+  private pruneOutputLogs(): void {
+    const retained = [...this.outputLogs.keys()].filter(log => log.isClosed && log.wasReferenced);
+    for (const log of retained.slice(0, Math.max(0, retained.length - MAX_RETAINED_OUTPUT_LOGS))) {
+      log.dispose();
+      this.outputLogs.delete(log);
+    }
+  }
   /** Shell used when a request names none. */
   readonly shellPath: string;
 
@@ -1724,6 +1753,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     for (const entry of entries) {
       if (entry.exitState !== null) this.releaseProcessId(entry.processId);
     }
+    this.disposeOutputLogs();
     if (sandboxOutcome!.status === "rejected") {
       this.poisonSandboxAuthority(sandboxOutcome.reason);
       throw sandboxOutcome.reason;
@@ -1859,6 +1889,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         throw error;
       }
       // Keep settled yielded entries for status/output collection and pruning.
+      this.disposeOutputLogs(lifetime.ownerId);
       lifetime.closed = true;
       for (const key of [...this.sessionSandboxAvailability.keys()]) {
         if (isOwnerSessionSandboxKey(key, lifetime.ownerId)) this.sessionSandboxAvailability.delete(key);
@@ -1893,6 +1924,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       if (this.sandboxAuthorityCleanupFailure !== undefined) {
         failures.push(this.sandboxAuthorityCleanupFailure);
       }
+      this.disposeOutputLogs();
       if (failures.length > 0) {
         const error = new AggregateError(failures,
           "unified exec cleanup is unproven at durable close");
@@ -2222,6 +2254,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     // released, even if the entry never reached complete() (idempotent).
     entry?.detachUpstreamAbort?.();
     if (entry) entry.detachUpstreamAbort = undefined;
+    if (entry?.output.fullLog !== undefined && !entry.output.fullLog.wasReferenced) {
+      entry.output.fullLog.dispose();
+      this.outputLogs.delete(entry.output.fullLog);
+    }
     this.processes.delete(processId);
   }
 
@@ -2279,7 +2315,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
     this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
     const output = new ProcessOutputBuffer(DEFAULT_OUTPUT_BUFFER_CHARS,
-      logOutputEnabled({ ...this.baseEnv, ...this.env }) ? new FullOutputLog(params.runtimeSandbox?.sessionTempRoot ?? this.sessionTempRoot) : undefined);
+      logOutputEnabled({ ...this.baseEnv, ...this.env }) ? this.createOutputLog(params.ownerId) : undefined);
     const abortController = new AbortController();
     const exit = makeDeferredExit();
     const notifyData = (stream: UnifiedExecStream, chunk: string): void => {
@@ -2821,9 +2857,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       entry.processCheck = sample.check;
       processState = sample.line;
     }
-    return createResult({
+    const result = createResult({
       logMode: entry.output.fullLog !== undefined,
       fullLogPath: entry.output.fullLog?.path,
+      fullLogTruncated: entry.output.fullLog?.truncated,
       bufferTruncated: entry.output.truncated,
       stdout,
       stderr,
@@ -2843,6 +2880,14 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         : {}),
       ...(processState !== undefined ? { processState } : {}),
     });
+    const log = entry.output.fullLog;
+    if (result.truncated && log?.path !== undefined) log.markReferenced();
+    if (!running && log !== undefined && !log.wasReferenced) {
+      log.dispose();
+      this.outputLogs.delete(log);
+    }
+    this.pruneOutputLogs();
+    return result;
   }
 
   /**

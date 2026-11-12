@@ -1,27 +1,64 @@
-import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, rmdirSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import type { TruncatedText } from "./head-tail-buffer.js";
+
+export const MAX_FULL_OUTPUT_LOG_BYTES = 8 * 1024 * 1024;
+export const MAX_RETAINED_OUTPUT_LOGS = 32;
 
 export function logOutputEnabled(env: Readonly<Record<string, string | undefined>>): boolean {
   return env.AGENC_EXEC_OUTPUT_KEEP?.trim().toLowerCase() === "log";
 }
 
-/** Spool before the bounded live buffer loses bytes. A failed write invalidates the reference. */
+/** The caller supplies a daemon-owned root outside the command's writable roots. */
 export class FullOutputLog {
   private savedPath: string | undefined;
+  private directory: string | undefined;
+  private directoryIdentity: { dev: number; ino: number } | undefined;
   private failed = false;
   private closed = false;
   private fd: number | undefined;
   private identity: { dev: number; ino: number } | undefined;
-  constructor(private readonly root: string) {}
+  private bytes = 0;
+  private capped = false;
+  private referenced = false;
+
+  constructor(root: string) {
+    try {
+      mkdirSync(root, { recursive: true, mode: 0o700 });
+      if (!lstatSync(root).isDirectory()) throw new Error("Log root must not be a symlink");
+      // Create and open before launching the command, under protected daemon
+      // state rather than its TMPDIR. Never reuse a command-planted directory.
+      this.directory = mkdtempSync(join(root, "exec-output-"));
+      const directory = lstatSync(this.directory);
+      if (!directory.isDirectory() || (directory.mode & 0o777) !== 0o700 ||
+          (process.getuid !== undefined && directory.uid !== process.getuid())) {
+        throw new Error("Log directory must be private and owned by the daemon");
+      }
+      this.directoryIdentity = directory;
+      this.savedPath = join(this.directory, "output.log");
+      this.fd = openSync(this.savedPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL |
+        (constants.O_NOFOLLOW ?? 0), 0o600);
+      this.identity = fstatSync(this.fd);
+    } catch { this.failed = true; this.dispose(); }
+  }
   get path(): string | undefined {
-    if (this.failed || this.savedPath === undefined) return undefined;
+    if (this.failed || this.savedPath === undefined || !this.ownsDirectory()) return undefined;
     try {
       const current = lstatSync(this.savedPath);
-      return current.isFile() && current.dev === this.identity?.dev && current.ino === this.identity?.ino
+      return current.isFile() && current.nlink === 1 && current.dev === this.identity?.dev && current.ino === this.identity?.ino
         ? this.savedPath : undefined;
     } catch { return undefined; }
+  }
+  get truncated(): boolean { return this.capped; }
+  get isClosed(): boolean { return this.closed; }
+  get wasReferenced(): boolean { return this.referenced; }
+  markReferenced(): void { this.referenced = true; }
+  private ownsDirectory(): boolean {
+    if (this.directory === undefined) return false;
+    try {
+      const current = lstatSync(this.directory);
+      return current.isDirectory() && current.dev === this.directoryIdentity?.dev && current.ino === this.directoryIdentity?.ino;
+    } catch { return false; }
   }
   close(): void {
     this.closed = true;
@@ -29,26 +66,31 @@ export class FullOutputLog {
     try { closeSync(this.fd); } catch { this.failed = true; }
     this.fd = undefined;
   }
+  dispose(): void {
+    this.close();
+    if (this.ownsDirectory()) {
+      try {
+        const current = this.savedPath === undefined ? undefined : lstatSync(this.savedPath);
+        if (current?.isFile() && current.dev === this.identity?.dev && current.ino === this.identity?.ino) unlinkSync(this.savedPath!);
+      } catch { /* Best effort; never traverse a replaced path. */ }
+      try { rmdirSync(this.directory!); } catch { /* Never recursively remove foreign entries. */ }
+    }
+    this.savedPath = undefined;
+  }
   append(chunk: string): void {
     if (this.failed || this.closed || chunk.length === 0) return;
     try {
-      if (this.savedPath === undefined) {
-        const directory = join(this.root, "exec-logs");
-        mkdirSync(directory, { recursive: true, mode: 0o700 });
-        const path = join(directory, `${randomUUID()}.log`);
-        this.fd = openSync(path, "wx", 0o600);
-        this.identity = fstatSync(this.fd);
-        this.savedPath = path;
-      }
-      // Keep the opened object: replacing the visible path cannot redirect writes.
       const bytes = Buffer.from(chunk, "utf8");
+      const length = Math.min(bytes.length, MAX_FULL_OUTPUT_LOG_BYTES - this.bytes);
       let written = 0;
-      while (written < bytes.length) {
-        const count = writeSync(this.fd!, bytes, written, bytes.length - written);
+      while (written < length) {
+        const count = writeSync(this.fd!, bytes, written, length - written);
         if (count <= 0) throw new Error("Full log write made no progress");
         written += count;
+        this.bytes += count;
       }
-    } catch { this.failed = true; this.close(); }
+      if (length < bytes.length) { this.capped = true; this.close(); }
+    } catch { this.failed = true; this.dispose(); }
   }
 }
 
