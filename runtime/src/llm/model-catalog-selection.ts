@@ -3,11 +3,13 @@ import { looksLikeGeminiChatModelId } from "./registry/gemini-live-models.js";
 import { resolveRegisteredModelCatalogEntry } from "./registry/model-catalog.js";
 import type { AgenCConfig } from "../config/schema.js";
 import {
+  BUILT_IN_PROVIDER_DEFINITIONS,
   BUILT_IN_PROVIDER_MODEL_CATALOG,
   providerLocalModelIdFromCatalog,
   type BuiltInProviderSlug,
 } from "./registry/provider-info.js";
 import { listRegisteredModelCatalogEntries } from "./registry/model-catalog.js";
+import { retiredBundledModel } from "./registry/model-retirement.js";
 import { hasDynamicProviderModelCatalog } from "./model-metadata.js";
 
 function editDistance(input: string, candidate: string): number {
@@ -39,13 +41,45 @@ function acceptsLiveGeminiModel(model: string): boolean {
   return publishedModelCatalogEntries("gemini") === undefined && looksLikeGeminiChatModelId(model);
 }
 
+/**
+ * What to tell someone whose model the bundled catalog says the provider has
+ * retired: the model, the date, and what to do. Undefined while the model is
+ * not retired, and whenever the provider's live list in this process has it.
+ * `now` is the clock the date is read against.
+ */
+export function retiredModelNotice(
+  provider: BuiltInProviderSlug,
+  model: string,
+  now: Date = new Date(),
+): string | undefined {
+  const retired = retiredBundledModel(provider, model, now);
+  if (retired === undefined) return undefined;
+  const name = BUILT_IN_PROVIDER_DEFINITIONS[provider].name;
+  return `${name} retired '${retired.model}' on ${retired.retiredOn}. Pick another model.`;
+}
+
+/** Refuse a model the bundled catalog says the provider has retired. */
+export function assertModelNotRetired(
+  provider: BuiltInProviderSlug,
+  model: string,
+  now: Date = new Date(),
+): void {
+  const notice = retiredModelNotice(provider, model, now);
+  if (notice !== undefined) throw new Error(notice);
+}
+
 /** Validate resolved intent before an interactive switch or startup mutates state. */
 export function assertModelCatalogSelection(
   config: AgenCConfig,
   provider: BuiltInProviderSlug,
   model: string,
   env: Readonly<Record<string, string | undefined>> = process.env,
+  now: Date = new Date(),
 ): void {
+  // Before any rule below accepts an id: a provider with its own list, an
+  // operator mapping, or OpenRouter's vendor/model shape would otherwise let
+  // a retired bundled model through unverified.
+  assertModelNotRetired(provider, model, now);
   if (provider === "openrouter") {
     const live = publishedModelCatalogEntries(provider);
     if (live?.some(entry => entry.model === model)) return;

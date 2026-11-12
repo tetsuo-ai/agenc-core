@@ -1,4 +1,4 @@
-import { assertModelCatalogSelection } from "../llm/model-catalog-selection.js";
+import { assertModelCatalogSelection, assertModelNotRetired } from "../llm/model-catalog-selection.js";
 import {
   mergeProviderModelLayer,
   resolveProviderSlugOrThrow,
@@ -37,12 +37,19 @@ export interface ReadSessionSelectionOptions {
   readonly fallbackConfig?: AgenCConfig;
 }
 
+export interface CatalogValidationOptions {
+  /** False for pairs that are replayed, not newly chosen: profiles, recovery, restore. */
+  readonly validateCatalog?: boolean;
+  /** The clock a retirement date is read against. Tests pass their own. */
+  readonly now?: Date;
+}
+
 export function resolveProviderModelSelection(
   config: AgenCConfig | undefined,
   current: SessionSelection,
   layer: Pick<AgenCConfig, "model_provider" | "model">,
   env: Readonly<Record<string, string | undefined>> = process.env,
-  options: { readonly validateCatalog?: boolean } = {},
+  options: CatalogValidationOptions = {},
 ): ResolvedSessionSelection {
   const configuredBase = mergeProviderModelLayer(defaultConfig(), config ?? {});
   const currentProvider = resolveBuiltInProviderSlug(current.provider);
@@ -69,8 +76,11 @@ export function resolveProviderModelSelection(
   // public catalog. Validate newly typed IDs while preserving that saved pair.
   const savedOpenRouterModel = provider === "openrouter" &&
     configuredModelForProvider(config ?? {}, provider) === model;
-  if (options.validateCatalog !== false && !savedOpenRouterModel) {
-    assertModelCatalogSelection(config ?? {}, provider, model, env);
+  if (options.validateCatalog !== false) {
+    // Choosing the saved pair again skips the catalog's listing check, never
+    // its retirement date.
+    if (savedOpenRouterModel) assertModelNotRetired(provider, model, options.now);
+    else assertModelCatalogSelection(config ?? {}, provider, model, env, options.now);
   }
   if (!isModelAllowed(provider, model, config ?? {})) {
     throw new ModelNotAllowedError(model);
@@ -233,7 +243,7 @@ export function readBuiltInSessionSelection(
 export function resolveSessionProviderModelSelection(
   session: Session | unknown,
   layer: Pick<AgenCConfig, "model_provider" | "model">,
-  options: ReadSessionSelectionOptions & { readonly validateCatalog?: boolean } = {},
+  options: ReadSessionSelectionOptions & CatalogValidationOptions = {},
 ): ResolvedSessionSelection {
   const sessionRecord = asRecord(session);
   const config = options.fallbackConfig ?? configStoreCurrent(sessionRecord);
@@ -245,6 +255,6 @@ export function resolveSessionProviderModelSelection(
   return resolveProviderModelSelection(
     config, current, layer,
     environment as Readonly<Record<string, string | undefined>> | undefined,
-    { validateCatalog: options.validateCatalog },
+    { validateCatalog: options.validateCatalog, now: options.now },
   );
 }

@@ -27,6 +27,9 @@ afterEach(() => {
 
 const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
 
+// The day the live lists below were read: the clock their retirement tags are read against.
+const LIST_DAY = new Date("2026-10-20T12:00:00Z");
+
 // Shapes from Venice's live GET /models (2026-10-20): a vision, reasoning,
 // effort-capable tool model that the bundled 3-model snapshot does not list.
 const VENICE_LIST = {
@@ -82,8 +85,11 @@ describe("Venice: the live list owns capability flags and effort levels", () => 
     expect(resolveProviderModelCapabilities({ provider: "venice", model: "qwen-3-8-flash" }))
       .toMatchObject({ supportsExtendedThinking: true, acceptsReasoningEffort: false, supportsImageInput: true });
     expect(modelCapabilityTags("venice", model)).toBe("vision · thinking");
-    // Venice's announced removal date is shown as a deprecation tag.
-    expect(modelCapabilityTags("venice", "qwen-3-8-flash")).toBe("vision · thinking · retires 2026-10-30");
+    // Venice's announced removal date is shown as a deprecation tag: "retires"
+    // while the date is ahead (the day this list was read), "retired" from it on.
+    expect(modelCapabilityTags("venice", "qwen-3-8-flash", LIST_DAY)).toBe("vision · thinking · retires 2026-10-30");
+    expect(modelCapabilityTags("venice", "qwen-3-8-flash", new Date("2026-10-30T00:00:00Z")))
+      .toBe("vision · thinking · retired 2026-10-30");
   });
 });
 
@@ -200,7 +206,9 @@ describe("OpenRouter: current catalog, thinking flags and live rows", () => {
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("https://openrouter.ai/api/v1/models");
     expect(resolveImageInputSupport({ provider: "openrouter", model: "acme/next-vision" })).toBe("supported");
     expect(resolveReasoningEffort({ provider: "openrouter", model: "acme/next-vision" }).levels).toEqual(["high", "low", "none"]);
-    expect(modelCapabilityTags("openrouter", "acme/next-vision")).toBe("vision · thinking · tools · retires 2027-01-31");
+    expect(modelCapabilityTags("openrouter", "acme/next-vision", LIST_DAY)).toBe("vision · thinking · tools · retires 2027-01-31");
+    expect(modelCapabilityTags("openrouter", "acme/next-vision", new Date("2027-01-31T00:00:00Z")))
+      .toBe("vision · thinking · tools · retired 2027-01-31");
   });
 
   test("picker tags name free routes", () => {

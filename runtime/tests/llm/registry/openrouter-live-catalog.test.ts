@@ -23,6 +23,11 @@ import { recordOpenRouterZdrEndpoints, resetOpenRouterZdrEndpointsForTesting } f
 import { resolveHomeContext } from "../../../src/config/home.js";
 import type { SlashCommandContext } from "../../../src/commands/types.js";
 
+// The bundled snapshot's generation day: none of its rows has reached its
+// retirement date yet, so the bundled list is offered whole. Later clocks
+// leave the retired rows out (tests/commands/model-menu-snapshot.retirement.test.ts).
+const SNAPSHOT_DAY = { now: new Date("2026-10-20T00:00:00Z") };
+
 const homes: string[] = [];
 function home() {
   const path = mkdtempSync(join(tmpdir(), "or-catalog-"));
@@ -120,9 +125,9 @@ test("a mocked 468-model catalog replaces all 300 menu rows and remains searchab
   const fetchImpl = vi.fn<typeof fetch>(() => new Promise(resolve => { finish = resolve; }));
   const catalog = openRouterCatalogFor({ home: path, fetchImpl });
   expect(OPENROUTER_MODEL_IDS).toHaveLength(300);
-  expect(readModelMenuSnapshot(ctx).providerCounts.openrouter).toBe(300);
+  expect(readModelMenuSnapshot(ctx, SNAPSHOT_DAY).providerCounts.openrouter).toBe(300);
   const pending = catalog.refresh();
-  expect(readProvidersHubModels(ctx, "openrouter")).toHaveLength(300);
+  expect(readProvidersHubModels(ctx, "openrouter", SNAPSHOT_DAY)).toHaveLength(300);
   finish(json(listing));
   await pending;
   const rows = readProvidersHubModels(ctx, "openrouter");
@@ -185,7 +190,7 @@ test("a corrupt disk cache cannot break the menu", async () => {
   const catalog = new OpenRouterCatalog({ home: path, fetchImpl: fakeFetch() });
   await catalog.refresh();
   writeFileSync(catalog.cachePath!, "{bad json");
-  const snapshot = readModelMenuSnapshot(context(path));
+  const snapshot = readModelMenuSnapshot(context(path), SNAPSHOT_DAY);
   expect(snapshot.providerCounts.openrouter).toBe(300);
   expect(snapshot.catalogNote).toContain("showing bundled models");
 });

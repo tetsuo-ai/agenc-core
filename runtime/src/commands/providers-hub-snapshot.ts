@@ -284,12 +284,18 @@ export function filterProvidersHubRows(
   );
 }
 
-/** The selectable models for one provider, as the model menu offers them. */
+/**
+ * The selectable models for one provider, as the model menu offers them.
+ * `now` is the clock model retirement dates are read against; tests pass
+ * their own.
+ */
 export function readProvidersHubModels(
   ctx: SlashCommandContext,
   provider: ProviderSlug,
+  options: { readonly now?: Date } = {},
 ): readonly ProvidersHubModelRow[] {
-  const snapshot = readModelMenuSnapshot(ctx);
+  const now = options.now ?? new Date();
+  const snapshot = readModelMenuSnapshot(ctx, { now });
   const checksZdr = provider === "openrouter" &&
     openRouterZeroDataRetentionEnabled(readCommandConfig(ctx));
   return snapshot.rows
@@ -310,7 +316,7 @@ export function readProvidersHubModels(
         displayModel: row.displayModel,
         current: row.status === "current",
         isDefault: row.status === "default",
-        tags: modelCapabilityTags(provider, row.displayModel),
+        tags: modelCapabilityTags(provider, row.displayModel, now),
         ...(catalogDetail ? { catalogDetail } : {}),
         ...(label === undefined ? {} : { label }),
         ...(checksZdr && openRouterModelHasZdrEndpoint(row.displayModel) === false

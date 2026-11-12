@@ -1368,7 +1368,9 @@ They read it again after a key is saved or replaced. When the list cannot be
 read, they show a small bundled catalog and say so. Any ID from the live list
 can be selected, in the screens, with `/model venice:<id>`, or with
 `--model venice:<id>`. An ID that Venice does not list is refused before the
-first request.
+first request. A bundled model whose announced removal date has arrived is left
+out of the screens and refused at selection unless Venice's live list still has
+it, as for [OpenRouter's bundled catalog](openrouter-models.md).
 
 The `function_calling_default` trait selects the discovered provider default.
 The offline fallback is `zai-org-glm-5-2`. Explicit model selections and
