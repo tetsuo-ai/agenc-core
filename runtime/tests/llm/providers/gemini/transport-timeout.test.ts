@@ -134,8 +134,13 @@ for (const mode of modes) for (const phase of phases) {
         signal: controller.signal,
         timeoutMs: limit === "per-call" ? 100 : limit === "provider" ? 5_000 : undefined,
       });
+      // A per-call timeout also sets the stream idle budget. Both timers use
+      // 100 ms here, so either can report the cancellation of a silent body.
+      const timeoutError = mode === "stream" && phase === "body" && limit === "per-call"
+        ? /(?:provider request timed out after 100ms|gemini stream idle for 100ms)/
+        : /timed out after 100ms/;
       const assertion = expect(pending).rejects.toThrow(
-        limit === "user" ? /user stopped/ : limit === "run deadline" ? /run deadline reached/ : /timed out after 100ms/,
+        limit === "user" ? /user stopped/ : limit === "run deadline" ? /run deadline reached/ : timeoutError,
       );
       await server.received;
       if (limit === "user") controller.abort(new Error("user stopped"));
