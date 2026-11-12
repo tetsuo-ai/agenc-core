@@ -325,9 +325,19 @@ Full pin table, payload shape, and pitfalls:
 
 - **Pairing by default.** An unknown sender (DMs **and** groups, unless
   Telegram owner `bypassAccess`) gets no agent access until paired. Codes are
-  host-only, 10-minute TTL; see them with `agenc gateway pairing pending`.
-  `approve` can pair a peer without the peer seeing a code. `dmPolicy`:
-  `pairing` (default), `allowlist`, `open`, or `disabled`.
+  host-only, 12 hex characters, 10-minute TTL; see them with
+  `agenc gateway pairing pending`. `approve` can pair a peer without the peer
+  seeing a code. `dmPolicy`: `pairing` (default), `allowlist`, `open`, or
+  `disabled`.
+- **Wrong codes are limited.** Once a code is pending, a message from that
+  sender that could be a code (4 to 64 characters with no whitespace) and
+  does not match is a failed attempt. The fifth one voids the code and locks
+  that sender out of pairing on that channel for 15 minutes. During the
+  lockout the pairing gate stays silent for that sender: no notice, no new
+  code, and even the correct code is refused; the gateway logs one line per
+  ignored message. The lockout ends on its own, or at once when the host runs
+  `agenc gateway pairing approve`. Other text never counts, and neither does
+  the message that opened the request.
 - **`open` requires an explicit `"*"`.** `dmPolicy: "open"` alone still
   denies; the allowlist must literally contain `"*"`.
 - **Telegram owner controls override public/private routing** when configured
@@ -469,7 +479,7 @@ agenc gateway pairing revoke telegram 123456789
 |---|---|---|
 | `config.toml` `[gateway]` | 0600 | policies, bindings, hooks flag |
 | Native secure storage | OS-managed | bot tokens and gateway bearer tokens |
-| `gateway/pairing.json` | 0600 | paired senders |
+| `gateway/pairing.json` | 0600 | paired senders, pending codes, pairing lockouts |
 | `gateway/pairing.json.lock.sqlite` | 0600 | cross-process pairing transaction lock |
 | `gateway/sessions.json` | 0600 | channel → daemon session map |
 | `gateway/control.json` | 0600 | Telegram owner/public state |
@@ -480,9 +490,13 @@ Writes use a unique temporary file, file sync, atomic rename, and directory sync
 where supported. Gateway and CLI processes therefore share one ordered sequence
 of approvals, revocations, and single-use challenges.
 
-Runtime callers must await `PairingStore.approve`, `revoke`, `challenge`, `redeem`,
-`listPending`, and `evaluateDmAccess`. Read-only `isPaired` and `listPaired`
-queries remain synchronous. The pairing JSON format stays at version 1.
+Runtime callers must await `PairingStore.approve`, `revoke`, `challenge`,
+`beginChallenge`, `redeem`, `listPending`, and `evaluateDmAccess`. Read-only
+`isPaired`, `listPaired`, and `lockedUntil` queries remain synchronous. The
+pairing JSON format stays at version 1. Failed-attempt counts
+(`failedAttempts` on a pending record) and lockouts (the `lockouts` map) are
+optional fields of that version: a file written by an earlier release loads
+unchanged, and an earlier release ignores them.
 Restart existing gateway processes after upgrading so every writer uses the lock.
 
 Session mappings reattach conversations after gateway restart; the daemon

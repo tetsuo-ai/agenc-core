@@ -5,11 +5,16 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { TelegramOwnerControl } from "../../src/gateway/control-plane.js";
 import { ChannelGateway } from "../../src/gateway/gateway.js";
 import type { GatewayOnchainFeature } from "../../src/gateway/onchain.js";
+import {
+  MAX_PAIRING_ATTEMPTS,
+  PAIRING_LOCKOUT_MS,
+  PairingStore,
+} from "../../src/gateway/pairing.js";
 import type { GatewayXSearchFeature } from "../../src/gateway/x-search.js";
 import { InMemoryChannelAdapter } from "../../src/gateway/test-channel.js";
 import type {
@@ -677,5 +682,249 @@ describe("channel gateway", () => {
     expect(transcript).not.toContain("Permission request");
     expect(transcript).not.toContain("privileged tools");
     expect(transcript).not.toContain("/meme");
+  });
+
+  // ---- pairing attempt limit (#3443) ----
+
+  describe("pairing attempt limit (#3443)", () => {
+    const T0 = 1_700_000_000_000;
+    const lockedUntil = new Date(T0 + PAIRING_LOCKOUT_MS).toISOString();
+    let now: number;
+    let logs: string[];
+    let codes: string[];
+
+    beforeEach(() => {
+      now = T0;
+      logs = [];
+      codes = [];
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    /**
+     * Pairing-default gateway on a clock the test moves. Codes come out as
+     * CODE0001, CODE0002, ... so a re-issue is visible.
+     */
+    async function lockoutGateway(): Promise<ChannelGateway> {
+      const gw = new ChannelGateway({
+        agencHome: home,
+        client,
+        config: { channels: {}, bindings: [], defaultAgent: "default" },
+        now: () => now,
+        log: (line) => logs.push(line),
+        generatePairingCode: () => {
+          const code = `CODE${String(codes.length + 1).padStart(4, "0")}`;
+          codes.push(code);
+          return code;
+        },
+      });
+      await gw.registerAdapter(adapter);
+      return gw;
+    }
+
+    /** Opens a challenge, then sends every wrong code the limit allows. */
+    async function lockOut(peerId: string): Promise<void> {
+      await adapter.receive(dmMessage(peerId, "/start"));
+      for (let attempt = 1; attempt <= MAX_PAIRING_ATTEMPTS; attempt += 1) {
+        await adapter.receive(dmMessage(peerId, `WRONG${attempt}`));
+      }
+    }
+
+    test("the 5th wrong code voids the code and gets no reply", async () => {
+      const gw = await lockoutGateway();
+      await adapter.receive(dmMessage("mallory", "/start"));
+      for (let attempt = 1; attempt < MAX_PAIRING_ATTEMPTS; attempt += 1) {
+        await adapter.receive(dmMessage("mallory", `WRONG${attempt}`));
+        expect(adapter.lastText()).toContain("pairing-protected");
+      }
+      // One notice for the opening message and one for each wrong code so far.
+      expect(adapter.sent).toHaveLength(MAX_PAIRING_ATTEMPTS);
+      expect(await gw.pairingStore.listPending()).toEqual([
+        expect.objectContaining({ peerId: "mallory", code: "CODE0001" }),
+      ]);
+      const logged = logs.length;
+
+      await adapter.receive(dmMessage("mallory", "WRONG5"));
+
+      expect(adapter.sent).toHaveLength(MAX_PAIRING_ATTEMPTS);
+      expect(logs.slice(logged)).toEqual([
+        `gateway: pairing locked channel=test peer=mallory until=${lockedUntil} after 5 wrong codes (code voided, no reply sent)`,
+      ]);
+      expect(await gw.pairingStore.listPending()).toEqual([]);
+      expect(gw.pairingStore.isPaired("test", "mallory")).toBe(false);
+      expect(client.sessions).toHaveLength(0);
+    });
+
+    test("a correct code sent during the cool-down is refused without a reply", async () => {
+      const gw = await lockoutGateway();
+      await lockOut("mallory");
+      const sent = adapter.sent.length;
+      const logged = logs.length;
+
+      now = T0 + PAIRING_LOCKOUT_MS - 1;
+      await adapter.receive(dmMessage("mallory", "CODE0001"));
+      await adapter.receive(dmMessage("mallory", "please let me in"));
+
+      // No reply, no new code, and one log line per ignored message.
+      expect(adapter.sent).toHaveLength(sent);
+      expect(codes).toEqual(["CODE0001"]);
+      const ignored = `gateway: ignored 'mallory' on 'test': pairing locked until ${lockedUntil} after too many wrong codes`;
+      expect(logs.slice(logged)).toEqual([ignored, ignored]);
+      expect(gw.pairingStore.isPaired("test", "mallory")).toBe(false);
+      expect(client.sessions).toHaveLength(0);
+    });
+
+    test("after the cool-down a new challenge is issued and its code pairs", async () => {
+      const gw = await lockoutGateway();
+      await lockOut("mallory");
+      const sent = adapter.sent.length;
+
+      now = T0 + PAIRING_LOCKOUT_MS;
+      // The voided code opens a new challenge and nothing more.
+      await adapter.receive(dmMessage("mallory", "CODE0001"));
+      expect(adapter.sent).toHaveLength(sent + 1);
+      expect(adapter.lastText()).toContain("pairing-protected");
+      expect(logs.at(-1)).toContain(
+        "pairing pending channel=test peer=mallory code=CODE0002",
+      );
+      expect(gw.pairingStore.isPaired("test", "mallory")).toBe(false);
+
+      await adapter.receive(dmMessage("mallory", "code0002"));
+      expect(adapter.lastText()).toContain("Paired");
+      client.script = [{ text: "hi mallory" }];
+      await adapter.receive(dmMessage("mallory", "do the thing"));
+      expect(client.sessions).toHaveLength(1);
+      expect(adapter.lastText()).toBe("hi mallory");
+    });
+
+    test("a burst of wrong codes in flight at once issues no second code and pairs nobody", async () => {
+      const gw = await lockoutGateway();
+      await adapter.receive(dmMessage("mallory", "/start"));
+
+      // Far more guesses than the limit, all handled concurrently.
+      await Promise.all(
+        Array.from({ length: 4 * MAX_PAIRING_ATTEMPTS }, (_, index) =>
+          adapter.receive(dmMessage("mallory", `BURST${index}`)),
+        ),
+      );
+
+      expect(codes).toEqual(["CODE0001"]);
+      expect(await gw.pairingStore.listPending()).toEqual([]);
+      expect(gw.pairingStore.lockedUntil("test", "mallory")).toBe(
+        T0 + PAIRING_LOCKOUT_MS,
+      );
+      // At most the opening notice and one per wrong code short of the limit.
+      expect(adapter.sent.length).toBeLessThanOrEqual(MAX_PAIRING_ATTEMPTS);
+
+      await adapter.receive(dmMessage("mallory", "CODE0001"));
+      expect(gw.pairingStore.isPaired("test", "mallory")).toBe(false);
+      expect(client.sessions).toHaveLength(0);
+    });
+
+    test("a message that arrives while the 5th wrong code is being counted gets no new code", async () => {
+      const gw = await lockoutGateway();
+      const store = gw.pairingStore;
+      await adapter.receive(dmMessage("mallory", "/start"));
+      for (let attempt = 1; attempt < MAX_PAIRING_ATTEMPTS; attempt += 1) {
+        await adapter.receive(dmMessage("mallory", `WRONG${attempt}`));
+      }
+      const sent = adapter.sent.length;
+
+      // The latecomer is handled while the 5th wrong code is still inside its
+      // transaction, so its plain lockout read finds nothing yet. Its own
+      // challenge transaction normally runs after the lockout has landed;
+      // whichever of the two commits first, the outcome must be the same.
+      const redeem = store.redeem.bind(store);
+      let latecomer: Promise<void> | undefined;
+      vi.spyOn(store, "redeem").mockImplementationOnce(
+        (channelId, sender, input) => {
+          const counted = redeem(channelId, sender, input);
+          latecomer = adapter.receive(dmMessage("mallory", "LATECOMER"));
+          return counted;
+        },
+      );
+      await adapter.receive(dmMessage("mallory", "WRONG5"));
+      await latecomer;
+
+      expect(latecomer).toBeDefined();
+      expect(codes).toEqual(["CODE0001"]);
+      expect(adapter.sent).toHaveLength(sent);
+      expect(await store.listPending()).toEqual([]);
+      expect(store.lockedUntil("test", "mallory")).toBe(T0 + PAIRING_LOCKOUT_MS);
+      expect(store.isPaired("test", "mallory")).toBe(false);
+      expect(client.sessions).toHaveLength(0);
+    });
+
+    test("messages that cannot be a code are not counted and keep getting the notice", async () => {
+      await lockoutGateway();
+      const chatter = [
+        "hello there",
+        "hi",
+        "is anyone home?",
+        "ok",
+        "let me in please",
+        "?",
+        "still waiting here",
+      ];
+      expect(chatter.length).toBeGreaterThan(MAX_PAIRING_ATTEMPTS + 1);
+
+      for (const text of chatter) {
+        await adapter.receive(dmMessage("alice", text));
+        expect(adapter.lastText()).toContain("pairing-protected");
+      }
+      expect(adapter.sent).toHaveLength(chatter.length);
+
+      await adapter.receive(dmMessage("alice", "code0001"));
+      expect(adapter.lastText()).toContain("Paired");
+    });
+
+    test("the message that opens a challenge is not a guess at it", async () => {
+      await lockoutGateway();
+      // Five messages shaped like codes, but the first one opened the challenge.
+      await adapter.receive(dmMessage("alice", "/start"));
+      for (let attempt = 1; attempt < MAX_PAIRING_ATTEMPTS; attempt += 1) {
+        await adapter.receive(dmMessage("alice", `WRONG${attempt}`));
+      }
+
+      await adapter.receive(dmMessage("alice", "CODE0001"));
+      expect(adapter.lastText()).toContain("Paired");
+    });
+
+    test("host approve during the cool-down restores the sender", async () => {
+      const gw = await lockoutGateway();
+      await lockOut("mallory");
+
+      // `agenc gateway pairing approve` is another process on the same file.
+      await new PairingStore({ agencHome: home }).approve("test", "mallory");
+
+      client.script = [{ text: "hi mallory" }];
+      await adapter.receive(dmMessage("mallory", "do the thing"));
+      expect(client.sessions).toHaveLength(1);
+      expect(adapter.lastText()).toBe("hi mallory");
+      expect(gw.pairingStore.lockedUntil("test", "mallory")).toBeUndefined();
+    });
+
+    test("the lockout is per sender and per channel", async () => {
+      const gw = await lockoutGateway();
+      const other = new InMemoryChannelAdapter({ id: "other" });
+      await gw.registerAdapter(other);
+      await lockOut("mallory");
+
+      // Another sender on the same channel still gets a challenge.
+      await adapter.receive(dmMessage("alice", "hello"));
+      expect(adapter.lastText("dm-alice")).toContain("pairing-protected");
+      // So does the same sender on another channel, who can pair there.
+      await other.receive(dmMessage("mallory", "hello"));
+      expect(other.lastText()).toContain("pairing-protected");
+      await other.receive(dmMessage("mallory", "CODE0003"));
+      expect(other.lastText()).toContain("Paired");
+
+      expect(gw.pairingStore.lockedUntil("test", "mallory")).toBe(
+        T0 + PAIRING_LOCKOUT_MS,
+      );
+      expect(gw.pairingStore.lockedUntil("test", "alice")).toBeUndefined();
+      expect(gw.pairingStore.lockedUntil("other", "mallory")).toBeUndefined();
+    });
   });
 });
