@@ -78,8 +78,9 @@ export function queuedInputText(cmd: Pick<QueuedCommand, "value" | "mode">): str
 export function formatQueuedInputRows(
   inputs: readonly string[],
   width: number,
+  maxListed: number = MAX_LISTED_QUEUED_INPUTS,
 ): string[] {
-  const listed = inputs.slice(0, MAX_LISTED_QUEUED_INPUTS);
+  const listed = inputs.slice(0, maxListed);
   const numberWidth = String(listed.length).length;
   const hang = " ".repeat(numberWidth + 2);
   const textWidth = Math.max(8, Math.floor(width) - hang.length);
@@ -177,8 +178,15 @@ function processQueuedCommands(
 }
 function PromptInputQueuedCommandsImpl({
   queueOwner,
+  listAll = false,
 }: {
   readonly queueOwner?: QueuedCommandOwner;
+  /**
+   * List every queued input, however many. Set while the prompts cannot be
+   * sent (a tool outcome waits for review): the user then needs to see all
+   * that wait, not the first five and a count.
+   */
+  readonly listAll?: boolean;
 }): React.ReactNode {
   const allQueuedCommands = useCommandQueue();
   const queuedCommands = useMemo(
@@ -218,8 +226,9 @@ function PromptInputQueuedCommandsImpl({
           .filter((cmd) => isQueuedCommandVisible(cmd) && isQueuedUserInput(cmd))
           .map(queuedInputText),
         contentWidth - QUEUED_INPUTS_INSET - 1,
+        listAll ? Number.POSITIVE_INFINITY : MAX_LISTED_QUEUED_INPUTS,
       ),
-    [queuedCommands, contentWidth],
+    [queuedCommands, contentWidth, listAll],
   );
 
   // createUserMessage mints a fresh UUID per call; without memoization, streaming

@@ -112,6 +112,20 @@ describe('queued inputs list', () => {
     ])
   })
 
+  it('lists every input while they cannot be sent, however many wait', async () => {
+    // A tool outcome waits for review: the prompts stay queued, and the user
+    // must see each of them, not five and a count.
+    queueFixture.commands = prompts(...Array.from({ length: 12 }, (_, index) => `input number ${index + 1}`))
+    const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
+    const output = await renderToString(<PromptInputQueuedCommands listAll />, 80)
+    const rows = block(output.split('\n').map(line => line.trimEnd()))
+    expect(rows).toHaveLength(13)
+    expect(rows[1]).toBe('   1  input number 1')
+    expect(rows[9]).toBe('   9  input number 9')
+    expect(rows[12]).toBe('  12  input number 12')
+    expect(rows.join('\n')).not.toContain('more queued')
+  })
+
   it.each(WIDTHS)('a long input at %i columns takes two rows and ends with an ellipsis', async width => {
     queueFixture.commands = prompts(LONG_MESSAGE, 'check now')
     const rows = block(await frame(width))

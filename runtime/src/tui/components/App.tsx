@@ -5225,7 +5225,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           viewport in fullscreen mode. */}
       {fullscreen ? <Box flexGrow={1} /> : null}
       {fullscreen ? (
-        <PromptInputQueuedCommands queueOwner={commandQueueOwner} />
+        <PromptInputQueuedCommands queueOwner={commandQueueOwner} listAll={reviewBlocksPrompt} />
       ) : null}
     </>
   );
