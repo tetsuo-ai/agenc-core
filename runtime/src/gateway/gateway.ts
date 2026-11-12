@@ -20,7 +20,10 @@ import type { TelegramOwnerControl } from "./control-plane.js";
 import type { GatewayMemeFeature } from "./meme.js";
 import type { GatewayOnchainFeature } from "./onchain.js";
 import { evaluateDmAccess, PairingStore } from "./pairing.js";
-import { detectPromptInjectionAttempt } from "./prompt-injection.js";
+import {
+  detectPromptInjectionAttempt,
+  PROMPT_INJECTION_REPLY,
+} from "./prompt-injection.js";
 import { SessionRouter } from "./session-router.js";
 import { TELEGRAM_CHANNEL_ID } from "./telegram-channel.js";
 import { frameChannelMessage, sanitizeChannelText } from "./untrusted.js";
@@ -198,7 +201,7 @@ export class ChannelGateway {
       this.#log(
         `gateway: blocked prompt injection from '${message.sender.peerId}' on '${message.channelId}': ${injection.reason ?? "unknown"}`,
       );
-      await reply(injection.reply ?? "Prompt injection blocked.");
+      await reply(injection.reply ?? PROMPT_INJECTION_REPLY);
       return;
     }
 
