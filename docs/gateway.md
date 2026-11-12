@@ -135,7 +135,24 @@ client). Create a bot with @BotFather, store the token:
 AGENC_TELEGRAM_BOT_TOKEN=123:ABC
 ```
 
-Streaming replies edit one message in place.
+Streaming replies edit their message in place. A reply longer than one
+Telegram message (4,096 characters) continues in follow-up messages in the
+same chat or topic, six messages at most; a longer reply ends with
+`… (truncated)`. If the final text needs fewer messages than the streamed
+draft used, the leftover messages are deleted. The final update of a reply
+must land: a flood limit is waited out (`retry_after`, at most 10 seconds)
+and retried once, an edit that still fails is sent as new messages, and if
+that fails too the turn is reported as not delivered.
+
+**Concurrency.** Updates are handed over without waiting for the agent turn.
+One conversation (a chat, or one forum topic) is answered in arrival order;
+different conversations run side by side, four turns at a time. Up to 100
+more updates wait. When that queue is full one update is dropped with a log
+line and no reply: the newest one of the chat that holds the most waiting
+places, so a busy chat cannot push the others out. Updates that are dropped,
+or still waiting when the gateway stops, are not delivered again. An
+owner's `/stop`, `/start`, `/status` or `/help` in the private chat is
+answered at once, ahead of running turns.
 
 **Rich Messages.** Text can use Bot API Rich Messages
 (`rich_message.markdown`) so headings, lists, links, code, and tables render
@@ -514,6 +531,13 @@ inbound callback), `stop`, and `send` (return the channel-native message id;
 `StdioChannelAdapter`, `TelegramChannelAdapter`, `DiscordChannelAdapter`,
 `SlackChannelAdapter`, `WebChatChannelAdapter`. Register in `startGateway`
 (`runtime/src/gateway/run.ts`).
+
+The last flush of a turn carries `final: true` and the whole answer. An
+adapter may treat earlier edits as best effort (the Telegram adapter logs and
+skips a failed streaming edit, because the next one carries newer text), but
+a final `send` that cannot deliver must reject. On an edit, `send` returns
+the handle later edits should use: the same one, or a new one when the
+adapter had to post a new message.
 
 The session router observes a rejected `send` immediately, including a failed
 streaming edit. It stops queued sends and ignores later text chunks for that

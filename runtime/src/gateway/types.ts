@@ -64,11 +64,17 @@ export interface OutboundChannelMessage {
    * edit support may ignore it and send a new message.
    */
   readonly editMessageId?: string;
+  /**
+   * True on the last send of a streamed turn, when `text` is the complete
+   * answer. An adapter that edits in place may use it to make sure the whole
+   * text lands (retry, or fall back to a new message); others ignore it.
+   */
+  readonly final?: boolean;
 }
 
 export type ChannelReplyOptions = Omit<
   OutboundChannelMessage,
-  "conversationId" | "text" | "editMessageId"
+  "conversationId" | "text" | "editMessageId" | "final"
 >;
 
 export interface ChannelAdapterContext {

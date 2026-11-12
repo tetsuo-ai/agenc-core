@@ -78,18 +78,26 @@ async function streamPromptToAdapter(options: {
     if (!force && now - lastFlush < options.flushIntervalMs) return flushing;
     lastFlush = now;
     const text = buffer;
+    // Only the flush after the prompt completed is forced: it carries the
+    // whole answer, so the adapter is told that this send must land.
+    const final = force ? { final: true } : {};
     flushing = flushing.then(async () => {
       if (delivery.failure !== undefined) return;
       if (options.adapter.supportsEdit && sentMessageId !== null) {
-        await options.adapter.send({
+        // An adapter that no longer holds the edit target posts a new
+        // message and returns its handle; later flushes then edit that one
+        // instead of posting the whole text again.
+        sentMessageId = await options.adapter.send({
           conversationId: options.conversationId,
           text,
           editMessageId: sentMessageId,
+          ...final,
         });
       } else {
         sentMessageId = await options.adapter.send({
           conversationId: options.conversationId,
           text,
+          ...final,
         });
       }
     }).catch((error: unknown) => {
