@@ -330,8 +330,8 @@ Full pin table, payload shape, and pitfalls:
   seeing a code. `dmPolicy`: `pairing` (default), `allowlist`, `open`, or
   `disabled`.
 - **Wrong codes are limited.** Once a code is pending, a message from that
-  sender that could be a code (4 to 64 characters with no whitespace) and
-  does not match is a failed attempt. The fifth one voids the code and locks
+  sender that could be the code (one word of the code's length) and does
+  not match is a failed attempt. The fifth one voids the code and locks
   that sender out of pairing on that channel for 15 minutes. During the
   lockout the pairing gate stays silent for that sender: no notice, no new
   code, and even the correct code is refused; the gateway logs one line per

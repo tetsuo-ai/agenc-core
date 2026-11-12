@@ -143,7 +143,7 @@ describe("PairingStore transactions", () => {
   test("counts every wrong code from contending processes and locks the sender out at the limit", async () => {
     await new PairingStore({ agencHome: home, generateCode: () => "RIGHT" }).challenge("tg", { peerId: "alice" });
     const startedAt = Date.now();
-    const results = await runWorkers(Array.from({ length: MAX_PAIRING_ATTEMPTS }, (_, index) => ({ operation: "redeem", peer: "alice", code: `WRONG${index}`, delayMs: 30 })));
+    const results = await runWorkers(Array.from({ length: MAX_PAIRING_ATTEMPTS }, (_, index) => ({ operation: "redeem", peer: "alice", code: `WRNG${index}`, delayMs: 30 })));
     expect(results).toEqual(Array.from({ length: MAX_PAIRING_ATTEMPTS }, () => false));
     const store = new PairingStore({ agencHome: home });
     expect(await store.listPending()).toEqual([]);

@@ -83,7 +83,7 @@ function writeState(state: unknown): void {
   writeStateText(`${JSON.stringify(state, null, 2)}\n`);
 }
 
-/** Sends `count` wrong codes, each shaped like a real one. */
+/** Sends `count` wrong codes, each as long as a real one. */
 async function sendWrongCodes(
   store: PairingStore,
   count: number,
@@ -91,7 +91,7 @@ async function sendWrongCodes(
   sender = ALICE,
 ): Promise<void> {
   for (let attempt = 1; attempt <= count; attempt += 1) {
-    expect(await store.redeem(channelId, sender, `WRONG${attempt}`)).toBe(false);
+    expect(await store.redeem(channelId, sender, `WRONG00${attempt}`)).toBe(false);
   }
 }
 
@@ -129,7 +129,7 @@ describe("pairing attempt limit (#3443)", () => {
     expect(readState().lockouts).toBeUndefined();
     expect(store.lockedUntil("tg", "alice")).toBeUndefined();
 
-    expect(await store.redeem("tg", ALICE, "WRONG5")).toBe(false);
+    expect(await store.redeem("tg", ALICE, "WRONG005")).toBe(false);
 
     expect(await store.listPending()).toEqual([]);
     expect(readState().pending).toEqual({});
@@ -226,15 +226,22 @@ describe("pairing attempt limit (#3443)", () => {
   test("text that cannot be a code is not counted", async () => {
     const store = openStore();
     const code = await store.challenge("tg", ALICE);
+    // The code is CODE0001: eight characters.
     const chatter = [
       "",
       "   ",
       "hi",
-      "abc",
+      "hello",
+      "thanks",
+      "/start",
+      "/help",
       " ok ",
       "hello there",
       "two\nlines",
       "tab\tseparated",
+      "eight ch",
+      "x".repeat(7),
+      "x".repeat(9),
       "x".repeat(65),
     ];
     expect(chatter.length).toBeGreaterThan(MAX_PAIRING_ATTEMPTS);
@@ -248,9 +255,9 @@ describe("pairing attempt limit (#3443)", () => {
     });
     expect(store.lockedUntil("tg", "alice")).toBeUndefined();
 
-    // The edges of the shape do count: 4 and 64 characters, once trimmed.
-    expect(await store.redeem("tg", ALICE, "abcd")).toBe(false);
-    expect(await store.redeem("tg", ALICE, ` ${"x".repeat(64)}\n`)).toBe(false);
+    // One word of the code's own length does count, once trimmed.
+    expect(await store.redeem("tg", ALICE, "abcdefgh")).toBe(false);
+    expect(await store.redeem("tg", ALICE, ` ${"x".repeat(8)}\n`)).toBe(false);
     expect(readState().pending[ALICE_ON_TG]?.failedAttempts).toBe(2);
     expect(await store.redeem("tg", ALICE, code)).toBe(true);
   });
@@ -325,9 +332,9 @@ describe("pairing attempt limit (#3443)", () => {
 
     // A new PairingStore on the same file carries on from the stored count.
     const second = openStore();
-    expect(await second.redeem("tg", ALICE, "WRONG4")).toBe(false);
+    expect(await second.redeem("tg", ALICE, "WRONG004")).toBe(false);
     expect(second.lockedUntil("tg", "alice")).toBeUndefined();
-    expect(await second.redeem("tg", ALICE, "WRONG5")).toBe(false);
+    expect(await second.redeem("tg", ALICE, "WRONG005")).toBe(false);
     expect(second.lockedUntil("tg", "alice")).toBe(T0 + PAIRING_LOCKOUT_MS);
 
     const third = openStore();
@@ -349,7 +356,7 @@ describe("pairing attempt limit (#3443)", () => {
     expect(readState().lockouts).toBeUndefined();
 
     // Alice's 5th on tg locks her out there, and only there.
-    expect(await store.redeem("tg", ALICE, "WRONG5")).toBe(false);
+    expect(await store.redeem("tg", ALICE, "WRONG005")).toBe(false);
     expect(readState().lockouts).toEqual({
       [ALICE_ON_TG]: { until: T0 + PAIRING_LOCKOUT_MS },
     });

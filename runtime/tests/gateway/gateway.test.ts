@@ -727,7 +727,7 @@ describe("channel gateway", () => {
     async function lockOut(peerId: string): Promise<void> {
       await adapter.receive(dmMessage(peerId, "/start"));
       for (let attempt = 1; attempt <= MAX_PAIRING_ATTEMPTS; attempt += 1) {
-        await adapter.receive(dmMessage(peerId, `WRONG${attempt}`));
+        await adapter.receive(dmMessage(peerId, `WRONG00${attempt}`));
       }
     }
 
@@ -735,7 +735,7 @@ describe("channel gateway", () => {
       const gw = await lockoutGateway();
       await adapter.receive(dmMessage("mallory", "/start"));
       for (let attempt = 1; attempt < MAX_PAIRING_ATTEMPTS; attempt += 1) {
-        await adapter.receive(dmMessage("mallory", `WRONG${attempt}`));
+        await adapter.receive(dmMessage("mallory", `WRONG00${attempt}`));
         expect(adapter.lastText()).toContain("pairing-protected");
       }
       // One notice for the opening message and one for each wrong code so far.
@@ -745,7 +745,7 @@ describe("channel gateway", () => {
       ]);
       const logged = logs.length;
 
-      await adapter.receive(dmMessage("mallory", "WRONG5"));
+      await adapter.receive(dmMessage("mallory", "WRONG005"));
 
       expect(adapter.sent).toHaveLength(MAX_PAIRING_ATTEMPTS);
       expect(logs.slice(logged)).toEqual([
@@ -805,7 +805,7 @@ describe("channel gateway", () => {
       // Far more guesses than the limit, all handled concurrently.
       await Promise.all(
         Array.from({ length: 4 * MAX_PAIRING_ATTEMPTS }, (_, index) =>
-          adapter.receive(dmMessage("mallory", `BURST${index}`)),
+          adapter.receive(dmMessage("mallory", `BURST${String(index).padStart(3, "0")}`)),
         ),
       );
 
@@ -827,7 +827,7 @@ describe("channel gateway", () => {
       const store = gw.pairingStore;
       await adapter.receive(dmMessage("mallory", "/start"));
       for (let attempt = 1; attempt < MAX_PAIRING_ATTEMPTS; attempt += 1) {
-        await adapter.receive(dmMessage("mallory", `WRONG${attempt}`));
+        await adapter.receive(dmMessage("mallory", `WRONG00${attempt}`));
       }
       const sent = adapter.sent.length;
 
@@ -844,7 +844,7 @@ describe("channel gateway", () => {
           return counted;
         },
       );
-      await adapter.receive(dmMessage("mallory", "WRONG5"));
+      await adapter.receive(dmMessage("mallory", "WRONG005"));
       await latecomer;
 
       expect(latecomer).toBeDefined();
@@ -862,8 +862,10 @@ describe("channel gateway", () => {
         "hello there",
         "hi",
         "is anyone home?",
-        "ok",
-        "let me in please",
+        "hello",
+        "/start",
+        "/help",
+        "thanks",
         "?",
         "still waiting here",
       ];
@@ -881,10 +883,10 @@ describe("channel gateway", () => {
 
     test("the message that opens a challenge is not a guess at it", async () => {
       await lockoutGateway();
-      // Five messages shaped like codes, but the first one opened the challenge.
-      await adapter.receive(dmMessage("alice", "/start"));
+      // Five messages as long as a code, but the first one opened the challenge.
+      await adapter.receive(dmMessage("alice", "WRONG000"));
       for (let attempt = 1; attempt < MAX_PAIRING_ATTEMPTS; attempt += 1) {
-        await adapter.receive(dmMessage("alice", `WRONG${attempt}`));
+        await adapter.receive(dmMessage("alice", `WRONG00${attempt}`));
       }
 
       await adapter.receive(dmMessage("alice", "CODE0001"));

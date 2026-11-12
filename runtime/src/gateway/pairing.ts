@@ -33,9 +33,6 @@ export const MAX_PAIRING_ATTEMPTS = 5;
 /** How long the sender is then locked out of pairing on that channel. */
 export const PAIRING_LOCKOUT_MS = 15 * 60 * 1000;
 
-const PAIRING_ATTEMPT_MIN_LENGTH = 4;
-const PAIRING_ATTEMPT_MAX_LENGTH = 64;
-
 export type DmAccessDecision =
   | { readonly kind: "allowed" }
   | {
@@ -110,17 +107,14 @@ function defaultGenerateCode(): string {
 }
 
 /**
- * Whether a message could be a pairing code at all: one token of 4 to 64
- * characters once trimmed. Anything else (a sentence, a two-letter greeting)
- * cannot equal a generated code, so it is never counted as a wrong one.
+ * Whether a message could be the pending code at all: one token of the
+ * code's own length once trimmed. Anything else (a sentence, a greeting, a
+ * bot command) cannot equal it, so it is never counted as a wrong guess and
+ * a sender who chats while waiting for the code is not locked out.
  */
-function isPairingAttempt(input: string): boolean {
+function isPairingAttempt(input: string, code: string): boolean {
   const candidate = input.trim();
-  return (
-    candidate.length >= PAIRING_ATTEMPT_MIN_LENGTH &&
-    candidate.length <= PAIRING_ATTEMPT_MAX_LENGTH &&
-    !/\s/u.test(candidate)
-  );
+  return candidate.length === code.length && !/\s/u.test(candidate);
 }
 
 /**
@@ -454,8 +448,8 @@ export class PairingStore {
         return { value: false, changed: true };
       }
       if (input.trim().toUpperCase() !== entry.code) {
-        // Chatter is not a guess: only input shaped like a code is counted.
-        if (!isPairingAttempt(input)) return { value: false, changed };
+        // Chatter is not a guess: only input as long as the code is counted.
+        if (!isPairingAttempt(input, entry.code)) return { value: false, changed };
         const failedAttempts = (entry.failedAttempts ?? 0) + 1;
         if (failedAttempts >= MAX_PAIRING_ATTEMPTS) {
           delete pending[key];
