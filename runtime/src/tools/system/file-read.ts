@@ -376,8 +376,8 @@ function estimateTokens(content: string, fileExtension = ""): number {
  * in the first 8 KB). Same heuristic AgenC uses in
  * `constants/files.ts:isBinaryContent`.
  */
-function isBinaryContent(buffer: Buffer): boolean {
-  const checkSize = Math.min(buffer.length, 8192);
+function isBinaryContent(buffer: Buffer, maxBytes = 8192): boolean {
+  const checkSize = Math.min(buffer.length, maxBytes);
   let nonPrintable = 0;
   for (let i = 0; i < checkSize; i += 1) {
     const byte = buffer[i] ?? 0;
@@ -814,6 +814,13 @@ async function readTextFile(
           rangeNote,
         )
       : sliceLines(text ?? "", opts.offset, opts.limit)), opts);
+  // The header sample cannot vouch for the bounded window we actually return.
+  // Check all selected bytes before recording or exposing this as a text read.
+  if (isBinaryContent(Buffer.from(sliced.content, "utf8"), Infinity)) {
+    return errorResult(
+      "This tool cannot read binary files. The file contains non-text bytes. Use a different tool (e.g. a hex viewer or shell tooling) for binary file analysis.",
+    );
+  }
   const slicedBytes = Buffer.byteLength(sliced.content, "utf8");
   if (slicedBytes > opts.maxTextBytes) {
     return errorResult(
