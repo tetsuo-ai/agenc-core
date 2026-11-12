@@ -610,12 +610,20 @@ daemon's environment, or turn `mcp.server` off.
   environment it runs in.
 
 ```bash
-curl -sS http://127.0.0.1:3334/mcp \
-  -H "Authorization: Bearer $(agenc mcp serve --print-token)" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}'
+agenc mcp serve --print-token \
+  | sed 's/^/Authorization: Bearer /' \
+  | curl -sS http://127.0.0.1:3334/mcp \
+      -H @- \
+      -H "Content-Type: application/json" \
+      -H "Accept: application/json, text/event-stream" \
+      -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}'
 ```
+
+The example hands curl the header on standard input (`-H @-`) instead of as
+an argument. Keep the token off command lines: on many hosts every local user
+can read another process's arguments, and those users are who the token keeps
+out. Pass it through a pipe, a file only you can read, or the client's own
+configuration.
 
 **Origins.** A request with no `Origin` header is admitted on the token alone;
 that is what non-browser MCP clients send. A request that carries an `Origin`
@@ -626,6 +634,12 @@ host with an optional port, for example `http://localhost:5173`, without a
 path, trailing slash or wildcard. A listed origin still needs the token.
 `agenc daemon reload` applies a changed list to the running listener and
 closes its open sessions.
+
+The list is for clients that send an `Origin` header without relying on
+browser CORS, such as a desktop webview or a browser extension. A page in an
+ordinary browser tab cannot call the server even when its origin is listed:
+the transport does not answer CORS preflight requests and sends no CORS
+response headers.
 
 ```toml
 [mcp.server]

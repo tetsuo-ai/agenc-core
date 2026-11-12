@@ -1070,6 +1070,45 @@ describe("MCP HTTP/SSE server transport admission", () => {
         expect(body, attempt.name).not.toContain(TOKEN);
         expect(transport.snapshots(), attempt.name).toHaveLength(0);
       }
+
+      // The token is judged before the Origin header and before the shutdown
+      // state, so a caller without it learns neither.
+      const initialize = {
+        method: "POST",
+        headers: { ...json, ...accept },
+        body: JSON.stringify(request(1, "initialize")),
+      } as const;
+      const unlistedOrigin = await fetch(`${server.baseUrl}/mcp`, {
+        ...initialize,
+        headers: { ...initialize.headers, origin: "https://elsewhere.example" },
+      });
+      expect(unlistedOrigin.status).toBe(401);
+      await unlistedOrigin.text();
+      const unlistedOriginWithToken = await fetch(`${server.baseUrl}/mcp`, {
+        ...initialize,
+        headers: {
+          ...initialize.headers,
+          ...AUTHORIZATION,
+          origin: "https://elsewhere.example",
+        },
+      });
+      expect(unlistedOriginWithToken.status).toBe(403);
+      await unlistedOriginWithToken.text();
+      expect(created()).toBe(0);
+
+      transport.close();
+      const closedWithoutToken = await fetch(`${server.baseUrl}/mcp`, initialize);
+      expect(closedWithoutToken.status).toBe(401);
+      expect(closedWithoutToken.headers.get("www-authenticate")).toBe("Bearer");
+      await expect(closedWithoutToken.text()).resolves.not.toContain(
+        "shutting down",
+      );
+      const closedWithToken = await fetch(`${server.baseUrl}/mcp`, {
+        ...initialize,
+        headers: { ...initialize.headers, ...AUTHORIZATION },
+      });
+      expect(closedWithToken.status).toBe(503);
+      await expect(closedWithToken.text()).resolves.toContain("shutting down");
       expect(created()).toBe(0);
     } finally {
       await server.close();
@@ -1193,6 +1232,9 @@ describe("MCP HTTP/SSE server transport admission", () => {
         ["scheme without a separator", `Bearer${TOKEN}`],
         ["another scheme", `Basic ${TOKEN}`],
         ["token sent as a Basic password", `Basic ${btoa(`agenc:${TOKEN}`)}`],
+        // Only spaces and tabs around the credential are ignored.
+        ["token followed by a non-breaking space", `Bearer ${TOKEN}\u00a0`],
+        ["token preceded by a non-breaking space", `Bearer \u00a0${TOKEN}`],
       ];
       for (const [name, authorization] of rejected) {
         const response = await fetch(`${server.baseUrl}/mcp`, {

@@ -861,11 +861,18 @@ function bearerTokenDigest(token: string): Buffer {
 
 const BEARER_SCHEME_PREFIX = "bearer ";
 
+// HTTP's optional whitespace is the space and the tab. `String.trim()` would
+// also drop characters such as a non-breaking space, so a credential that is
+// not the token byte for byte could compare equal to it.
+const BEARER_CREDENTIAL_PADDING = /^[ \t]+|[ \t]+$/gu;
+
 function bearerCredential(header: string | undefined): string | null {
   if (header === undefined) return null;
   const scheme = header.slice(0, BEARER_SCHEME_PREFIX.length);
   if (scheme.toLowerCase() !== BEARER_SCHEME_PREFIX) return null;
-  const credential = header.slice(BEARER_SCHEME_PREFIX.length).trim();
+  const credential = header
+    .slice(BEARER_SCHEME_PREFIX.length)
+    .replace(BEARER_CREDENTIAL_PADDING, "");
   return credential.length > 0 ? credential : null;
 }
 
