@@ -852,7 +852,8 @@ function moveCursorTo(screen: VirtualScreen, targetX: number, targetY: number) {
  *   cells for every emoji glyph, older ones lack the newer code points;
  * - a cluster with U+FE0F or U+FE0E, a joiner, a keycap or a skin tone:
  *   some terminals size the whole cluster, some size each code point;
- * - a regional indicator, alone or as a flag.
+ * - a regional indicator, alone or as a flag;
+ * - a symbol for legacy computing (U+1FB00..U+1FBFF), new in Unicode 13.
  *
  * Letters, digits, punctuation, box drawing and CJK are not in this set:
  * their width is the same everywhere we know of.
@@ -868,6 +869,10 @@ function hasDisputedWidth(char: string): boolean {
   }
   // CJK ideographs and Hangul syllables on their own.
   if (first >= 0x3400 && first <= 0xd7ff && char.length === 1) return false
+  // U+1FB00..U+1FBFF, Symbols for Legacy Computing (Unicode 13): not emoji,
+  // but missing from the width tables of older terminals.
+  const codePoint = char.codePointAt(0)!
+  if (codePoint >= 0x1fb00 && codePoint <= 0x1fbff) return true
   return DISPUTED_WIDTH.test(char)
 }
 
