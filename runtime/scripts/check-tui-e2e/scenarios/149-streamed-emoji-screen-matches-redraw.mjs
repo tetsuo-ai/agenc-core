@@ -56,6 +56,18 @@ async function streamAndCompare(session, from, label) {
   await session.submit(`Use the Bash tool to run exactly: ${LONG_COMMAND}`);
   await session.waitFor(/tool complete/u, { timeout: 60_000, label: `${label}: tool turn` });
   await session.waitForIdle({ idleWindow: 2_000, timeout: 20_000 });
+  // The shell may still be finishing in the background. The footer then
+  // counts it ("1 agent", "1 shell still running") and drops the count a
+  // moment later. Wait until it is gone, so the live screen and the redraw
+  // show the same state.
+  const footerBusy = () =>
+    /\d+ agents?\b|still running|to stop agents/u.test(
+      picture(frameOf(session, from)).split("\n").slice(-8).join("\n"),
+    );
+  for (let waited = 0; footerBusy() && waited < 20_000; waited += 250) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  await session.waitForIdle({ idleWindow: 1_500, timeout: 20_000 });
 
   const cols = session.cols;
   const liveEnd = session.raw.length;
