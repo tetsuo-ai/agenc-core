@@ -169,6 +169,13 @@ The first owner DMs `/owner <code>` to claim the bot. After that:
 - group traffic bypasses pairing while public replies are on.
 
 Owner/control state lives at `<AGENC_HOME>/gateway/control.json` (`0600`).
+If that file exists but cannot be read as a JSON object (empty, cut short,
+not an object, or a read error), the bot fails closed: public group replies
+are off, stored owners are ignored, and `/owner` claims are refused. The
+reason is logged once. An owner from `AGENC_TELEGRAM_ADMIN_PEER_IDS` can
+replace the file with `/stop` or `/start`; stored owners are not restored.
+Removing the file instead returns the bot to its first-run state: public
+replies on, no stored owner, and open to a new `/owner` claim.
 Public command menus are empty. Owner controls stay on configured owner/admin
 chats. `/start` and `/stop` must not be advertised as public group commands.
 

@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
+import { writeDurableAtomicFileSync } from "../utils/durable-atomic-file.js";
 import { TELEGRAM_CHANNEL_ID } from "./telegram-channel.js";
 import type { ChannelSender, InboundChannelMessage } from "./types.js";
 
@@ -39,6 +41,19 @@ interface StoredTelegramOwnerControlState {
   readonly publicEnabled?: unknown;
   readonly ownerPeerIds?: unknown;
   readonly updatedAt?: unknown;
+}
+
+/**
+ * What one message is decided on: the stored state, or its fail-closed
+ * stand-in when the state file is present but cannot be used.
+ */
+interface LoadedTelegramOwnerControlState extends TelegramOwnerControlState {
+  /**
+   * The state file exists but could not be read as a JSON object. The other
+   * fields are then the closed values (public replies off, no stored owners),
+   * not what was stored.
+   */
+  readonly unreadable: boolean;
 }
 
 interface ParsedCommand {
@@ -112,6 +127,8 @@ export class TelegramOwnerControl {
   readonly #ownerClaimCode?: string;
   readonly #log: (line: string) => void;
   readonly #now: () => Date;
+  /** The unreadable state has been logged and has not been readable since. */
+  #unreadableLogged = false;
 
   constructor(options: TelegramOwnerControlOptions) {
     this.#path = join(options.agencHome, "gateway", "control.json");
@@ -148,7 +165,7 @@ export class TelegramOwnerControl {
         await reply(
           isOwner
             ? "Owner controls live in the private DM. Use the bot chat for /start, /stop, /status, and /help."
-            : this.#ownerOnlyMessage(ownerCount),
+            : this.#ownerOnlyMessage(ownerCount, state.unreadable),
         );
         this.#log(
           `telegram-control: denied group owner command '/${command.name}' from '${message.sender.peerId}'`,
@@ -179,29 +196,90 @@ export class TelegramOwnerControl {
     return { handled: false, bypassAccess: true };
   }
 
-  #load(): TelegramOwnerControlState {
-    if (!existsSync(this.#path)) return normalizeState(undefined, this.#now());
+  /**
+   * Three outcomes:
+   * - no file: a first run, so the defaults apply (public replies on, no
+   *   stored owners, the bot can be claimed);
+   * - a JSON object: the stored state;
+   * - anything else (a read error, an empty or cut-short file, JSON that is
+   *   not an object): unreadable, which fails closed. Using the defaults
+   *   here would turn a paused group back on and let another account claim
+   *   the bot.
+   * Loading never deletes or rewrites the file; only `#save` replaces it.
+   */
+  #load(): LoadedTelegramOwnerControlState {
+    let raw: string;
     try {
-      const parsed = JSON.parse(readFileSync(this.#path, "utf8")) as
-        | StoredTelegramOwnerControlState
-        | undefined;
-      return normalizeState(parsed, this.#now());
+      raw = readFileSync(this.#path, "utf8");
     } catch (error) {
-      this.#log(`telegram-control: failed to read control state: ${String(error)}`);
-      return normalizeState(undefined, this.#now());
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return this.#readable(undefined);
+      return this.#failClosed(`the read failed with ${String(code)}`);
     }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return this.#failClosed(
+        raw.trim().length === 0
+          ? "the file is empty"
+          : "the file is not valid JSON",
+      );
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return this.#failClosed("the JSON value is not an object");
+    }
+    return this.#readable(parsed as StoredTelegramOwnerControlState);
+  }
+
+  #readable(
+    input: StoredTelegramOwnerControlState | undefined,
+  ): LoadedTelegramOwnerControlState {
+    this.#unreadableLogged = false;
+    return { ...normalizeState(input, this.#now()), unreadable: false };
+  }
+
+  #failClosed(reason: string): LoadedTelegramOwnerControlState {
+    // Every message loads the state, so say why once, not once per message.
+    if (!this.#unreadableLogged) {
+      this.#unreadableLogged = true;
+      this.#log(
+        [
+          `telegram-control: control state '${this.#path}' is unreadable (${reason});`,
+          "failing closed: public group replies are off, stored owners are ignored and /owner claims are refused.",
+          "Repair the file, or have an admin owner send /stop or /start to replace it.",
+          "Removing the file instead resets the bot to its first-run state: public replies on, no stored owner, and open to a new /owner claim.",
+        ].join(" "),
+      );
+    }
+    return {
+      publicEnabled: false,
+      ownerPeerIds: [],
+      updatedAt: this.#now().toISOString(),
+      unreadable: true,
+    };
   }
 
   #save(state: Omit<TelegramOwnerControlState, "updatedAt">): void {
-    mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 });
     const next: TelegramOwnerControlState = {
-      ...state,
+      publicEnabled: state.publicEnabled,
       ownerPeerIds: parsePeerList(state.ownerPeerIds),
       updatedAt: this.#now().toISOString(),
     };
-    writeFileSync(this.#path, `${JSON.stringify(next, null, 2)}\n`, {
-      mode: 0o600,
-    });
+    // Temporary file, fsync, rename: a write that fails or is interrupted
+    // leaves the previous state in place, never an empty or cut-short file.
+    // The helper creates the directory 0700; the file is always 0600.
+    writeDurableAtomicFileSync(
+      this.#path,
+      `${this.#path}.${process.pid}.${randomUUID()}.tmp`,
+      `${JSON.stringify(next, null, 2)}\n`,
+      0o600,
+    );
+    this.#unreadableLogged = false;
   }
 
   #isOwner(sender: ChannelSender, state: TelegramOwnerControlState): boolean {
@@ -218,11 +296,24 @@ export class TelegramOwnerControl {
   async #handleOwnerClaim(input: {
     readonly message: InboundChannelMessage;
     readonly reply: (text: string) => Promise<string>;
-    readonly state: TelegramOwnerControlState;
+    readonly state: LoadedTelegramOwnerControlState;
     readonly isOwner: boolean;
     readonly ownerCount: number;
     readonly args: string;
   }): Promise<void> {
+    if (input.state.unreadable) {
+      // Whether the bot already has an owner is not known, so nobody can
+      // claim it until the state is readable again.
+      await input.reply(
+        [
+          "Owner claim refused: the owner state on the host is unreadable.",
+          input.isOwner
+            ? "Use /status to see how to replace it."
+            : "The host operator must repair the state file first.",
+        ].join("\n"),
+      );
+      return;
+    }
     if (input.ownerCount > 0) {
       await input.reply(
         input.isOwner
@@ -259,7 +350,7 @@ export class TelegramOwnerControl {
   async #handleOwnerCommand(input: {
     readonly command: ParsedCommand;
     readonly reply: (text: string) => Promise<string>;
-    readonly state: TelegramOwnerControlState;
+    readonly state: LoadedTelegramOwnerControlState;
   }): Promise<void> {
     const { command, reply, state } = input;
     if (command.name === "start" || command.name === "resume") {
@@ -285,13 +376,19 @@ export class TelegramOwnerControl {
     await reply(this.#helpText());
   }
 
-  #statusText(state: TelegramOwnerControlState): string {
+  #statusText(state: LoadedTelegramOwnerControlState): string {
     const groupStatus = state.publicEnabled ? "on" : "paused";
     return [
       "AgenC bot status",
       `Public group: ${groupStatus}`,
       "Private DM: owner-only",
       `Owners: ${this.#ownerCount(state)}`,
+      ...(state.unreadable
+        ? [
+            "Stored state: unreadable on the host. Public group replies stay off, stored owners are ignored and /owner claims are refused.",
+            "Send /stop or /start to replace it with a fresh state file (stored owners are not restored).",
+          ]
+        : []),
       "Media: /image, /meme, /voice, and /song are enabled when configured server-side.",
     ].join("\n");
   }
@@ -311,8 +408,13 @@ export class TelegramOwnerControl {
     ].join("\n");
   }
 
-  #ownerOnlyMessage(ownerCount: number): string {
-    if (ownerCount === 0 && this.#ownerClaimCode !== undefined) {
+  #ownerOnlyMessage(ownerCount: number, unreadable: boolean): string {
+    // With unreadable state a claim is refused, so do not invite one.
+    if (
+      !unreadable &&
+      ownerCount === 0 &&
+      this.#ownerClaimCode !== undefined
+    ) {
       return "Owner setup is not claimed yet. The owner must DM /owner <code>.";
     }
     return "Owner-only command.";
