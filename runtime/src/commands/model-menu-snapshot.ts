@@ -41,7 +41,8 @@ type ModelMenuRow = {
   readonly groupLabel: string;
   /**
    * The date the bundled catalog says the provider retired this model
-   * (YYYY-MM-DD). Only the session's own model is listed with one.
+   * (YYYY-MM-DD). Only the session's own model is listed with one, and it is
+   * not selectable: choosing it again is refused.
    */
   readonly retiredOn?: string;
 };
@@ -221,7 +222,7 @@ function providerRows(params: {
       displayModel,
       provider: params.provider,
       status,
-      selectable: status !== "unavailable",
+      selectable: status !== "unavailable" && retiredOn === undefined,
       groupLabel: params.provider,
       detail: rowDetailForRoute(
         status,
@@ -306,7 +307,7 @@ function readModelMenuSnapshotFromStorage(ctx: SlashCommandContext, now: Date): 
         const access = accessFor(row.provider, row.model);
         return [{
           ...row,
-          selectable: access.effect !== "blocked",
+          selectable: row.selectable && access.effect !== "blocked",
           detail: rowDetailForRoute(row.status, row.provider),
         }];
       });

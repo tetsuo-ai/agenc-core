@@ -22,6 +22,7 @@ import {
   isModelAllowed,
   ModelNotAllowedError,
 } from "../utils/model/modelAllowlist.js";
+import { queueTuiStartupNotice } from "../tui/startup-notices.js";
 import type { StartupCliFlags } from "./startup-cli-flags.js";
 export { readStartupCliFlags, type StartupCliFlags } from "./startup-cli-flags.js";
 
@@ -109,7 +110,7 @@ const printedSavedModelNotices = new Set<string>();
 /**
  * Tell the owner of a saved model that its provider has retired it. Startup
  * resolves the selection more than once in a process (the trust preflight,
- * then the session), so a notice prints once. It is advice: a catalog row
+ * then the session), so a notice is given once. It is advice: a catalog row
  * that cannot be read means no notice, never a start that fails.
  */
 function noteRetiredSavedModel(provider: ProviderName, model: string, now: Date | undefined): void {
@@ -121,7 +122,10 @@ function noteRetiredSavedModel(provider: ProviderName, model: string, now: Date 
   }
   if (notice === undefined || printedSavedModelNotices.has(notice)) return;
   printedSavedModelNotices.add(notice);
+  // Print mode reads this line on stderr. An interactive start draws the TUI
+  // over it, so the TUI is handed the same text to show once it has mounted.
   console.warn(notice);
+  queueTuiStartupNotice({ key: `retired-model:${provider}/${model}`, text: notice });
 }
 
 /**

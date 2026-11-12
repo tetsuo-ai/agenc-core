@@ -57,18 +57,38 @@ export class OpenRouterCatalog {
     if (options.home !== undefined) {
       const partition = createHash("sha256").update(options.apiKey ?? "public").digest("hex");
       this.cachePath = join(options.home, "cache", `openrouter-models-${partition}.json`);
-      try {
-        const cached = asRecord(JSON.parse(readFileSync(this.cachePath, "utf8")));
-        const models = parseModels(cached?.body);
-        if (cached?.version === 1 && typeof cached.at === "number" && Number.isFinite(cached.at) &&
-            cached.at <= this.#now() && models !== undefined) {
-          this.#at = cached.at;
-          this.#snapshot = { source: "cache", models };
-        }
-      } catch {
-        // Missing, corrupt or unreadable cache: use the bundled catalog.
-      }
+      this.#readCache(false);
     }
+  }
+
+  /** Take the cache file's list. With `newerOnly`, only one newer than the list held. */
+  #readCache(newerOnly: boolean): void {
+    if (this.cachePath === undefined) return;
+    try {
+      const cached = asRecord(JSON.parse(readFileSync(this.cachePath, "utf8")));
+      if (cached?.version !== 1 || typeof cached.at !== "number" || !Number.isFinite(cached.at) ||
+          cached.at > this.#now() || (newerOnly && cached.at <= this.#at)) return;
+      const models = parseModels(cached.body);
+      if (models === undefined) return;
+      this.#at = cached.at;
+      this.#snapshot = { source: "cache", models };
+    } catch {
+      // Missing, corrupt or unreadable cache: keep the list held, the bundled one at first.
+    }
+  }
+
+  /**
+   * Take the list another catalog object cached in this home after this one
+   * last looked, then record the list held as OpenRouter's published one.
+   * The cache file is shared: the TUI downloads the list for its menus, and
+   * the daemon, which checks the model picked there, has its own object and
+   * may have built it before the file existed. Local, like read(). Unlike
+   * read(), a catalog left with only the bundled rows records and clears
+   * nothing, so a list another object recorded in this process stays.
+   */
+  refreshFromCache(): OpenRouterCatalogSnapshot {
+    this.#readCache(true);
+    return this.#snapshot.source === "bundled" ? this.#snapshot : this.read();
   }
 
   read(): OpenRouterCatalogSnapshot {

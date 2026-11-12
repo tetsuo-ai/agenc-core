@@ -121,6 +121,7 @@ import {
   readSessionSelection,
   resolveProviderModelSelection,
 } from "../session/provider-model-selection.js";
+import { readSessionCachedLiveModelList } from "../session/cached-live-model-list.js";
 import { applyProviderSwitch } from "../commands/provider.js";
 import { resolveProfile } from "../config/profiles.js";
 import {
@@ -1416,12 +1417,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         }
         if (active.runtimeSettings !== undefined) {
           const restoredBaseline = active.runtimeSettings;
+          const restoredSession = bootstrap.session;
           const restoreOverrides = runtimeSettingsWithRestoreOverrides(
             restoredBaseline,
             params,
             runtimeWorkspaceRoot(bootstrap),
             bootstrap.configStore.current(),
-            bootstrap.session.services.providerEnvironment,
+            restoredSession.services.providerEnvironment,
+            // A model given with --resume is checked here. This process may
+            // not have read the provider's list: the home's cache may hold it.
+            (provider) => readSessionCachedLiveModelList(restoredSession, provider),
           );
           if (!runtimeSettingsEqual(restoreOverrides, restoredBaseline)) {
             const previousSettings = restoredBaseline;

@@ -177,17 +177,24 @@ describe("a session or a configuration that is on a retired model", () => {
   test("the session's own model stays listed, marked in use and tagged \"retired\"", async () => {
     const ctx = context({ model: MODEL });
     const snapshot = readModelMenuSnapshot(ctx, { now: late });
+    // Listed where the session is, but not selectable: choosing it again is refused.
     expect(snapshot.rows[snapshot.activeIndex]).toMatchObject({
-      provider: "openrouter", displayModel: MODEL, status: "current", selectable: true, retiredOn: DATE,
+      provider: "openrouter", displayModel: MODEL, status: "current", selectable: false, retiredOn: DATE,
     });
     expect(modelMenuFallback(snapshot)).toContain(`* openrouter:${MODEL} (active session model, retired ${DATE})`);
     // No other row is retired, and before its date this one is not either.
     expect(snapshot.rows.filter((entry) => entry.retiredOn !== undefined)).toHaveLength(1);
-    expect(modelMenuFallback(readModelMenuSnapshot(ctx, { now: at("2026-12-30") })))
-      .toContain(`* openrouter:${MODEL} (active session model)`);
+    const before = readModelMenuSnapshot(ctx, { now: at("2026-12-30") });
+    expect(modelMenuFallback(before)).toContain(`* openrouter:${MODEL} (active session model)`);
+    expect(before.rows[before.activeIndex]).toMatchObject({ displayModel: MODEL, selectable: true });
+    // It is not counted among the models offered: all nine dated rows are past their date.
+    expect(snapshot.providerCounts.openrouter).toBe(OPENROUTER_MODEL_IDS.length - 9);
+    expect(before.providerCounts.openrouter).toBe(OPENROUTER_MODEL_IDS.length - 7);
     const row = readProvidersHubModels(ctx, "openrouter", { now: late }).find((entry) => entry.model === MODEL);
     expect(row).toMatchObject({ current: true });
     expect(row?.tags).toContain(`retired ${DATE}`);
+    // The hub lists it with the models it offers.
+    expect(hubModels(ctx, late)).toHaveLength(OPENROUTER_MODEL_IDS.length - 9 + 1);
     // Every other retired row is still left out.
     expect(hubModels(ctx, late)).not.toContain("bytedance-seed/seed-1.6");
 
@@ -222,6 +229,20 @@ describe("a session or a configuration that is on a retired model", () => {
 
 describe("the bundled snapshot with the clock at 2026-11-12", () => {
   const today = at("2026-11-12");
+
+  test.each([
+    ["on a model with no date", "x-ai/grok-4.5"],
+    ["on a retired model", "poolside/laguna-s-2.1"],
+    ["on another provider", undefined],
+  ])("no selectable entry has a retirement date in the past: a session %s", (_where, model) => {
+    const ctx = context(model === undefined ? { provider: "grok", model: "grok-4.6" } : { model });
+    const selectable = readModelMenuSnapshot(ctx, { now: today }).rows
+      .filter((row) => row.provider === "openrouter" && row.selectable)
+      .map((row) => row.displayModel);
+    expect(selectable).toHaveLength(OPENROUTER_MODEL_IDS.length - RETIRED_BY_2026_11_12.length);
+    for (const [retired] of RETIRED_BY_2026_11_12) expect(selectable, retired).not.toContain(retired);
+    for (const retiring of RETIRING_2026_12_31) expect(selectable, retiring).toContain(retiring);
+  });
 
   test("offers none of the seven retired models and still offers the two dated 2026-12-31", () => {
     const ctx = context();

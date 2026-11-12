@@ -6,11 +6,13 @@ import { resolveCanonicalStartupSelection } from "../../src/bin/startup-selectio
 import { OpenRouterCatalog } from "../../src/llm/registry/openrouter-live-catalog.js";
 import { clearPublishedModelCatalogs } from "../../src/llm/registry/published-model-catalog.js";
 import { recordPublishedModelCosts } from "../../src/llm/registry/published-model-costs.js";
+import { takeTuiStartupNotices } from "../../src/tui/startup-notices.js";
 
 const homes: string[] = [];
 afterEach(() => {
   clearPublishedModelCatalogs();
   recordPublishedModelCosts("openrouter", new Map());
+  takeTuiStartupNotices();
   vi.restoreAllMocks();
   vi.useRealTimers();
   for (const path of homes.splice(0)) rmSync(path, { recursive: true, force: true });
@@ -19,6 +21,9 @@ afterEach(() => {
 const at = (day: string, time = "12:00:00.000"): Date => new Date(`${day}T${time}Z`);
 const saved = (model: string) => ({ model_provider: "openrouter", model });
 const notice = (model: string, date: string) => `OpenRouter retired '${model}' on ${date}. Pick another model.`;
+/** What the TUI is handed to show in its footer once it has mounted (tui/startup-notices.ts). */
+const tuiNotice = (model: string, date: string) =>
+  ({ key: `retired-model:openrouter/${model}`, text: notice(model, date) });
 const silenceWarnings = () => vi.spyOn(console, "warn").mockImplementation(() => {});
 
 /** Leave OpenRouter's list in a home's cache, as an earlier run would have. */
@@ -45,14 +50,28 @@ describe("a saved model the bundled catalog says is retired", () => {
     expect(resolveCanonicalStartupSelection({ config, env: {}, now }))
       .toMatchObject({ provider: "openrouter", model: "bytedance-seed/seed-1.6", config });
     expect(warning.mock.calls).toEqual([[notice("bytedance-seed/seed-1.6", "2026-11-11")]]);
+    // The interactive TUI draws over that stderr line: it is handed the same text.
+    expect(takeTuiStartupNotices()).toEqual([tuiNotice("bytedance-seed/seed-1.6", "2026-11-11")]);
     // The trust preflight and the session each resolve the selection in one
     // process: the notice is not repeated.
     expect(resolveCanonicalStartupSelection({ config, env: {}, now }).model).toBe("bytedance-seed/seed-1.6");
     expect(warning).toHaveBeenCalledTimes(1);
+    expect(takeTuiStartupNotices()).toEqual([]);
     // Another retired model is another notice.
     resolveCanonicalStartupSelection({ config: saved("poolside/laguna-xs-2.1:free"), env: {}, now });
     expect(warning).toHaveBeenLastCalledWith(notice("poolside/laguna-xs-2.1:free", "2026-10-31"));
     expect(warning).toHaveBeenCalledTimes(2);
+    expect(takeTuiStartupNotices()).toEqual([tuiNotice("poolside/laguna-xs-2.1:free", "2026-10-31")]);
+  });
+
+  test("hands the TUI one notice when the selection is resolved twice before it mounts", () => {
+    silenceWarnings();
+    const now = at("2026-11-12");
+    const config = saved("poolside/laguna-s-2.1");
+    // The trust preflight, then the TUI's own session context.
+    resolveCanonicalStartupSelection({ config, env: {}, now });
+    resolveCanonicalStartupSelection({ config, env: {}, now });
+    expect(takeTuiStartupNotices()).toEqual([tuiNotice("poolside/laguna-s-2.1", "2026-10-31")]);
   });
 
   test("starts without a notice the day before its date, with one from its date on", () => {
@@ -61,9 +80,11 @@ describe("a saved model the bundled catalog says is retired", () => {
     expect(resolveCanonicalStartupSelection({ config, env: {}, now: at("2026-12-30", "23:59:59.999") }).model)
       .toBe("z-ai/glm-4.5");
     expect(warning).not.toHaveBeenCalled();
+    expect(takeTuiStartupNotices()).toEqual([]);
     expect(resolveCanonicalStartupSelection({ config, env: {}, now: at("2026-12-31", "00:00:00.000") }).model)
       .toBe("z-ai/glm-4.5");
     expect(warning.mock.calls).toEqual([[notice("z-ai/glm-4.5", "2026-12-31")]]);
+    expect(takeTuiStartupNotices()).toEqual([tuiNotice("z-ai/glm-4.5", "2026-12-31")]);
   });
 
   test("reads the system time when no clock is passed", () => {
@@ -85,6 +106,7 @@ describe("a saved model the bundled catalog says is retired", () => {
       config: { model_provider: "deepseek", model: "deepseek-flash" }, env: {}, now,
     }).model).toBe("deepseek-flash");
     expect(warning).not.toHaveBeenCalled();
+    expect(takeTuiStartupNotices()).toEqual([]);
   });
 
   test("the cached live list wins: a model it has starts without a notice", async () => {
@@ -94,9 +116,11 @@ describe("a saved model the bundled catalog says is retired", () => {
     expect(resolveCanonicalStartupSelection({ config: saved("bytedance-seed/seed-2.0-code"), env: {}, metadata, now }).model)
       .toBe("bytedance-seed/seed-2.0-code");
     expect(warning).not.toHaveBeenCalled();
+    expect(takeTuiStartupNotices()).toEqual([]);
     // A retired model that list no longer has still gets its notice.
     resolveCanonicalStartupSelection({ config: saved("poolside/laguna-s-2.1:free"), env: {}, metadata, now });
     expect(warning.mock.calls).toEqual([[notice("poolside/laguna-s-2.1:free", "2026-10-31")]]);
+    expect(takeTuiStartupNotices()).toEqual([tuiNotice("poolside/laguna-s-2.1:free", "2026-10-31")]);
   });
 });
 
@@ -113,6 +137,8 @@ describe("a retired model typed with --model", () => {
       }).model).toBe(model);
     }
     expect(warning).not.toHaveBeenCalled();
+    // A refused start never reaches the TUI: nothing is left for it to show.
+    expect(takeTuiStartupNotices()).toEqual([]);
   });
 
   test("is accepted while the cached live list has it", async () => {

@@ -53,11 +53,38 @@ describe("isModelRetired", () => {
     expect(isModelRetired(entry, at("2031-06-15"))).toBe(true);
   });
 
-  test("the date is read in UTC, whatever offset the clock was written with", () => {
+  test("the clock is an instant: the offset it was written with changes nothing", () => {
     // 01:00 on the 31st at UTC+2 is still the 30th in UTC.
     expect(isModelRetired(entry, new Date("2026-10-31T01:00:00+02:00"))).toBe(false);
     // 23:00 on the 30th at UTC-2 is already the 31st in UTC.
     expect(isModelRetired(entry, new Date("2026-10-30T23:00:00-02:00"))).toBe(true);
+  });
+
+  // The suite runs with TZ=UTC, where a date read in the machine's own zone
+  // would pass every other test here. These two zones are on either side of
+  // UTC: local midnight of the 31st is 10:00Z on the 30th in Kiritimati and
+  // 11:00Z on the 31st in Pago Pago.
+  test.each([
+    ["Pacific/Kiritimati", -14 * 60],
+    ["Pacific/Pago_Pago", 11 * 60],
+  ])("the date is read in UTC on a machine whose zone is %s", (zone, minutesBehindUtc) => {
+    const suiteZone = process.env.TZ;
+    const suiteOffset = new Date(2026, 9, 31).getTimezoneOffset();
+    process.env.TZ = zone;
+    try {
+      // The machine's zone did move; otherwise this test would prove nothing.
+      expect(new Date(2026, 9, 31).getTimezoneOffset()).toBe(minutesBehindUtc);
+      expect(isModelRetired(entry, at("2026-10-30", "23:59:59.999"))).toBe(false);
+      expect(isModelRetired(entry, at("2026-10-31", "00:00:00.000"))).toBe(true);
+      // The same boundary for a bundled row, dated 2026-12-31.
+      expect(retiredBundledModel("openrouter", "z-ai/glm-4.5", at("2026-12-30", "23:59:59.999"))).toBeUndefined();
+      expect(retiredBundledModel("openrouter", "z-ai/glm-4.5", at("2026-12-31", "00:00:00.000")))
+        .toEqual({ model: "z-ai/glm-4.5", retiredOn: "2026-12-31" });
+    } finally {
+      if (suiteZone === undefined) delete process.env.TZ;
+      else process.env.TZ = suiteZone;
+    }
+    expect(new Date(2026, 9, 31).getTimezoneOffset()).toBe(suiteOffset);
   });
 
   test.each([

@@ -1,22 +1,16 @@
-import { readLocalByokCredential } from "../auth/native-credentials.js";
-import { openRouterCatalogFor, type OpenRouterCatalog } from "../llm/registry/openrouter-live-catalog.js";
+import type { OpenRouterCatalog } from "../llm/registry/openrouter-live-catalog.js";
+import { openRouterCatalogForHome } from "../session/cached-live-model-list.js";
 import { providerEnvironmentFromCommandContext, requireCommandConfigStore } from "./config-context.js";
 import type { SlashCommandContext } from "./types.js";
 
 export function openRouterMenuCatalog(ctx: SlashCommandContext, options: { readonly fetchImpl?: typeof fetch } = {}): OpenRouterCatalog {
   const home = requireCommandConfigStore(ctx).homeContext;
-  let apiKey: string | undefined;
+  let environment: Readonly<Record<string, string | undefined>> | undefined;
   try {
-    apiKey = providerEnvironmentFromCommandContext(ctx).OPENROUTER_API_KEY?.trim();
+    environment = providerEnvironmentFromCommandContext(ctx);
   } catch {
     // The public catalog also works without a credential environment.
   }
-  if (!apiKey) {
-    try {
-      apiKey = readLocalByokCredential(home, "openrouter")?.apiKey;
-    } catch {
-      // Use the public catalog if the credential store is unavailable.
-    }
-  }
-  return openRouterCatalogFor({ home: home.path, apiKey, fetchImpl: options.fetchImpl });
+  // The same home and key as the selection check reads the cached list with.
+  return openRouterCatalogForHome(home, environment, options);
 }

@@ -7,7 +7,9 @@
  * read from, a row past its date is left out of the list and refused at
  * selection (model-catalog-selection.ts). The provider's own list wins: a
  * model its live or cached live list has in this process is never hidden or
- * refused over a bundled date.
+ * refused over a bundled date. Before a selection is refused, the list cached
+ * in the session's home is read as well, since another process may have read
+ * the provider's list there (session/cached-live-model-list.ts).
  *
  * The rule is the same for every provider that fills in `retiresOn`
  * (OpenRouter's `expiration_date`, Venice's `model_spec.deprecation`).

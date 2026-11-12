@@ -28,10 +28,14 @@ is the source a model whose date has arrived is left out of `/model`,
 OpenRouter retired 'vendor/model' on 2026-10-31. Pick another model.
 ```
 
-A session whose saved model is retired still starts and prints that message
-once. The model stays listed as the session's own, marked `retired`, and
-choosing it again is refused. The live or cached catalog wins: a model it lists
-is offered and accepted whatever date the bundled snapshot has for it.
+A session whose saved model is retired still starts and shows that message
+once: on stderr, and for a few seconds in the footer of the interactive screen.
+The model stays listed as the session's own, marked `retired`. It is not
+selectable: choosing it again is refused. The live or cached catalog wins: a
+model it lists is offered and accepted whatever date the bundled snapshot has
+for it. The daemon checks a model picked in the interactive screen against the
+same cache, so it accepts what that screen read from OpenRouter even when it has
+not read the list itself.
 
 The preferred default is `x-ai/grok-4.5`. If it is absent from the available live
 catalog, AgenC uses a listed model instead. Model rows show tools, vision,

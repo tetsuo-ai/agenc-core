@@ -1,4 +1,8 @@
-import { assertModelCatalogSelection, assertModelNotRetired } from "../llm/model-catalog-selection.js";
+import {
+  assertModelCatalogSelection,
+  assertModelNotRetired,
+  retiredModelNotice,
+} from "../llm/model-catalog-selection.js";
 import {
   mergeProviderModelLayer,
   resolveProviderSlugOrThrow,
@@ -8,6 +12,7 @@ import {
 import { defaultConfig, type AgenCConfig } from "../config/schema.js";
 import { configuredModelForProvider } from "../config/resolve-model.js";
 import { resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
+import { readSessionCachedLiveModelList } from "./cached-live-model-list.js";
 import type { Session } from "./session.js";
 import { asRecord } from "../utils/record.js";
 import {
@@ -42,6 +47,12 @@ export interface CatalogValidationOptions {
   readonly validateCatalog?: boolean;
   /** The clock a retirement date is read against. Tests pass their own. */
   readonly now?: Date;
+  /**
+   * Reads into this process the live model list the home's cache holds now
+   * for a provider (cached-live-model-list.ts). Asked only when a bundled
+   * retirement date is about to refuse the model.
+   */
+  readonly readCachedLiveList?: (provider: ProviderSlug) => void;
 }
 
 export function resolveProviderModelSelection(
@@ -77,6 +88,14 @@ export function resolveProviderModelSelection(
   const savedOpenRouterModel = provider === "openrouter" &&
     configuredModelForProvider(config ?? {}, provider) === model;
   if (options.validateCatalog !== false) {
+    // A bundled date is about to refuse this model, and the provider's own
+    // list wins. Another process may have read that list after this one last
+    // looked (the TUI reads it for its menus, the daemon checks the model
+    // picked there), so read what the home's cache holds now before deciding.
+    if (options.readCachedLiveList !== undefined &&
+        retiredModelNotice(provider, model, options.now) !== undefined) {
+      options.readCachedLiveList(provider);
+    }
     // Choosing the saved pair again skips the catalog's listing check, never
     // its retirement date.
     if (savedOpenRouterModel) assertModelNotRetired(provider, model, options.now);
@@ -255,6 +274,12 @@ export function resolveSessionProviderModelSelection(
   return resolveProviderModelSelection(
     config, current, layer,
     environment as Readonly<Record<string, string | undefined>> | undefined,
-    { validateCatalog: options.validateCatalog, now: options.now },
+    {
+      validateCatalog: options.validateCatalog,
+      now: options.now,
+      // The list cached in this session's home, for this session's key.
+      readCachedLiveList: options.readCachedLiveList ??
+        ((provider) => readSessionCachedLiveModelList(session, provider)),
+    },
   );
 }
