@@ -8,7 +8,7 @@ import {
 import type { RuntimeMessage } from "../../../src/services/compact/types.js";
 
 const user = (content: string, extra: Partial<RuntimeMessage> = {}): RuntimeMessage =>
-  ({ role: "user", content, ...extra }) as RuntimeMessage;
+  ({ role: "user", content, runtimeOnly: { userMessageId: "submitted" }, ...extra }) as RuntimeMessage;
 const assistant = (content: string): RuntimeMessage => ({ role: "assistant", content }) as RuntimeMessage;
 
 describe("retainedUserPromptIndexes", () => {

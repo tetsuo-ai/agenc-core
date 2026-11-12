@@ -8,9 +8,9 @@ afterEach(() => { harness?.close(); harness = undefined; });
 
 test('a first prompt over the retention cap does not exclude small recent corrections', () => {
   const messages: RuntimeMessage[] = [
-    { role: 'user', content: 'large original task '.repeat(100) },
+    { role: 'user', runtimeOnly: { userMessageId: 'submitted' }, content: 'large original task '.repeat(100) },
     { role: 'assistant', content: 'work' },
-    { role: 'user', content: 'Use the staging endpoint only.' },
+    { role: 'user', runtimeOnly: { userMessageId: 'submitted' }, content: 'Use the staging endpoint only.' },
     { role: 'assistant', content: 'work' },
   ];
   expect([...retainedUserPromptIndexes(messages, 4, 100)]).toEqual([2]);
@@ -20,6 +20,7 @@ test('automatic compaction retains recent corrections when the original task exc
   const correction = 'CORRECTION: use the staging endpoint only; never deploy to production.';
   const messages: RuntimeMessage[] = Array.from({ length: 40 }, (_, index) => ({
     role: index % 2 === 0 ? 'user' : 'assistant',
+    ...(index % 2 === 0 ? { runtimeOnly: { userMessageId: `prompt-${index}` } } : {}),
     content: index === 0 ? 'original task detail '.repeat(3500)
       : index === 20 ? correction
       : index % 2 === 0 ? `next step ${index}` : `work-${index}:${'x'.repeat(3000)}`,

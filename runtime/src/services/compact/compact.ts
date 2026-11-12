@@ -507,8 +507,13 @@ export function retainedUserPromptByteLimit(effectiveWindowTokens: number): numb
 }
 
 function isUserPrompt(message: RuntimeMessage): boolean {
+  const id = message.runtimeOnly?.userMessageId;
   return (message.originalRole ?? message.role ?? message.message?.role) === "user" &&
-    message.isMeta !== true && message.runtimeOnly?.compactionHistory === undefined;
+    message.isMeta !== true && message.runtimeOnly?.compactionHistory === undefined &&
+    message.runtimeOnly?.agentInvocation === undefined && typeof id === "string" && id.length > 0 &&
+    // Older compactions assigned projection IDs to every user-role row. Those
+    // IDs and hidden request IDs are not evidence of a submitted user prompt.
+    !/^agenc-user-\d+$/.test(id) && !id.startsWith("user-request-");
 }
 
 /**

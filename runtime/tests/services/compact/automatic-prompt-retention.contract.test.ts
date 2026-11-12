@@ -19,6 +19,7 @@ const CORRECTION = "CORRECTION: the floor must be a checkerboard, not a solid co
 function source(): RuntimeMessage[] {
   return Array.from({ length: 40 }, (_, index): RuntimeMessage => ({
     role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+    ...(index % 2 === 0 ? { runtimeOnly: { userMessageId: `prompt-${index}` } } : {}),
     content: index === 0
       ? TASK
       : index === 20

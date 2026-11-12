@@ -1977,7 +1977,12 @@ function toProjectionMessage(message: RuntimeMessage): CompactionProjectionMessa
     ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
     ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
-    ...(message.uuid !== undefined ? { id: message.uuid } : {}),
+    // Projection UUIDs identify envelopes, not user submissions. Preserve the
+    // durable identity when present and never mint a user ID for a runtime nudge.
+    ...((message.runtimeOnly?.responseItemId ?? message.runtimeOnly?.userMessageId ??
+      (normalizedRole === "user" ? undefined : message.uuid)) !== undefined
+      ? { id: message.runtimeOnly?.responseItemId ?? message.runtimeOnly?.userMessageId ?? message.uuid }
+      : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
     ...(message.runtimeOnly?.toolResultIsError === true
       ? { toolResultIsError: true as const }
