@@ -10,6 +10,7 @@ import type {
   GatewayPromptHandlers,
   GatewayPromptResult,
   GatewaySession,
+  OutboundChannelMessage,
 } from "../../src/gateway/types.js";
 
 const completed: GatewayPromptResult = {
@@ -163,5 +164,35 @@ describe("SessionRouter delivery failures", () => {
     finishPrompt.reject(failure);
     await expect(outcome).resolves.toEqual({ kind: "failed", error: failure });
     expect(sends).toBe(0);
+  });
+
+  it("marks only the forced last flush as final", async () => {
+    const sent: OutboundChannelMessage[] = [];
+    const run = setup(async (message) => { sent.push(message); return "message-id"; });
+    const outcome = run();
+    const handlers = await handlersReady.promise;
+    handlers.onEvent({ type: "text", delta: "first" });
+    await nextEventLoopTurn();
+    handlers.onEvent({ type: "text", delta: " second" });
+    await nextEventLoopTurn();
+    finishPrompt.resolve(completed);
+    await expect(outcome).resolves.toEqual({ kind: "completed", value: completed });
+    expect(sent).toStrictEqual([
+      { conversationId: "conversation", text: "first" },
+      { conversationId: "conversation", text: "first second", editMessageId: "message-id" },
+      { conversationId: "conversation", text: "final answer", editMessageId: "message-id", final: true },
+    ]);
+  });
+
+  it.each([true, false])("marks a last flush that is also the first send as final (supportsEdit %s)", async (supportsEdit) => {
+    const sent: OutboundChannelMessage[] = [];
+    const run = setup(async (message) => { sent.push(message); return "message-id"; }, supportsEdit);
+    const outcome = run();
+    await handlersReady.promise;
+    finishPrompt.resolve(completed);
+    await expect(outcome).resolves.toEqual({ kind: "completed", value: completed });
+    expect(sent).toStrictEqual([
+      { conversationId: "conversation", text: "final answer", final: true },
+    ]);
   });
 });

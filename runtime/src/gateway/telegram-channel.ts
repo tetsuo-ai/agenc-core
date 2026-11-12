@@ -4,6 +4,7 @@
  * Official Bot API (https://core.telegram.org/bots/api) via long polling —
  * no reverse-engineered client, no account-ban risk. Streaming replies use
  * editMessageText so a turn updates one message in place (`supportsEdit`).
+ * A reply longer than one Telegram message continues in follow-up messages.
  *
  * The HTTP transport is injectable so the adapter logic is unit-tested
  * against a fake Bot API. The production transport uses global fetch (Node
@@ -176,9 +177,49 @@ interface BotApiResponse<T> {
   readonly ok: boolean;
   readonly result?: T;
   readonly description?: string;
+  readonly error_code?: number;
+  readonly parameters?: { readonly retry_after?: number };
 }
 
-export class TelegramBotApiError extends Error {}
+export class TelegramBotApiError extends Error {
+  /** Bot API `error_code`, for example 429, when the API reported one. */
+  readonly errorCode?: number;
+  /** Bot API `parameters.retry_after`: seconds to wait after a flood limit. */
+  readonly retryAfterSeconds?: number;
+
+  constructor(
+    message: string,
+    details: {
+      readonly errorCode?: number;
+      readonly retryAfterSeconds?: number;
+    } = {},
+  ) {
+    super(message);
+    if (details.errorCode !== undefined) this.errorCode = details.errorCode;
+    if (details.retryAfterSeconds !== undefined) {
+      this.retryAfterSeconds = details.retryAfterSeconds;
+    }
+  }
+}
+
+function telegramBotApiError<T>(
+  method: string,
+  json: BotApiResponse<T>,
+  status: number,
+): TelegramBotApiError {
+  const retryAfter = json.parameters?.retry_after;
+  return new TelegramBotApiError(
+    `Telegram ${method} failed: ${json.description ?? status}`,
+    {
+      ...(typeof json.error_code === "number"
+        ? { errorCode: json.error_code }
+        : {}),
+      ...(typeof retryAfter === "number"
+        ? { retryAfterSeconds: retryAfter }
+        : {}),
+    },
+  );
+}
 
 /** Production transport over the official Bot API using global fetch. */
 export class FetchTelegramTransport implements TelegramTransport {
@@ -200,11 +241,7 @@ export class FetchTelegramTransport implements TelegramTransport {
       body: JSON.stringify(body),
     });
     const json = (await res.json()) as BotApiResponse<T>;
-    if (!json.ok) {
-      throw new TelegramBotApiError(
-        `Telegram ${method} failed: ${json.description ?? res.status}`,
-      );
-    }
+    if (!json.ok) throw telegramBotApiError(method, json, res.status);
     return json.result as T;
   }
 
@@ -236,11 +273,7 @@ export class FetchTelegramTransport implements TelegramTransport {
       body: form,
     });
     const json = (await res.json()) as BotApiResponse<T>;
-    if (!json.ok) {
-      throw new TelegramBotApiError(
-        `Telegram ${method} failed: ${json.description ?? res.status}`,
-      );
-    }
+    if (!json.ok) throw telegramBotApiError(method, json, res.status);
     return json.result as T;
   }
 
@@ -436,6 +469,8 @@ export interface TelegramChannelOptions {
    * one log line and no reply. Default 100.
    */
   readonly maxQueuedUpdates?: number;
+  /** Test seam: the wait before the one retry of a rate-limited final edit. */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 const DEFAULT_MAX_CONCURRENT_UPDATES = 4;
@@ -447,13 +482,49 @@ interface PendingUpdate {
   readonly message: InboundChannelMessage;
 }
 
-/** Maps a Telegram sent-message id back to its chat for later edits. */
 // Upper bound on retained edit-in-place targets (evicted oldest-first).
 const MAX_EDIT_TARGETS = 512;
 
+/** Bot API limit on the text of sendMessage and editMessageText. */
+export const TELEGRAM_MESSAGE_LIMIT = 4096;
+/**
+ * Most raw text per message when a reply has to be split. The HTML rendering
+ * escapes characters and pads tables, so the raw text is cut with room to
+ * grow; a piece whose rendering is still too long is cut shorter.
+ */
+const TELEGRAM_PART_BUDGET = 3600;
+/**
+ * Most raw text that is rendered as a whole to see whether it fits one
+ * message. Longer text is cut without that check: only heavy padding in a
+ * table could make it fit, and rendering all that is left once per part would
+ * be quadratic work on a long reply.
+ */
+const TELEGRAM_WHOLE_FIT_CHECK = 2 * TELEGRAM_MESSAGE_LIMIT;
+/** Longest wait before the one retry of a rate-limited final edit. */
+const TELEGRAM_MAX_RETRY_WAIT_MS = 10_000;
+/** Wait used when a flood-limit error names no retry_after. */
+const TELEGRAM_DEFAULT_RETRY_WAIT_MS = 1_000;
+
+/** The share of a reply that goes into one Telegram message. */
+export interface TelegramTextPart {
+  /** Raw Markdown of this part; Rich Messages receive it as is. */
+  readonly markdown: string;
+  /** Its HTML rendering, for sendMessage and editMessageText. */
+  readonly html: string;
+}
+
+/** One Telegram message that carries part of a reply. */
+interface DeliveredPart {
+  readonly messageId: number;
+  /** Raw text the message shows now; an edit to the same text is skipped. */
+  markdown: string;
+}
+
+/** What an edit handle points at: the messages of one reply, in reading order. */
 interface EditTarget {
   readonly chatId: string;
-  readonly messageId: number;
+  readonly messageThreadId?: number;
+  readonly messages: DeliveredPart[];
 }
 
 export class TelegramChannelAdapter implements ChannelAdapter {
@@ -470,6 +541,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   readonly #richMessages: TelegramRichMessageMode;
   readonly #maxConcurrentUpdates: number;
   readonly #maxQueuedUpdates: number;
+  readonly #sleep: (ms: number) => Promise<void>;
   readonly #editTargets = new Map<string, EditTarget>();
   /** Accepted updates that could not start yet, oldest first. */
   readonly #waitingUpdates: PendingUpdate[] = [];
@@ -513,6 +585,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       DEFAULT_MAX_QUEUED_UPDATES,
       0,
     );
+    this.#sleep = options.sleep ?? sleepDefault;
     const configuredBotUsername = options.botUsername?.trim().replace(/^@/, "");
     if (configuredBotUsername !== undefined && configuredBotUsername.length > 0) {
       this.#botIdentity = { id: -1, username: configuredBotUsername };
@@ -857,103 +930,70 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   }
 
   async send(message: OutboundChannelMessage): Promise<string> {
-    // Conversation id is Telegram chat id, optionally suffixed with the forum
-    // topic thread id. Replies must stay in-topic or users never see them.
-    const target = parseTelegramConversationId(message.conversationId);
-    const richOptions: TelegramRichMessageOptions = {
-      ...(target.messageThreadId !== undefined
-        ? { messageThreadId: target.messageThreadId }
-        : {}),
-      skipEntityDetection: true,
-    };
-    const sendOptions: TelegramSendOptions = {
-      ...(target.messageThreadId !== undefined
-        ? { messageThreadId: target.messageThreadId }
-        : {}),
-      parseMode: "HTML",
-    };
-    const formattedText = telegramRichText(message.text);
-    const useRichMessages = shouldUseTelegramRichMessages(
-      this.#richMessages,
-      target.chatId,
-    );
     if (message.editMessageId !== undefined) {
-      const target = this.#editTargets.get(message.editMessageId);
-      if (target !== undefined) {
-        if (
-          useRichMessages &&
-          this.#transport.editRichMessage !== undefined
-        ) {
-          try {
-            await this.#transport.editRichMessage(
-              target.chatId,
-              target.messageId,
-              message.text,
-              richOptions,
-            );
-            return message.editMessageId;
-          } catch (error) {
-            if (isTelegramNoopEdit(error)) return message.editMessageId;
-            this.#log(`telegram: rich edit fallback: ${String(error)}`);
-          }
-        }
-        try {
-          await this.#transport.editMessageText(
-            target.chatId,
-            target.messageId,
-            formattedText,
-            sendOptions,
-          );
-          return message.editMessageId;
-        } catch (error) {
-          // Telegram rejects a no-op edit ("message is not modified"); treat
-          // as a successful non-update rather than failing the turn.
-          this.#log(`telegram: edit skipped: ${String(error)}`);
-          return message.editMessageId;
-        }
+      const reply = this.#editTargets.get(message.editMessageId);
+      if (reply !== undefined) {
+        await this.#editReply(reply, message.text, message.final === true);
+        return message.editMessageId;
       }
     }
-    const sent =
-      message.audioBytes !== undefined && this.#transport.sendAudio !== undefined
-        ? await this.#transport.sendAudio(target.chatId, message.audioBytes, {
-            ...sendOptions,
-            caption: telegramRichText(message.caption ?? message.text),
-            ...(message.audioFileName !== undefined
-              ? { fileName: message.audioFileName }
-              : {}),
-            ...(message.audioContentType !== undefined
-              ? { contentType: message.audioContentType }
-              : {}),
-            ...(message.audioTitle !== undefined
-              ? { title: message.audioTitle }
-              : {}),
-            ...(message.audioPerformer !== undefined
-              ? { performer: message.audioPerformer }
-              : {}),
-          })
-        :
-      message.photoUrl !== undefined && this.#transport.sendPhoto !== undefined
-        ? await this.#transport.sendPhoto(
-            target.chatId,
-            message.photoUrl,
-            telegramRichText(message.caption ?? message.text),
-            sendOptions,
-          )
-        : await sendTelegramTextMessage(
-            this.#transport,
-            target.chatId,
-            message.text,
-            formattedText,
-            richOptions,
-            sendOptions,
-            this.#log,
-            useRichMessages,
-          );
+    // Conversation id is Telegram chat id, optionally suffixed with the forum
+    // topic thread id. Replies must stay in-topic or users never see them.
+    const reply: EditTarget = {
+      ...parseTelegramConversationId(message.conversationId),
+      messages: [],
+    };
+    const sendOptions = telegramHtmlOptions(reply.messageThreadId);
+    if (
+      message.audioBytes !== undefined &&
+      this.#transport.sendAudio !== undefined
+    ) {
+      const sent = await this.#transport.sendAudio(
+        reply.chatId,
+        message.audioBytes,
+        {
+          ...sendOptions,
+          caption: telegramRichText(message.caption ?? message.text),
+          ...(message.audioFileName !== undefined
+            ? { fileName: message.audioFileName }
+            : {}),
+          ...(message.audioContentType !== undefined
+            ? { contentType: message.audioContentType }
+            : {}),
+          ...(message.audioTitle !== undefined
+            ? { title: message.audioTitle }
+            : {}),
+          ...(message.audioPerformer !== undefined
+            ? { performer: message.audioPerformer }
+            : {}),
+        },
+      );
+      reply.messages.push({
+        messageId: sent.message_id,
+        markdown: message.caption ?? message.text,
+      });
+    } else if (
+      message.photoUrl !== undefined &&
+      this.#transport.sendPhoto !== undefined
+    ) {
+      const sent = await this.#transport.sendPhoto(
+        reply.chatId,
+        message.photoUrl,
+        telegramRichText(message.caption ?? message.text),
+        sendOptions,
+      );
+      reply.messages.push({
+        messageId: sent.message_id,
+        markdown: message.caption ?? message.text,
+      });
+    } else {
+      // One Telegram message per part, in reading order.
+      for (const part of splitTelegramText(message.text)) {
+        reply.messages.push(await this.#sendPart(reply, part));
+      }
+    }
     const handle = `${this.id}-out-${++this.#outCounter}`;
-    this.#editTargets.set(handle, {
-      chatId: target.chatId,
-      messageId: sent.message_id,
-    });
+    this.#editTargets.set(handle, reply);
     // Bound the map (see slack-channel.ts): evict oldest edit targets.
     while (this.#editTargets.size > MAX_EDIT_TARGETS) {
       const oldest = this.#editTargets.keys().next().value;
@@ -961,6 +1001,137 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       this.#editTargets.delete(oldest);
     }
     return handle;
+  }
+
+  /**
+   * Bring an already sent reply up to `text`: edit the messages whose part
+   * changed, send parts that have no message yet as follow-ups in the same
+   * thread, and never delete a message.
+   *
+   * A streaming edit is best effort, because the next edit carries newer
+   * text: a failure is logged and skipped. The final edit must land: a
+   * rate-limited edit is retried once, and if it still fails the text from
+   * that part on is sent as new messages. Only when that fails too does the
+   * error reach the caller, which records the turn as not delivered.
+   */
+  async #editReply(
+    reply: EditTarget,
+    text: string,
+    final: boolean,
+  ): Promise<void> {
+    const parts = splitTelegramText(text);
+    for (const [index, part] of parts.entries()) {
+      const delivered = reply.messages[index];
+      if (delivered === undefined) {
+        try {
+          reply.messages.push(await this.#sendPart(reply, part));
+        } catch (error) {
+          if (final) throw error;
+          // Stop here so the parts stay in order; the next edit sends them.
+          this.#log(`telegram: follow-up skipped: ${String(error)}`);
+          return;
+        }
+        continue;
+      }
+      if (delivered.markdown === part.markdown) continue;
+      try {
+        if (final) {
+          await this.#editPartOrRetry(reply, delivered.messageId, part);
+        } else {
+          await this.#editPart(reply, delivered.messageId, part);
+        }
+        delivered.markdown = part.markdown;
+      } catch (error) {
+        if (!final) {
+          this.#log(`telegram: edit skipped: ${String(error)}`);
+          continue;
+        }
+        this.#log(
+          `telegram: final edit failed, sending the rest as new messages: ${String(error)}`,
+        );
+        const resent: DeliveredPart[] = [];
+        for (const rest of parts.slice(index)) {
+          resent.push(await this.#sendPart(reply, rest));
+        }
+        // The messages that could not be edited stay in the chat as they are;
+        // the handle now points at the ones that carry the final text.
+        reply.messages.splice(index, reply.messages.length - index, ...resent);
+        return;
+      }
+    }
+  }
+
+  /** Send one part as a new message: Rich Messages first where enabled. */
+  async #sendPart(
+    reply: EditTarget,
+    part: TelegramTextPart,
+  ): Promise<DeliveredPart> {
+    const sent = await sendTelegramTextMessage(
+      this.#transport,
+      reply.chatId,
+      part.markdown,
+      part.html,
+      telegramRichOptions(reply.messageThreadId),
+      telegramHtmlOptions(reply.messageThreadId),
+      this.#log,
+      shouldUseTelegramRichMessages(this.#richMessages, reply.chatId),
+    );
+    return { messageId: sent.message_id, markdown: part.markdown };
+  }
+
+  /** Edit one message to one part. Throws unless the message now shows it. */
+  async #editPart(
+    reply: EditTarget,
+    messageId: number,
+    part: TelegramTextPart,
+  ): Promise<void> {
+    if (
+      shouldUseTelegramRichMessages(this.#richMessages, reply.chatId) &&
+      this.#transport.editRichMessage !== undefined
+    ) {
+      try {
+        await this.#transport.editRichMessage(
+          reply.chatId,
+          messageId,
+          part.markdown,
+          telegramRichOptions(reply.messageThreadId),
+        );
+        return;
+      } catch (error) {
+        if (isTelegramNoopEdit(error)) return;
+        this.#log(`telegram: rich edit fallback: ${String(error)}`);
+      }
+    }
+    try {
+      await this.#transport.editMessageText(
+        reply.chatId,
+        messageId,
+        part.html,
+        telegramHtmlOptions(reply.messageThreadId),
+      );
+    } catch (error) {
+      // Telegram rejects an edit that changes nothing ("message is not
+      // modified"). The message already shows this text, so that is success;
+      // every other rejection is a real failure.
+      if (!isTelegramNoopEdit(error)) throw error;
+    }
+  }
+
+  /** The final edit of one message: wait out a flood limit and retry once. */
+  async #editPartOrRetry(
+    reply: EditTarget,
+    messageId: number,
+    part: TelegramTextPart,
+  ): Promise<void> {
+    try {
+      await this.#editPart(reply, messageId, part);
+    } catch (error) {
+      const waitMs = telegramRetryWaitMs(error);
+      if (waitMs === null) throw error;
+      this.#log(`telegram: final edit rate limited, retrying in ${waitMs} ms`);
+      await this.#sleep(waitMs);
+      await this.#editPart(reply, messageId, part);
+    }
   }
 }
 
@@ -1094,6 +1265,153 @@ async function sendTelegramTextMessage(
 
 function isTelegramNoopEdit(error: unknown): boolean {
   return /message is not modified/i.test(String(error));
+}
+
+/**
+ * How long to wait before retrying after a flood limit (Bot API error 429),
+ * capped, or null when the error is something else.
+ */
+function telegramRetryWaitMs(error: unknown): number | null {
+  if (!(error instanceof TelegramBotApiError) || error.errorCode !== 429) {
+    return null;
+  }
+  if (error.retryAfterSeconds === undefined) {
+    return TELEGRAM_DEFAULT_RETRY_WAIT_MS;
+  }
+  return Math.min(
+    Math.max(error.retryAfterSeconds, 0) * 1000,
+    TELEGRAM_MAX_RETRY_WAIT_MS,
+  );
+}
+
+function sleepDefault(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function telegramRichOptions(
+  messageThreadId: number | undefined,
+): TelegramRichMessageOptions {
+  return {
+    ...(messageThreadId !== undefined ? { messageThreadId } : {}),
+    skipEntityDetection: true,
+  };
+}
+
+function telegramHtmlOptions(
+  messageThreadId: number | undefined,
+): TelegramSendOptions {
+  return {
+    ...(messageThreadId !== undefined ? { messageThreadId } : {}),
+    parseMode: "HTML",
+  };
+}
+
+function fitsTelegramMessage(html: string): boolean {
+  return html.length <= TELEGRAM_MESSAGE_LIMIT;
+}
+
+/**
+ * Split a reply into parts that each fit one Telegram message. A reply whose
+ * rendering already fits stays one part.
+ *
+ * The raw text is cut, not the HTML, and each part is rendered on its own, so
+ * every part is valid HTML whatever the cut went through. A part is the
+ * longest start of the remaining text that stays within the raw budget and
+ * whose rendering fits, ended at a line break where possible.
+ *
+ * A cut depends only on the text before it. While a streamed reply grows,
+ * its earlier parts therefore stay the same and only the last one changes,
+ * so their messages need no further edit.
+ */
+export function splitTelegramText(text: string): TelegramTextPart[] {
+  const parts: TelegramTextPart[] = [];
+  let rest = text;
+  for (;;) {
+    if (rest.length <= TELEGRAM_WHOLE_FIT_CHECK) {
+      const html = telegramRichText(rest);
+      if (fitsTelegramMessage(html)) {
+        // Blank space left over after a cut is not worth a message. A reply
+        // that is blank altogether is passed on for Telegram to refuse.
+        if (rest.trim().length > 0 || parts.length === 0) {
+          parts.push({ markdown: rest, html });
+        }
+        return parts;
+      }
+    }
+    const taken = takeTelegramPart(rest);
+    if (taken.markdown.length > 0) {
+      parts.push({ markdown: taken.markdown, html: taken.html });
+    }
+    rest = rest.slice(taken.next);
+  }
+}
+
+/**
+ * The next part of text that does not fit one message, and where the text
+ * goes on after it.
+ */
+function takeTelegramPart(text: string): {
+  readonly markdown: string;
+  readonly html: string;
+  readonly next: number;
+} {
+  const limit = telegramFittingLength(text);
+  const cut = telegramCut(text, limit);
+  const markdown = text.slice(0, cut.end).trimEnd();
+  const html = telegramRichText(markdown);
+  if (fitsTelegramMessage(html)) return { markdown, html, next: cut.next };
+  // Rendering is not strictly additive: a table header renders shorter once
+  // its separator line follows, so the piece cut before that line can come
+  // out longer than the measured start. The measured start always fits.
+  const measured = text.slice(0, limit);
+  return { markdown: measured, html: telegramRichText(measured), next: limit };
+}
+
+/**
+ * Where to end a part within the first `limit` characters of `text`: at the
+ * last line break in their second half, else at the last space there, else
+ * at `limit`. `end` closes the part, `next` opens the one after it.
+ */
+function telegramCut(
+  text: string,
+  limit: number,
+): { readonly end: number; readonly next: number } {
+  const window = text.slice(0, limit + 1);
+  const half = Math.floor(limit / 2);
+  const lineBreak = window.lastIndexOf("\n");
+  if (lineBreak >= half) {
+    let next = lineBreak + 1;
+    while (text[next] === "\n" || text[next] === "\r") next += 1;
+    return { end: lineBreak, next };
+  }
+  const space = window.lastIndexOf(" ");
+  if (space >= half) return { end: space, next: space + 1 };
+  // No break in reach: cut mid-word, but not between the two halves of a
+  // surrogate pair.
+  const last = text.charCodeAt(limit - 1);
+  const end = limit > 1 && last >= 0xd800 && last <= 0xdbff ? limit - 1 : limit;
+  return { end, next: end };
+}
+
+/**
+ * How many characters from the start of `text` may go into one message: the
+ * raw budget, or fewer when the rendering of that many is over the limit.
+ * Never less than one, so a split always moves forward.
+ */
+function telegramFittingLength(text: string): number {
+  const fits = (length: number): boolean =>
+    fitsTelegramMessage(telegramRichText(text.slice(0, length)));
+  const budget = Math.min(text.length, TELEGRAM_PART_BUDGET);
+  if (fits(budget)) return budget;
+  // `fitting` characters fit (one always does), `tooMany` do not: close in.
+  let fitting = 1;
+  let tooMany = budget;
+  while (tooMany - fitting > 1) {
+    const middle = Math.floor((fitting + tooMany) / 2);
+    if (fits(middle)) fitting = middle;
+    else tooMany = middle;
+  }
+  return fitting;
 }
 
 function shouldUseTelegramRichMessages(

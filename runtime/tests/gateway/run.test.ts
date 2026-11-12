@@ -427,7 +427,14 @@ describe("startGateway", () => {
     // The prompt is the framed form of the inbound text.
     expect(client.sessions[0].prompts[0]).toContain("run the tests");
     expect(client.sessions[0].prompts[0]).toContain('trust="external"');
-    expect(transport.sent.at(-1)?.text).toContain("echo:");
+    // The echoed prompt is about 8,300 characters, more than one Telegram
+    // message holds, so the reply arrives in order across several messages:
+    // the first opens with the echo and the last ends with the user's text.
+    const delivered = transport.sent.map((message) => message.text);
+    expect(delivered.length).toBeGreaterThan(1);
+    expect(delivered.every((text) => text.length <= 4096)).toBe(true);
+    expect(delivered[0]).toContain("echo:");
+    expect(delivered.at(-1)).toContain("run the tests");
 
     await handle.stop();
   });
