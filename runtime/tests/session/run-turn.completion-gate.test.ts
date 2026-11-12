@@ -231,6 +231,23 @@ describe("completion gate in the turn loop", () => {
     expect(options.slice(2).every(option => (option?.maxOutputTokens ?? Infinity) <= 1024)).toBe(true);
   });
 
+  test("a capped non-reasoning gate keeps paid partial output when escalation would hit the same ceiling", async () => {
+    const { provider, requests, options } = scriptedProvider([
+      toolStep("work"), textStep("Done."),
+      { ...textStep("Paid verification fragment"), finishReason: "length" },
+      ...Array.from({ length: 8 }, (_, i) => toolStep(`verify-${i}`)),
+    ]);
+    const { session } = headlessSession(provider, true);
+    const ctx = mkCtx();
+    await collect(session, { ...ctx, modelInfo: { ...ctx.modelInfo,
+      supportedReasoningLevels: [], supportsReasoning: false,
+      maxOutputTokens: 32_000, maxOutputTokensUpperLimit: 64_000, maxOutputTokensCappedDefault: true,
+    } });
+    expect(options[2]?.maxOutputTokens).toBe(8192);
+    expect(options[3]?.maxOutputTokens).toBe(8192);
+    expect(requests[3]?.some(message => message.content === "Paid verification fragment")).toBe(true);
+  });
+
   test("bounds tool-only verification continuations and every gated output request", async () => {
     const { provider, requests, options } = scriptedProvider([
       toolStep("work"), textStep("Done."),

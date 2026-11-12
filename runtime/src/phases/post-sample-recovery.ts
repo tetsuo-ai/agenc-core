@@ -66,6 +66,7 @@ import {
 } from "../recovery/api-errors.js";
 import { RecoveryLadder } from "../recovery/fallback-ladder.js";
 import { resetRecoveryReentries } from "../recovery/fallback-ladder.js";
+import { completionGateCapsOutput } from "./completion-gate.js";
 import { runMaxOutputTokensRecovery } from "../recovery/max-output-tokens.js";
 import { runModelFallback } from "../recovery/model-fallback.js";
 import { escalatedMaxOutputTokensForModel } from "../llm/model-metadata.js";
@@ -643,7 +644,10 @@ export async function postSampleRecovery(
           state: c.state,
           escalateAllowed:
             ctx.modelInfo.maxOutputTokensCappedDefault === true &&
-            ctx.modelInfo.maxOutputTokensExplicit !== true,
+            ctx.modelInfo.maxOutputTokensExplicit !== true &&
+            // The gate also clamps to the original request limit. Retrying an
+            // override cannot raise it, so keep the paid fragment and continue.
+            !completionGateCapsOutput(c.state, ctx, c.session.services.provider.name),
           currentMaxOutputTokens: c.state.samplingRequestMaxOutputTokens ?? ctx.modelInfo.maxOutputTokens,
           escalatedMaxOutputTokens: escalatedMaxOutputTokensForModel(
             ctx.modelInfo,

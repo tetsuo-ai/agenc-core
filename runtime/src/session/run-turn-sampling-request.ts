@@ -7,8 +7,7 @@
  * @module
  */
 
-import { resolveProviderModelCapabilities } from "../llm/capabilities.js";
-import { COMPLETION_GATE_MAX_OUTPUT_TOKENS } from "../phases/completion-gate.js";
+import { COMPLETION_GATE_MAX_OUTPUT_TOKENS, completionGateCapsOutput } from "../phases/completion-gate.js";
 import { randomUUID } from "node:crypto";
 import type { LLMMessage, LLMTool } from "../llm/types.js";
 import { cloneLlmMessageSnapshot } from "../llm/content-conversion.js";
@@ -224,16 +223,8 @@ function buildSamplingRequestContract(
     baseInstructions,
   );
   const outputLimit = state.maxOutputTokensOverride ?? request.maxOutputTokens;
-  const gateActive = state.completionGate !== undefined && state.completionGateRound > 0 && !state.completionGateSettled;
-  // Thinking consumes output tokens too. A bookkeeping cap can exhaust the
-  // shared ceiling before reasoning models produce an answer or tool call.
-  const capGateOutput = gateActive &&
-    samplingContext.modelInfo.supportsReasoning !== true &&
-    samplingContext.modelInfo.supportedReasoningLevels.length === 0 &&
-    !resolveProviderModelCapabilities({
-      provider: samplingContext.modelProviderId ?? session.services.provider.name,
-      model: samplingContext.modelInfo.slug,
-    }).supportsExtendedThinking;
+  // Thinking shares output tokens; only non-reasoning gates use the bookkeeping cap.
+  const capGateOutput = completionGateCapsOutput(state, samplingContext, session.services.provider.name);
   return {
     ...request,
     contextWindowTokens: getEffectiveContextWindowSizeForEnvironment({ options: {

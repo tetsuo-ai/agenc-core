@@ -72,6 +72,7 @@
  * @module
  */
 
+import { resolveProviderModelCapabilities } from "../llm/capabilities.js";
 import { Lexer, type Token, type Tokens } from "marked";
 import type { LLMMessage } from "../llm/types.js";
 import type { Session } from "../session/session.js";
@@ -95,6 +96,16 @@ export const DEFAULT_COMPLETION_GATE_ROUNDS = 3;
 export const COMPLETION_GATE_ROUNDS_HARD_CAP = 3;
 export const COMPLETION_GATE_MAX_SAMPLES = 6;
 export const COMPLETION_GATE_MAX_OUTPUT_TOKENS = 8_192;
+
+/** Sampling and recovery must agree on whether a gate ceiling can be raised. */
+export function completionGateCapsOutput(state: TurnState, ctx: TurnContext, provider: string): boolean {
+  return state.completionGate !== undefined && state.completionGateRound > 0 && !state.completionGateSettled &&
+    ctx.modelInfo.supportsReasoning !== true && ctx.modelInfo.supportedReasoningLevels.length === 0 &&
+    !resolveProviderModelCapabilities({
+      provider: ctx.modelProviderId ?? provider, model: ctx.modelInfo.slug,
+    }).supportsExtendedThinking;
+}
+
 export const COMPLETION_GATE_TASK_TEXT_MAX_CHARS = 6_000;
 export const COMPLETION_GATE_MAX_UNMET_ITEMS = 20;
 const UNMET_ITEM_MAX_CHARS = 200;
