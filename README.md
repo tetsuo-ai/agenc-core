@@ -108,7 +108,9 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   private/loopback/metadata addresses by default; dedicated profile, never your
   real one.
 - **MCP** — outbound MCP client and MCP server (`agenc mcp serve|…`), including
-  enterprise XAA (SEP-990).
+  enterprise XAA (SEP-990). The server's SSE transport answers only requests
+  that carry its bearer token
+  ([docs](docs/reference/mcp.md#sse-bearer-token-and-origins)).
 - **Layered safety** — permission modes, opt-in OS sandbox (bubblewrap/Landlock
   on Linux, Seatbelt on macOS), `agenc security audit [--fix]`.
 - **17 built-in providers** — default provider **grok**; fresh-config session

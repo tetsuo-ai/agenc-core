@@ -1102,6 +1102,79 @@ describe("schema: closed config block validators (CF-13)", () => {
     ).toThrow(InvalidMcpServerModeConfigError);
   });
 
+  test("validateMcpServerModeConfig accepts a list of exact allowed origins", () => {
+    expect(validateMcpServerModeConfig({ allowed_origins: [] })).toEqual({
+      allowed_origins: [],
+    });
+    const validated = validateMcpServerModeConfig({
+      enabled: true,
+      transport: "sse",
+      allowed_origins: [
+        "http://localhost:5173",
+        "https://app.example",
+        "chrome-extension://abcdefghijklmnopabcdefghijklmnop",
+      ],
+    });
+    expect(validated).toEqual({
+      enabled: true,
+      transport: "sse",
+      allowed_origins: [
+        "http://localhost:5173",
+        "https://app.example",
+        "chrome-extension://abcdefghijklmnopabcdefghijklmnop",
+      ],
+    });
+    expect(Object.isFrozen(validated?.allowed_origins)).toBe(true);
+    expect(
+      validateAgenCConfigBlocks(
+        normalizeRawConfig({
+          mcp: { server: { allowed_origins: ["http://localhost:5173"] } },
+        }),
+      ).mcp?.server,
+    ).toEqual({ allowed_origins: ["http://localhost:5173"] });
+  });
+
+  test("validateMcpServerModeConfig rejects anything but exact origins", () => {
+    for (const allowed_origins of [
+      "http://localhost:5173",
+      { origin: "http://localhost:5173" },
+      [5173],
+      ["*"],
+      ["null"],
+      ["localhost"],
+      ["localhost:5173"],
+      ["http://localhost:5173/"],
+      ["http://localhost:5173/mcp"],
+      ["http://*.example.com"],
+      ["http://LOCALHOST:5173"],
+      ["https://app.example:443"],
+      ["http://localhost:5173", ""],
+    ]) {
+      let caught: unknown;
+      try {
+        validateMcpServerModeConfig({ allowed_origins });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught, JSON.stringify(allowed_origins)).toBeInstanceOf(
+        InvalidMcpServerModeConfigError,
+      );
+      expect((caught as InvalidMcpServerModeConfigError).field).toBe(
+        "allowed_origins",
+      );
+      expect((caught as Error).message).toContain(
+        "Invalid mcp.server.allowed_origins",
+      );
+    }
+    expect(() =>
+      validateMcpServerModeConfig({ allowed_origins: ["http://LOCALHOST:5173"] }),
+    ).toThrow('origin "http://LOCALHOST:5173" must be written as http://localhost:5173');
+    // A misspelled key is still an unknown field, never a silently open list.
+    expect(() =>
+      validateMcpServerModeConfig({ allowedOrigins: ["http://localhost:5173"] }),
+    ).toThrow(InvalidMcpServerModeConfigError);
+  });
+
   test("validateAgenCConfigBlocks checks typed blocks including mcp.server", () => {
     const out = validateAgenCConfigBlocks(
       normalizeRawConfig({

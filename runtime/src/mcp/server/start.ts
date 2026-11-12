@@ -21,11 +21,14 @@ import {
   createSkillPromptProvider,
 } from "./content-providers.js";
 import type { ResolvedMcpServeDefaults } from "./defaults.js";
+import { MCP_SERVER_TOKEN_ENV, resolveMcpServerToken } from "./token.js";
 import { normalizeMcpSseLoopbackHost, resolveMcpServeWorkspace } from "./workspace.js";
 export { resolveMcpServeDefaults, type ResolvedMcpServeDefaults } from "./defaults.js";
+import { captureSecureStorageIngress } from "../../utils/secureStorage/home.js";
 import { VERSION } from "../../version.js";
 import { McpServerFramework } from "../../mcp-server/framework.js";
 import { McpHttpSseServerTransport } from "../../mcp-server/http-sse.js";
+import { normalizeMcpServerAllowedOrigins } from "../../mcp-server/origin.js";
 import { McpStdioServerTransport } from "../../mcp-server/stdio.js";
 import type {
   McpCallToolResult,
@@ -57,12 +60,27 @@ export interface McpServerStartOptions {
    * MCP can bind requests to a daemon session-owned admission identity.
    */
   readonly toolRegistry?: ToolRegistry;
+  /**
+   * SSE bearer token that the caller has already resolved. Foreground serve
+   * resolves it first because it prints it. When omitted, the token comes
+   * from `environment`.
+   */
+  readonly token?: string;
+  /**
+   * Environment captured at the runtime ingress. It supplies an explicit
+   * AGENC_MCP_SERVER_TOKEN, and otherwise selects the home whose native
+   * secure storage keeps the generated token. Defaults to the process
+   * environment.
+   */
+  readonly environment?: Readonly<Record<string, string | undefined>>;
 }
 
 export interface McpServerStartCommand {
   readonly transport: "stdio" | "sse";
   readonly host: string;
   readonly port: number;
+  /** Exact origins the SSE transport admits; none when omitted. */
+  readonly allowedOrigins?: readonly string[];
 }
 
 export interface StartedMcpSseServer {
@@ -72,6 +90,14 @@ export interface StartedMcpSseServer {
   readonly configuredPort: number;
   /** Prepare without applying; the returned synchronous swap cannot fail. */
   prepareContextReplacement(cwd: string): () => number;
+  /**
+   * Prepare a new origin allowlist without applying it. An entry that is not
+   * an exact origin throws here; the returned synchronous swap cannot fail
+   * and returns the number of sessions it revoked.
+   */
+  prepareAllowedOriginsReplacement(
+    allowedOrigins: readonly string[],
+  ): () => number;
   close(): Promise<void>;
   waitUntilClosed(): Promise<void>;
 }
@@ -125,10 +151,17 @@ export async function startMcpSseServe(
   command: McpServerStartCommand,
   options: McpServerStartOptions = {},
 ): Promise<StartedMcpSseServer> {
+  // Captured before the first await, like the workspace below, so a later
+  // change to the process environment cannot select another token or home.
+  const resolveToken = captureMcpSseTokenSource(options);
   const pinnedOptions = await pinMcpServerStartOptions(options);
   const host = normalizeMcpSseLoopbackHost(command.host);
+  // No token, no listener: the transport has no unauthenticated mode, and a
+  // token that cannot be resolved fails the start before anything is bound.
   const transport = new McpHttpSseServerTransport({
     serverFactory: createMcpFrameworkFactory(pinnedOptions),
+    token: resolveToken(),
+    allowedOrigins: command.allowedOrigins,
   });
   const server = transport.createNodeServer();
   await new Promise<void>((resolve, reject) => {
@@ -153,6 +186,10 @@ export async function startMcpSseServe(
         cwd,
       });
       return () => transport.replaceServerFactory(replacementFactory);
+    },
+    prepareAllowedOriginsReplacement(allowedOrigins) {
+      const replacement = normalizeMcpServerAllowedOrigins(allowedOrigins);
+      return () => transport.replaceAllowedOrigins(replacement);
     },
     close: closeMcpSseHttpServer(server, transport),
     waitUntilClosed: () =>
@@ -188,6 +225,23 @@ export function formatMcpSseServeUrl(host: string, port: number): string {
   const bracketedHost =
     urlHost.includes(":") && !urlHost.startsWith("[") ? `[${urlHost}]` : urlHost;
   return `http://${bracketedHost}:${port}/mcp`;
+}
+
+function captureMcpSseTokenSource(
+  options: McpServerStartOptions,
+): () => string {
+  if (options.token !== undefined) {
+    const token = options.token;
+    return () => token;
+  }
+  const ingress = captureSecureStorageIngress(
+    options.environment ?? process.env,
+  );
+  return () =>
+    resolveMcpServerToken(
+      ingress.home,
+      ingress.environment[MCP_SERVER_TOKEN_ENV],
+    );
 }
 
 async function pinMcpServerStartOptions(

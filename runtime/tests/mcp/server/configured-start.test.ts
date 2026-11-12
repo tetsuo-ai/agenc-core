@@ -125,7 +125,8 @@ describe("configured MCP first-use boundary", () => {
   it("prepares a live listener replacement without loading another implementation", async () => {
     const apply = vi.fn(() => 3);
     const prepareContextReplacement = vi.fn(() => apply);
-    const live = { configuredHost: "127.0.0.1", configuredPort: 4321, prepareContextReplacement } as unknown as StartedMcpSseServer;
+    const prepareAllowedOriginsReplacement = vi.fn(() => () => 0);
+    const live = { configuredHost: "127.0.0.1", configuredPort: 4321, prepareContextReplacement, prepareAllowedOriginsReplacement } as unknown as StartedMcpSseServer;
     resolveWorkspace.mockResolvedValueOnce("/canonical");
     const { prepareMcpSseServerReconfigurationFromConfig } = await import("../../../src/mcp/server/configured-start.js");
     const prepared = await prepareMcpSseServerReconfigurationFromConfig(live, { mcp: { server: {
@@ -136,5 +137,40 @@ describe("configured MCP first-use boundary", () => {
     expect(prepared.apply()).toBe(3);
     expect(implementationLoads).toBe(0);
     expect(startServer).not.toHaveBeenCalled();
+  });
+
+  it("prepares the origin allowlist with the context and swaps the context first", async () => {
+    const order: string[] = [];
+    const applyContext = vi.fn(() => { order.push("context"); return 2; });
+    const applyOrigins = vi.fn(() => { order.push("origins"); return 1; });
+    const prepareContextReplacement = vi.fn(() => applyContext);
+    const prepareAllowedOriginsReplacement = vi.fn(() => applyOrigins);
+    const live = { configuredHost: "127.0.0.1", configuredPort: 4321, prepareContextReplacement, prepareAllowedOriginsReplacement } as unknown as StartedMcpSseServer;
+    const { prepareMcpSseServerReconfigurationFromConfig } = await import("../../../src/mcp/server/configured-start.js");
+    const server = { enabled: true, transport: "sse" as const, host: "127.0.0.1", port: 4321, workspace: "/requested" };
+
+    const prepared = await prepareMcpSseServerReconfigurationFromConfig(live, { mcp: { server: {
+      ...server, allowed_origins: ["http://localhost:5173"],
+    } } });
+    expect(prepareAllowedOriginsReplacement).toHaveBeenCalledExactlyOnceWith(["http://localhost:5173"]);
+    expect(prepared.defaults.allowedOrigins).toEqual(["http://localhost:5173"]);
+    expect(applyContext).not.toHaveBeenCalled();
+    expect(applyOrigins).not.toHaveBeenCalled();
+    expect(prepared.apply()).toBe(3);
+    expect(order).toEqual(["context", "origins"]);
+
+    // Removing the key clears the list on the live listener.
+    await prepareMcpSseServerReconfigurationFromConfig(live, { mcp: { server } });
+    expect(prepareAllowedOriginsReplacement).toHaveBeenLastCalledWith([]);
+
+    // A context that cannot be swapped leaves the previous list in force.
+    applyContext.mockImplementationOnce(() => { throw new Error("context swap failed"); });
+    order.length = 0;
+    expect(() => prepared.apply()).toThrow("context swap failed");
+    expect(order).toEqual([]);
+
+    // An invalid list fails the preparation, before anything is applied.
+    prepareAllowedOriginsReplacement.mockImplementationOnce(() => { throw new Error("allowed origin is invalid"); });
+    await expect(prepareMcpSseServerReconfigurationFromConfig(live, { mcp: { server } })).rejects.toThrow("allowed origin is invalid");
   });
 });

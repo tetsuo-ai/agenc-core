@@ -386,6 +386,7 @@ Channel tokens live in env, not in TOML:
 | `AGENC_SLACK_BOT_TOKEN`, `AGENC_SLACK_APP_TOKEN` | One-shot Slack credentials; onboarding persists them only in the home-bound native secure storage |
 | `AGENC_WEBCHAT_TOKEN` | One-shot WebChat bearer override; generated persistent tokens live only in the native secure storage |
 | `AGENC_HOOKS_TOKEN` | One-shot gateway hooks bearer override. Persistent generated tokens live only in the native secure storage. |
+| `AGENC_MCP_SERVER_TOKEN` | Bearer token of the inbound MCP SSE server (`agenc mcp serve --transport sse` and daemon `[mcp.server]` autostart). At least 16 characters; a shorter value is ignored. Without it one generated token per AgenC home lives only in the native secure storage, and a host with neither does not start the SSE server. [mcp.md](mcp.md#sse-bearer-token-and-origins) |
 | `AGENC_REMOTE_FULL_CONTROL` | Per-run phone full-control consent, only after the owner sets `[remote_control] enabled = true` in home/managed config. Ignored with a warning while disabled; never enables the capability. |
 
 [gateway.md](../gateway.md), [remote-control.md](../remote-control.md).

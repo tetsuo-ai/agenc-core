@@ -7,7 +7,11 @@ export type AgenCMcpCliCommand =
       readonly transport: "stdio" | "sse";
       readonly host: string;
       readonly port: number;
+      /** Exact origins the SSE transport admits, from `mcp.server`. */
+      readonly allowedOrigins?: readonly string[];
     }
+  /** Print the SSE bearer token for this home and exit without serving. */
+  | { readonly kind: "serve-token" }
   | { readonly kind: "management"; readonly argv: readonly string[] }
   | { readonly kind: "help"; readonly text: string }
   | { readonly kind: "error"; readonly message: string };
@@ -58,6 +62,7 @@ export function formatAgenCMcpCliHelpText(): string {
     "",
     "Options:",
     "  serve --transport <stdio|sse>       Transport for serve",
+    "  serve --print-token                 Print the SSE bearer token and exit",
     "  add -t, --transport <stdio|sse|http> Transport for add",
     "  -s, --scope <scope>        Config scope for add/remove/import commands (default: user for add/add-json)",
     "  -e, --env <KEY=value>      Environment variable for stdio add",
@@ -95,6 +100,7 @@ export function parseMcpServeArgs(
 ): AgenCMcpCliCommand {
   const defaults = resolveMcpServeDefaults(config?.mcp?.server);
   let transport = defaults.transport;
+  let printToken = false;
   const host = defaults.host;
   const port = defaults.port;
   const rest = argv;
@@ -102,6 +108,10 @@ export function parseMcpServeArgs(
     const arg = rest[i]!;
     if (arg === "--help" || arg === "-h") {
       return { kind: "help", text: formatAgenCMcpCliHelpText() };
+    }
+    if (arg === "--print-token") {
+      printToken = true;
+      continue;
     }
     if (arg === "--transport") {
       const value = rest[i + 1];
@@ -142,5 +152,14 @@ export function parseMcpServeArgs(
       message: `mcp serve does not accept argument '${arg}'`,
     };
   }
-  return { kind: "serve", transport, host, port };
+  if (printToken) return { kind: "serve-token" };
+  return {
+    kind: "serve",
+    transport,
+    host,
+    port,
+    ...(defaults.allowedOrigins !== undefined
+      ? { allowedOrigins: defaults.allowedOrigins }
+      : {}),
+  };
 }

@@ -1166,7 +1166,7 @@ agenc agent start --unattended-allow read,grep "audit imports"
 ## `mcp`
 
 ```text
-agenc mcp serve [--transport <stdio|sse>]
+agenc mcp serve [--transport <stdio|sse>] [--print-token]
 agenc mcp add <name> <command-or-url> [args...]
 agenc mcp list
 agenc mcp get <name>
@@ -1196,6 +1196,7 @@ agenc mcp xaa setup|login|show|clear
 | Option (selected) | Meaning |
 | --- | --- |
 | `serve --transport <stdio\|sse>` | Transport for serve |
+| `serve --print-token` | Print the SSE bearer token for this AgenC home on stdout and exit without serving |
 | `add -t, --transport <stdio\|sse\|http>` | Transport for add |
 | `-s, --scope <scope>` | Config scope for add/remove/import (default user for add/add-json) |
 | `-e, --env <KEY=value>` | Environment variable for stdio add |
@@ -1215,6 +1216,17 @@ closed with `ADMISSION_IDENTITY_REQUIRED`; environment flags cannot authorize
 execution. Prompts and resources remain workspace-scoped. Daemon SSE autostart
 additionally requires an absolute `mcp.server.workspace`; foreground serve uses
 its working directory.
+
+`serve --transport sse` answers only requests that carry
+`Authorization: Bearer <token>`; anything else gets `401`. It prints the token
+once at start, on stderr after the URL line. A daemon-autostarted server never
+prints it: run `agenc mcp serve --print-token` for the same AgenC home.
+`AGENC_MCP_SERVER_TOKEN` (at least 16 characters) supplies the token instead
+of the one kept in the native secure storage. A request with an `Origin`
+header gets `403` unless the origin is listed in
+`mcp.server.allowed_origins`. Upgrade note: existing SSE clients must now send
+the header. Details:
+[mcp.md](mcp.md#sse-bearer-token-and-origins).
 
 ---
 

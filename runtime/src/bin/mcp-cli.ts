@@ -21,6 +21,10 @@ import {
   runMcpStdioServe,
   startMcpSseServe,
 } from "../mcp/server/start.js";
+import {
+  MCP_SERVER_TOKEN_ENV,
+  resolveMcpServerToken,
+} from "../mcp/server/token.js";
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 import { resolvePluginStorageRootAtIngress } from "../session/runtime-options.js";
 
@@ -121,8 +125,16 @@ export async function runAgenCMcpCli(
           await runMcpStdioServe(io, options);
           return 0;
         }
-        const started = await startMcpSseServe(command, options);
+        // Resolved here, not inside the start path, because this is the one
+        // place that shows the token to the person who has to configure a
+        // client with it.
+        const token = resolveMcpServerToken(
+          home,
+          ingress.environment[MCP_SERVER_TOKEN_ENV],
+        );
+        const started = await startMcpSseServe(command, { ...options, token });
         io.stderr.write(`AgenC MCP server listening on ${started.url}\n`);
+        io.stderr.write(formatMcpServerTokenNotice(token));
         if (options.waitForClose !== false) {
           await started.waitUntilClosed();
         }
@@ -133,7 +145,31 @@ export async function runAgenCMcpCli(
         );
         return 1;
       }
+    case "serve-token":
+      // The daemon-autostarted server never prints its token: its output is a
+      // log. This prints the token that a server bound to this home accepts,
+      // minting it first when none is stored yet.
+      try {
+        io.stdout.write(
+          `${resolveMcpServerToken(home, ingress.environment[MCP_SERVER_TOKEN_ENV])}\n`,
+        );
+        return 0;
+      } catch (error) {
+        io.stderr.write(
+          `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        return 1;
+      }
   }
+}
+
+/** Printed once at start, after the URL line and on the same stream. */
+function formatMcpServerTokenNotice(token: string): string {
+  return (
+    `AgenC MCP server token: ${token}\n` +
+    "Clients must send it with every request, for example: " +
+    "Authorization: Bearer <token>\n"
+  );
 }
 
 async function runMcpManagementCommand(

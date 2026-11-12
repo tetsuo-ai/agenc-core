@@ -86,7 +86,10 @@ AgenC can also expose itself as an MCP server via `[mcp.server]`
 (`enabled`, `transport` = `stdio` | `sse`, optional `host` / `port`). Daemon
 SSE autostart also requires an absolute `workspace`; the path is canonicalized
 and must resolve to a directory before the endpoint starts. Foreground
-`agenc mcp serve` scopes tools to the command's working directory.
+`agenc mcp serve` scopes tools to the command's working directory. The SSE
+transport requires a bearer token on every request and refuses any `Origin`
+that is not listed in `allowed_origins`:
+[SSE bearer token and origins](#sse-bearer-token-and-origins).
 
 ### Plugin-declared servers
 
@@ -516,7 +519,7 @@ must not advertise tools.
 ### CLI
 
 ```bash
-agenc mcp serve [--transport stdio|sse]
+agenc mcp serve [--transport stdio|sse] [--print-token]
 agenc mcp add|list|get|remove|add-json|add-from-agenc-desktop
 agenc mcp reset-project-choices
 agenc mcp doctor
@@ -525,7 +528,8 @@ agenc mcp xaa
 
 `serve` transport defaults and host/port for network modes come from config
 `[mcp.server]` (the CLI rejects inventing `--host`/`--port` flags on the
-command line). Full flag tables: [cli.md](cli.md).
+command line). `serve --print-token` prints the SSE bearer token and exits
+without serving. Full flag tables: [cli.md](cli.md).
 
 ### Sampling & roots
 
@@ -556,6 +560,87 @@ Two related layers:
 
 Prefer config `[mcp.server]` and the `agenc mcp` CLI rather than importing
 framework modules from embedders.
+
+### SSE bearer token and origins
+
+The SSE transport listens on a loopback TCP port. A loopback port is not
+private to one user: every local process, of any user, can connect to it. So
+every HTTP request to the transport must carry the server's bearer token:
+
+```text
+Authorization: Bearer <token>
+```
+
+This covers the streamable endpoint (`POST`, `GET` and `DELETE` on `/mcp`) and
+the legacy `/sse` and `/message` routes. A request without the header, or with
+a wrong token, gets `401` with `WWW-Authenticate: Bearer`. That is decided
+before a session is looked up or the request body is read. There is no
+unauthenticated mode, a session id is not a credential, and a token in the
+query string is never read. The stdio transport is unchanged and needs no
+token.
+
+**Where the token comes from.** `AGENC_MCP_SERVER_TOKEN` wins when it is set to
+at least 16 characters; a shorter value is ignored. Otherwise AgenC generates
+one token per AgenC home and keeps it in the native secure storage, the same
+way the gateway keeps its WebChat and hooks tokens. The token is never written
+to `config.toml`, a log, a session file, or a daemon status or reload payload.
+If the native secure storage is unavailable and the variable is not set, the
+SSE server does not start and the error names `AGENC_MCP_SERVER_TOKEN`. The
+daemon treats that like any other MCP server start failure: it does not
+start, and a reload fails and keeps what was running. Set the variable in the
+daemon's environment, or turn `mcp.server` off.
+
+**How to get it.**
+
+- `agenc mcp serve --transport sse` prints it once at start, on stderr, right
+  after the URL line:
+
+  ```text
+  AgenC MCP server listening on http://127.0.0.1:3334/mcp
+  AgenC MCP server token: <token>
+  Clients must send it with every request, for example: Authorization: Bearer <token>
+  ```
+
+- The daemon-autostarted server never prints it, because the daemon's output
+  is a log. Run `agenc mcp serve --print-token`: it prints the token for the
+  same AgenC home on stdout and exits without starting a server. It creates
+  the token when none is stored yet, so a client can be configured before the
+  daemon starts the server. The daemon reads `AGENC_MCP_SERVER_TOKEN` from its
+  own environment when it starts; `--print-token` reads it from the
+  environment it runs in.
+
+```bash
+curl -sS http://127.0.0.1:3334/mcp \
+  -H "Authorization: Bearer $(agenc mcp serve --print-token)" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}'
+```
+
+**Origins.** A request with no `Origin` header is admitted on the token alone;
+that is what non-browser MCP clients send. A request that carries an `Origin`
+header gets `403` unless that exact origin is listed in
+`mcp.server.allowed_origins`. The list is empty by default and `localhost` is
+not special. An entry is written the way the client sends it: a scheme and a
+host with an optional port, for example `http://localhost:5173`, without a
+path, trailing slash or wildcard. A listed origin still needs the token.
+`agenc daemon reload` applies a changed list to the running listener and
+closes its open sessions.
+
+```toml
+[mcp.server]
+enabled = true
+transport = "sse"
+workspace = "/abs/path/to/project"
+allowed_origins = ["http://localhost:5173"]
+```
+
+**Upgrading.** Earlier versions served any local client, and any web page on a
+`localhost` origin, without a credential. Existing SSE clients must now send
+the `Authorization` header: get the token as described above and add the
+header to each client's configuration. A client that sends an `Origin` header
+also needs its origin listed in `allowed_origins`. On a host without native
+secure storage, set `AGENC_MCP_SERVER_TOKEN` before the next start.
 
 The inbound server does not advertise tools: `tools/list` is empty and every
 direct `tools/call` fails closed with `ADMISSION_IDENTITY_REQUIRED` and reason
@@ -598,10 +683,12 @@ there, because the memory scanner reports `unsupported` on win32.
 - Inbound `mcp serve` exposes prompts and resources only. Tools are neither
   advertised nor dispatched, even if a registry or legacy environment override
   is present.
-- SSE remains loopback-only, disabled by default, and has no peer authentication.
-  Prefer stdio when process-level peer isolation is required: any local process
-  or OS user able to reach loopback may otherwise read the configured workspace
-  with the AgenC owner's filesystem authority.
+- SSE remains loopback-only and disabled by default. Every local process and
+  OS user can reach a loopback port, so each request must carry the bearer
+  token ([SSE bearer token and origins](#sse-bearer-token-and-origins)).
+  Whoever holds the token reads the configured workspace's prompts and
+  resources with the AgenC owner's filesystem authority, so treat it like a
+  password. Prefer stdio when process-level peer isolation is required.
 - Prefer supply-chain pins for untrusted third-party servers.
 - Stdio servers run as your user with the configured env — only pass secrets you
   intend the child to see.

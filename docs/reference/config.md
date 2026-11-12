@@ -789,6 +789,7 @@ discovered metadata.
 | `mcp.server.transport` | `stdio` or `sse`. |
 | `mcp.server.port`, `mcp.server.host` | SSE listener port and host. |
 | `mcp.server.workspace` | Absolute workspace required for daemon SSE autostart. |
+| `mcp.server.allowed_origins` | Array of exact origins, default empty. The SSE transport admits a request that carries an `Origin` header only when that origin is listed, for example `http://localhost:5173`; `localhost` is not special. An entry is a scheme and a host with an optional port, without a path, trailing slash or wildcard. A request without an `Origin` header is not affected. Every request also needs the bearer token, which is never set in this file: [mcp.md](mcp.md#sse-bearer-token-and-origins). |
 | `mcp_servers`, `mcp_servers.<server>` | Named external MCP connections. Server identifiers are 1 to 256 ASCII letters, numbers, colons, hyphens, or underscores; `.` is reserved as the tool-identity delimiter. |
 | `mcp_servers.<server>.transport` | `stdio`, `sse`, `http`, or `websocket`. |
 | `mcp_servers.<server>.command`, `mcp_servers.<server>.args`, `mcp_servers.<server>.cwd` | Stdio process launch fields. |

@@ -56,6 +56,7 @@ import type {
 } from "../tui/keybindings/types.js";
 import { isDynamicSessionCredentialEnvironmentKey } from "../session/environment.js";
 import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
+import { mcpServerOriginValidationIssue } from "../mcp-server/origin.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Core enums / unions
@@ -404,6 +405,12 @@ export interface McpServerModeConfig {
   readonly host?: string;
   /** Absolute workspace exposed by daemon-autostarted read-only MCP tools. */
   readonly workspace?: string;
+  /**
+   * Exact origins the SSE transport admits when a request carries an Origin
+   * header. Empty by default: only clients that send no Origin header are
+   * admitted, and every request still needs the bearer token.
+   */
+  readonly allowed_origins?: readonly string[];
 }
 
 export interface McpConfig {
@@ -2897,6 +2904,7 @@ const MCP_SERVER_MODE_KEYS: ReadonlySet<string> = new Set([
   "port",
   "host",
   "workspace",
+  "allowed_origins",
 ]);
 
 export function validateMcpServerModeConfig(
@@ -2964,6 +2972,23 @@ export function validateMcpServerModeConfig(
       );
     }
     out.workspace = workspace;
+  }
+  const allowedOrigins = optionalStringArray(
+    record.allowed_origins,
+    "allowed_origins",
+    (field, detail) => new InvalidMcpServerModeConfigError(field, detail),
+  );
+  if (allowedOrigins !== undefined) {
+    for (const origin of allowedOrigins) {
+      const issue = mcpServerOriginValidationIssue(origin);
+      if (issue !== undefined) {
+        throw new InvalidMcpServerModeConfigError(
+          "allowed_origins",
+          `origin ${JSON.stringify(origin)} ${issue}`,
+        );
+      }
+    }
+    out.allowed_origins = allowedOrigins;
   }
   return Object.freeze(out as McpServerModeConfig);
 }

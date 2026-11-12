@@ -116,6 +116,13 @@ import {
   writePairFile,
 } from "../../src/bin/remote-state.js";
 import { McpHttpSseServerTransport } from "../../src/mcp-server/http-sse.js";
+import { resolveHomeContext } from "../../src/config/home.js";
+import {
+  getSecureStorage,
+  type SecureStorage,
+} from "../../src/utils/secureStorage/index.js";
+import { readNativeSecureStorage } from "../../src/utils/secureStorage/native.js";
+import { SecureStorageUnavailableError } from "../../src/utils/secureStorage/unavailable.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { ConfigStore } from "../config/store.js";
@@ -905,12 +912,38 @@ async function availableLoopbackPort(): Promise<number> {
   return port;
 }
 
-function mcpHttpHeaders(sessionId?: string): Record<string, string> {
+/** Explicit MCP SSE bearer token a case hands its daemon through host.env. */
+const MCP_SSE_TEST_TOKEN = "daemon-contract-mcp-token-0123456789";
+
+function mcpHttpHeaders(
+  sessionId?: string,
+  token: string | null = MCP_SSE_TEST_TOKEN,
+): Record<string, string> {
   return {
     accept: "application/json, text/event-stream",
     "content-type": "application/json",
+    ...(token === null ? {} : { authorization: `Bearer ${token}` }),
     ...(sessionId === undefined ? {} : { "mcp-session-id": sessionId }),
   };
+}
+
+/** Regular files below `root` whose bytes contain `needle`. */
+async function filesContaining(root: string, needle: string): Promise<string[]> {
+  const found: string[] = [];
+  const visit = async (directory: string): Promise<void> => {
+    for (const entry of await fsPromises.readdir(directory, {
+      withFileTypes: true,
+    })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(path);
+      } else if (entry.isFile() && (await readFile(path)).includes(needle)) {
+        found.push(path);
+      }
+    }
+  };
+  await visit(root);
+  return found.sort();
 }
 
 async function initializeMcpHttpSession(url: string): Promise<string> {
@@ -4788,6 +4821,8 @@ token_cap = 123
     host.env[AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV] = String(
       LOADED_DAEMON_REQUEST_TIMEOUT_MS,
     );
+    // Every MCP request below carries this token in its Authorization header.
+    host.env.AGENC_MCP_SERVER_TOKEN = MCP_SSE_TEST_TOKEN;
     const io = createIo();
     const signalProcess = createSignalProcess();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
@@ -4880,6 +4915,245 @@ workspace = ${JSON.stringify(workspaceB)}
     // Nothing here times the daemon. The bound clears the pid wait and the
     // reload's two requests back to back.
   }, loadedDaemonCaseTimeoutMs({ milestones: 1, requests: 2 }));
+
+  it.each(["generated", "environment"] as const)(
+    "requires the %s MCP SSE token and keeps it out of output, payloads, config and files",
+    async (source) => {
+      const agencHome = await tempAgencHome();
+      const workspace = await mkdtemp(join(tmpdir(), "agenc-mcp-token-"));
+      const port = await availableLoopbackPort();
+      const url = `http://127.0.0.1:${port}/mcp`;
+      const allowedOrigin = "http://localhost:5173";
+      const host = createHost(agencHome);
+      host.env[AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV] = String(
+        LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+      );
+      if (source === "environment") {
+        host.env.AGENC_MCP_SERVER_TOKEN = MCP_SSE_TEST_TOKEN;
+      }
+      const io = createIo();
+      const reloadIo = createIo();
+      const statusIo = createIo();
+      const signalProcess = createSignalProcess();
+      const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+      const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+      const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+      const configPath = join(agencHome, "config.toml");
+      host.runningPids.add(host.pid);
+      const config = (extra = "") => `
+config_version = 2
+
+[mcp.server]
+enabled = true
+transport = "sse"
+host = "127.0.0.1"
+port = ${port}
+workspace = ${JSON.stringify(workspace)}
+${extra}
+      `;
+      const initialize = (
+        token: string | null,
+        origin?: string,
+      ): Promise<number> =>
+        fetch(url, {
+          method: "POST",
+          headers: {
+            ...mcpHttpHeaders(undefined, token),
+            ...(origin === undefined ? {} : { origin }),
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+        }).then(async (response) => {
+          await response.text();
+          return response.status;
+        });
+      await writeFile(configPath, config());
+
+      const running = runAgenCDaemonCli(
+        { kind: "command", action: "run" },
+        { host, io, signalProcess },
+      );
+      let stopped = false;
+      try {
+        await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
+        const stored = readNativeSecureStorage(
+          resolveHomeContext({ AGENC_HOME: agencHome }),
+        ).mcpServer?.token;
+        if (source === "environment") expect(stored).toBeUndefined();
+        const token = source === "environment" ? MCP_SSE_TEST_TOKEN : stored;
+        if (token === undefined) throw new Error("the daemon resolved no MCP token");
+        expect(token.length).toBeGreaterThanOrEqual(16);
+
+        // The listener the daemon started needs the token on every request.
+        await expect(initialize(null)).resolves.toBe(401);
+        await expect(initialize(`${token}x`)).resolves.toBe(401);
+        await expect(initialize(token)).resolves.toBe(200);
+        await expect(initialize(token, allowedOrigin)).resolves.toBe(403);
+
+        const authCookie = (await readFile(cookiePath, "utf8")).trim();
+        const client = createAgenCJsonLineDaemonRequestClient({
+          socketPath,
+          authCookie,
+          timeoutMs: LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+        });
+        const reloaded = await client.request("daemon.reload");
+        expect(reloaded).toMatchObject({
+          reloaded: true,
+          mcpServer: { status: "listening", url },
+        });
+        expect(
+          Object.keys((reloaded as { mcpServer: object }).mcpServer).sort(),
+        ).toEqual(["status", "url"]);
+
+        // A reload that only changes the origin list reaches the live listener.
+        await writeFile(
+          configPath,
+          config(`allowed_origins = ${JSON.stringify([allowedOrigin])}`),
+        );
+        await expect(
+          runAgenCDaemonCli(
+            { kind: "command", action: "reload" },
+            { host, io: reloadIo },
+          ),
+        ).resolves.toBe(0);
+        await expect(initialize(token, allowedOrigin)).resolves.toBe(200);
+        await expect(initialize(token, "http://localhost:5174")).resolves.toBe(403);
+        await expect(initialize(null, allowedOrigin)).resolves.toBe(401);
+        expect(
+          io.stderrText().match(/AgenC MCP server listening/g) ?? [],
+        ).toHaveLength(1);
+
+        await expect(
+          runAgenCDaemonCli(
+            { kind: "command", action: "status" },
+            { host, io: statusIo },
+          ),
+        ).resolves.toBe(0);
+        const health = [
+          await client.request("health.stats"),
+          await client.request("health.ready"),
+        ];
+
+        signalProcess.emit("SIGTERM");
+        stopped = true;
+        await expect(running).resolves.toBe(0);
+
+        // The daemon says where the token is shown and never shows it.
+        expect(io.stderrText()).toContain("agenc mcp serve --print-token");
+        const published = [
+          io.stdoutText(),
+          io.stderrText(),
+          reloadIo.stdoutText(),
+          reloadIo.stderrText(),
+          statusIo.stdoutText(),
+          statusIo.stderrText(),
+          JSON.stringify([reloaded, health]),
+        ].join("\n");
+        expect(statusIo.stdoutText()).toContain("AgenC daemon running");
+        expect(published).not.toContain(token);
+        expect(await readFile(configPath, "utf8")).not.toContain(token);
+        await expect(filesContaining(agencHome, token)).resolves.toEqual([]);
+      } finally {
+        if (!stopped) {
+          signalProcess.emit("SIGTERM");
+          await running.catch(() => {});
+        }
+        await Promise.all([
+          rm(agencHome, { recursive: true, force: true }),
+          rm(workspace, { recursive: true, force: true }),
+        ]);
+      }
+      // Nothing here times the daemon. The bound clears the pid wait, the
+      // reload command's two requests and this case's own daemon requests.
+    },
+    loadedDaemonCaseTimeoutMs({ milestones: 1, requests: 7 }),
+  );
+
+  it("does not start with an enabled MCP SSE server and no token source, then starts on the environment token", async () => {
+    const agencHome = await tempAgencHome();
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-mcp-no-token-"));
+    const port = await availableLoopbackPort();
+    const url = `http://127.0.0.1:${port}/mcp`;
+    await writeFile(
+      join(agencHome, "config.toml"),
+      `
+config_version = 2
+
+[mcp.server]
+enabled = true
+transport = "sse"
+host = "127.0.0.1"
+port = ${port}
+workspace = ${JSON.stringify(workspace)}
+      `,
+    );
+    // A host with no native secure storage: nothing can keep a generated
+    // token, so only AGENC_MCP_SERVER_TOKEN can supply one.
+    const unavailable = (): never => {
+      throw new SecureStorageUnavailableError(
+        "Secret Service is unavailable: no session message bus",
+      );
+    };
+    const absentBackend: SecureStorage = {
+      name: "absent-libsecret",
+      read: unavailable,
+      readFresh: unavailable,
+      readAsync: async () => unavailable(),
+      update: () => ({ success: false, warning: "no backend" }),
+      delete: () => true,
+    };
+    const getSecureStorageMock = vi.mocked(getSecureStorage);
+    const hermeticStorage = getSecureStorageMock.getMockImplementation();
+    getSecureStorageMock.mockReturnValue(absentBackend);
+    const signalProcess = createSignalProcess();
+    let running: Promise<number> | undefined;
+    let stopped = false;
+    try {
+      const refusedHost = createHost(agencHome);
+      const refusedIo = createIo();
+      refusedHost.runningPids.add(refusedHost.pid);
+      await expect(
+        runAgenCDaemonCli(
+          { kind: "command", action: "run" },
+          { host: refusedHost, io: refusedIo, signalProcess: createSignalProcess() },
+        ),
+      ).resolves.toBe(1);
+      expect(refusedIo.stderrText()).toContain(
+        "agenc: daemon MCP server start failed: MCP SSE server has no bearer token: set AGENC_MCP_SERVER_TOKEN to at least 16 characters",
+      );
+      expect(refusedIo.stderrText()).not.toContain("AgenC MCP server listening");
+      await expect(fetch(url)).rejects.toThrow();
+
+      const host = createHost(agencHome);
+      host.env.AGENC_MCP_SERVER_TOKEN = MCP_SSE_TEST_TOKEN;
+      const io = createIo();
+      const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+      host.runningPids.add(host.pid);
+      running = runAgenCDaemonCli(
+        { kind: "command", action: "run" },
+        { host, io, signalProcess },
+      );
+      await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
+      expect(io.stderrText()).toContain(`AgenC MCP server listening on ${url}`);
+      await expect(initializeMcpHttpSession(url)).resolves.toEqual(
+        expect.any(String),
+      );
+
+      signalProcess.emit("SIGTERM");
+      stopped = true;
+      await expect(running).resolves.toBe(0);
+    } finally {
+      if (running !== undefined && !stopped) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      if (hermeticStorage) getSecureStorageMock.mockImplementation(hermeticStorage);
+      await Promise.all([
+        rm(agencHome, { recursive: true, force: true }),
+        rm(workspace, { recursive: true, force: true }),
+      ]);
+    }
+    // Nothing here times the daemon. The bound clears the pid wait.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 2, requests: 1 }));
 
   it("reload failure preserves active auth and mcp.server state", async () => {
     const agencHome = await tempAgencHome();

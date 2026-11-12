@@ -78,6 +78,11 @@ export interface GatewaySecureStorage {
   }
 }
 
+/** Bearer token of the inbound MCP SSE server, generated once per home. */
+export interface McpServerSecureStorage {
+  readonly token?: string
+}
+
 export interface SecureStorageData {
   /** Primary API key used by the local auth facade. */
   primaryApiKey?: string
@@ -88,6 +93,7 @@ export interface SecureStorageData {
   remoteAuth?: RemoteAuthSecureStorage
   remoteRuntimeAuth?: RemoteRuntimeAuthSecureStorage
   gateway?: GatewaySecureStorage
+  mcpServer?: McpServerSecureStorage
   githubModels?: {
     accessToken: string
     oauthAccessToken?: string
