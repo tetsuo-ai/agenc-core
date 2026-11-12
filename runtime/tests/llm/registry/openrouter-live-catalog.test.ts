@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { OpenRouterCatalog, OPENROUTER_CATALOG_TTL_MS, openRouterCatalogFor } from "../../../src/llm/registry/openrouter-live-catalog.js";
-import { clearPublishedModelCatalogs } from "../../../src/llm/registry/published-model-catalog.js";
+import { clearPublishedModelCatalogs, publishedModelCatalogEntries, publishedModelCatalogReadAt } from "../../../src/llm/registry/published-model-catalog.js";
 import { recordPublishedModelCosts } from "../../../src/llm/registry/published-model-costs.js";
 import { OPENROUTER_MODEL_IDS } from "../../../src/llm/registry/openrouter-model-ids.js";
 import { ModelMetadataResolver } from "../../../src/llm/model-metadata.js";
@@ -22,6 +22,11 @@ import { searchModels } from "../../../src/commands/model-search.js";
 import { recordOpenRouterZdrEndpoints, resetOpenRouterZdrEndpointsForTesting } from "../../../src/llm/registry/openrouter-zdr-endpoints.js";
 import { resolveHomeContext } from "../../../src/config/home.js";
 import type { SlashCommandContext } from "../../../src/commands/types.js";
+
+// The bundled snapshot's generation day: none of its rows has reached its
+// retirement date yet, so the bundled list is offered whole. Later clocks
+// leave the retired rows out (tests/commands/model-menu-snapshot.retirement.test.ts).
+const SNAPSHOT_DAY = { now: new Date("2026-10-20T00:00:00Z") };
 
 const homes: string[] = [];
 function home() {
@@ -120,9 +125,9 @@ test("a mocked 468-model catalog replaces all 300 menu rows and remains searchab
   const fetchImpl = vi.fn<typeof fetch>(() => new Promise(resolve => { finish = resolve; }));
   const catalog = openRouterCatalogFor({ home: path, fetchImpl });
   expect(OPENROUTER_MODEL_IDS).toHaveLength(300);
-  expect(readModelMenuSnapshot(ctx).providerCounts.openrouter).toBe(300);
+  expect(readModelMenuSnapshot(ctx, SNAPSHOT_DAY).providerCounts.openrouter).toBe(300);
   const pending = catalog.refresh();
-  expect(readProvidersHubModels(ctx, "openrouter")).toHaveLength(300);
+  expect(readProvidersHubModels(ctx, "openrouter", SNAPSHOT_DAY)).toHaveLength(300);
   finish(json(listing));
   await pending;
   const rows = readProvidersHubModels(ctx, "openrouter");
@@ -180,12 +185,132 @@ test.each(["network", "http", "malformed", "empty"])("%s failure uses the bundle
   expect((await catalog.refresh()).models).toHaveLength(468);
 });
 
+/** The models OpenRouter's published list has in this process, if one is recorded. */
+const published = () => publishedModelCatalogEntries("openrouter")?.map(entry => entry.model);
+
+test("a catalog built before the cache existed takes the list another catalog cached", async () => {
+  const path = home();
+  // Two objects on one home and key, as the daemon and the TUI each have one.
+  const early = new OpenRouterCatalog({ home: path, apiKey: "fixture-only-key" });
+  expect(early.read().source).toBe("bundled");
+  const other = new OpenRouterCatalog({ home: path, apiKey: "fixture-only-key", fetchImpl: fakeFetch({ data: [row()] }) });
+  expect((await other.refresh()).source).toBe("live");
+  // A second process has none of the first one's memory.
+  clearPublishedModelCatalogs();
+  // Reading alone does not look at the file again.
+  expect(early.read().source).toBe("bundled");
+  expect(published()).toBeUndefined();
+
+  const taken = early.refreshFromCache();
+  expect(taken).toMatchObject({ source: "cache", models: [{ model: "test/live-only" }] });
+  expect(published()).toEqual(["test/live-only"]);
+  expect(early.read()).toBe(taken);
+  expect(early.refreshFromCache()).toBe(taken);
+});
+
+test("a list is recorded with the time OpenRouter gave it, not the time its cache was opened", async () => {
+  const path = home();
+  const downloaded = Date.parse("2026-11-05T12:00:00Z");
+  const first = new OpenRouterCatalog({ home: path, fetchImpl: fakeFetch({ data: [row()] }), now: () => downloaded });
+  expect((await first.refresh()).source).toBe("live");
+  expect(publishedModelCatalogReadAt("openrouter")).toBe(downloaded);
+
+  // Another process opens that cache a week later: the list is a week old.
+  clearPublishedModelCatalogs();
+  const weekLater = downloaded + 7 * 24 * 60 * 60_000;
+  const later = new OpenRouterCatalog({ home: path, now: () => weekLater });
+  expect(later.read().source).toBe("cache");
+  expect(publishedModelCatalogReadAt("openrouter")).toBe(downloaded);
+  // So is a list taken from the cache by a catalog that was built before it.
+  clearPublishedModelCatalogs();
+  const other = home();
+  const early = new OpenRouterCatalog({ home: other, now: () => weekLater });
+  const writer = new OpenRouterCatalog({ home: other, fetchImpl: fakeFetch({ data: [row()] }), now: () => downloaded });
+  expect((await writer.refresh()).source).toBe("live");
+  clearPublishedModelCatalogs();
+  expect(early.refreshFromCache().source).toBe("cache");
+  expect(publishedModelCatalogReadAt("openrouter")).toBe(downloaded);
+
+  // The bundled list is not an answer from OpenRouter: no time goes with it.
+  expect(new OpenRouterCatalog().read().source).toBe("bundled");
+  expect(publishedModelCatalogReadAt("openrouter")).toBeUndefined();
+});
+
+test("a cached list replaces the one held only when it is newer", async () => {
+  const path = home();
+  let now = 1_000;
+  await new OpenRouterCatalog({ home: path, now: () => now, fetchImpl: fakeFetch({ data: [row("test/first")] }) }).refresh();
+  const fetchImpl = fakeFetch({ data: [row("test/third")] });
+  const holder = new OpenRouterCatalog({ home: path, now: () => now, fetchImpl });
+  const held = holder.read();
+  expect(held.models.map(entry => entry.model)).toEqual(["test/first"]);
+  // The file it already read is not taken again.
+  expect(holder.refreshFromCache()).toBe(held);
+
+  // Another catalog downloads the list again once the first one is an hour old.
+  now += OPENROUTER_CATALOG_TTL_MS;
+  const other = new OpenRouterCatalog({ home: path, now: () => now, fetchImpl: fakeFetch({ data: [row("test/second")] }) });
+  expect((await other.refresh()).source).toBe("live");
+  clearPublishedModelCatalogs();
+  expect(holder.refreshFromCache().models.map(entry => entry.model)).toEqual(["test/second"]);
+  expect(published()).toEqual(["test/second"]);
+  // It is as fresh as the download that wrote it: no request of its own for an hour.
+  now += OPENROUTER_CATALOG_TTL_MS - 1;
+  await holder.refresh();
+  expect(fetchImpl).not.toHaveBeenCalled();
+  now += 1;
+  expect((await holder.refresh()).models.map(entry => entry.model)).toEqual(["test/third"]);
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+});
+
+test("a list this catalog gave up after a failed refresh is not taken back from the cache", async () => {
+  const path = home();
+  let now = 1_000;
+  const fetchImpl = fakeFetch({ data: [row()] });
+  const catalog = new OpenRouterCatalog({ home: path, now: () => now, fetchImpl });
+  await catalog.refresh();
+  now += OPENROUTER_CATALOG_TTL_MS;
+  fetchImpl.mockRejectedValueOnce(new Error("offline"));
+  expect((await catalog.refresh()).source).toBe("bundled");
+  // The file still holds the list of the first download: no newer than the one given up.
+  expect(catalog.refreshFromCache().source).toBe("bundled");
+  expect(published()).toBeUndefined();
+});
+
+test.each([
+  ["missing", undefined],
+  ["corrupt", "{bad json"],
+  ["of another version", JSON.stringify({ version: 2, at: 500, body: { data: [row()] } })],
+  ["dated in the future", JSON.stringify({ version: 1, at: 5_000, body: { data: [row()] } })],
+  ["dated with text", JSON.stringify({ version: 1, at: "500", body: { data: [row()] } })],
+  ["dated with no finite number", `{"version":1,"at":-1e999,"body":${JSON.stringify({ data: [row()] })}}`],
+  ["without a usable list", JSON.stringify({ version: 1, at: 500, body: { data: [] } })],
+])("a cache file that is %s changes nothing, and nothing recorded in this process is cleared", async (_what, content) => {
+  const path = home();
+  const catalog = new OpenRouterCatalog({ home: path, now: () => 1_000 });
+  // Another catalog object of this process has recorded a list (another key's, here).
+  await new OpenRouterCatalog({ home: path, apiKey: "fixture-only-key", fetchImpl: fakeFetch({ data: [row("test/recorded")] }) }).refresh();
+  expect(published()).toEqual(["test/recorded"]);
+  if (content !== undefined) writeFileSync(catalog.cachePath!, content);
+
+  expect(catalog.refreshFromCache()).toMatchObject({ source: "bundled" });
+  expect(published()).toEqual(["test/recorded"]);
+  // read() is the call that makes this catalog's own rows the published ones.
+  expect(catalog.read().source).toBe("bundled");
+  expect(published()).toBeUndefined();
+});
+
+test("a catalog without a home has no cache to read", () => {
+  expect(new OpenRouterCatalog().refreshFromCache().source).toBe("bundled");
+  expect(published()).toBeUndefined();
+});
+
 test("a corrupt disk cache cannot break the menu", async () => {
   const path = home();
   const catalog = new OpenRouterCatalog({ home: path, fetchImpl: fakeFetch() });
   await catalog.refresh();
   writeFileSync(catalog.cachePath!, "{bad json");
-  const snapshot = readModelMenuSnapshot(context(path));
+  const snapshot = readModelMenuSnapshot(context(path), SNAPSHOT_DAY);
   expect(snapshot.providerCounts.openrouter).toBe(300);
   expect(snapshot.catalogNote).toContain("showing bundled models");
 });

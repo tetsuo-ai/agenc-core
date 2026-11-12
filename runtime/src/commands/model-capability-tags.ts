@@ -7,6 +7,7 @@
  */
 
 import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
+import { isModelRetired } from "../llm/registry/model-retirement.js";
 import { DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../session/cost.js";
 import { ollamaMenuModelCapabilities } from "./ollama-menu-models.js";
 
@@ -21,7 +22,11 @@ function localOllamaTags(model: string): string {
   return tags.join(" · ");
 }
 
-export function modelCapabilityTags(provider: string, model: string): string {
+/**
+ * `now` is the clock a retirement date is read against: "retires <date>"
+ * while the date is ahead, "retired <date>" once it has arrived.
+ */
+export function modelCapabilityTags(provider: string, model: string, now: Date = new Date()): string {
   const entry = resolveRegisteredModelCatalogEntry({ provider, model });
   if (entry === undefined) return provider === "ollama" ? localOllamaTags(model) : "";
   const tags: string[] = [];
@@ -31,6 +36,8 @@ export function modelCapabilityTags(provider: string, model: string): string {
   else if (provider === "openrouter") tags.push("tools");
   const cost = resolveModelCostEntry({ provider, model }, DEFAULT_MODEL_COSTS)?.entry;
   if (entry.isFree || (cost?.localZeroCost === true && cost.label === "free")) tags.push("free");
-  if (entry.retiresOn !== undefined) tags.push(`retires ${entry.retiresOn}`);
+  if (entry.retiresOn !== undefined) {
+    tags.push(`${isModelRetired(entry, now) ? "retired" : "retires"} ${entry.retiresOn}`);
+  }
   return tags.join(" · ");
 }

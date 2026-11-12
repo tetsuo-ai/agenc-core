@@ -284,16 +284,23 @@ export function filterProvidersHubRows(
   );
 }
 
-/** The selectable models for one provider, as the model menu offers them. */
+/**
+ * The selectable models for one provider, as the model menu offers them, and
+ * the session's own model when it is retired: listed as in use and tagged,
+ * no longer offered. `now` is the clock model retirement dates are read
+ * against; tests pass their own.
+ */
 export function readProvidersHubModels(
   ctx: SlashCommandContext,
   provider: ProviderSlug,
+  options: { readonly now?: Date } = {},
 ): readonly ProvidersHubModelRow[] {
-  const snapshot = readModelMenuSnapshot(ctx);
+  const now = options.now ?? new Date();
+  const snapshot = readModelMenuSnapshot(ctx, { now });
   const checksZdr = provider === "openrouter" &&
     openRouterZeroDataRetentionEnabled(readCommandConfig(ctx));
   return snapshot.rows
-    .filter((row) => row.provider === provider && row.selectable)
+    .filter((row) => row.provider === provider && (row.selectable || row.retiredOn !== undefined))
     .map((row) => {
       const metadata = resolveRegisteredModelCatalogEntry({ provider, model: row.displayModel });
       const label = metadata?.displayName;
@@ -310,7 +317,7 @@ export function readProvidersHubModels(
         displayModel: row.displayModel,
         current: row.status === "current",
         isDefault: row.status === "default",
-        tags: modelCapabilityTags(provider, row.displayModel),
+        tags: modelCapabilityTags(provider, row.displayModel, now),
         ...(catalogDetail ? { catalogDetail } : {}),
         ...(label === undefined ? {} : { label }),
         ...(checksZdr && openRouterModelHasZdrEndpoint(row.displayModel) === false

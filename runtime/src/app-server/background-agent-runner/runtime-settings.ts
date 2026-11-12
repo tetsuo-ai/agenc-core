@@ -33,6 +33,7 @@ import {
 import {
   readSessionSelection,
   resolveProviderModelSelection,
+  type CatalogValidationOptions,
 } from "../../session/provider-model-selection.js";
 import {
   mergeProviderModelLayer,
@@ -1431,6 +1432,8 @@ function runtimeSettingsWithRestoreOverrides(
   workspaceRoot: string,
   config: AgenCConfig,
   env: Readonly<Record<string, string | undefined>> = process.env,
+  /** Reads the provider's live list cached in the restored session's home. */
+  readCachedLiveList?: CatalogValidationOptions["readCachedLiveList"],
 ): RunRuntimeSettingsSnapshot {
   const permissionMode = params.permissionMode ?? canonical.permissionMode;
   const permissionChanged = permissionMode !== canonical.permissionMode;
@@ -1455,10 +1458,13 @@ function runtimeSettingsWithRestoreOverrides(
     env,
     // Automatic daemon restore repeats the saved pair. Only a new model
     // override is an admission request; catalog drift cannot block replay.
-    { validateCatalog: params.model !== undefined && (
-      params.model !== canonical.model ||
-      (params.provider !== undefined && params.provider !== canonical.provider)
-    ) },
+    {
+      validateCatalog: params.model !== undefined && (
+        params.model !== canonical.model ||
+        (params.provider !== undefined && params.provider !== canonical.provider)
+      ),
+      ...(readCachedLiveList !== undefined ? { readCachedLiveList } : {}),
+    },
   );
   // Resuming on another model is a model switch: the effort stays only when
   // that model accepts it.

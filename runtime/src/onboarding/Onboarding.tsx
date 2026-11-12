@@ -52,6 +52,7 @@ import { readLocalByokCredential } from "../auth/native-credentials.js";
 import { resolveProviderRuntimeAuthority } from "../llm/provider-options.js";
 import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
 import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
+import { retiredBundledModel } from "../llm/registry/model-retirement.js";
 import { isModelAllowed } from "../utils/model/modelAllowlist.js";
 import {
   geminiEndpointFor,
@@ -1121,6 +1122,9 @@ function onboardingModelChoices(
   return [...new Set(candidates)].filter(
     (model, index) =>
       model !== "" &&
+      // A model the bundled catalog says its provider has retired is not
+      // offered, the current choice included (model-retirement.ts).
+      retiredBundledModel(provider, model) === undefined &&
       // The current choice is always offered, even when the catalog hides it.
       (index === 0 || isOfferedModel(provider, model, context.config)),
   );

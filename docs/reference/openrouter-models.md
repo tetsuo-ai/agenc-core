@@ -17,6 +17,32 @@ notice. Offline selection accepts a well-formed `vendor/model` ID with an
 unverified-model notice. When a live catalog is available, a new selection must
 appear in it. Saved explicit selections remain pinned.
 
+A row carries the retirement date OpenRouter announces for its model. Its tag
+reads `retires <date>` while the date is ahead and `retired <date>` from that
+date on (UTC). The bundled snapshot is not updated between releases, so while it
+is the source a model whose date has arrived is left out of `/model`,
+`/providers` and first-run setup. Selecting one with `/model`, `/provider` or
+`--model` is refused with a message that names the model and the date:
+
+```text
+OpenRouter retired 'vendor/model' on 2026-10-31. Pick another model.
+```
+
+A session whose saved model is retired still starts and shows that message
+once: on stderr, and for a few seconds in the footer of the interactive screen.
+A print run (`agenc -p`) that a running daemon serves does not show it; the
+daemon writes it to its own stderr. The model stays listed as the session's
+own, marked `retired`. It is not selectable: choosing it again is refused.
+
+The live or cached catalog wins: a model it lists is offered and accepted
+whatever date the bundled snapshot has for it, provided OpenRouter gave that
+list on or after the date. A list from before the date, such as a cache file
+last refreshed the week before, only shows that the model was there until
+then, so the date decides until the list is read again. The daemon checks a
+model picked in the interactive screen against the same cache. Before it
+refuses one, it reads what that screen last read from OpenRouter, so it accepts
+a model the screen offers even when it has not read the list itself.
+
 The preferred default is `x-ai/grok-4.5`. If it is absent from the available live
 catalog, AgenC uses a listed model instead. Model rows show tools, vision,
 thinking and free-model tags, context limits and token prices. The separate ZDR

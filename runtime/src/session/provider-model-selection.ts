@@ -1,4 +1,7 @@
-import { assertModelCatalogSelection } from "../llm/model-catalog-selection.js";
+import {
+  assertModelCatalogSelection,
+  assertModelNotRetired,
+} from "../llm/model-catalog-selection.js";
 import {
   mergeProviderModelLayer,
   resolveProviderSlugOrThrow,
@@ -8,6 +11,7 @@ import {
 import { defaultConfig, type AgenCConfig } from "../config/schema.js";
 import { configuredModelForProvider } from "../config/resolve-model.js";
 import { resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
+import { readSessionCachedLiveModelList } from "./cached-live-model-list.js";
 import type { Session } from "./session.js";
 import { asRecord } from "../utils/record.js";
 import {
@@ -37,12 +41,25 @@ export interface ReadSessionSelectionOptions {
   readonly fallbackConfig?: AgenCConfig;
 }
 
+export interface CatalogValidationOptions {
+  /** False for pairs that are replayed, not newly chosen: profiles, recovery, restore. */
+  readonly validateCatalog?: boolean;
+  /** The clock a retirement date is read against. Tests pass their own. */
+  readonly now?: Date;
+  /**
+   * Reads into this process the live model list the home's cache holds now
+   * for a provider (cached-live-model-list.ts). Asked only when the catalog
+   * check is about to refuse the model, and then the check runs once more.
+   */
+  readonly readCachedLiveList?: (provider: ProviderSlug) => void;
+}
+
 export function resolveProviderModelSelection(
   config: AgenCConfig | undefined,
   current: SessionSelection,
   layer: Pick<AgenCConfig, "model_provider" | "model">,
   env: Readonly<Record<string, string | undefined>> = process.env,
-  options: { readonly validateCatalog?: boolean } = {},
+  options: CatalogValidationOptions = {},
 ): ResolvedSessionSelection {
   const configuredBase = mergeProviderModelLayer(defaultConfig(), config ?? {});
   const currentProvider = resolveBuiltInProviderSlug(current.provider);
@@ -69,8 +86,26 @@ export function resolveProviderModelSelection(
   // public catalog. Validate newly typed IDs while preserving that saved pair.
   const savedOpenRouterModel = provider === "openrouter" &&
     configuredModelForProvider(config ?? {}, provider) === model;
-  if (options.validateCatalog !== false && !savedOpenRouterModel) {
-    assertModelCatalogSelection(config ?? {}, provider, model, env);
+  if (options.validateCatalog !== false) {
+    const check = (): void => {
+      // Choosing the saved pair again skips the catalog's listing check,
+      // never its retirement date.
+      if (savedOpenRouterModel) assertModelNotRetired(provider, model, options.now);
+      else assertModelCatalogSelection(config ?? {}, provider, model, env, options.now);
+    };
+    try {
+      check();
+    } catch (refusal) {
+      // The refusal rests on the provider list this process holds, or on a
+      // bundled date for want of one. Another process may have read a newer
+      // list since this one last looked (the TUI reads it for its menus, the
+      // daemon checks the model picked there), and the provider's own list
+      // wins. So read what the home's cache holds now and decide once more:
+      // for a retirement date, and for "the provider does not list it".
+      if (options.readCachedLiveList === undefined) throw refusal;
+      options.readCachedLiveList(provider);
+      check();
+    }
   }
   if (!isModelAllowed(provider, model, config ?? {})) {
     throw new ModelNotAllowedError(model);
@@ -233,7 +268,7 @@ export function readBuiltInSessionSelection(
 export function resolveSessionProviderModelSelection(
   session: Session | unknown,
   layer: Pick<AgenCConfig, "model_provider" | "model">,
-  options: ReadSessionSelectionOptions & { readonly validateCatalog?: boolean } = {},
+  options: ReadSessionSelectionOptions & CatalogValidationOptions = {},
 ): ResolvedSessionSelection {
   const sessionRecord = asRecord(session);
   const config = options.fallbackConfig ?? configStoreCurrent(sessionRecord);
@@ -245,6 +280,12 @@ export function resolveSessionProviderModelSelection(
   return resolveProviderModelSelection(
     config, current, layer,
     environment as Readonly<Record<string, string | undefined>> | undefined,
-    { validateCatalog: options.validateCatalog },
+    {
+      validateCatalog: options.validateCatalog,
+      now: options.now,
+      // The list cached in this session's home, for this session's key.
+      readCachedLiveList: options.readCachedLiveList ??
+        ((provider) => readSessionCachedLiveModelList(session, provider)),
+    },
   );
 }

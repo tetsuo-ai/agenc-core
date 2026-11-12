@@ -1720,6 +1720,46 @@ export function listRegisteredModelCatalogEntries(
   );
 }
 
+/** Where each bundled row sits in REGISTERED_MODEL_CATALOG, by provider and model id. */
+let bundledRowPositions: ReadonlyMap<string, number> | undefined;
+
+function bundledRowKey(provider: string, model: string): string {
+  return `${provider}\n${normalizeId(model)}`;
+}
+
+/** Built from names alone, on first use: no OpenRouter row is read for it. */
+function bundledRowPosition(provider: string, model: string): number | undefined {
+  bundledRowPositions ??= new Map([
+    ...OPENROUTER_MODEL_IDS.map((rowModel, position) =>
+      [bundledRowKey("openrouter", rowModel), position] as const),
+    ...NON_OPENROUTER_MODEL_CATALOG.map((entry, position) => [
+      bundledRowKey(modelCatalogProviderIdentity(entry.provider), entry.model),
+      OPENROUTER_MODEL_IDS.length + position,
+    ] as const),
+    // Last to first, so the first row registered under an id is the one
+    // kept: the row findExactModel reads.
+  ].reverse());
+  return bundledRowPositions.get(bundledRowKey(provider, model));
+}
+
+/**
+ * The bundled row registered under exactly this provider and model id. Unlike
+ * resolveRegisteredModelCatalogEntry it reads no published row and matches no
+ * alias, namespace or prefix: a rule that takes a model away (see
+ * model-retirement.ts) must never reach a neighbouring model. An id the
+ * OpenRouter index does not list is answered without reading its rows.
+ */
+export function findBundledModelCatalogEntry(input: {
+  readonly provider: string | undefined;
+  readonly model: string | undefined;
+}): RegisteredModelCatalogEntry | undefined {
+  const provider = modelCatalogProviderIdentity(input.provider);
+  const model = input.model?.trim() ?? "";
+  if (provider.length === 0 || model.length === 0) return undefined;
+  const position = bundledRowPosition(provider, model);
+  return position === undefined ? undefined : REGISTERED_MODEL_CATALOG[position];
+}
+
 const fastCatalogEntries = new Map<string, RegisteredModelCatalogEntry | undefined>();
 
 export function resolveRegisteredModelCatalogEntry(input: {

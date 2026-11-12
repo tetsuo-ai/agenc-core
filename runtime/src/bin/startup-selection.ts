@@ -1,5 +1,5 @@
 import { defaultModelForProvider } from "../config/resolve-model.js";
-import { assertModelCatalogSelection, openRouterSelectionNotice } from "../llm/model-catalog-selection.js";
+import { assertModelCatalogSelection, openRouterSelectionNotice, retiredModelNotice } from "../llm/model-catalog-selection.js";
 import { resolve as resolvePath } from "node:path";
 
 import { ModelMetadataResolver, type ModelMetadataResolverOptions } from "../llm/model-metadata.js";
@@ -22,6 +22,7 @@ import {
   isModelAllowed,
   ModelNotAllowedError,
 } from "../utils/model/modelAllowlist.js";
+import { queueTuiStartupNotice } from "../tui/startup-notices.js";
 import type { StartupCliFlags } from "./startup-cli-flags.js";
 export { readStartupCliFlags, type StartupCliFlags } from "./startup-cli-flags.js";
 
@@ -104,6 +105,31 @@ export function resolvedStartupProfileName(
   return cli.profile ?? resolveProfileName(env);
 }
 
+const printedSavedModelNotices = new Set<string>();
+
+/**
+ * Tell the owner of a saved model that its provider has retired it. Startup
+ * resolves the selection more than once in a process (the trust preflight,
+ * then the session), so a notice is given once. It is advice: a catalog row
+ * that cannot be read means no notice, never a start that fails.
+ */
+function noteRetiredSavedModel(provider: ProviderName, model: string, now: Date | undefined): void {
+  let notice: string | undefined;
+  try {
+    notice = retiredModelNotice(provider, model, now);
+  } catch {
+    return;
+  }
+  if (notice === undefined || printedSavedModelNotices.has(notice)) return;
+  printedSavedModelNotices.add(notice);
+  // On stderr of the process that resolves the start. An interactive start
+  // draws the TUI over it, so the TUI is handed the same text to show once
+  // it has mounted. A print run served by a running daemon is resolved in
+  // the daemon: the line goes to the daemon's stderr, not to the caller's.
+  console.warn(notice);
+  queueTuiStartupNotice({ key: `retired-model:${provider}/${model}`, text: notice });
+}
+
 /**
  * Resolve provider/model metadata from an already layered canonical
  * snapshot. Generic provider/model/profile env and CLI selectors are not read
@@ -119,6 +145,8 @@ export function resolveCanonicalStartupSelection(params: {
   /** A model typed at CLI ingress. Omit for saved, profile, or restored selections. */
   readonly explicitModel?: string;
   readonly profileName?: string;
+  /** The clock a model's retirement date is read against. Tests pass their own. */
+  readonly now?: Date;
 }): StartupSelection {
   const config = params.config;
   const configuredProvider = config.model_provider?.trim();
@@ -147,9 +175,14 @@ export function resolveCanonicalStartupSelection(params: {
   // Saved models may outlive a curated catalog entry or arrive before Core
   // learns about them. Preserve main's startup behavior for those selections.
   if (params.explicitModel !== undefined) {
-    assertModelCatalogSelection(config, provider, canonicalModel, params.env);
+    assertModelCatalogSelection(config, provider, canonicalModel, params.env, params.now);
     const note = provider === "openrouter" ? openRouterSelectionNotice(canonicalModel) : undefined;
     if (note !== undefined) console.warn(note);
+  } else {
+    // A saved model the provider has retired still starts: refusing it here
+    // would leave its owner unable to open AgenC and pick another one. They
+    // are told instead.
+    noteRetiredSavedModel(provider, canonicalModel, params.now);
   }
   if (!isModelAllowed(provider, canonicalModel, config)) {
     throw new ModelNotAllowedError(canonicalModel);

@@ -1,7 +1,8 @@
 import * as oneShotDurability from "../../src/durability/one-shot-durability.js";
 import { ModelRegistry, modelRegistryEntryToModelInfo } from "../../src/llm/model-registry.js";
 import { ModelMetadataResolver } from "../../src/llm/model-metadata.js";
-import { clearPublishedModelCatalogs } from "../../src/llm/registry/published-model-catalog.js";
+import { OpenRouterCatalog } from "../../src/llm/registry/openrouter-live-catalog.js";
+import { clearPublishedModelCatalogs, publishedModelCatalogEntries } from "../../src/llm/registry/published-model-catalog.js";
 import { resolveSessionReasoningEffort } from "../../src/session/session-reasoning-effort.js";
 import { buildAnthropicMessagesRequest } from "../../src/llm/wire/messages-anthropic.js";
 import desktopEffortCatalog from "../llm/desktop-effort-catalog.json";
@@ -335,6 +336,21 @@ function runtimeSettingsRolloutItem(
       },
     },
   };
+}
+
+/**
+ * The TUI, another process, reads OpenRouter's live list into the daemon's
+ * home. The daemon process keeps none of what that process recorded.
+ */
+async function tuiCachesOpenRouterList(home: string, models: readonly string[]): Promise<void> {
+  const body = JSON.stringify({ data: models.map((id) => ({
+    id, name: id, context_length: 200000,
+    architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+    supported_parameters: ["tools"], pricing: { prompt: "0.000001", completion: "0.000002" },
+  })) });
+  const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => new Response(body));
+  expect((await new OpenRouterCatalog({ home, fetchImpl }).refresh()).source).toBe("live");
+  clearPublishedModelCatalogs();
 }
 
 function canonicalRuntimeSettings(
@@ -4099,6 +4115,54 @@ describe("AgenC delegate background-agent runner", () => {
   });
 
   it.each([
+    { label: "refused with its date while no list is cached in the home", cached: false },
+    { label: "accepted when the OpenRouter list cached in the home has it", cached: true },
+  ])("a resume onto a model past its bundled retirement date is $label", async (entry) => {
+    // Bundled OpenRouter row retired on 2026-11-11 (issue #3447).
+    const model = "bytedance-seed/seed-1.6";
+    const runId = `session-settings-resume-retired-${entry.cached ? "cached" : "bundled"}`;
+    const baseline = canonicalRuntimeSettings();
+    const rolloutItems = [runtimeSettingsRolloutItem(runId, baseline)];
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      rolloutItems,
+      canonicalRuntimeSettings: true,
+    });
+    const home = harness.configStore.homeContext.path;
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-12T12:00:00Z") });
+    // The daemon process has read no OpenRouter list of its own.
+    clearPublishedModelCatalogs();
+    try {
+      if (entry.cached) await tuiCachesOpenRouterList(home, ["x-ai/grok-4.5", model]);
+      expect(publishedModelCatalogEntries("openrouter")).toBeUndefined();
+      const restoring = harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "resume on a model given with --resume",
+        explicitColdResume: true,
+        runtimeSettings: baseline,
+        provider: "openrouter",
+        model,
+      });
+      if (entry.cached) {
+        await expect(restoring).resolves.toBe(true);
+        expect(harness.session.pendingProviderSwitch).toMatchObject({ provider: "openrouter", model });
+        expect(recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload).toMatchObject({
+          reason: "model_provider_changed", provider: "openrouter", model,
+        });
+      } else {
+        await expect(restoring).rejects.toThrow(
+          `OpenRouter retired '${model}' on 2026-11-11. Pick another model.`,
+        );
+        expect(harness.session.pendingProviderSwitch).toBeNull();
+      }
+    } finally {
+      vi.useRealTimers();
+      clearPublishedModelCatalogs();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
     { label: "none keeps following the model default", effort: null, cleared: true },
     { label: "a level is a chosen level", effort: "high", cleared: undefined },
   ] as const)("a restored journal with $label", async (entry) => {
@@ -6936,6 +7000,55 @@ describe("AgenC delegate background-agent runner", () => {
     expect(recordedRuntimeSettingsEvents(rolloutItems)).toHaveLength(
       before.length,
     );
+  });
+
+  it("accepts a model the OpenRouter list cached in the home has, past its bundled retirement date", async () => {
+    // Bundled OpenRouter row retired on 2026-11-11 (issue #3447). The TUI
+    // offers it while OpenRouter's live list has it; the daemon checks the pick.
+    const model = "bytedance-seed/seed-1.6";
+    const refusal = `OpenRouter retired '${model}' on 2026-11-11. Pick another model.`;
+    const agentId = "retired-model-cached-live-list";
+    const { runner, session, rolloutItems, configStore } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    const home = configStore.homeContext.path;
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-12T12:00:00Z") });
+    clearPublishedModelCatalogs();
+    try {
+      await runner.startAgent({ objective: "work", cwd: process.cwd() });
+      const before = recordedRuntimeSettingsEvents(rolloutItems).length;
+      // No list in this process and none cached in the home: the bundled date decides.
+      await expect(
+        runner.setAgentModel(agentId, { provider: "openrouter", model }),
+      ).resolves.toMatchObject({
+        applied: false,
+        provider: "grok",
+        model: "base-model",
+        summary: `Model switch to "${model}" blocked: ${refusal}`,
+      });
+      expect(session.pendingProviderSwitch).toBeNull();
+      expect(recordedRuntimeSettingsEvents(rolloutItems)).toHaveLength(before);
+
+      await tuiCachesOpenRouterList(home, ["x-ai/grok-4.5", model]);
+      expect(publishedModelCatalogEntries("openrouter")).toBeUndefined();
+      await expect(
+        runner.setAgentModel(agentId, { provider: "openrouter", model }),
+      ).resolves.toMatchObject({ applied: true, provider: "openrouter", model });
+      expect(session.pendingProviderSwitch).toEqual({ provider: "openrouter", model });
+      // A retired model that list does not have is still refused, with its date.
+      await expect(
+        runner.setAgentModel(agentId, { provider: "openrouter", model: "poolside/laguna-s-2.1" }),
+      ).resolves.toMatchObject({
+        applied: false,
+        summary: "Model switch to \"poolside/laguna-s-2.1\" blocked: " +
+          "OpenRouter retired 'poolside/laguna-s-2.1' on 2026-10-31. Pick another model.",
+      });
+    } finally {
+      vi.useRealTimers();
+      clearPublishedModelCatalogs();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("rejects an impossible background provider/model pair before durable staging", async () => {

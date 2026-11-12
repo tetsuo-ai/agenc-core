@@ -33,6 +33,12 @@ describe('catalog data on first use', () => {
     expect(registry.resolveRegisteredModelCatalogEntry({ provider: 'deepseek', model: 'deepseek-flash' })?.model).toBe('deepseek-flash')
     expect(registry.resolveRegisteredModelCatalogEntry({ provider: 'openrouter', model: 'not-in-the-catalog' })).toBeUndefined()
     expect(registry.listRegisteredModelCatalogEntries('not-a-provider')).toEqual([])
+    // The exact bundled-row lookup, and the retirement check built on it.
+    const retirement = await import('../../../src/llm/registry/model-retirement.js')
+    expect(registry.findBundledModelCatalogEntry({ provider: 'openrouter', model: 'not-in-the-catalog' })).toBeUndefined()
+    expect(registry.findBundledModelCatalogEntry({ provider: 'deepseek', model: 'deepseek-flash' })?.model).toBe('deepseek-flash')
+    expect(retirement.retiredBundledModel('openrouter', 'future/new-model', new Date('2099-01-01T00:00:00Z'))).toBeUndefined()
+    expect(retirement.retiredBundledModel('deepseek', 'deepseek-flash', new Date('2099-01-01T00:00:00Z'))).toBeUndefined()
     expect(state.reads).toBe(0)
   })
 
@@ -48,6 +54,25 @@ describe('catalog data on first use', () => {
     expect(resolve()).toBe(row)
     expect(registry.listRegisteredModelCatalogEntries('openrouter').find(entry => entry.model === row?.model)).toBe(row)
     expect(state.reads).toBe(2)
+  })
+
+  test('a saved OpenRouter model starts although its row cannot be read', async () => {
+    const { resolveCanonicalStartupSelection } = await import('../../../src/bin/startup-selection.js')
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const config = { model_provider: 'openrouter', model: 'z-ai/glm-4.5' }
+    const now = new Date('2027-03-01T00:00:00Z')
+    // The retirement notice is advice: no readable row means no notice, never a failed start.
+    state.fail = true
+    expect(resolveCanonicalStartupSelection({ config, env: {}, now }).model).toBe('z-ai/glm-4.5')
+    expect(state.reads).toBe(1)
+    expect(warning).not.toHaveBeenCalled()
+    // A model typed with --model is a selection: it fails closed, like any capability read.
+    expect(() => resolveCanonicalStartupSelection({ config, env: {}, explicitModel: config.model, now }))
+      .toThrow('catalog-data-unavailable')
+    state.fail = false
+    expect(resolveCanonicalStartupSelection({ config, env: {}, now }).model).toBe('z-ai/glm-4.5')
+    expect(warning.mock.calls).toEqual([["OpenRouter retired 'z-ai/glm-4.5' on 2026-12-31. Pick another model."]])
+    warning.mockRestore()
   })
 
   test('a mismatched data index is an error and is not cached', async () => {

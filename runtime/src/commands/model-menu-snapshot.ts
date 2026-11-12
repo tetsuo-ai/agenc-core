@@ -11,6 +11,7 @@ import {
   defaultModelForProvider,
 } from "../config/resolve-model.js";
 import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
+import { retiredBundledModel } from "../llm/registry/model-retirement.js";
 import {
   providerLocalModelIdFromCatalog,
 } from "../llm/registry/provider-info.js";
@@ -38,6 +39,12 @@ type ModelMenuRow = {
   readonly detail: string;
   readonly selectable: boolean;
   readonly groupLabel: string;
+  /**
+   * The date the bundled catalog says the provider retired this model
+   * (YYYY-MM-DD). Only the session's own model is listed with one, and it is
+   * not selectable: choosing it again is refused.
+   */
+  readonly retiredOn?: string;
 };
 
 export type ModelMenuSnapshot = {
@@ -137,12 +144,17 @@ function providerRows(params: {
   readonly currentModel: string;
   readonly config?: AgenCConfig;
   readonly catalogModels: readonly string[];
+  readonly now: Date;
 }): readonly ModelMenuRow[] {
   const configuredModel =
     params.config !== undefined
       ? configuredModelForProvider(params.config, params.provider)
       : undefined;
   const defaultModel = defaultModelForProvider(params.provider);
+  // A model the bundled catalog says its provider has retired is not offered
+  // (the provider's live list wins, see model-retirement.ts).
+  const retirement = (model: string) => retiredBundledModel(params.provider, model, params.now);
+  const isRetired = (model: string): boolean => retirement(model) !== undefined;
   const candidates = new Map<string, string>();
   const addCandidate = (model: string, preferCatalogSpelling = false): void => {
     const displayModel = providerLocalModelIdFromCatalog(
@@ -160,9 +172,11 @@ function providerRows(params: {
       candidates.set(displayModel, model);
     }
   };
+  // The session's own model stays listed even when it is retired: it is
+  // where the session is, and its row says so.
   if (params.provider === params.currentProvider) addCandidate(params.currentModel);
-  if (configuredModel !== undefined) addCandidate(configuredModel);
-  addCandidate(defaultModel);
+  if (configuredModel !== undefined && !isRetired(configuredModel)) addCandidate(configuredModel);
+  if (!isRetired(defaultModel)) addCandidate(defaultModel);
   for (const model of params.catalogModels) {
     const trimmed = model.trim();
     if (trimmed.length === 0) continue;
@@ -170,6 +184,7 @@ function providerRows(params: {
     // via the flat catalog but must not be offered as new picker selections.
     // Current/configured/default candidates bypass visibility filtering.
     if (isHiddenCatalogModel(params.provider, trimmed)) continue;
+    if (isRetired(trimmed)) continue;
     addCandidate(trimmed, true);
   }
 
@@ -200,26 +215,34 @@ function providerRows(params: {
       configuredModel,
       defaultModel,
     });
+    // Every other retired candidate was left out above.
+    const retiredOn = status === "current" ? retirement(model)?.retiredOn : undefined;
     return {
       model,
       displayModel,
       provider: params.provider,
       status,
-      selectable: status !== "unavailable",
+      selectable: status !== "unavailable" && retiredOn === undefined,
       groupLabel: params.provider,
       detail: rowDetailForRoute(
         status,
         params.provider,
       ),
+      ...(retiredOn === undefined ? {} : { retiredOn }),
     };
   });
 }
 
-export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapshot {
-  return withSecureStorageDisplaySnapshot(requireCommandConfigStore(ctx).homeContext, () => readModelMenuSnapshotFromStorage(ctx));
+/** `now` is the clock model retirement dates are read against; tests pass their own. */
+export function readModelMenuSnapshot(
+  ctx: SlashCommandContext,
+  options: { readonly now?: Date } = {},
+): ModelMenuSnapshot {
+  const now = options.now ?? new Date();
+  return withSecureStorageDisplaySnapshot(requireCommandConfigStore(ctx).homeContext, () => readModelMenuSnapshotFromStorage(ctx, now));
 }
 
-function readModelMenuSnapshotFromStorage(ctx: SlashCommandContext): ModelMenuSnapshot {
+function readModelMenuSnapshotFromStorage(ctx: SlashCommandContext, now: Date): ModelMenuSnapshot {
   const openrouter = openRouterMenuCatalog(ctx).read();
   const config = readCommandConfig(ctx);
   const sessionSelection = readBuiltInSessionSelection(ctx.session, {
@@ -269,6 +292,7 @@ function readModelMenuSnapshotFromStorage(ctx: SlashCommandContext): ModelMenuSn
         currentModel,
         ...(config !== undefined ? { config } : {}),
         catalogModels: visibleModels,
+        now,
       });
       if (
         projectedRows.length === 1 &&
@@ -283,7 +307,7 @@ function readModelMenuSnapshotFromStorage(ctx: SlashCommandContext): ModelMenuSn
         const access = accessFor(row.provider, row.model);
         return [{
           ...row,
-          selectable: access.effect !== "blocked",
+          selectable: row.selectable && access.effect !== "blocked",
           detail: rowDetailForRoute(row.status, row.provider),
         }];
       });
@@ -325,8 +349,9 @@ export function modelMenuFallback(snapshot: ModelMenuSnapshot): string {
     "Available models:",
   ];
   for (const row of snapshot.rows) {
+    const retired = row.retiredOn === undefined ? "" : `, retired ${row.retiredOn}`;
     lines.push(
-      `  ${row.status === "current" ? "*" : "-"} ${row.provider}:${row.displayModel} (${row.detail})`,
+      `  ${row.status === "current" ? "*" : "-"} ${row.provider}:${row.displayModel} (${row.detail}${retired})`,
     );
   }
   lines.push(
