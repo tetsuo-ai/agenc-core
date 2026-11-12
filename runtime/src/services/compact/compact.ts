@@ -528,12 +528,15 @@ export function retainedUserPromptIndexes(
     JSON.stringify(messages[index]!.message?.content ?? messages[index]!.content ?? ""), "utf8");
   const retained = new Set<number>();
   if (prompts.length === 0) return retained;
-  let bytes = bytesOf(prompts[0]!);
-  if (bytes > byteLimit) return retained;
-  retained.add(prompts[0]!);
+  let bytes = 0;
+  const firstBytes = bytesOf(prompts[0]!);
+  if (firstBytes <= byteLimit) {
+    retained.add(prompts[0]!);
+    bytes = firstBytes;
+  }
   for (let at = prompts.length - 1; at >= 1; at -= 1) {
     const size = bytesOf(prompts[at]!);
-    if (bytes + size > byteLimit) break;
+    if (bytes + size > byteLimit) continue;
     retained.add(prompts[at]!);
     bytes += size;
   }
