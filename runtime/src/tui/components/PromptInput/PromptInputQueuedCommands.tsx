@@ -52,13 +52,22 @@ function isQueuedUserInput(cmd: QueuedCommand): boolean {
   );
 }
 
-/** A queued input as one line of text: line breaks and runs of spaces become one space. */
+/**
+ * A queued input as one line of text: line breaks and runs of spaces become
+ * one space. A content block that is not text (an image, a document) is
+ * named in brackets, so the user sees that an attachment waits with the
+ * input before dropping or sending it.
+ */
 export function queuedInputText(cmd: Pick<QueuedCommand, "value" | "mode">): string {
   const value =
     typeof cmd.value === "string"
       ? cmd.value
       : (cmd.value as ReadonlyArray<{ type?: string; text?: string }>)
-          .map((block) => (block.type === "text" ? (block.text ?? "") : ""))
+          .map((block) =>
+            block.type === "text"
+              ? (block.text ?? "")
+              : `[${block.type ?? "attachment"}]`,
+          )
           .join(" ");
   const text = value.normalize("NFC").replace(/\s+/gu, " ").trim();
   return cmd.mode === "bash" ? `! ${text}` : text;

@@ -284,6 +284,15 @@ export function MarkdownTable({
     const separator = tableGlyphs.horizontal.repeat(separatorWidth);
     // Small indent for wrapped lines (just 2 spaces)
     const wrapIndent = '  ';
+    // A table with no data rows (also a streamed table whose first row has
+    // not arrived yet) still shows its headers, one per line.
+    if (token.rows.length === 0) {
+      for (const header_1 of headers) {
+        for (const line_3 of wrapText(header_1, Math.max(terminalWidth - 1, 10))) {
+          lines_2.push(`${ANSI_BOLD_START}${line_3}${ANSI_BOLD_END}`);
+        }
+      }
+    }
     token.rows.forEach((row_2, rowIndex) => {
       if (rowIndex > 0) {
         lines_2.push(separator);
