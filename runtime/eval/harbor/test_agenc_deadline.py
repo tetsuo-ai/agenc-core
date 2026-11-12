@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -81,15 +82,24 @@ class ResolveAgentBudgetTest(unittest.TestCase):
                            "ref": "sha256:" + digest,
                            "source": "terminal-bench/terminal-bench-2-1"}}
         (self.fixture.trial / "config.json").write_text(json.dumps(config))
-        saved = os.environ.get("HOME")
-        os.environ["HOME"] = str(home)
-        try:
-            self.assertEqual(resolve_agent_budget_sec(self.fixture.trial), 900.0)
-        finally:
-            if saved is None:
-                del os.environ["HOME"]
-            else:
-                os.environ["HOME"] = saved
+        # Harbor caches its package directory at import time. Import it under
+        # the fixture HOME even when earlier adapter tests already loaded it.
+        result = subprocess.run(
+            [
+                sys.executable, "-B", "-c",
+                "from pathlib import Path; import sys; "
+                "from agenc_deadline import resolve_agent_budget_sec; "
+                "print(resolve_agent_budget_sec(Path(sys.argv[1])))",
+                str(self.fixture.trial),
+            ],
+            cwd=Path(__file__).resolve().parent,
+            env={**os.environ, "HOME": str(home)},
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(result.stdout.strip(), "900.0")
 
     def test_no_timeout_or_unreadable_inputs_mean_no_budget(self) -> None:
         self.assertIsNone(resolve_agent_budget_sec(self.fixture.write({}, task_timeout=None)))
