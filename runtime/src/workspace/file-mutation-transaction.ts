@@ -194,6 +194,7 @@ export interface WorkspaceBoundTextWindow {
   readonly startLine: number;
   readonly endLine: number;
   readonly totalLines: number;
+  readonly totalLinesIsLowerBound?: true;
   readonly numLines: number;
   readonly isPartial: true;
   readonly stats: WorkspaceBoundReadFileStats;
@@ -354,6 +355,7 @@ interface BoundHelperMessage {
   readonly startLine?: number;
   readonly endLine?: number;
   readonly totalLines?: number;
+  readonly totalLinesIsLowerBound?: true;
   readonly numLines?: number;
   readonly stdoutBase64?: string;
   readonly stderrBase64?: string;
@@ -1722,6 +1724,8 @@ try {
         encoding: "utf8", highWaterMark: 64 * 1024, autoClose: false, start: 0,
       });
       let endsWithNewline = false;
+      let countedBytes = 0;
+      let totalLinesIsLowerBound;
       let selectedBytes = 0;
       let windowFull = false;
       let line = "";
@@ -1761,6 +1765,13 @@ try {
       };
       try {
         chunks: for await (const chunk of input) {
+          // Match the ordinary reader: exact window, bounded optional count.
+          if (command.completeLineCount && countedBytes >= 1024 * 1024 &&
+              (selected.length >= limit || windowFull)) {
+            totalLinesIsLowerBound = true;
+            break;
+          }
+          countedBytes += Buffer.byteLength(chunk, "utf8");
           endsWithNewline = chunk.endsWith("\n");
           let start = skipLF && chunk.startsWith("\n") ? 1 : 0;
           skipLF = false;
@@ -1777,7 +1788,7 @@ try {
           append(chunk.slice(start));
         }
         if (hasLineContent) finishLine();
-        if (command.completeLineCount && endsWithNewline) {
+        if (command.completeLineCount && !totalLinesIsLowerBound && endsWithNewline) {
           append("");
           finishLine();
         }
@@ -1810,6 +1821,7 @@ try {
           startLine: offset,
           endLine,
           totalLines,
+          totalLinesIsLowerBound,
           numLines: selected.length,
         });
       }
@@ -3638,6 +3650,7 @@ class BoundDirectoryHelper {
       startLine: message.startLine,
       endLine: message.endLine,
       totalLines: message.totalLines,
+      ...(message.totalLinesIsLowerBound ? { totalLinesIsLowerBound: true as const } : {}),
       numLines: message.numLines,
       isPartial: true,
       stats: message.stats,

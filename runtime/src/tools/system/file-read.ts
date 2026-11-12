@@ -418,6 +418,7 @@ interface SliceResult {
   readonly startLine: number;
   readonly endLine: number;
   readonly totalLines: number;
+  readonly totalLinesIsLowerBound?: true;
   readonly numLines: number;
   readonly isPartial: boolean;
 }
@@ -453,8 +454,8 @@ function sliceLines(
 
 function withRangeNote(numbered: string, sliced: SliceResult): string {
   if (!readRangeNoteEnabled() || !sliced.isPartial || sliced.numLines === 0) return numbered;
-  const next = sliced.endLine < sliced.totalLines ? `; next offset ${sliced.endLine + 1}` : "";
-  return `${numbered}\n[lines ${sliced.startLine}-${sliced.endLine} of ${sliced.totalLines}${next}]`;
+  const next = sliced.totalLinesIsLowerBound || sliced.endLine < sliced.totalLines ? `; next offset ${sliced.endLine + 1}` : "";
+  return `${numbered}\n[lines ${sliced.startLine}-${sliced.endLine} of ${sliced.totalLinesIsLowerBound ? "at least " : ""}${sliced.totalLines}${next}]`;
 }
 
 /** Keep complete lines. A single oversized line still uses the existing actionable error. */
@@ -503,6 +504,8 @@ async function sliceTextFileByLineStream(
 
   const input = createReadStream(filePath, { encoding: "utf8", highWaterMark: 64 * 1024 });
   let endsWithNewline = false;
+  let countedBytes = 0;
+  let totalLinesIsLowerBound: true | undefined;
   let selectedBytes = 0;
   let windowFull = false;
   let line = "";
@@ -542,6 +545,14 @@ async function sliceTextFileByLineStream(
   };
   try {
     chunks: for await (const chunk of input) {
+      // Only scan beyond the exact requested window while the counting budget
+      // remains. Fetching another chunk proves the count is a lower bound.
+      if (countAll && countedBytes >= 1024 * 1024 &&
+          (selected.length >= effectiveLimit || windowFull)) {
+        totalLinesIsLowerBound = true;
+        break;
+      }
+      countedBytes += Buffer.byteLength(chunk, "utf8");
       endsWithNewline = chunk.endsWith("\n");
       let start: number = skipLF && chunk.startsWith("\n") ? 1 : 0;
       skipLF = false;
@@ -558,7 +569,7 @@ async function sliceTextFileByLineStream(
       append(chunk.slice(start));
     }
     if (hasLineContent) finishLine();
-    if (countAll && endsWithNewline) {
+    if (countAll && !totalLinesIsLowerBound && endsWithNewline) {
       append("");
       finishLine();
     }
@@ -578,6 +589,7 @@ async function sliceTextFileByLineStream(
     startLine,
     endLine,
     totalLines,
+    ...(totalLinesIsLowerBound ? { totalLinesIsLowerBound } : {}),
     numLines: selected.length,
     isPartial: true,
   };
@@ -900,6 +912,7 @@ async function readTextFile(
       } : {}),
       filePath: opts.displayPath,
       totalLines: sliced.totalLines,
+      ...(sliced.totalLinesIsLowerBound ? { totalLinesIsLowerBound: true } : {}),
       startLine: sliced.startLine,
       endLine: sliced.endLine,
       numLines: sliced.numLines,

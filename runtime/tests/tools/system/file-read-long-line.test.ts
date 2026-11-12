@@ -85,6 +85,7 @@ for (const reader of ["file", "bound"]) {
     expect(JSON.parse(result.stdout)).toMatchObject("code" in expected
       ? { code: expected.code }
       : { content: expected.content, numLines: expected.numLines,
-        startLine: expected.offset, endLine: expected.offset, totalLines: 4 });
+        startLine: expected.offset, endLine: expected.offset,
+        ...(expected.offset === 1 ? { totalLinesIsLowerBound: true, totalLines: 2 } : { totalLines: 4 }) });
   });
 }
