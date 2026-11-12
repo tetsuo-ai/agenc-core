@@ -197,10 +197,10 @@ class AdapterCommandTest(unittest.TestCase):
         command, environment, guard = self._run()
         self.assertIn(
             "/root/.local/bin/agenc -p --budget max --dangerously-bypass-approvals-and-sandbox "
-            "--output-format stream-json <",
+            "--output-format stream-json --deadline +3598 <",
             command,
         )
-        self.assertNotIn("--deadline", command)
+        self.assertIn("--deadline +3598", command)
         self.assertNotIn("--add-dir", command)
         self.assertTrue(any(c.endswith("agenc daemon stop") for c in environment.commands))
         self.assertEqual(guard["budget_sec"], 3600.0)
@@ -209,7 +209,15 @@ class AdapterCommandTest(unittest.TestCase):
 
     def test_cli_deadline_puts_the_flag_on_the_agenc_command(self) -> None:
         command, _environment, _guard = self._run(cli_deadline=True, add_dirs="/")
-        self.assertIn("--add-dir / --deadline +3480 <", command)
+        self.assertIn("--add-dir / --deadline +3598 <", command)
+
+    def test_cli_deadline_can_be_disabled_without_disabling_the_daemon_stop(self) -> None:
+        command, environment, guard = self._run(cli_deadline=False)
+        self.assertNotIn("--deadline", command)
+        self.assertTrue(any(c.endswith("agenc daemon stop") for c in environment.commands))
+        self.assertEqual(guard["budget_sec"], 3600.0)
+        self.assertFalse(guard["timed_out"])
+        self.assertEqual(guard["stop_exit_code"], 0)
 
 
 if __name__ == "__main__":
