@@ -18,6 +18,7 @@ describe('Provider result counts', () => {
     'you.ts',
     'jina.ts',
     'duckduckgo.ts',
+    'keenable.ts',
     // linkup.ts excluded — uses depth param, not a result count field
   ]
 
