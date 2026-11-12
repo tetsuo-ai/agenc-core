@@ -1414,7 +1414,6 @@ const BOUND_READ_WORKER_SOURCE = String.raw`
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, open, stat } from "node:fs/promises";
-import { createInterface } from "node:readline";
 
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const identity = (value) => ({
@@ -1719,34 +1718,73 @@ try {
             );
       const selected = [];
       let totalLines = 0;
+      const input = opened.handle.createReadStream({
+        encoding: "utf8", highWaterMark: 64 * 1024, autoClose: false, start: 0,
+      });
+      let endsWithNewline = false;
       let selectedBytes = 0;
       let windowFull = false;
-      let endsWithNewline = false;
-      const input = opened.handle.createReadStream({
-        encoding: "utf8",
-        autoClose: false,
-        start: 0,
-      });
-      input.on("data", (chunk) => { endsWithNewline = chunk.endsWith("\n"); });
-      const reader = createInterface({ input, crlfDelay: Infinity });
-      try {
-        for await (const line of reader) {
-          totalLines += 1;
-          if (totalLines >= offset && selected.length < limit && !windowFull) {
-            const bytes = Buffer.byteLength(line, "utf8") + (selected.length > 0 ? 1 : 0);
-            if (command.completeLineCount && selected.length > 0 && selectedBytes + bytes > maxBytes) windowFull = true;
-            else { selected.push(line); selectedBytes += bytes; }
+      let line = "";
+      let lineBytes = 0;
+      let hasLineContent = false;
+      let skipLF = false;
+      // Readline buffers an entire line even outside the requested window. Scan
+      // fixed-size chunks instead, retaining only complete lines that fit the cap.
+      // Keep this scanner in sync with sliceTextFileByLineStream in file-read.ts.
+      const append = (part) => {
+        hasLineContent ||= part.length > 0;
+        if (totalLines + 1 < offset || selected.length >= limit || windowFull) return;
+        const bytes = Buffer.byteLength(part, "utf8");
+        if (selectedBytes + lineBytes + bytes + (selected.length > 0 ? 1 : 0) > maxBytes) {
+          if (!command.completeLineCount || selected.length === 0) {
+            throw Object.assign(new Error(
+              "bound text window exceeds the requested byte limit",
+            ), { code: "FILE_TOO_LARGE" });
           }
-          if (!command.completeLineCount && selected.length >= limit) break;
+          windowFull = true;
+          line = "";
+          lineBytes = 0;
+          return;
+        }
+        line += part;
+        lineBytes += bytes;
+      };
+      const finishLine = () => {
+        totalLines += 1;
+        if (totalLines >= offset && selected.length < limit && !windowFull) {
+          selectedBytes += lineBytes + (selected.length > 0 ? 1 : 0);
+          selected.push(line);
+        }
+        line = "";
+        lineBytes = 0;
+        hasLineContent = false;
+      };
+      try {
+        chunks: for await (const chunk of input) {
+          endsWithNewline = chunk.endsWith("\n");
+          let start = skipLF && chunk.startsWith("\n") ? 1 : 0;
+          skipLF = false;
+          const breaks = /\r\n|\r|\n/g;
+          breaks.lastIndex = start;
+          let match;
+          while ((match = breaks.exec(chunk)) !== null) {
+            append(chunk.slice(start, match.index));
+            finishLine();
+            start = match.index + match[0].length;
+            skipLF = start === chunk.length && match[0] === "\r";
+            if (!command.completeLineCount && selected.length >= limit) break chunks;
+          }
+          append(chunk.slice(start));
+        }
+        if (hasLineContent) finishLine();
+        if (command.completeLineCount && endsWithNewline) {
+          append("");
+          finishLine();
         }
       } finally {
-        reader.close();
         input.destroy();
       }
-      if (command.completeLineCount && endsWithNewline) {
-        totalLines += 1;
-        if (!windowFull && totalLines >= offset && selected.length < limit) selected.push("");
-      }
+
       const content = selected.join("\n");
       if (Buffer.byteLength(content, "utf8") > maxBytes) {
         send({

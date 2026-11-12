@@ -44,7 +44,6 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { dirname, extname, isAbsolute, resolve } from "node:path";
-import { createInterface } from "node:readline";
 import {
   hasReadOnlyDelegationReadGuard,
   readOnlyDelegationReadPathAllowed,
@@ -502,33 +501,71 @@ async function sliceTextFileByLineStream(
   const selected: string[] = [];
   let totalLines = 0;
 
-  const input = createReadStream(filePath, { encoding: "utf8" });
+  const input = createReadStream(filePath, { encoding: "utf8", highWaterMark: 64 * 1024 });
   let endsWithNewline = false;
   let selectedBytes = 0;
   let windowFull = false;
-  input.on("data", (chunk: string) => { endsWithNewline = chunk.endsWith("\n"); });
-  const reader = createInterface({ input, crlfDelay: Infinity });
+  let line = "";
+  let lineBytes = 0;
+  let hasLineContent = false;
+  let skipLF = false;
+  // Readline buffers an entire line even outside the requested window. Scan
+  // fixed-size chunks instead, retaining only complete lines that fit the cap.
+  // Keep this scanner in sync with the descriptor-bound read_text_window helper.
+  const append = (part: string): void => {
+    hasLineContent ||= part.length > 0;
+    if (totalLines + 1 < startLine || selected.length >= effectiveLimit || windowFull) return;
+    const bytes = Buffer.byteLength(part, "utf8");
+    if (selectedBytes + lineBytes + bytes + (selected.length > 0 ? 1 : 0) > maxBytes) {
+      if (!countAll || selected.length === 0) {
+        throw Object.assign(new Error(
+          `File slice exceeds the text-read limit of ${formatBytes(maxBytes)}. Use a smaller offset and limit window.`,
+        ), { code: "FILE_TOO_LARGE" });
+      }
+      windowFull = true;
+      line = "";
+      lineBytes = 0;
+      return;
+    }
+    line += part;
+    lineBytes += bytes;
+  };
+  const finishLine = (): void => {
+    totalLines += 1;
+    if (totalLines >= startLine && selected.length < effectiveLimit && !windowFull) {
+      selectedBytes += lineBytes + (selected.length > 0 ? 1 : 0);
+      selected.push(line);
+    }
+    line = "";
+    lineBytes = 0;
+    hasLineContent = false;
+  };
   try {
-    for await (const line of reader) {
-      totalLines += 1;
-      if (totalLines >= startLine && selected.length < effectiveLimit && !windowFull) {
-        const bytes = Buffer.byteLength(line, "utf8") + (selected.length > 0 ? 1 : 0);
-        if (selected.length > 0 && selectedBytes + bytes > maxBytes) windowFull = true;
-        else { selected.push(line); selectedBytes += bytes; }
+    chunks: for await (const chunk of input) {
+      endsWithNewline = chunk.endsWith("\n");
+      let start: number = skipLF && chunk.startsWith("\n") ? 1 : 0;
+      skipLF = false;
+      const breaks = /\r\n|\r|\n/g;
+      breaks.lastIndex = start;
+      let match: RegExpExecArray | null;
+      while ((match = breaks.exec(chunk)) !== null) {
+        append(chunk.slice(start, match.index));
+        finishLine();
+        start = match.index + match[0].length;
+        skipLF = start === chunk.length && match[0] === "\r";
+        if (!countAll && selected.length >= effectiveLimit) break chunks;
       }
-      if (!countAll && selected.length >= effectiveLimit) {
-        break;
-      }
+      append(chunk.slice(start));
+    }
+    if (hasLineContent) finishLine();
+    if (countAll && endsWithNewline) {
+      append("");
+      finishLine();
     }
   } finally {
-    reader.close();
     input.destroy();
   }
 
-  if (countAll && endsWithNewline) {
-    totalLines += 1;
-    if (!windowFull && totalLines >= startLine && selected.length < effectiveLimit) selected.push("");
-  }
   const endLine =
     selected.length > 0
       ? startLine + selected.length - 1
@@ -764,7 +801,7 @@ async function readTextFile(
           resolvedPath.canonical,
           opts.offset,
           opts.limit,
-          rangeNote ? opts.maxTextBytes : Number.POSITIVE_INFINITY,
+          opts.maxTextBytes,
           rangeNote,
         )
       : sliceLines(text ?? "", opts.offset, opts.limit)), opts);

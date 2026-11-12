@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { createFileReadTool } from "../../../src/tools/system/file-read.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 import { runWithStartupProviderSelection } from "../../../src/utils/model/providers.js";
+import { bindWorkspaceFileReadCapability } from "../../../src/workspace/file-mutation-transaction.js";
 
 let root: string;
 beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "read-range-")); });
@@ -67,3 +68,47 @@ test("token-limited reads return a fitting prefix and preserve legacy errors whe
   expect(legacy.isError).toBe(true);
   expect(legacy.content).toContain("exceeds maximum allowed tokens (20)");
 });
+
+for (const bound of [false, true]) {
+  test.each([
+    { name: "CRLF split across chunks", text: `${"x".repeat(65535)}\r\né😀\r\nlast`, offset: 2, limit: 2, maxBytes: 16, content: "é😀\nlast", totalLines: 3 },
+    { name: "UTF-8 split across chunks", text: `${"x".repeat(65534)}\né😀\nlast\n`, offset: 2, limit: 1, maxBytes: 16, content: "é😀", totalLines: 4 },
+    { name: "blank lines at the byte cap", text: `a\n\n${"x".repeat(64)}`, offset: 1, limit: 20, maxBytes: 2, content: "a\n", totalLines: 3 },
+    { name: "trailing blank line beyond the byte cap", text: "aaaa\nbbbb\n", offset: 1, limit: 20, maxBytes: 9, content: "aaaa\nbbbb", totalLines: 3 },
+    { name: "selected line spanning chunks", text: `${"x".repeat(65535)}\n${"é".repeat(40000)}\nlast`, offset: 2, limit: 1, maxBytes: 80000, content: "é".repeat(40000), totalLines: 3 },
+  ])(`streamed windows preserve $name (bound=${bound})`, async fixture => {
+    const numLines = fixture.content.split("\n").length;
+    const endLine = fixture.offset + numLines - 1;
+    if (bound) {
+      const file = join(root, "bound.txt");
+      await writeFile(file, fixture.text);
+      const capability = await bindWorkspaceFileReadCapability(file);
+      try {
+        expect(await capability.readTextWindow(fixture.offset, fixture.limit, fixture.maxBytes, true))
+          .toMatchObject({ content: fixture.content, startLine: fixture.offset, endLine, numLines, totalLines: fixture.totalLines });
+      } finally { await capability.dispose(); }
+    } else {
+      const result = await read(fixture.text, { offset: fixture.offset, limit: fixture.limit }, {}, fixture.maxBytes, 100000);
+      expect(result.isError).toBeUndefined();
+      expect(result.metadata).toMatchObject({ startLine: fixture.offset, endLine, numLines, totalLines: fixture.totalLines });
+      const numbered = fixture.content.split("\n").map((line, i) => `${fixture.offset + i}→${line}`).join("\n");
+      const next = endLine < fixture.totalLines ? `; next offset ${endLine + 1}` : "";
+      expect(result.content).toBe(`${numbered}\n[lines ${fixture.offset}-${endLine} of ${fixture.totalLines}${next}]`);
+    }
+  });
+
+  test(`a first selected line over the cap returns an actionable error (bound=${bound})`, async () => {
+    if (bound) {
+      const file = join(root, "oversized.txt");
+      await writeFile(file, "x".repeat(100));
+      const capability = await bindWorkspaceFileReadCapability(file);
+      try {
+        await expect(capability.readTextWindow(1, 1, 16, true)).rejects.toThrow("exceeds its byte limit");
+      } finally { await capability.dispose(); }
+    } else {
+      const result = await read("x".repeat(100), { offset: 1, limit: 1 }, {}, 16);
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("Use a smaller offset and limit window.");
+    }
+  });
+}
