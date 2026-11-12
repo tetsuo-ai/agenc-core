@@ -103,6 +103,8 @@ describe("summary format recovery", () => {
       usage: { promptTokens: 100, completionTokens: 9_000, reasoningOutputTokens: 8_900, reasoningIncludedInCompletion: true, totalTokens: 9_100 },
       model: "grok-4.5", finishReason: "stop",
     }) });
+    // The reasoning reserve needs a proven ceiling above the answer budget.
+    Object.assign(harness.session.modelInfo, { maxOutputTokensUpperLimit: 16_384 });
     const result = await compactConversation(source, harness.context);
     expect(result.transaction).toBeDefined();
     expect(harness.provider.chat.mock.calls[0]![1].maxOutputTokens).toBe(16_384);
