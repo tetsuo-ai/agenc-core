@@ -29,8 +29,10 @@ function fixture() {
   const update = (id: number, text: string, changes: Partial<NonNullable<TelegramUpdate["message"]>> = {}): TelegramUpdate => ({ update_id: id, message: { message_id: id, date: Math.floor(Date.now() / 1000), chat: { id: 123456, type: "private" }, from: { id: 123456, is_bot: false }, text, ...changes } });
   async function deliver(...updates: TelegramUpdate[]) { batches.push(updates); await vi.advanceTimersByTimeAsync(101); }
   async function start() { service.configure(config); await service.start(); await vi.advanceTimersByTimeAsync(0); }
+  const request = (sessionId: string, requestId: string): void => service.observeSessionEvent(sessionId, { method: "event.permission_request", params: { requestId } });
+  const notices = (): number => vi.mocked(transport.sendMessage).mock.calls.filter(([, text]) => text.includes("needs permission to continue")).length;
   cleanups.push(() => { service.stop(); rmSync(root, { recursive: true, force: true }); });
-  return { service, config, storage, transport, createSession, invoke, update, deliver, start, batches };
+  return { service, config, storage, transport, createSession, invoke, update, deliver, start, batches, request, notices };
 }
 
 describe("managed private Telegram owner control", () => {
@@ -90,6 +92,34 @@ describe("managed private Telegram owner control", () => {
     f.service.observeSessionEvent("other", event); f.service.observeSessionEvent("session-1", event); await vi.advanceTimersByTimeAsync(0);
     expect(f.transport.sendMessage).toHaveBeenCalledWith("123456", expect.stringContaining("on the host"));
     expect(JSON.stringify(vi.mocked(f.transport.sendMessage).mock.calls)).not.toContain("must-not-send");
+  });
+  it("announces every distinct permission request, including the 101st in one run", async () => {
+    const f = fixture(); await f.start(); await f.deliver(f.update(1, "/new"));
+    for (let index = 0; index <= 100; index++) f.request("session-1", `request-${index}`);
+    await vi.advanceTimersByTimeAsync(0); expect(f.notices()).toBe(101);
+  });
+  it("announces a repeated permission request id once", async () => {
+    const f = fixture(); await f.start(); await f.deliver(f.update(1, "/new"));
+    f.request("session-1", "request"); f.request("session-1", "request"); await vi.advanceTimersByTimeAsync(0);
+    expect(f.notices()).toBe(1);
+  });
+  it("remembers no more than the 100 newest announced request ids", async () => {
+    const f = fixture(); await f.start(); await f.deliver(f.update(1, "/new"));
+    for (let index = 0; index <= 100; index++) f.request("session-1", `request-${index}`);
+    // The 100 newest ids are still remembered, so replaying them announces nothing.
+    for (let index = 1; index <= 100; index++) f.request("session-1", `request-${index}`);
+    await vi.advanceTimersByTimeAsync(0); expect(f.notices()).toBe(101);
+    // The oldest id made room for the 101st. Remembering it again drops the next oldest.
+    f.request("session-1", "request-0"); await vi.advanceTimersByTimeAsync(0); expect(f.notices()).toBe(102);
+    f.request("session-1", "request-1"); await vi.advanceTimersByTimeAsync(0); expect(f.notices()).toBe(103);
+  });
+  it("forgets announced request ids when /new starts another session, not when /new fails", async () => {
+    const f = fixture(); await f.start(); await f.deliver(f.update(1, "/new"));
+    f.request("session-1", "request"); await vi.advanceTimersByTimeAsync(0); expect(f.notices()).toBe(1);
+    f.createSession.mockRejectedValueOnce(new Error("fixture creation failure")); await f.deliver(f.update(2, "/new"));
+    expect(f.service.status().sessionId).toBe("session-1"); f.request("session-1", "request"); await vi.advanceTimersByTimeAsync(0); expect(f.notices()).toBe(1);
+    await f.deliver(f.update(3, "/new")); expect(f.service.status().sessionId).toBe("session-2");
+    f.request("session-2", "request"); await vi.advanceTimersByTimeAsync(0); expect(f.notices()).toBe(2);
   });
   it("stop fences a late poll and revoke removes only managed owner credentials", async () => {
     const f = fixture(); const pending = deferred<TelegramUpdate[]>(); vi.mocked(f.transport.getUpdates).mockImplementation(() => pending.promise);

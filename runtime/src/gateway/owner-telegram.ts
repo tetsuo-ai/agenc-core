@@ -167,7 +167,7 @@ class OwnerTelegramRuntime {
       if (!this.#current(generation)) return false;
       if (created.error) throw created.error;
       if (typeof created.result?.sessionId !== "string") throw new Error("TELEGRAM_SESSION_RESPONSE_INVALID");
-      this.#error = null; this.#sessionError = null; this.#sessionId = created.result.sessionId; this.#instructionsSent = false; return true;
+      this.#error = null; this.#sessionError = null; this.#sessionId = created.result.sessionId; this.#instructionsSent = false; this.#notifiedApprovals.clear(); return true;
     } catch (error) {
       if (!this.#current(generation)) return false;
       const failure = this.#creationFailure ?? telegramSessionFailure(error);
@@ -207,7 +207,9 @@ class OwnerTelegramRuntime {
   observeSessionEvent(sessionId: string, event: JsonObject): void {
     if (!this.#enabled || sessionId !== this.#sessionId || event.method !== "event.permission_request") return;
     const params = event.params as JsonObject | undefined;
-    if (typeof params?.requestId !== "string" || this.#notifiedApprovals.has(params.requestId) || this.#notifiedApprovals.size >= 100) return;
+    if (typeof params?.requestId !== "string" || this.#notifiedApprovals.has(params.requestId)) return;
+    // The cap bounds memory, never notices: a full set forgets its oldest id (a Set iterates in insertion order).
+    if (this.#notifiedApprovals.size >= 100) this.#notifiedApprovals.delete(this.#notifiedApprovals.values().next().value!);
     this.#notifiedApprovals.add(params.requestId);
     void this.#reply("This session needs permission to continue. Review and approve the tool request in AgenC on the host.", this.#generation).catch(() => {});
   }
