@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { build } from "esbuild";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { PairingStore } from "../../src/gateway/pairing.js";
+import { MAX_PAIRING_ATTEMPTS, PairingStore } from "../../src/gateway/pairing.js";
 
 interface WorkerOperation {
   operation: "approve" | "revoke" | "challenge" | "redeem" | "unexpected-read";
@@ -138,5 +138,17 @@ describe("PairingStore transactions", () => {
     const results = await runWorkers(Array.from({ length: 8 }, () => ({ operation: "redeem", peer: "alice", code: "ONCE" })));
     expect(results.filter(result => result === true)).toHaveLength(1);
     expect(new PairingStore({ agencHome: home }).isPaired("tg", "alice")).toBe(true);
+  }, 30_000);
+
+  test("counts every wrong code from contending processes and locks the sender out at the limit", async () => {
+    await new PairingStore({ agencHome: home, generateCode: () => "RIGHT" }).challenge("tg", { peerId: "alice" });
+    const startedAt = Date.now();
+    const results = await runWorkers(Array.from({ length: MAX_PAIRING_ATTEMPTS }, (_, index) => ({ operation: "redeem", peer: "alice", code: `WRNG${index}`, delayMs: 30 })));
+    expect(results).toEqual(Array.from({ length: MAX_PAIRING_ATTEMPTS }, () => false));
+    const store = new PairingStore({ agencHome: home });
+    expect(await store.listPending()).toEqual([]);
+    expect(store.lockedUntil("tg", "alice")).toBeGreaterThan(startedAt);
+    expect(await runWorkers([{ operation: "redeem", peer: "alice", code: "RIGHT", delayMs: 0 }])).toEqual([false]);
+    expect(store.isPaired("tg", "alice")).toBe(false);
   }, 30_000);
 });

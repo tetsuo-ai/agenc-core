@@ -19,7 +19,11 @@ import { resolveBinding } from "./bindings.js";
 import type { TelegramOwnerControl } from "./control-plane.js";
 import type { GatewayMemeFeature } from "./meme.js";
 import type { GatewayOnchainFeature } from "./onchain.js";
-import { evaluateDmAccess, PairingStore } from "./pairing.js";
+import {
+  evaluateDmAccess,
+  MAX_PAIRING_ATTEMPTS,
+  PairingStore,
+} from "./pairing.js";
 import {
   detectPromptInjectionAttempt,
   PROMPT_INJECTION_REPLY,
@@ -171,15 +175,42 @@ export class ChannelGateway {
         );
         return;
       }
+      if (access.kind === "pairing_locked") {
+        // Too many wrong pairing codes (#3443). Until the lockout ends or the
+        // host runs `pairing approve`, the sender gets no reply and no new
+        // code: an ignored message costs the host this one line.
+        this.#log(
+          `gateway: ignored '${message.sender.peerId}' on '${message.channelId}': pairing locked until ${new Date(access.lockedUntil).toISOString()} after too many wrong codes`,
+        );
+        return;
+      }
       if (access.kind === "pairing_challenge") {
         // Host-gated pairing (todo-103): never DM the secret code. Operator
         // reads it via gateway logs or `agenc gateway pairing pending`, then
         // either tells the user out-of-band or runs `pairing approve`.
-        if (await this.#pairing.redeem(message.channelId, message.sender, message.text)) {
-          await reply(
-            "Paired. This conversation now reaches your AgenC agent. Send a message to begin.",
+        //
+        // The message that opened the challenge cannot be a guess at its
+        // code, so only later messages are tried, and counted, as codes.
+        if (!access.issued) {
+          if (await this.#pairing.redeem(message.channelId, message.sender, message.text)) {
+            await reply(
+              "Paired. This conversation now reaches your AgenC agent. Send a message to begin.",
+            );
+            return;
+          }
+          const lockedUntil = this.#pairing.lockedUntil(
+            message.channelId,
+            message.sender.peerId,
           );
-          return;
+          if (lockedUntil !== undefined) {
+            // That was the last wrong code allowed: the code is void and the
+            // sender is locked out, so the notice below would no longer be
+            // true. Stay silent from here on.
+            this.#log(
+              `gateway: pairing locked channel=${message.channelId} peer=${message.sender.peerId} until=${new Date(lockedUntil).toISOString()} after ${MAX_PAIRING_ATTEMPTS} wrong codes (code voided, no reply sent)`,
+            );
+            return;
+          }
         }
         this.#log(
           `gateway: pairing pending channel=${message.channelId} peer=${message.sender.peerId} code=${access.code} (host-only, not sent in-channel)`,

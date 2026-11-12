@@ -5,6 +5,10 @@
  * codes unless the channel explicitly allowlists them; `open` requires the
  * literal `"*"` allowlist entry AND `dmPolicy: "open"` — one alone is not
  * enough. State persists to `<agencHome>/gateway/pairing.json` (0600).
+ *
+ * Wrong codes are limited (#3443): MAX_PAIRING_ATTEMPTS failed attempts on
+ * one pending code void it and lock that (channel, sender) out of pairing
+ * for PAIRING_LOCKOUT_MS. Counts and lockouts persist in the same file.
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
@@ -24,16 +28,47 @@ import {
 } from "./types.js";
 
 export const PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
+/** Failed attempts allowed on one pending code. The last one voids the code. */
+export const MAX_PAIRING_ATTEMPTS = 5;
+/** How long the sender is then locked out of pairing on that channel. */
+export const PAIRING_LOCKOUT_MS = 15 * 60 * 1000;
 
 export type DmAccessDecision =
   | { readonly kind: "allowed" }
-  | { readonly kind: "pairing_challenge"; readonly code: string }
+  | {
+      readonly kind: "pairing_challenge";
+      readonly code: string;
+      /** True when this evaluation issued the code, false when a live one was reused. */
+      readonly issued: boolean;
+    }
   | { readonly kind: "pairing_pending" }
+  | {
+      readonly kind: "pairing_locked";
+      /** Epoch ms until which no code is issued or redeemed (too many wrong codes). */
+      readonly lockedUntil: number;
+    }
   | { readonly kind: "denied"; readonly reason: string };
+
+/** Outcome of {@link PairingStore.beginChallenge}. */
+export type PairingChallenge =
+  | {
+      readonly kind: "challenge";
+      readonly code: string;
+      /** True when this call issued the code, false when a live one was reused. */
+      readonly issued: boolean;
+    }
+  | { readonly kind: "locked"; readonly lockedUntil: number };
 
 interface PendingPairing {
   readonly code: string;
   readonly expiresAt: number;
+  /** Failed attempts on this code so far; left out until the first one. */
+  readonly failedAttempts?: number;
+}
+
+interface PairingLockout {
+  /** Epoch ms at which the sender may ask for a new code. */
+  readonly until: number;
 }
 
 interface PairingState {
@@ -43,13 +78,19 @@ interface PairingState {
   /**
    * Durable pending challenges so host CLI (`pairing pending` / `approve`)
    * can see codes without the secret ever being DM'd (todo-103).
-   * key = `${channelId}\u0000${peerId}` → { code, expiresAt }.
+   * key = `${channelId}\u0000${peerId}` → { code, expiresAt, failedAttempts? }.
    */
-  pending?: Record<string, { code: string; expiresAt: number }>;
+  pending?: Record<string, PendingPairing>;
+  /**
+   * Senders locked out of pairing after too many wrong codes (#3443), under
+   * the same key as `pending` → { until }. The file leaves this map out
+   * while it is empty, as files written before #3443 do.
+   */
+  lockouts: Record<string, PairingLockout>;
 }
 
 function emptyState(): PairingState {
-  return { version: 1, paired: {}, pending: {} };
+  return { version: 1, paired: {}, pending: {}, lockouts: {} };
 }
 
 export interface PairingStoreOptions {
@@ -60,8 +101,41 @@ export interface PairingStoreOptions {
 }
 
 function defaultGenerateCode(): string {
-  // 6 hex bytes → 8 base36 chars, uppercased for read-back-over-voice.
-  return randomBytes(6).toString("hex").slice(0, 8).toUpperCase();
+  // 6 random bytes, all kept: 12 hex chars (48 bits), uppercased for
+  // read-back-over-voice.
+  return randomBytes(6).toString("hex").toUpperCase();
+}
+
+/**
+ * Whether a message could be the pending code at all: one token of the
+ * code's own length once trimmed. Anything else (a sentence, a greeting, a
+ * bot command) cannot equal it, so it is never counted as a wrong guess and
+ * a sender who chats while waiting for the code is not locked out.
+ */
+function isPairingAttempt(input: string, code: string): boolean {
+  const candidate = input.trim();
+  return candidate.length === code.length && !/\s/u.test(candidate);
+}
+
+/**
+ * Failed-attempt count of a stored pending record. Files written before
+ * #3443 carry none, which reads as zero. Returns undefined for anything the
+ * limit cannot have produced, so the caller voids the code instead of
+ * granting it a fresh set of guesses.
+ */
+function readFailedAttempts(value: unknown): number | undefined {
+  if (value === undefined) return 0;
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value < MAX_PAIRING_ATTEMPTS
+    ? value
+    : undefined;
+}
+
+/** A stored instant that a Date can hold, so it is safe to compare and print. */
+function isEpochMs(value: unknown): value is number {
+  return typeof value === "number" && !Number.isNaN(new Date(value).getTime());
 }
 
 export class PairingStore {
@@ -110,14 +184,28 @@ export class PairingStore {
               typeof (value as PendingPairing).code === "string" &&
               typeof (value as PendingPairing).expiresAt === "number"
             ) {
+              const failedAttempts = readFailedAttempts(
+                (value as { failedAttempts?: unknown }).failedAttempts,
+              );
+              if (failedAttempts === undefined) continue;
               pending[key] = {
                 code: (value as PendingPairing).code,
                 expiresAt: (value as PendingPairing).expiresAt,
+                ...(failedAttempts > 0 ? { failedAttempts } : {}),
               };
             }
           }
         }
-        return { version: 1, paired, pending };
+        const lockouts: Record<string, PairingLockout> = {};
+        const rawLockouts = (raw as { lockouts?: unknown }).lockouts;
+        if (typeof rawLockouts === "object" && rawLockouts !== null) {
+          for (const [key, value] of Object.entries(rawLockouts)) {
+            if (typeof value !== "object" || value === null) continue;
+            const until = (value as { until?: unknown }).until;
+            if (isEpochMs(until)) lockouts[key] = { until };
+          }
+        }
+        return { version: 1, paired, pending, lockouts };
       }
     } catch {
       // Corrupt state fails closed: nobody is paired.
@@ -127,10 +215,15 @@ export class PairingStore {
 
   #save(): void {
     // pairing.json holds paired peers + host-only pending codes (0600).
+    // An empty lockout map is left out, so a file with no lockouts keeps
+    // the shape earlier releases wrote.
+    const { lockouts, ...state } = this.#state;
+    const persisted =
+      Object.keys(lockouts).length > 0 ? { ...state, lockouts } : state;
     writeDurableAtomicFileSync(
       this.#path,
       `${this.#path}.${process.pid}.${randomUUID()}.tmp`,
-      `${JSON.stringify(this.#state, null, 2)}\n`,
+      `${JSON.stringify(persisted, null, 2)}\n`,
       0o600,
     );
   }
@@ -177,7 +270,8 @@ export class PairingStore {
     return this.#state.pending;
   }
 
-  #pruneExpiredPending(): boolean {
+  /** Drops expired pending codes and expired lockouts alike. */
+  #pruneExpired(): boolean {
     const now = this.#now();
     const pending = this.#pendingMap();
     let dirty = false;
@@ -187,12 +281,37 @@ export class PairingStore {
         dirty = true;
       }
     }
+    const lockouts = this.#state.lockouts;
+    for (const [key, entry] of Object.entries(lockouts)) {
+      if (entry.until <= now) {
+        delete lockouts[key];
+        dirty = true;
+      }
+    }
     return dirty;
+  }
+
+  /** End of the live lockout stored under `key`, if there is one. */
+  #liveLockout(key: string): number | undefined {
+    const lockout = this.#state.lockouts[key];
+    return lockout !== undefined && lockout.until > this.#now()
+      ? lockout.until
+      : undefined;
   }
 
   isPaired(channelId: string, peerId: string): boolean {
     this.#reloadFromDisk();
     return (this.#state.paired[channelId] ?? []).includes(peerId);
+  }
+
+  /**
+   * Epoch ms at which the sender's pairing lockout ends, or undefined when
+   * the sender is not locked out (#3443). Read-only like `isPaired`, so a
+   * message from a locked-out sender costs no transaction.
+   */
+  lockedUntil(channelId: string, peerId: string): number | undefined {
+    this.#reloadFromDisk();
+    return this.#liveLockout(this.#key(channelId, peerId));
   }
 
   listPaired(channelId: string): readonly string[] {
@@ -220,7 +339,7 @@ export class PairingStore {
     readonly expiresAt: number;
   }[]> {
     return this.#mutate(() => {
-      const changed = this.#pruneExpiredPending();
+      const changed = this.#pruneExpired();
       const out: {
         channelId: string;
         peerId: string;
@@ -243,12 +362,14 @@ export class PairingStore {
 
   /**
    * Host-side approve: pair without the remote party seeing a code (todo-103).
-   * Clears any pending challenge for the peer.
+   * Clears any pending challenge and any lockout for the peer.
    */
   async approve(channelId: string, peerId: string): Promise<void> {
     return this.#mutate(() => {
+      const key = this.#key(channelId, peerId);
       const pending = this.#pendingMap();
-      delete pending[this.#key(channelId, peerId)];
+      delete pending[key];
+      delete this.#state.lockouts[key];
       const peers = this.#state.paired[channelId] ?? [];
       if (!peers.includes(peerId)) {
         this.#state.paired[channelId] = [...peers, peerId];
@@ -259,21 +380,47 @@ export class PairingStore {
 
   /**
    * Begin (or refresh) a pairing challenge for a sender. Reuses the live
-   * code when one is pending so repeated messages don't rotate it.
+   * code when one is pending so repeated messages don't rotate it, and
+   * reports whether this call issued the code. A locked-out sender gets no
+   * code (#3443).
    */
-  async challenge(channelId: string, sender: ChannelSender): Promise<string> {
-    return this.#mutate(() => {
-      const changed = this.#pruneExpiredPending();
+  async beginChallenge(
+    channelId: string,
+    sender: ChannelSender,
+  ): Promise<PairingChallenge> {
+    return this.#mutate<PairingChallenge>(() => {
+      const changed = this.#pruneExpired();
       const key = this.#key(channelId, sender.peerId);
+      const lockedUntil = this.#liveLockout(key);
+      if (lockedUntil !== undefined) {
+        return { value: { kind: "locked", lockedUntil }, changed };
+      }
       const pending = this.#pendingMap();
       const existing = pending[key];
       if (existing !== undefined && existing.expiresAt > this.#now()) {
-        return { value: existing.code, changed };
+        return {
+          value: { kind: "challenge", code: existing.code, issued: false },
+          changed,
+        };
       }
       const code = this.#generateCode();
       pending[key] = { code, expiresAt: this.#now() + this.#ttlMs };
-      return { value: code, changed: true };
+      return { value: { kind: "challenge", code, issued: true }, changed: true };
     });
+  }
+
+  /**
+   * Code-only form of {@link beginChallenge}. Rejects when the sender is
+   * locked out, because there is no code to return.
+   */
+  async challenge(channelId: string, sender: ChannelSender): Promise<string> {
+    const challenge = await this.beginChallenge(channelId, sender);
+    if (challenge.kind === "locked") {
+      throw new Error(
+        `pairing is locked for '${sender.peerId}' on '${channelId}' until ${new Date(challenge.lockedUntil).toISOString()}`,
+      );
+    }
+    return challenge.code;
   }
 
   /**
@@ -282,11 +429,17 @@ export class PairingStore {
    *
    * Codes are disclosed only on the gateway host (`listPending` / logs), not
    * in the channel DM (todo-103).
+   *
+   * Wrong codes are limited (#3443). Input that could be a code but does not
+   * match is a failed attempt on the pending code. Reaching
+   * MAX_PAIRING_ATTEMPTS voids the code and locks the sender out for
+   * PAIRING_LOCKOUT_MS, during which even the correct code is refused.
    */
   async redeem(channelId: string, sender: ChannelSender, input: string): Promise<boolean> {
     return this.#mutate(() => {
-      const changed = this.#pruneExpiredPending();
+      const changed = this.#pruneExpired();
       const key = this.#key(channelId, sender.peerId);
+      if (this.#liveLockout(key) !== undefined) return { value: false, changed };
       const pending = this.#pendingMap();
       const entry = pending[key];
       if (entry === undefined) return { value: false, changed };
@@ -294,7 +447,20 @@ export class PairingStore {
         delete pending[key];
         return { value: false, changed: true };
       }
-      if (input.trim().toUpperCase() !== entry.code) return { value: false, changed };
+      if (input.trim().toUpperCase() !== entry.code) {
+        // Chatter is not a guess: only input as long as the code is counted.
+        if (!isPairingAttempt(input, entry.code)) return { value: false, changed };
+        const failedAttempts = (entry.failedAttempts ?? 0) + 1;
+        if (failedAttempts >= MAX_PAIRING_ATTEMPTS) {
+          delete pending[key];
+          this.#state.lockouts[key] = {
+            until: this.#now() + PAIRING_LOCKOUT_MS,
+          };
+        } else {
+          pending[key] = { ...entry, failedAttempts };
+        }
+        return { value: false, changed: true };
+      }
       delete pending[key];
       const peers = this.#state.paired[channelId] ?? [];
       if (!peers.includes(sender.peerId)) {
@@ -340,9 +506,28 @@ export async function evaluateDmAccess(options: {
       ) {
         return { kind: "allowed" };
       }
+      // A plain read answers for a locked-out sender (#3443), so an ignored
+      // message costs the host no transaction.
+      const lockedUntil = options.store.lockedUntil(
+        options.channelId,
+        options.sender.peerId,
+      );
+      if (lockedUntil !== undefined) {
+        return { kind: "pairing_locked", lockedUntil };
+      }
+      const challenge = await options.store.beginChallenge(
+        options.channelId,
+        options.sender,
+      );
+      if (challenge.kind === "locked") {
+        // A wrong code from a concurrent message locked the sender out
+        // between the read above and this transaction.
+        return { kind: "pairing_locked", lockedUntil: challenge.lockedUntil };
+      }
       return {
         kind: "pairing_challenge",
-        code: await options.store.challenge(options.channelId, options.sender),
+        code: challenge.code,
+        issued: challenge.issued,
       };
     }
   }
