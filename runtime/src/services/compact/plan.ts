@@ -1,3 +1,7 @@
+import { resolveProviderModelCapabilities } from "../../llm/capabilities.js";
+import { resolveRegisteredModelCatalogEntry } from "../../llm/registry/model-catalog.js";
+import { chatCompletionsCapabilityHintsForProvider } from "../../llm/wire/capability-gating.js";
+import type { ModelInfo } from "../../session/turn-context.js";
 import { supportsThinkingOffRecovery } from "../../session/reasoning-recovery-capability.js";
 import {
   assertTokenAccountingWithinContext,
@@ -697,9 +701,21 @@ export function compactionProviderOutputReserve(
   provider: string,
   model: string,
   contextWindow: number,
+  modelInfo?: Pick<ModelInfo, "maxOutputTokensUpperLimit" | "maxOutputTokens" | "supportsReasoning">,
 ): number {
-  return answerTokens + (supportsThinkingOffRecovery(provider, model)
-    ? 0 : Math.min(answerTokens, Math.floor(contextWindow / 8)));
+  const entry = resolveRegisteredModelCatalogEntry({ provider, model });
+  const routeCeiling = chatCompletionsCapabilityHintsForProvider(provider, model).outputTokensCeiling;
+  const ceilings = [modelInfo?.maxOutputTokensUpperLimit ?? modelInfo?.maxOutputTokens,
+    entry?.maxOutputTokensUpperLimit ?? entry?.maxOutputTokens, routeCeiling]
+    .filter((value): value is number => value !== undefined && Number.isFinite(value) && value > 0);
+  // An unknown route has no proven room above the caller's answer reserve.
+  const ceiling = ceilings.length > 0 ? Math.min(...ceilings) : answerTokens;
+  const reasons = modelInfo?.supportsReasoning === true || entry?.supportsThinking === true ||
+    (entry?.supportedReasoningLevels.length ?? 0) > 0 ||
+    resolveProviderModelCapabilities({ provider, model }).supportsExtendedThinking;
+  const allowance = reasons && !supportsThinkingOffRecovery(provider, model)
+    ? Math.min(answerTokens, Math.floor(contextWindow / 8)) : 0;
+  return Math.min(answerTokens + allowance, ceiling);
 }
 
 export function accountCompactionCall(params: {

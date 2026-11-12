@@ -1581,7 +1581,11 @@ async function invokeCompactionProvider(params: {
   const provider = params.context.provider!;
   const session = params.context.admissionSession!;
   const signal = params.context.abortController?.signal;
-  const providerOutputReserve = compactionProviderOutputReserve(params.outputReserveTokens, params.providerName, params.model, params.contextWindowTokens);
+  const modelInfo = params.context.turn?.modelInfo ?? session.modelInfo;
+  const providerOutputReserve = compactionProviderOutputReserve(
+    params.outputReserveTokens, params.providerName, params.model, params.contextWindowTokens,
+    modelInfo?.slug === params.model ? modelInfo : undefined,
+  );
   const options: LLMChatOptions = {
     model: params.model,
     systemPrompt: params.systemPrompt,
