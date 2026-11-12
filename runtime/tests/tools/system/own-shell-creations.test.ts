@@ -137,7 +137,7 @@ test("a file created and then changed by a later command, as yacht32's shots.mjs
   const file = join(root, "scripts/shots.mjs");
   expect((await exec(CREATE_SHOTS)).isError).not.toBe(true);
   await delay(20);
-  expect((await exec("sed -i 's/chromium.launch()/chromium.launch({ headless: true })/' scripts/shots.mjs")).isError)
+  expect((await exec("perl -pi -e 's/chromium\\.launch\\(\\)/chromium.launch({ headless: true })/' scripts/shots.mjs")).isError)
     .not.toBe(true);
   const patch = createApplyPatchTool({ cwd: root, allowedPaths: [root] });
   expect(refusedAsUnread(await patch.execute(patchArgs(SHOTS_PATCH)))).toBe(true);

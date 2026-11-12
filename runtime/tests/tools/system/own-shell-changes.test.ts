@@ -188,7 +188,7 @@ test("two of the session's commands naming the file before the next request send
   await write(file, "# notes\n");
   expect(await attachments()).toEqual([]);
   await exec("printf 'one\\n' >> notes.md");
-  await exec("sed -i 's/one/uno/' notes.md");
+  await exec("perl -pi -e 's/one/uno/' notes.md");
   expect(await readFile(file, "utf8")).toBe("# notes\nuno\n");
   expect(await attachments()).toEqual([]);
 });
@@ -285,7 +285,7 @@ test("Edit after the session's command needs a read of what the command wrote", 
   const file = join(root, "app.js");
   await write(file, "export const total = 1;\n");
   expect(await attachments()).toEqual([]);
-  await exec("sed -i 's/total = 1/total = 2/' app.js");
+  await exec("perl -pi -e 's/total = 1/total = 2/' app.js");
   expect((await edit(file, "total = 2", "total = 3")).isError).toBe(true);
   expect(await attachments()).toEqual([]);
   const refused = await edit(file, "total = 2", "total = 3");

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /** Lets a test replace the next process checks; otherwise the real sampler runs. */
-const sampling = vi.hoisted(() => ({ missingChecks: 0, emptyChecks: 0 }));
+const sampling = vi.hoisted(() => ({ missingChecks: 0, emptyChecks: 0, startupCpuSeconds: 0 }));
 vi.mock("../../src/unified-exec/process-state.js", async (original) => {
   const actual = await original<typeof import("../../src/unified-exec/process-state.js")>();
   return {
@@ -22,7 +22,11 @@ vi.mock("../../src/unified-exec/process-state.js", async (original) => {
         return { groups: [], memberCount: 0, cpuSeconds: 0, cpuDeltaSeconds: 0, exited: [],
           check: { cpuSeconds: 0, members: new Map() } };
       }
-      return actual.checkSessionProcesses(...args);
+      const report = await actual.checkSessionProcesses(...args);
+      // Reproduce Darwin's startup charge without relying on machine speed.
+      return report !== undefined && args[1]?.members.size === 0 && sampling.startupCpuSeconds > 0
+        ? { ...report, cpuDeltaSeconds: (report.cpuDeltaSeconds ?? 0) + sampling.startupCpuSeconds }
+        : report;
     }),
   };
 });
@@ -46,6 +50,7 @@ describe("busy waits", () => {
   afterEach(async () => {
     sampling.missingChecks = 0;
     sampling.emptyChecks = 0;
+    sampling.startupCpuSeconds = 0;
     vi.restoreAllMocks();
     if (restoreDiagnostics === undefined) delete process.env.AGENC_DIAGNOSTICS_FILE;
     else process.env.AGENC_DIAGNOSTICS_FILE = restoreDiagnostics;
@@ -91,13 +96,17 @@ describe("busy waits", () => {
       const file = join(dir, "diagnostics.jsonl");
       process.env.AGENC_DIAGNOSTICS_FILE = file;
       const processes = manager();
+      sampling.startupCpuSeconds = 1;
       await processes.execCommand({ cmd: busyFor(2), yield_time_ms: 300, waitWhileBusy: true });
-      await processes.execCommand({ cmd: "sleep 5", yield_time_ms: 300, waitWhileBusy: true });
+      // Poll an already-started sleeper. Its baseline includes startup CPU,
+      // so the idle interval measures only the sleep on both Darwin and Linux.
+      const sleeper = await processes.execCommand({ cmd: "sleep 10", yield_time_ms: 300 });
+      await processes.writeStdin({ session_id: sleeper.session_id!, chars: "", yield_time_ms: 300, waitWhileBusy: true });
       await processes.execCommand({ cmd: busyFor(1), yield_time_ms: 300 });
       const lines = (await readFile(file, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as {
         event: string; data: { kind: string; end: string; busy_ms: number; wait_ms: number; checks: number; cpu_shares: number[] };
       }).filter((line) => line.event === "exec_busy_wait");
-      expect(lines.map((line) => [line.data.kind, line.data.end])).toEqual([["exec", "exit"], ["exec", "idle"]]);
+      expect(lines.map((line) => [line.data.kind, line.data.end])).toEqual([["exec", "exit"], ["poll", "idle"]]);
       const [busy, idle] = lines.map((line) => line.data);
       expect(busy!.checks).toBeGreaterThanOrEqual(1);
       expect(Math.min(...busy!.cpu_shares)).toBeGreaterThanOrEqual(0.25);

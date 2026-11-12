@@ -150,7 +150,7 @@ test("an append, a later change in the same command and a later outside change s
   const result = await exec([
     "cat >> appended.js <<'EOF'", "const second = 2;", "EOF",
     "cat > changed.js <<'EOF'", "const value = 1;", "EOF",
-    "sed -i 's/value = 1/value = 2/' changed.js",
+    "perl -pi -e 's/value = 1/value = 2/' changed.js",
     "cat > outside.js <<'EOF'", "const mine = 1;", "EOF",
   ].join("\n"));
   expect(result.isError, String(result.content)).not.toBe(true);
