@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   checkOriginFileChanged,
@@ -116,7 +116,6 @@ describe("FileHistory (I-28)", () => {
       expect((await history.previewRewind("before-edit"))?.filesChanged).toEqual([file]);
       await expect(history.rewindToMessage("before-edit")).resolves.toEqual([file]);
       expect(readFileSync(file, "utf8")).toBe("original\n");
-      await expect(history.clear()).resolves.toBeUndefined();
       await expect(sidecar.stop()).resolves.toBeUndefined();
     } finally {
       history.stop();
@@ -578,6 +577,244 @@ describe("FileHistory unchanged files (#3434)", () => {
     await hist.trackEdits([], "m1");
     expect(hist.getState()).toBe(state);
     expect(listBackupFiles(hist.historyDir)).toHaveLength(2);
+  });
+});
+
+describe("FileHistory eviction deletes unreferenced backups (#3435)", () => {
+  let project = "";
+  let diagnostics: string[] = [];
+  const engines: FileHistory[] = [];
+
+  function engine(options: { sessionId?: string; maxSnapshots: number }): FileHistory {
+    const history = new FileHistory({
+      projectDir: project,
+      ...options,
+      onDiagnostic: ({ cause }) => { diagnostics.push(cause); },
+    });
+    engines.push(history);
+    return history;
+  }
+
+  /** The backup the newest snapshot names for `file`. */
+  function newestBackup(history: FileHistory, file: string): string {
+    const backup = history.getState().snapshots.at(-1)?.trackedFileBackups[file];
+    if (!backup || backup.backupFileName === null) {
+      throw new Error(`the newest snapshot has no backup for ${file}`);
+    }
+    return backup.backupFileName;
+  }
+
+  /** Per-path backup directories below a history directory. */
+  function backupDirectories(history: FileHistory): string[] {
+    return readdirSync(history.historyDir).filter((name) => name !== "snapshots.json");
+  }
+
+  beforeEach(() => {
+    project = mkdtempSync(join(tmpdir(), "agenc-filehist-evict-"));
+    diagnostics = [];
+  });
+  afterEach(() => {
+    for (const history of engines.splice(0)) history.stop();
+    if (project) rmSync(project, { recursive: true, force: true });
+  });
+
+  test.each([
+    ["an engine with a session id", "evict"],
+    ["an engine without a session id", undefined],
+  ])("%s deletes the backups that only evicted snapshots named", async (_layout, sessionId) => {
+    const busy = join(project, "busy.txt");
+    const removed = join(project, "removed.txt");
+    const neverCreated = join(project, "never-created.txt");
+    writeFileSync(busy, "busy 0\n", "utf8");
+    writeFileSync(removed, "removed\n", "utf8");
+    const hist = engine({ sessionId, maxSnapshots: 3 });
+    await hist.trackEdits([busy, removed, neverCreated], "m0");
+    const removedOrigin = newestBackup(hist, removed);
+    const busyBackups = [newestBackup(hist, busy)];
+    rmSync(removed);
+    for (let i = 1; i <= 2; i += 1) {
+      writeFileSync(busy, `busy ${i}\n`, "utf8");
+      await hist.makeSnapshot(`m${i}`);
+      busyBackups.push(newestBackup(hist, busy));
+    }
+    // At the cap, but nothing was evicted yet: every backup is still named.
+    expect(hist.getState().evictedCount).toBe(0);
+    expect(listBackupFiles(hist.historyDir).sort()).toEqual(
+      [removedOrigin, ...busyBackups].sort(),
+    );
+
+    writeFileSync(busy, "busy 3\n", "utf8");
+    await hist.makeSnapshot("m3");
+    busyBackups.push(newestBackup(hist, busy));
+
+    // m0 is evicted, and the two backups that only m0 named went with it.
+    expect(hist.getState().snapshots.map((snapshot) => snapshot.messageId)).toEqual([
+      "m1", "m2", "m3",
+    ]);
+    expect(existsSync(busyBackups[0]!)).toBe(false);
+    expect(existsSync(removedOrigin)).toBe(false);
+    expect(listBackupFiles(hist.historyDir).sort()).toEqual(busyBackups.slice(1).sort());
+    // `removed.txt` has no backup left, so its directory is gone as well.
+    expect(existsSync(dirname(removedOrigin))).toBe(false);
+    expect(backupDirectories(hist)).toEqual([basename(dirname(busyBackups[0]!))]);
+
+    // A tree that keeps changing holds one backup per retained snapshot.
+    for (let i = 4; i <= 9; i += 1) {
+      writeFileSync(busy, `busy ${i}\n`, "utf8");
+      await hist.makeSnapshot(`m${i}`);
+      busyBackups.push(newestBackup(hist, busy));
+      expect(listBackupFiles(hist.historyDir).sort()).toEqual(busyBackups.slice(-3).sort());
+    }
+    // Once it stops changing, only the backup the retained snapshots share is left.
+    for (let i = 10; i <= 14; i += 1) await hist.makeSnapshot(`m${i}`);
+    expect(listBackupFiles(hist.historyDir)).toEqual([busyBackups.at(-1)]);
+    expect(backupDirectories(hist)).toEqual([basename(dirname(busyBackups[0]!))]);
+    expect(hist.getState()).toMatchObject({ evictedCount: 12, isFileHistoryComplete: false });
+    expect(diagnostics).toEqual(["file_history_cap_reached"]);
+
+    // What is left still restores the file.
+    writeFileSync(busy, "edited\n", "utf8");
+    await expect(hist.rewindToMessage("m12")).resolves.toEqual([busy]);
+    expect(readFileSync(busy, "utf8")).toBe("busy 9\n");
+    expect(existsSync(removed)).toBe(false);
+  });
+
+  test("an origin backup that retained snapshots still name survives eviction and restores its file", async () => {
+    const steady = join(project, "steady.txt");
+    const busy = join(project, "busy.txt");
+    writeFileSync(steady, "steady origin\n", "utf8");
+    writeFileSync(busy, "busy 0\n", "utf8");
+    const hist = engine({ sessionId: "carried", maxSnapshots: 2 });
+    await hist.trackEdits([steady, busy], "m0");
+    const steadyOrigin = hist.getState().snapshots[0]!.trackedFileBackups[steady]!;
+    expect(steadyOrigin.version).toBe(1);
+    for (let i = 1; i <= 4; i += 1) {
+      writeFileSync(busy, `busy ${i}\n`, "utf8");
+      await hist.makeSnapshot(`m${i}`);
+    }
+
+    // Three snapshots are gone, the one that first named the origin among them.
+    const retained = hist.getState().snapshots;
+    expect(retained.map((snapshot) => snapshot.messageId)).toEqual(["m3", "m4"]);
+    expect(hist.getState().evictedCount).toBe(3);
+    for (const snapshot of retained) {
+      expect(snapshot.trackedFileBackups[steady]).toEqual({
+        backupFileName: steadyOrigin.backupFileName,
+        version: 1,
+        backupTimeMs: steadyOrigin.backupTimeMs,
+      });
+    }
+    expect(readFileSync(steadyOrigin.backupFileName!, "utf8")).toBe("steady origin\n");
+    expect(listBackupFiles(hist.historyDir).sort()).toEqual([
+      steadyOrigin.backupFileName,
+      retained[0]!.trackedFileBackups[busy]!.backupFileName,
+      retained[1]!.trackedFileBackups[busy]!.backupFileName,
+    ].sort());
+
+    // A file first tracked now has its origin on the newest snapshot. A rewind
+    // to the older one falls back to that origin.
+    const late = join(project, "late.txt");
+    writeFileSync(late, "late origin\n", "utf8");
+    await hist.trackEdit(late, "late-edit");
+
+    writeFileSync(steady, "steady edited\n", "utf8");
+    writeFileSync(busy, "busy edited\n", "utf8");
+    writeFileSync(late, "late edited\n", "utf8");
+    const restored = await hist.rewindToMessage("m3");
+    expect([...restored].sort()).toEqual([busy, late, steady].sort());
+    expect(readFileSync(steady, "utf8")).toBe("steady origin\n");
+    expect(readFileSync(busy, "utf8")).toBe("busy 3\n");
+    expect(readFileSync(late, "utf8")).toBe("late origin\n");
+  });
+
+  test("a file without an entry at the target is left alone once its origin is evicted", async () => {
+    const path = join(project, "replaced.txt");
+    writeFileSync(path, "one\n", "utf8");
+    const hist = engine({ sessionId: "unknown-origin", maxSnapshots: 2 });
+    await hist.trackEdit(path, "m0");
+    writeFileSync(path, "two\n", "utf8");
+    await hist.makeSnapshot("m1");
+    // A directory cannot be backed up, so m2 has no entry for the path, and
+    // the same snapshot evicts m0, which held its origin.
+    rmSync(path);
+    mkdirSync(path);
+    await hist.makeSnapshot("m2");
+    expect(diagnostics).toEqual(["file_history_snapshot_failed", "file_history_cap_reached"]);
+    const [m1, m2] = hist.getState().snapshots;
+    expect([m1!.messageId, m2!.messageId]).toEqual(["m1", "m2"]);
+    expect(m1!.trackedFileBackups[path]!.version).toBe(2);
+    expect(m2!.trackedFileBackups[path]).toBeUndefined();
+    expect(listBackupFiles(hist.historyDir)).toEqual([m1!.trackedFileBackups[path]!.backupFileName]);
+
+    // What the path held at m2 is unknown: neither reader touches it.
+    rmSync(path, { recursive: true });
+    writeFileSync(path, "three\n", "utf8");
+    await expect(hist.previewRewind("m2")).resolves.toEqual({
+      filesChanged: [],
+      insertions: 0,
+      deletions: 0,
+      perFile: {},
+    });
+    await expect(hist.rewindToMessage("m2")).resolves.toEqual([]);
+    expect(readFileSync(path, "utf8")).toBe("three\n");
+    // The snapshot that does have an entry still restores it.
+    await expect(hist.rewindToMessage("m1")).resolves.toEqual([path]);
+    expect(readFileSync(path, "utf8")).toBe("two\n");
+  });
+
+  test("the index written after eviction reloads and rewinds to every retained snapshot", async () => {
+    const steady = join(project, "steady.txt");
+    const busy = join(project, "busy.txt");
+    writeFileSync(steady, "steady origin\n", "utf8");
+    writeFileSync(busy, "busy 0\n", "utf8");
+    const first = engine({ sessionId: "reload", maxSnapshots: 3 });
+    await first.trackEdits([steady, busy], "m0");
+    for (let i = 1; i <= 5; i += 1) {
+      writeFileSync(busy, `busy ${i}\n`, "utf8");
+      await first.makeSnapshot(`m${i}`);
+    }
+    first.stop();
+    const backupsOnDisk = listBackupFiles(first.historyDir).sort();
+    expect(backupsOnDisk).toHaveLength(4);
+
+    const resumed = engine({ sessionId: "reload", maxSnapshots: 3 });
+    await resumed.loadFromDisk();
+    await resumed.flush();
+    // Only the first engine's cap warning: the index loaded cleanly.
+    expect(diagnostics).toEqual(["file_history_cap_reached"]);
+    const state = resumed.getState();
+    expect(state.snapshots.map((snapshot) => snapshot.messageId)).toEqual(["m3", "m4", "m5"]);
+    expect(state).toMatchObject({
+      evictedCount: 3,
+      isFileHistoryComplete: false,
+      snapshotSequence: 5,
+    });
+    // The index names exactly the backups on disk: none it needs was deleted
+    // and none it no longer names was left behind.
+    const named = new Set(state.snapshots.flatMap((snapshot) =>
+      Object.values(snapshot.trackedFileBackups).map((backup) => backup.backupFileName)));
+    expect([...named].sort()).toEqual(backupsOnDisk);
+    for (const snapshot of state.snapshots) {
+      await expect(fileHistoryCanRestore(state, snapshot.messageId)).resolves.toBe(true);
+    }
+
+    for (const [messageId, content] of [["m3", "busy 3\n"], ["m5", "busy 5\n"], ["m4", "busy 4\n"]]) {
+      writeFileSync(steady, "steady edited\n", "utf8");
+      await expect(resumed.rewindToMessage(messageId!)).resolves.toEqual([steady, busy]);
+      expect(readFileSync(steady, "utf8")).toBe("steady origin\n");
+      expect(readFileSync(busy, "utf8")).toBe(content);
+    }
+
+    // The resumed engine goes on evicting, and deletes what it evicts.
+    const evictedNext = state.snapshots[0]!.trackedFileBackups[busy]!.backupFileName!;
+    writeFileSync(busy, "busy 6\n", "utf8");
+    await resumed.makeSnapshot("m6");
+    expect(existsSync(evictedNext)).toBe(false);
+    expect(listBackupFiles(resumed.historyDir).sort()).toEqual([
+      ...backupsOnDisk.filter((backup) => backup !== evictedNext),
+      newestBackup(resumed, busy),
+    ].sort());
+    expect(resumed.getState().evictedCount).toBe(4);
   });
 });
 

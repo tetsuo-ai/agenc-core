@@ -1778,6 +1778,12 @@ spared by newest-rollout mtime and by a live rollout lock.
 
 - The session directory (rollout JSONL, `index.json`, sidecars), renamed
   aside then removed so a half-deleted name is never visible
+- The session's file-history directory,
+  `<projectDir>/file-history/session-<hash>/` (the snapshot index and the
+  file backups that rewind restores from), removed the same way right
+  after the session directory. `<hash>` is the first 16 hex digits of the
+  SHA-256 of the session id. A session without one, such as a subagent
+  session, is not an error
 - `thread_rollout_items` mirror rows for those rollout paths
 - Journal bindings retired with reason `retention` before the files go
 

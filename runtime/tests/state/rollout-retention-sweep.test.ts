@@ -1,17 +1,22 @@
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildCanonicalRunReplay } from "../../src/app-server/run-journal-replay.js";
+import { FileHistory } from "../../src/session/file-history.js";
+import { fileHistorySessionDirName } from "../../src/session/file-history-paths.js";
+import { itWhen } from "../helpers/platform-registration.js";
 import { ROLLOUT_SCHEMA_VERSION } from "../session/event-log.js";
 import { serializeRolloutItem } from "../session/rollout-item.js";
 import { RolloutStore } from "../session/rollout-store.js";
@@ -667,6 +672,193 @@ describe("pruneRolloutSessions", () => {
     expect(existsSync(corruptPath)).toBe(true);
     expect(mirrorRowCountForSource(rolloutPath)).toBe(2);
   });
+});
+
+// #3435: a pruned session can no longer be resumed, so the backups its
+// rewinds read have no reader left and go with the session.
+describe("pruneRolloutSessions and file-history directories", () => {
+  const fullReport = (sessionId: string) => ({
+    prunedSessions: 1,
+    prunedRolloutFiles: 1,
+    prunedMirrorRows: 2,
+    prunedSessionIds: [sessionId],
+  });
+
+  function sweep(onError: (error: unknown) => void, activeSessionId?: string) {
+    return pruneRolloutSessions(driver, {
+      sessionsDir: join(driver.projectDir, "sessions"),
+      retention_days: 30,
+      now: () => NOW,
+      onError,
+      ...(activeSessionId !== undefined ? { activeSessionId } : {}),
+    });
+  }
+
+  /**
+   * Let the real engine write the history of `sessionId`: an index and the
+   * backup of one tracked file. Returns the directory and that backup.
+   */
+  async function seedFileHistory(
+    sessionId: string,
+  ): Promise<{ historyDir: string; backup: string }> {
+    const file = join(cwd, `${sessionId}.txt`);
+    writeFileSync(file, `tracked by ${sessionId}\n`);
+    const history = new FileHistory({ projectDir: driver.projectDir, sessionId });
+    try {
+      await history.trackEdit(file, "m0");
+      const backup = history.getState().snapshots[0]!.trackedFileBackups[file]!.backupFileName!;
+      expect(readFileSync(backup, "utf8")).toBe(`tracked by ${sessionId}\n`);
+      expect(existsSync(join(history.historyDir, "snapshots.json"))).toBe(true);
+      return { historyDir: history.historyDir, backup };
+    } finally {
+      history.stop();
+    }
+  }
+
+  it("removes the file history of a pruned session and of no other", async () => {
+    const oldPath = seedSession("thread-old", 60);
+    const recentPath = seedSession("thread-recent", 5);
+    const activePath = seedSession("thread-active", 90);
+    const old = await seedFileHistory("thread-old");
+    const recent = await seedFileHistory("thread-recent");
+    const active = await seedFileHistory("thread-active");
+    const historyRoot = join(driver.projectDir, "file-history");
+    expect(old.historyDir).toBe(join(historyRoot, fileHistorySessionDirName("thread-old")));
+    const onError = vi.fn();
+
+    const report = sweep(onError, "thread-active");
+
+    expect(report).toEqual(fullReport("thread-old"));
+    expect(onError).not.toHaveBeenCalled();
+    expect(existsSync(oldPath)).toBe(false);
+    expect(existsSync(old.historyDir)).toBe(false);
+    // Nothing of it is left under another name either.
+    expect(readdirSync(historyRoot).sort()).toEqual(
+      [basename(recent.historyDir), basename(active.historyDir)].sort(),
+    );
+    // Sessions the sweep kept still have their history.
+    expect(existsSync(recentPath)).toBe(true);
+    expect(existsSync(activePath)).toBe(true);
+    expect(readFileSync(recent.backup, "utf8")).toBe("tracked by thread-recent\n");
+    expect(readFileSync(active.backup, "utf8")).toBe("tracked by thread-active\n");
+    expect(existsSync(join(recent.historyDir, "snapshots.json"))).toBe(true);
+  });
+
+  it("keeps the file history of a session it could not prune", async () => {
+    const lockedPath = seedSession("thread-locked", 90);
+    const locked = await seedFileHistory("thread-locked");
+    writeFileSync(
+      `${lockedPath}.lock`,
+      JSON.stringify({ pid: process.pid, startNs: "0", acquiredAtIso: "2026-01-01T00:00:00.000Z" }),
+    );
+    const onError = vi.fn();
+
+    expect(sweep(onError).prunedSessions).toBe(0);
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(existsSync(lockedPath)).toBe(true);
+    expect(readFileSync(locked.backup, "utf8")).toBe("tracked by thread-locked\n");
+  });
+
+  // Renaming an entry of a read-only directory fails only without root.
+  itWhen(process.platform !== "win32" && process.getuid?.() !== 0)(
+    "keeps the file history when the session directory itself cannot be removed",
+    async () => {
+      const oldPath = seedSession("thread-old", 60);
+      const old = await seedFileHistory("thread-old");
+      const sessionsDir = join(driver.projectDir, "sessions");
+      chmodSync(sessionsDir, 0o500);
+      const onError = vi.fn();
+      try {
+        expect(sweep(onError).prunedSessions).toBe(0);
+      } finally {
+        chmodSync(sessionsDir, 0o700);
+      }
+
+      // The one error is the session directory's; its history was not touched.
+      expect(onError).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ code: "EACCES", syscall: "rename" }),
+      );
+      expect(existsSync(oldPath)).toBe(true);
+      expect(readFileSync(old.backup, "utf8")).toBe("tracked by thread-old\n");
+      expect(existsSync(join(old.historyDir, "snapshots.json"))).toBe(true);
+    },
+  );
+
+  it.each([
+    ["no session has written any file history", false],
+    ["only other sessions have a file history", true],
+  ])("prunes a session without a file history silently when %s", async (_case, othersHaveHistory) => {
+    const oldPath = seedSession("thread-old", 60);
+    const historyRoot = join(driver.projectDir, "file-history");
+    if (othersHaveHistory) {
+      seedSession("thread-recent", 5);
+      await seedFileHistory("thread-recent");
+    }
+    const before = existsSync(historyRoot) ? readdirSync(historyRoot) : null;
+    const onError = vi.fn();
+
+    const report = sweep(onError);
+
+    expect(report).toEqual(fullReport("thread-old"));
+    expect(existsSync(oldPath)).toBe(false);
+    // A session without a history directory is normal, not an error.
+    expect(onError).not.toHaveBeenCalled();
+    expect(existsSync(historyRoot) ? readdirSync(historyRoot) : null).toEqual(before);
+  });
+
+  // Windows reports a path through a regular file as "not found".
+  itWhen(process.platform !== "win32")(
+    "reports a file history it cannot move aside and still counts the session as pruned",
+    () => {
+      const oldPath = seedSession("thread-old", 60);
+      // A regular file where the directory of all histories belongs.
+      writeFileSync(join(driver.projectDir, "file-history"), "not a directory");
+      const onError = vi.fn();
+
+      const report = sweep(onError);
+
+      expect(report).toEqual(fullReport("thread-old"));
+      expect(existsSync(oldPath)).toBe(false);
+      expect(onError).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ code: "ENOTDIR", syscall: "rename" }),
+      );
+      expect(readFileSync(join(driver.projectDir, "file-history"), "utf8")).toBe("not a directory");
+    },
+  );
+
+  // Removing an entry of a read-only directory fails only without root.
+  itWhen(process.platform !== "win32" && process.getuid?.() !== 0)(
+    "reports a file history it cannot delete after moving it aside",
+    async () => {
+      const oldPath = seedSession("thread-old", 60);
+      const old = await seedFileHistory("thread-old");
+      const historyRoot = join(driver.projectDir, "file-history");
+      const readOnlyDir = dirname(old.backup);
+      chmodSync(readOnlyDir, 0o500);
+      const onError = vi.fn();
+      try {
+        const report = sweep(onError);
+
+        expect(report).toEqual(fullReport("thread-old"));
+        expect(existsSync(oldPath)).toBe(false);
+        expect(onError).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ code: "EACCES" }),
+        );
+        // The history is out of the way: only the renamed husk is left.
+        expect(existsSync(old.historyDir)).toBe(false);
+        expect(readdirSync(historyRoot)).toEqual([
+          expect.stringMatching(
+            new RegExp(`^${basename(old.historyDir)}\\.pruning-${process.pid}-[0-9a-z]+$`),
+          ),
+        ]);
+      } finally {
+        for (const husk of readdirSync(historyRoot)) {
+          chmodSync(join(historyRoot, husk, basename(readOnlyDir)), 0o700);
+        }
+      }
+    },
+  );
 });
 
 describe("AgenCSessionSnapshotPolicy rollout sweep timer", () => {

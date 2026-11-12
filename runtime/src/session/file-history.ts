@@ -35,6 +35,14 @@
  * an unchanged file it repeats the previous entry, so consecutive
  * snapshots can share one backup file.
  *
+ * A backup is deleted once no retained snapshot names it. Eviction at
+ * the cap collects the backups that only evicted snapshots named; they
+ * are unlinked after the index that no longer lists them is on disk,
+ * and not while a rewind or preview is reading. Nothing lists or sweeps
+ * the directory, so a backup orphaned by a crash stays until the whole
+ * `session-<sessionHash>` directory goes: session retention
+ * (`state/pruning.ts`) removes it together with the session.
+ *
  * @module
  */
 
@@ -46,21 +54,27 @@ import {
   readFile,
   rename,
   rm,
+  rmdir,
   stat,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { syncDirectory } from "../utils/durable-atomic-file.js";
 import { collectShellWorkspaceMutationTargets } from "../llm/shell-write-policy.js";
 import { monotonicMs } from "./_deps/utils.js";
 import { DegradedStore } from "./degraded-store.js";
 import type { Event } from "./event-log.js";
+import { fileHistorySessionDirName } from "./file-history-paths.js";
 import type { RolloutItem } from "./rollout-item.js";
 import { isDegradedErrno } from "./session-store.js";
 import type { Sidecar } from "./sidecar.js";
 
 const MAX_SNAPSHOTS = 100;
+
+/** File name of a backup, as `createBackup` writes it: `v<version>-<uuid>`. */
+const BACKUP_FILE_NAME = /^v\d+-[0-9a-f-]{36}$/;
 
 export type BackupFileName = string | null;
 
@@ -292,15 +306,35 @@ export class FileHistory {
    * True while the index on disk may not match the state: set when the
    * state changes and when an index write fails, cleared when one
    * succeeds. A `trackEdits` that changed nothing skips the index write
-   * only while this is clear.
+   * only while this is clear. Only `indexWritten` clears it, and it empties
+   * `awaitingDurableIndex` in the same step, so the flag also stays set for
+   * as long as a deletion waits for the index.
    */
   private needsPersist = false;
+  /**
+   * Backups that only evicted snapshots named. The index on disk may still
+   * list those snapshots, and a reload would then need the files, so they
+   * wait here until an index write succeeds.
+   */
+  private readonly awaitingDurableIndex = new Set<string>();
+  /**
+   * Backups that neither the state nor the index on disk names any more.
+   * A deletion pass unlinks them as soon as no reader is active.
+   */
+  private readonly deletable = new Set<string>();
+  /**
+   * Rewinds and previews in flight. Each works from the state it read when
+   * it started, which can name backups evicted since, so nothing is
+   * unlinked while this is above zero.
+   */
+  private activeReaders = 0;
+  private pruneFailureReported = false;
 
   constructor(opts: FileHistoryOptions) {
     this.projectDir = opts.projectDir;
     this.historyDir = opts.sessionId === undefined
       ? join(opts.projectDir, "file-history")
-      : join(opts.projectDir, "file-history", `session-${pathHash(opts.sessionId)}`);
+      : join(opts.projectDir, "file-history", fileHistorySessionDirName(opts.sessionId));
     this.statePath = opts.sessionId === undefined ? undefined : join(this.historyDir, "snapshots.json");
     this.maxSnapshots = opts.maxSnapshots ?? MAX_SNAPSHOTS;
     this.enabled = opts.enabled !== false;
@@ -382,7 +416,8 @@ export class FileHistory {
 
   private async persistState(): Promise<void> {
     if (this.statePath === undefined) {
-      this.needsPersist = false;
+      // No index on disk, so nothing on disk can lag behind the state.
+      this.indexWritten();
       return;
     }
     // Stays set unless every step below succeeds, so that the next queued
@@ -400,7 +435,30 @@ export class FileHistory {
       await rename(tmp, this.statePath);
       await syncDirectory(this.historyDir);
     } finally { await rm(tmp, { force: true }); }
+    this.indexWritten();
+  }
+
+  /**
+   * The index on disk matches the state. The snapshots it lists are the
+   * retained ones, so a backup that only evicted snapshots named is named
+   * by nothing any more and may be deleted.
+   */
+  private indexWritten(): void {
     this.needsPersist = false;
+    for (const backupFileName of this.awaitingDurableIndex) {
+      this.deletable.add(backupFileName);
+    }
+    this.awaitingDurableIndex.clear();
+  }
+
+  /**
+   * End of a queued operation that owes an index write: write the index
+   * and then delete the backups it no longer lists. A failed write rejects
+   * before the deletion pass, so those backups stay where they are.
+   */
+  private async persistAndPrune(): Promise<void> {
+    await this.persistState();
+    await this.deleteUnreferencedBackups();
   }
 
   /**
@@ -426,7 +484,7 @@ export class FileHistory {
       for (const filePath of paths) {
         if (await this.trackEditNow(filePath, messageId)) this.needsPersist = true;
       }
-      if (this.needsPersist) await this.persistState();
+      if (this.needsPersist) await this.persistAndPrune();
     });
   }
 
@@ -503,16 +561,22 @@ export class FileHistory {
    *
    * I-28 LRU eviction applies here: when snapshots exceed
    * `maxSnapshots`, evict the oldest and flip `isFileHistoryComplete=false`.
+   * The backups that only evicted snapshots named are deleted once the
+   * index without those snapshots is on disk and no rewind or preview is
+   * reading.
    */
   async makeSnapshot(messageId: string): Promise<void> {
     return this.enqueue(async () => {
-      await this.makeSnapshotNow(messageId);
-      await this.persistState();
+      this.collectUnreferencedBackups(await this.makeSnapshotNow(messageId));
+      await this.persistAndPrune();
     });
   }
 
-  private async makeSnapshotNow(messageId: string): Promise<void> {
-    if (!this.enabled) return;
+  /** Returns the snapshots the cap evicted, oldest first. */
+  private async makeSnapshotNow(
+    messageId: string,
+  ): Promise<ReadonlyArray<FileHistorySnapshot>> {
+    if (!this.enabled) return [];
     const mostRecent = this.state.snapshots.at(-1);
     const trackedFileBackups: Record<string, FileHistoryBackup> = {};
     const filesChanged: string[] = [];
@@ -632,11 +696,12 @@ export class FileHistory {
           : undefined,
     };
     const nextSnapshots = [...this.state.snapshots, snapshot];
+    let evictedSnapshots: FileHistorySnapshot[] = [];
     let evicted = this.state.evictedCount;
     let complete = this.state.isFileHistoryComplete;
     if (nextSnapshots.length > this.maxSnapshots) {
       const overflow = nextSnapshots.length - this.maxSnapshots;
-      nextSnapshots.splice(0, overflow);
+      evictedSnapshots = nextSnapshots.splice(0, overflow);
       evicted += overflow;
       complete = false;
       if (!this.evictionWarningEmitted) {
@@ -655,6 +720,7 @@ export class FileHistory {
       evictedCount: evicted,
     };
     this.needsPersist = true;
+    return evictedSnapshots;
   }
 
   /**
@@ -670,14 +736,17 @@ export class FileHistory {
   async rewindToMessage(messageId: string): Promise<ReadonlyArray<string>> {
     await this.flush();
     if (!this.enabled) return [];
+    const state = this.acquireReader();
     try {
-      return await fileHistoryRewind(this.state, messageId);
+      return await fileHistoryRewind(state, messageId);
     } catch (err) {
       this.emitDiagnostic({
         cause: "file_history_restore_failed",
         message: err instanceof Error ? err.message : String(err),
       });
       throw err;
+    } finally {
+      this.releaseReader();
     }
   }
 
@@ -697,49 +766,161 @@ export class FileHistory {
   ): Promise<FileHistoryRewindPreview | null> {
     await this.flush();
     if (!this.enabled) return null;
-    const target = findSnapshotByMessageId(this.state, messageId);
-    if (!target) return null;
-    const filesChanged: string[] = [];
-    const perFile: Record<string, DiffStats> = {};
-    let insertions = 0;
-    let deletions = 0;
-    for (const trackingPath of this.state.trackedFiles) {
-      const targetBackup = target.trackedFileBackups[trackingPath];
-      const origin = targetBackup ?? getOriginBackup(this.state, trackingPath);
-      if (origin === undefined) continue;
-      try {
-        const diskContent = await readFileOrEmpty(trackingPath);
-        const targetContent =
-          origin.backupFileName === null
-            ? ""
-            : await readFileOrEmpty(origin.backupFileName);
-        if (diskContent === targetContent) continue;
-        const stats = computeDiffStats(diskContent, targetContent);
-        filesChanged.push(trackingPath);
-        perFile[trackingPath] = stats;
-        insertions += stats.insertions;
-        deletions += stats.deletions;
-      } catch {
-        /* best-effort — unreadable files are skipped */
-      }
-    }
-    return { filesChanged, insertions, deletions, perFile };
-  }
-
-  /** Clear all tracked files + backups. Used on `/clear` or session end. */
-  async clear(): Promise<void> {
-    await this.flush();
-    this.state = emptyFileHistoryState();
+    const state = this.acquireReader();
     try {
-      await rm(this.historyDir, { recursive: true, force: true });
-    } catch {
-      /* best-effort */
+      const target = findSnapshotByMessageId(state, messageId);
+      if (!target) return null;
+      const filesChanged: string[] = [];
+      const perFile: Record<string, DiffStats> = {};
+      let insertions = 0;
+      let deletions = 0;
+      for (const trackingPath of state.trackedFiles) {
+        const targetBackup = target.trackedFileBackups[trackingPath];
+        const origin = targetBackup ?? getOriginBackup(state, trackingPath);
+        if (origin === undefined) continue;
+        try {
+          const diskContent = await readFileOrEmpty(trackingPath);
+          const targetContent =
+            origin.backupFileName === null
+              ? ""
+              : await readFileOrEmpty(origin.backupFileName);
+          if (diskContent === targetContent) continue;
+          const stats = computeDiffStats(diskContent, targetContent);
+          filesChanged.push(trackingPath);
+          perFile[trackingPath] = stats;
+          insertions += stats.insertions;
+          deletions += stats.deletions;
+        } catch {
+          /* best-effort — unreadable files are skipped */
+        }
+      }
+      return { filesChanged, insertions, deletions, perFile };
+    } finally {
+      this.releaseReader();
     }
   }
 
   // ───────────────────────────────────────────────────────────────────
   // Private
   // ───────────────────────────────────────────────────────────────────
+
+  /**
+   * Start of a rewind or preview: counts the reader and hands it the state
+   * in one synchronous step, so no deletion pass can start between the two.
+   * Always paired with `releaseReader` in a `finally`.
+   */
+  private acquireReader(): FileHistoryState {
+    this.activeReaders += 1;
+    return this.state;
+  }
+
+  /**
+   * End of a rewind or preview. After the last one, a deletion pass is
+   * queued for the backups that waited for it. It is queued here, before
+   * the reader's own promise resolves, so a caller that awaits the reader
+   * and then `flush()` finds those backups gone.
+   */
+  private releaseReader(): void {
+    this.activeReaders -= 1;
+    if (this.activeReaders === 0 && this.deletable.size > 0) {
+      void this.enqueue(() => this.deleteUnreferencedBackups());
+    }
+  }
+
+  /**
+   * After an eviction: a backup that an evicted snapshot named and that no
+   * retained snapshot names is of no further use to this engine. It still
+   * has to outlive the index on disk that lists it, so it goes to
+   * `awaitingDurableIndex` first. Names are compared as strings. An
+   * unchanged file repeats its entry in every snapshot, so one backup can
+   * belong to many snapshots, and a file's origin (version 1) backup stays
+   * for as long as any retained snapshot names it.
+   */
+  private collectUnreferencedBackups(
+    evicted: ReadonlyArray<FileHistorySnapshot>,
+  ): void {
+    const unreferenced = new Set<string>();
+    for (const snapshot of evicted) {
+      for (const backup of Object.values(snapshot.trackedFileBackups)) {
+        if (backup.backupFileName !== null) unreferenced.add(backup.backupFileName);
+      }
+    }
+    for (const snapshot of this.state.snapshots) {
+      if (unreferenced.size === 0) return;
+      for (const backup of Object.values(snapshot.trackedFileBackups)) {
+        if (backup.backupFileName !== null) unreferenced.delete(backup.backupFileName);
+      }
+    }
+    for (const backupFileName of unreferenced) {
+      this.awaitingDurableIndex.add(backupFileName);
+    }
+  }
+
+  /**
+   * Deletion pass: unlink every backup in `deletable`, and the directory of
+   * a tracked path once its last backup is gone. Runs on the queue, after an
+   * index write that succeeded and again when the last reader finishes. It
+   * does nothing while a reader is active; the end of that reader queues
+   * the next pass. Every path leaves the set here whatever happens to it: a
+   * failed unlink is reported (once per engine) and not retried.
+   */
+  private async deleteUnreferencedBackups(): Promise<void> {
+    if (this.activeReaders > 0) return;
+    const backups = [...this.deletable];
+    this.deletable.clear();
+    for (const backupFileName of backups) {
+      // No snapshot names it, so no file is compared against it again.
+      this.backupDigests.delete(backupFileName);
+      if (!this.isBackupPath(backupFileName)) continue;
+      try {
+        await unlink(backupFileName);
+      } catch (err) {
+        const failure = err as NodeJS.ErrnoException;
+        // A backup that is already gone needs no deleting.
+        if (failure.code !== "ENOENT") {
+          this.reportPruneFailure(backupFileName, failure);
+          continue;
+        }
+      }
+      const backupDir = dirname(backupFileName);
+      try {
+        await rmdir(backupDir);
+      } catch (err) {
+        const failure = err as NodeJS.ErrnoException;
+        // Not empty: the tracked path still has backups in use.
+        if (failure.code !== "ENOTEMPTY" && failure.code !== "ENOENT") {
+          this.reportPruneFailure(backupDir, failure);
+        }
+      }
+    }
+  }
+
+  /**
+   * True for `<historyDir>/<directory>/v<version>-<uuid>` in exactly that
+   * spelling, which is how `createBackup` names a backup. A deletion pass
+   * unlinks nothing else: an index loaded from disk may name any path below
+   * the history directory, the index itself included. The path is rebuilt
+   * rather than taken apart with `dirname`, which only splits text and would
+   * accept `<historyDir>/../v1-...` as two levels below the history
+   * directory.
+   */
+  private isBackupPath(path: string): boolean {
+    const name = basename(path);
+    return (
+      BACKUP_FILE_NAME.test(name) &&
+      join(this.historyDir, basename(dirname(path)), name) === path
+    );
+  }
+
+  /** One `file_history_prune_failed` per engine; later failures are silent. */
+  private reportPruneFailure(path: string, failure: NodeJS.ErrnoException): void {
+    if (this.pruneFailureReported) return;
+    this.pruneFailureReported = true;
+    this.emitDiagnostic({
+      cause: "file_history_prune_failed",
+      message: `prune ${path}: ${failure.message}`,
+    });
+  }
 
   private async createBackup(
     filePath: string,
@@ -824,7 +1005,7 @@ export class FileHistory {
     this.pendingDiagnostics = this.pendingDiagnostics.then(() =>
       this.runCanonicalWork(() => { this.onDiagnostic?.(d); })).catch(() => {});
     // Diagnostics are best-effort. A failed delivery must not poison later
-    // publications or prevent restore, preview, clear, or stop from draining.
+    // publications or prevent restore, preview, or stop from draining.
   }
 
   /**

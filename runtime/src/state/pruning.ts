@@ -14,6 +14,7 @@ import type { StateSqliteDriver } from "./sqlite-driver.js";
 import { sqlPlaceholders } from "./sql.js";
 import { agentIdFromThreadSourceJson } from "../thread-store/thread-source.js";
 import { StateRunDurabilityRepository } from "./run-durability.js";
+import { fileHistorySessionDirName } from "../session/file-history-paths.js";
 import { parseRolloutLine } from "../session/rollout-item.js";
 import { SessionLock, SessionLockedError } from "../session/session-store.js";
 import { ThreadRegistryLock } from "../thread-store/registry-lock.js";
@@ -338,6 +339,8 @@ export function pruneSessionSnapshotsPerSession(
 // newest rollout file is older than the configured retention window, and
 // (in the same pass) drops the `thread_rollout_items` SQLite mirror rows that
 // point at the removed rollout files so the index can't outlive its source.
+// A pruned session's file-history directory, `session-<hash>/` under
+// `<projectDir>/file-history/`, is removed right after its session directory.
 //
 // CONSERVATISM (this deletes user data):
 //   - `retention_days === undefined` is a no-op; the daemon maps a configured
@@ -380,8 +383,9 @@ export interface RolloutPruningReport {
 
 /**
  * Delete session directories (rollout JSONL + index + sidecars) older than the
- * retention window, and the `thread_rollout_items` mirror rows that mirror the
- * removed rollout files. See the section header for the conservatism contract.
+ * retention window, the `thread_rollout_items` mirror rows that mirror the
+ * removed rollout files, and each deleted session's file-history directory.
+ * See the section header for the conservatism contract.
  */
 export function pruneRolloutSessions(
   driver: StateSqliteDriver,
@@ -498,6 +502,10 @@ export function pruneRolloutSessions(
         // Atomic directory removal: rename aside so a crash mid-rm never leaves a
         // partially-deleted session dir under its real name, then recursive rm.
         if (!removeSessionDirAtomically(sessionDir, heldLocks, onError)) continue;
+        // The session can no longer be resumed, so nothing can rewind to its
+        // file-history backups. They go only now: a session that could not be
+        // pruned keeps its history.
+        removeSessionFileHistory(driver.projectDir, sessionId, onError);
 
         prunedSessionIds.push(sessionId);
         prunedRolloutFiles += currentRollout.rolloutPaths.length;
@@ -766,6 +774,40 @@ function removeSessionDirAtomically(
     cleanupRenamedRolloutLocks(sessionDir, aside, heldLocks, onError);
   }
   return true;
+}
+
+/**
+ * Remove the file-history directory of a session that was just pruned:
+ * `<projectDir>/file-history/session-<hash>/`, the snapshot index and file
+ * backups its rewinds read. Renamed aside first, like the session directory,
+ * so a half-deleted history is never visible under its real name. Not every
+ * session has one (a subagent session keeps no file history, and older
+ * sessions predate this layout), so a missing directory is not an error. The
+ * session is already gone: whatever happens here, the prune report stands.
+ */
+function removeSessionFileHistory(
+  projectDir: string,
+  sessionId: string,
+  onError: (error: unknown) => void,
+): void {
+  const historyDir = join(
+    projectDir,
+    "file-history",
+    fileHistorySessionDirName(sessionId),
+  );
+  const aside = `${historyDir}.pruning-${process.pid}-${Date.now().toString(36)}`;
+  try {
+    renameSync(historyDir, aside);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") onError(error);
+    return;
+  }
+  try {
+    rmSync(aside, { recursive: true, force: true });
+  } catch (error) {
+    // The history is out of the way under its aside name; report the husk.
+    onError(error);
+  }
 }
 
 function rolloutCutoffMs(

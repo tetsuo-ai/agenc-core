@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   createReadStream,
   existsSync,
@@ -11,12 +11,16 @@ import {
   type ReadStream,
   type Stats,
 } from "node:fs";
-import { copyFile, open, rename, stat } from "node:fs/promises";
+import { copyFile, open, readFile, rename, rmdir, stat, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FileHistory, sha256OfFile } from "../../src/session/file-history.js";
+import {
+  FileHistory,
+  sha256OfFile,
+  type FileHistoryOptions,
+} from "../../src/session/file-history.js";
 
 // Reload helpers imported by test setup so filesystem fault injection reaches them.
 vi.hoisted(() => vi.resetModules());
@@ -32,16 +36,22 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     ...actual,
     copyFile: vi.fn(actual.copyFile),
     open: vi.fn(actual.open),
+    readFile: vi.fn(actual.readFile),
     rename: vi.fn(actual.rename),
+    rmdir: vi.fn(actual.rmdir),
     stat: vi.fn(actual.stat),
+    unlink: vi.fn(actual.unlink),
   };
 });
 
 const actualCreateReadStream = vi.mocked(createReadStream).getMockImplementation()!;
 const actualCopyFile = vi.mocked(copyFile).getMockImplementation()!;
 const actualOpen = vi.mocked(open).getMockImplementation()!;
+const actualReadFile = vi.mocked(readFile).getMockImplementation()!;
 const actualRename = vi.mocked(rename).getMockImplementation()!;
+const actualRmdir = vi.mocked(rmdir).getMockImplementation()!;
 const actualStat = vi.mocked(stat).getMockImplementation()!;
+const actualUnlink = vi.mocked(unlink).getMockImplementation()!;
 
 type Diagnostic = { cause: string; message: string };
 
@@ -52,11 +62,16 @@ let history: FileHistory;
 let diagnostics: Diagnostic[];
 const engines: FileHistory[] = [];
 
-function newEngine(options: { sessionId?: string; enabled?: boolean } = {}): FileHistory {
+function newEngine(
+  options: Pick<
+    FileHistoryOptions,
+    "sessionId" | "enabled" | "maxSnapshots" | "withCanonicalBackgroundWork"
+  > = {},
+): FileHistory {
   const engine = new FileHistory({
     projectDir: project,
+    ...options,
     sessionId: options.sessionId ?? "fault-injection",
-    enabled: options.enabled,
     onDiagnostic: (diagnostic) => { diagnostics.push(diagnostic); },
   });
   engines.push(engine);
@@ -78,8 +93,12 @@ afterEach(() => {
   vi.mocked(createReadStream).mockReset().mockImplementation(actualCreateReadStream);
   vi.mocked(copyFile).mockReset().mockImplementation(actualCopyFile);
   vi.mocked(open).mockReset().mockImplementation(actualOpen);
+  vi.mocked(readFile).mockReset().mockImplementation(actualReadFile);
   vi.mocked(rename).mockReset().mockImplementation(actualRename);
+  vi.mocked(rmdir).mockReset().mockImplementation(actualRmdir);
   vi.mocked(stat).mockReset().mockImplementation(actualStat);
+  vi.mocked(unlink).mockReset().mockImplementation(actualUnlink);
+  heldReads.clear();
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -142,6 +161,109 @@ function failingReadStream(reads = { count: 0 }): ReadStream {
       else this.destroy(ioError("read"));
     },
   }) as unknown as ReadStream;
+}
+
+function snapshotIds(engine: FileHistory = history): string[] {
+  return engine.getState().snapshots.map((snapshot) => snapshot.messageId);
+}
+
+function causes(): string[] {
+  return diagnostics.map((diagnostic) => diagnostic.cause);
+}
+
+/** One step of the engine that a test holds in place and lets go by hand. */
+interface Hold {
+  /** Resolves when the engine reaches the held step. */
+  readonly entered: Promise<void>;
+  /** Lets the held step, and every later one like it, proceed. */
+  release(): void;
+}
+
+function hold(): Hold & { reach(): Promise<void> } {
+  let release!: () => void;
+  let enter!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  let reached = false;
+  return {
+    entered,
+    release,
+    // Only the first arrival waits; the held step may be repeated later.
+    reach: async () => {
+      if (reached) return;
+      reached = true;
+      enter();
+      await released;
+    },
+  };
+}
+
+const heldReads = new Map<string, ReturnType<typeof hold>>();
+
+/** Hold the next `readFile` of `path`; reads of other paths are not delayed. */
+function holdNextReadOf(path: string): Hold {
+  const held = hold();
+  heldReads.set(path, held);
+  vi.mocked(readFile).mockImplementation(async (target, options) => {
+    await heldReads.get(String(target))?.reach();
+    return actualReadFile(target, options);
+  });
+  return held;
+}
+
+/** Hold the next `copyFile` from `source`, which is a backup being taken. */
+function holdNextCopyOf(source: string): Hold {
+  const held = hold();
+  vi.mocked(copyFile).mockImplementation(async (from, to, mode) => {
+    if (from === source) await held.reach();
+    return actualCopyFile(from, to, mode);
+  });
+  return held;
+}
+
+/** Make the next index write fail at `step`; the ones after it work again. */
+function failNextIndexWrite(step: string, error: Error): void {
+  if (step === "rename") {
+    vi.mocked(rename).mockRejectedValueOnce(error);
+    return;
+  }
+  let failures = 1;
+  vi.mocked(open).mockImplementation(async (path, flags, mode) => {
+    if (flags !== "r" || failures === 0) return actualOpen(path, flags, mode);
+    failures -= 1;
+    return {
+      sync: async () => { throw error; },
+      close: async () => {},
+    } as unknown as Awaited<ReturnType<typeof open>>;
+  });
+}
+
+/**
+ * An engine capped at two snapshots that holds `m0` and `m1` for one file
+ * with different content in each. The next snapshot evicts `m0`, the only
+ * snapshot that names the backup `evicted`; `m1` names `kept`. A second
+ * tracked path never exists, so every snapshot also has an entry without a
+ * backup.
+ */
+async function engineAtTheCap(
+  sessionId: string,
+  options: Pick<FileHistoryOptions, "withCanonicalBackgroundWork"> = {},
+): Promise<{ engine: FileHistory; file: string; evicted: string; kept: string }> {
+  const engine = newEngine({ ...options, sessionId, maxSnapshots: 2 });
+  const file = workFile(`${sessionId}.txt`, "one\n");
+  await engine.trackEdits([file, join(work, `${sessionId}-never-created.txt`)], "m0");
+  const evicted = latestEntry(file, engine).backupFileName!;
+  writeFileSync(file, "two\n", "utf8");
+  await engine.makeSnapshot("m1");
+  const kept = latestEntry(file, engine).backupFileName!;
+  expect(snapshotIds(engine)).toEqual(["m0", "m1"]);
+  return { engine, file, evicted, kept };
+}
+
+/** Change the file and take the snapshot that evicts the oldest one. */
+async function evictOldest(engine: FileHistory, file: string, messageId: string): Promise<void> {
+  writeFileSync(file, `content at ${messageId}\n`, "utf8");
+  await engine.makeSnapshot(messageId);
 }
 
 describe("sha256OfFile", () => {
@@ -464,5 +586,488 @@ describe("file-history index writes", () => {
     await history.trackEdit(file, "m3");
     expect(indexWrites()).toBe(attempts + 1);
     expect(diagnostics).toEqual([]);
+  });
+});
+
+describe("file-history eviction and the index on disk", () => {
+  test.each(["rename", "directory sync"])(
+    "an index write that fails at the %s keeps the evicted backups until a later write succeeds",
+    async (step) => {
+      const { engine, file, evicted } = await engineAtTheCap("owed");
+      const error = ioError(`index ${step}`);
+      failNextIndexWrite(step, error);
+
+      await evictOldest(engine, file, "m2");
+
+      expect(diagnostics).toEqual([
+        { cause: "file_history_cap_reached", message: expect.any(String) },
+        { cause: "file_history_save_failed", message: String(error) },
+      ]);
+      expect(snapshotIds(engine)).toEqual(["m1", "m2"]);
+      expect(existsSync(evicted)).toBe(true);
+      // It waits for the index, and it is the only thing that does.
+      expect([...engine["awaitingDurableIndex"]]).toEqual([evicted]);
+      expect(engine["deletable"].size).toBe(0);
+
+      // A reader that ends is no reason to delete either.
+      await expect(engine.previewRewind("m1")).resolves.toMatchObject({ filesChanged: [file] });
+      await engine.flush();
+      expect(existsSync(evicted)).toBe(true);
+
+      if (step === "rename") {
+        // The index on disk still lists m0. After a restart m0 is a rewind
+        // target again, and its backup is what restores the file.
+        expect(indexedSnapshots(engine)).toEqual(["m0", "m1"]);
+        const restarted = newEngine({ sessionId: "owed", maxSnapshots: 2 });
+        await restarted.loadFromDisk();
+        expect(snapshotIds(restarted)).toEqual(["m0", "m1"]);
+        await expect(restarted.rewindToMessage("m0")).resolves.toEqual([file]);
+        expect(readFileSync(file, "utf8")).toBe("one\n");
+      }
+
+      // The next queued operation changes nothing but still owes the index
+      // write. Once that write is on disk the backup goes.
+      const writes = indexWrites(engine);
+      await engine.trackEdit(file, "m3");
+      expect(indexWrites(engine)).toBe(writes + 1);
+      expect(indexedSnapshots(engine)).toEqual(["m1", "m2"]);
+      expect(existsSync(evicted)).toBe(false);
+      expect(diagnostics).toHaveLength(2);
+
+      // Nothing is owed any more.
+      await engine.trackEdit(file, "m4");
+      expect(indexWrites(engine)).toBe(writes + 1);
+    },
+  );
+
+  test("any index write that succeeds releases the evicted backups to the next deletion pass", async () => {
+    const { engine, file, evicted } = await engineAtTheCap("released");
+    failNextIndexWrite("rename", ioError("index rename"));
+    await evictOldest(engine, file, "m2");
+    expect(existsSync(evicted)).toBe(true);
+
+    // Not a queued operation: the index is on disk, but no pass has run.
+    await expect(engine["persistState"]()).resolves.toBeUndefined();
+    expect(indexedSnapshots(engine)).toEqual(["m1", "m2"]);
+    expect(existsSync(evicted)).toBe(true);
+
+    // The end of the next reader runs one.
+    await expect(engine.previewRewind("m2")).resolves.toMatchObject({ filesChanged: [] });
+    await engine.flush();
+    expect(existsSync(evicted)).toBe(false);
+  });
+
+  test("a deleted backup leaves no digest behind", async () => {
+    const { engine, file, evicted, kept } = await engineAtTheCap("digests");
+    expect([...engine["backupDigests"].keys()]).toEqual([evicted, kept]);
+
+    await evictOldest(engine, file, "m2");
+
+    expect(existsSync(evicted)).toBe(false);
+    expect([...engine["backupDigests"].keys()]).toEqual([
+      kept,
+      latestEntry(file, engine).backupFileName,
+    ]);
+    expect(causes()).toEqual(["file_history_cap_reached"]);
+  });
+
+  test("a disabled engine takes no snapshot and evicts nothing", async () => {
+    const file = workFile("a.txt", "a\n");
+    const disabled = newEngine({ sessionId: "disabled", enabled: false, maxSnapshots: 1 });
+
+    await disabled.trackEdit(file, "m0");
+    await disabled.makeSnapshot("m1");
+    await disabled.makeSnapshot("m2");
+
+    expect(disabled.getState()).toMatchObject({ snapshots: [], evictedCount: 0 });
+    expect(copyFile).not.toHaveBeenCalled();
+    expect(unlink).not.toHaveBeenCalled();
+    expect(diagnostics).toEqual([]);
+  });
+});
+
+describe("file-history eviction while a rewind or preview is reading", () => {
+  test.each(["previewRewind", "rewindToMessage"] as const)(
+    "%s in flight keeps the backups it may read until it finishes",
+    async (reader) => {
+      const { engine, file, evicted } = await engineAtTheCap("in-flight");
+      const reading = holdNextReadOf(evicted);
+      const result = engine[reader]("m0");
+      await reading.entered;
+
+      // m0 is evicted while the reader still works from the state that names it.
+      await evictOldest(engine, file, "m2");
+
+      expect(snapshotIds(engine)).toEqual(["m1", "m2"]);
+      expect(indexedSnapshots(engine)).toEqual(["m1", "m2"]);
+      expect(existsSync(evicted)).toBe(true);
+
+      reading.release();
+      if (reader === "previewRewind") {
+        // Read before the eviction ("two") against the backup that outlived it ("one").
+        await expect(result).resolves.toEqual({
+          filesChanged: [file],
+          insertions: 1,
+          deletions: 1,
+          perFile: { [file]: { insertions: 1, deletions: 1 } },
+        });
+      } else {
+        await expect(result).resolves.toEqual([file]);
+        expect(readFileSync(file, "utf8")).toBe("one\n");
+      }
+      await engine.flush();
+      expect(existsSync(evicted)).toBe(false);
+      expect(causes()).toEqual(["file_history_cap_reached"]);
+    },
+  );
+
+  test("deletion waits for the last of several readers", async () => {
+    const { engine, file, evicted, kept } = await engineAtTheCap("overlap");
+    const readingEvicted = holdNextReadOf(evicted);
+    const readingKept = holdNextReadOf(kept);
+    const older = engine.previewRewind("m0");
+    await readingEvicted.entered;
+    const newer = engine.previewRewind("m1");
+    await readingKept.entered;
+
+    await evictOldest(engine, file, "m2");
+    expect(existsSync(evicted)).toBe(true);
+
+    // One reader ends; the other still works from the state that names m0.
+    readingKept.release();
+    await expect(newer).resolves.toMatchObject({ filesChanged: [] });
+    await engine.flush();
+    expect(existsSync(evicted)).toBe(true);
+
+    readingEvicted.release();
+    await expect(older).resolves.toMatchObject({
+      filesChanged: [file],
+      insertions: 1,
+      deletions: 1,
+    });
+    await engine.flush();
+    expect(existsSync(evicted)).toBe(false);
+  });
+
+  test.each(["previewRewind", "rewindToMessage"] as const)(
+    "%s still waiting for the queue does not hold deletions back",
+    async (reader) => {
+      const { engine, file, evicted } = await engineAtTheCap("queued");
+      // Same size as the content at m1 ("two"), so that a rewind has to read
+      // the file to compare it.
+      writeFileSync(file, "2+1\n", "utf8");
+      const copying = holdNextCopyOf(file);
+      const snapshot = engine.makeSnapshot("m2");
+      await copying.entered;
+      // Asked for while the evicting snapshot runs: it waits in flush() and
+      // reads the state only after the eviction.
+      const reading = holdNextReadOf(file);
+      const result = engine[reader]("m1");
+
+      copying.release();
+      await snapshot;
+      await reading.entered;
+
+      // The reader is active now, and the snapshot did not wait for it.
+      expect(existsSync(evicted)).toBe(false);
+      reading.release();
+      if (reader === "previewRewind") {
+        await expect(result).resolves.toMatchObject({ filesChanged: [file] });
+      } else {
+        await expect(result).resolves.toEqual([file]);
+        expect(readFileSync(file, "utf8")).toBe("two\n");
+      }
+    },
+  );
+
+  test("a deletion pass queued by one reader's end leaves what a newer reader holds", async () => {
+    let diagnosticDelivery: Promise<void> = Promise.resolve();
+    const { engine, file, evicted, kept } = await engineAtTheCap("interleaved", {
+      withCanonicalBackgroundWork: async (work) => {
+        await diagnosticDelivery;
+        return work();
+      },
+    });
+
+    // The first reader works from [m0, m1]; m0 is evicted under it.
+    const readingEvicted = holdNextReadOf(evicted);
+    const first = engine.previewRewind("m0");
+    await readingEvicted.entered;
+    await evictOldest(engine, file, "m2");
+    expect(existsSync(evicted)).toBe(true);
+
+    // The second reader is asked for now but stays in flush(): a diagnostic
+    // is still being delivered.
+    const delivery = hold();
+    diagnosticDelivery = delivery.reach();
+    await engine.trackEdit(work, "not-a-file");
+    const readingKept = holdNextReadOf(kept);
+    const second = engine.previewRewind("m1");
+
+    // The next snapshot stops while it copies, before it changes the state.
+    const copying = holdNextCopyOf(file);
+    const snapshot = evictOldest(engine, file, "m3");
+    await copying.entered;
+
+    // The first reader ends. No reader is counted, so a pass is queued; it
+    // has to wait for the snapshot.
+    readingEvicted.release();
+    await first;
+    // The second reader leaves flush() and reads [m1, m2], and only then
+    // does the snapshot evict m1.
+    delivery.release();
+    await readingKept.entered;
+    copying.release();
+    await snapshot;
+    await engine.flush();
+
+    // The snapshot's own pass and the queued one both found a reader.
+    expect(snapshotIds(engine)).toEqual(["m2", "m3"]);
+    expect(existsSync(evicted)).toBe(true);
+    expect(existsSync(kept)).toBe(true);
+
+    readingKept.release();
+    await expect(second).resolves.toMatchObject({
+      filesChanged: [file],
+      insertions: 1,
+      deletions: 1,
+    });
+    await engine.flush();
+    expect(existsSync(evicted)).toBe(false);
+    expect(existsSync(kept)).toBe(false);
+    expect(causes()).toEqual(["file_history_cap_reached", "file_history_track_failed"]);
+  });
+
+  test("a preview finishes on the state it started with", async () => {
+    const engine = newEngine({ sessionId: "captured", maxSnapshots: 2 });
+    const early = workFile("early.txt", "early\n");
+    const late = workFile("late.txt", "late origin\n");
+    await engine.trackEdit(early, "m0");
+    await engine.makeSnapshot("m1");
+    // First tracked after m0: a rewind to m0 restores it from this origin.
+    await engine.trackEdit(late, "late-edit");
+    const lateOrigin = latestEntry(late, engine).backupFileName!;
+    const reading = holdNextReadOf(latestEntry(early, engine).backupFileName!);
+    const preview = engine.previewRewind("m0");
+    await reading.entered;
+
+    // Two snapshots on, no retained snapshot holds an origin for `late`.
+    await evictOldest(engine, late, "m2");
+    await evictOldest(engine, late, "m3");
+    expect(snapshotIds(engine)).toEqual(["m2", "m3"]);
+    expect(existsSync(lateOrigin)).toBe(true);
+
+    reading.release();
+    await expect(preview).resolves.toEqual({
+      filesChanged: [late],
+      insertions: 1,
+      deletions: 1,
+      perFile: { [late]: { insertions: 1, deletions: 1 } },
+    });
+    await engine.flush();
+    expect(existsSync(lateOrigin)).toBe(false);
+  });
+
+  test("a reader that fails or finds no snapshot still lets deletions proceed", async () => {
+    const { engine, file, evicted } = await engineAtTheCap("ended");
+
+    await expect(engine.rewindToMessage("no-such-message")).rejects.toThrow(
+      "Snapshot for messageId=no-such-message not found",
+    );
+    await expect(engine.previewRewind("no-such-message")).resolves.toBeNull();
+
+    // Neither left a reader counted: the eviction deletes at once.
+    await evictOldest(engine, file, "m2");
+    expect(existsSync(evicted)).toBe(false);
+    expect(causes()).toEqual(["file_history_restore_failed", "file_history_cap_reached"]);
+  });
+});
+
+describe("file-history deletion passes", () => {
+  test("a pass unlinks nothing but the engine's own backup files", async () => {
+    const { engine, file, evicted, kept } = await engineAtTheCap("shapes");
+    const neighbour = newEngine({ sessionId: "shapes-neighbour" });
+    const neighbourFile = workFile("neighbour.txt", "neighbour\n");
+    await neighbour.trackEdit(neighbourFile, "m0");
+    const backupDir = dirname(evicted);
+    const backupName = `v1-${randomUUID()}`;
+    // Paths a damaged index could name. All of them exist.
+    const strays: Record<string, string> = {
+      "the index": indexPath(engine),
+      "a backup directory": backupDir,
+      "a file directly in the history directory": join(engine.historyDir, backupName),
+      "a file one level too deep": join(backupDir, "nested", backupName),
+      "another file in a backup directory": join(backupDir, "notes.txt"),
+      "a backup name with a suffix": join(backupDir, `${backupName}.bak`),
+      "a backup name without a version": join(backupDir, backupName.replace("v1-", "v-")),
+      "a backup of another session": latestEntry(neighbourFile, neighbour).backupFileName!,
+      "a file outside the history": join(work, backupName),
+      "a path that only looks two levels deep": `${engine.historyDir}${sep}..${sep}${backupName}`,
+    };
+    for (const [label, path] of Object.entries(strays)) {
+      if (existsSync(path)) continue;
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, `${label}\n`, "utf8");
+    }
+    // The oldest snapshot is the only one that names them.
+    const state = engine.getState();
+    const [oldest, newest] = state.snapshots;
+    engine["state"] = {
+      ...state,
+      snapshots: [
+        {
+          ...oldest!,
+          trackedFileBackups: {
+            ...oldest!.trackedFileBackups,
+            ...Object.fromEntries(Object.entries(strays).map(([label, backupFileName]) => [
+              join(work, label),
+              { backupFileName, version: 1, backupTimeMs: 0 },
+            ])),
+          },
+        },
+        newest!,
+      ],
+    };
+
+    await evictOldest(engine, file, "m2");
+
+    // The pass ran: the one real backup among them is gone.
+    expect(existsSync(evicted)).toBe(false);
+    expect(vi.mocked(unlink).mock.calls).toEqual([[evicted]]);
+    expect(vi.mocked(rmdir).mock.calls).toEqual([[backupDir]]);
+    for (const [label, path] of Object.entries(strays)) {
+      expect(existsSync(path), label).toBe(true);
+    }
+    expect(indexedSnapshots(engine)).toEqual(["m1", "m2"]);
+    expect(readFileSync(kept, "utf8")).toBe("two\n");
+    expect(readFileSync(strays["a backup of another session"]!, "utf8")).toBe("neighbour\n");
+    // Dropped for good, without a word: the next pass does not see them.
+    expect(engine["deletable"].size).toBe(0);
+    expect(engine["awaitingDurableIndex"].size).toBe(0);
+    await evictOldest(engine, file, "m3");
+    expect(vi.mocked(unlink).mock.calls).toEqual([[evicted], [kept]]);
+    expect(causes()).toEqual(["file_history_cap_reached"]);
+  });
+
+  test("a backup stays while any retained snapshot names it, wherever that snapshot is", async () => {
+    const engine = newEngine({ sessionId: "anywhere", maxSnapshots: 3 });
+    const file = workFile("a.txt", "a at m0\n");
+    await engine.trackEdit(file, "m0");
+    const origin = latestEntry(file, engine).backupFileName!;
+    writeFileSync(file, "a at m1\n", "utf8");
+    await engine.makeSnapshot("m1");
+    writeFileSync(file, "a at m2\n", "utf8");
+    await engine.makeSnapshot("m2");
+    // An index from disk is not bound to name a backup in neighbouring
+    // snapshots only. Here m0 and m2 name the origin and m1 does not.
+    const state = engine.getState();
+    const [m0, m1, m2] = state.snapshots;
+    engine["state"] = {
+      ...state,
+      snapshots: [
+        m0!,
+        m1!,
+        {
+          ...m2!,
+          trackedFileBackups: {
+            ...m2!.trackedFileBackups,
+            [join(work, "restored.txt")]: { backupFileName: origin, version: 1, backupTimeMs: 0 },
+          },
+        },
+      ],
+    };
+
+    await evictOldest(engine, file, "m3");
+
+    expect(snapshotIds(engine)).toEqual(["m1", "m2", "m3"]);
+    expect(readFileSync(origin, "utf8")).toBe("a at m0\n");
+    expect(unlink).not.toHaveBeenCalled();
+
+    // It goes when the last snapshot that names it does.
+    await evictOldest(engine, file, "m4");
+    expect(existsSync(origin)).toBe(true);
+    await evictOldest(engine, file, "m5");
+    expect(existsSync(origin)).toBe(false);
+  });
+
+  test("failed unlinks are reported once per engine and not retried", async () => {
+    const engine = newEngine({ sessionId: "unlink", maxSnapshots: 2 });
+    const a = workFile("a.txt", "a at m0\n");
+    const b = workFile("b.txt", "b at m0\n");
+    await engine.trackEdits([a, b], "m0");
+    const firstA = latestEntry(a, engine).backupFileName!;
+    const firstB = latestEntry(b, engine).backupFileName!;
+    writeFileSync(a, "a at m1\n", "utf8");
+    writeFileSync(b, "b at m1\n", "utf8");
+    await engine.makeSnapshot("m1");
+    const secondA = latestEntry(a, engine).backupFileName!;
+    const secondB = latestEntry(b, engine).backupFileName!;
+    const denied = (path: unknown): Error => Object.assign(
+      new Error(`EACCES: permission denied, unlink '${String(path)}'`),
+      { code: "EACCES" },
+    );
+    vi.mocked(unlink).mockImplementation(async (path) => { throw denied(path); });
+
+    // Evicts m0: two backups to delete in one pass, and both unlinks fail.
+    await evictOldest(engine, a, "m2");
+    expect(vi.mocked(unlink).mock.calls).toEqual([[firstA], [firstB]]);
+    expect(diagnostics).toEqual([
+      { cause: "file_history_cap_reached", message: expect.any(String) },
+      { cause: "file_history_prune_failed", message: `prune ${firstA}: ${denied(firstA).message}` },
+    ]);
+
+    // Evicts m1 and with it the second backup of `a`: a third failure, in a
+    // later pass, and still the one report.
+    await evictOldest(engine, b, "m3");
+    expect(vi.mocked(unlink).mock.calls).toEqual([[firstA], [firstB], [secondA]]);
+    expect(diagnostics).toHaveLength(2);
+    for (const backup of [firstA, firstB, secondA]) expect(existsSync(backup)).toBe(true);
+    // A backup that could not be unlinked still sits in its directory.
+    expect(rmdir).not.toHaveBeenCalled();
+    expect(engine["deletable"].size).toBe(0);
+
+    // Unlinking works again. Later evictions delete as usual; the three that
+    // failed are not tried again and stay where they are.
+    vi.mocked(unlink).mockImplementation(actualUnlink);
+    await evictOldest(engine, a, "m4");
+    expect(vi.mocked(unlink).mock.calls).toEqual([[firstA], [firstB], [secondA], [secondB]]);
+    expect(existsSync(secondB)).toBe(false);
+    for (const backup of [firstA, firstB, secondA]) expect(existsSync(backup)).toBe(true);
+    expect(diagnostics).toHaveLength(2);
+  });
+
+  test("a backup that is already gone needs no deleting", async () => {
+    const { engine, file, evicted } = await engineAtTheCap("gone");
+    rmSync(evicted);
+
+    await evictOldest(engine, file, "m2");
+
+    expect(unlink).toHaveBeenCalledExactlyOnceWith(evicted);
+    // Its directory is still looked after.
+    expect(rmdir).toHaveBeenCalledExactlyOnceWith(dirname(evicted));
+    expect(engine["backupDigests"].has(evicted)).toBe(false);
+    expect(causes()).toEqual(["file_history_cap_reached"]);
+  });
+
+  test.each([
+    ["ENOTEMPTY", []],
+    ["ENOENT", []],
+    ["EACCES", ["file_history_prune_failed"]],
+  ])("a backup directory that cannot be removed with %s reports %j", async (code, reported) => {
+    const { engine, file, evicted } = await engineAtTheCap("rmdir");
+    const error = Object.assign(new Error(`${code}: rmdir '${dirname(evicted)}'`), { code });
+    vi.mocked(rmdir).mockRejectedValue(error);
+
+    await evictOldest(engine, file, "m2");
+    await evictOldest(engine, file, "m3");
+
+    // The backups themselves are gone either way.
+    expect(vi.mocked(unlink).mock.calls).toHaveLength(2);
+    expect(existsSync(evicted)).toBe(false);
+    expect(rmdir).toHaveBeenCalledTimes(2);
+    expect(diagnostics.slice(1)).toEqual(reported.map((cause) => ({
+      cause,
+      message: `prune ${dirname(evicted)}: ${error.message}`,
+    })));
   });
 });
