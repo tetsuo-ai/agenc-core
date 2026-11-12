@@ -760,7 +760,14 @@ async function readTextFile(
         boundFile = await boundRead.readFile(opts.maxTextBytes);
       } catch (error) {
         if (error instanceof WorkspaceBoundReadFileTooLargeError && rangeNote) {
-          boundWindow = await boundRead.readTextWindow(opts.offset, opts.limit ?? DEFAULT_LINE_LIMIT, opts.maxTextBytes, true);
+          try {
+            boundWindow = await boundRead.readTextWindow(opts.offset, opts.limit ?? DEFAULT_LINE_LIMIT, opts.maxTextBytes, true);
+          } catch (windowError) {
+            if (!(windowError instanceof WorkspaceBoundReadFileTooLargeError)) throw windowError;
+            return errorResult(
+              `File slice exceeds the text-read limit of ${formatBytes(opts.maxTextBytes)}. Use a smaller offset and limit window.`,
+            );
+          }
           fileStats = boundWindow.stats;
         } else if (error instanceof WorkspaceBoundReadFileTooLargeError) {
           return errorResult(
