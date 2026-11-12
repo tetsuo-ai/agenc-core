@@ -100,6 +100,7 @@ const FAILURE = /\b(error|failed|failure|fatal|panic|exception|assertion|traceba
 function logLines(text: string): string[] {
   const lines = text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\r\n/g, "\n")
     .split("\n").map(line => line.split("\r").at(-1)!);
+  while (lines.length > 0 && lines.at(-1)!.trim().length === 0) lines.pop();
   const collapsed: string[] = [];
   for (let index = 0; index < lines.length;) {
     const line = lines[index]!;
@@ -119,7 +120,8 @@ function reduceLog(text: string, budget: number): TruncatedText {
   const selected = new Set<number>();
   let remaining = Math.max(0, budget - marker.length - 2);
   // Reserve the final summary first, then failures, then the opening context.
-  const priority = lines.length > 0 ? [lines.length - 1] : [];
+  const finalLine = lines.findLastIndex(line => line.trim().length > 0);
+  const priority = finalLine >= 0 ? [finalLine] : [];
   priority.push(...lines.flatMap((line, index) => FAILURE.test(line) ? [index] : []));
   priority.push(...[...lines.keys()].slice(-8).reverse(), ...lines.keys());
   for (const index of priority) {
