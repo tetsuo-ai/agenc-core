@@ -7,9 +7,12 @@
  * read from, a row past its date is left out of the list and refused at
  * selection (model-catalog-selection.ts). The provider's own list wins: a
  * model its live or cached live list has in this process is never hidden or
- * refused over a bundled date. Before a selection is refused, the list cached
- * in the session's home is read as well, since another process may have read
- * the provider's list there (session/cached-live-model-list.ts).
+ * refused over a date, provided the provider gave that list on or after the
+ * date. A list it gave before the date says only that the model was there
+ * until then; a cache file can be days old, and a daemon keeps the list it
+ * downloaded. Before a selection is refused, the list cached in the session's
+ * home is read as well, since another process may have read the provider's
+ * list there (session/cached-live-model-list.ts).
  *
  * The rule is the same for every provider that fills in `retiresOn`
  * (OpenRouter's `expiration_date`, Venice's `model_spec.deprecation`).
@@ -21,7 +24,10 @@ import {
   findBundledModelCatalogEntry,
   type RegisteredModelCatalogEntry,
 } from "./model-catalog.js";
-import { publishedModelCatalogEntry } from "./published-model-catalog.js";
+import {
+  publishedModelCatalogEntry,
+  publishedModelCatalogReadAt,
+} from "./published-model-catalog.js";
 
 const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/u;
 
@@ -50,20 +56,30 @@ export function isModelRetired(
   return start !== undefined && start <= now.getTime();
 }
 
-/** A model the bundled catalog says its provider has retired. */
+/** A model whose provider has retired it, as far as this process can tell. */
 export interface RetiredBundledModel {
-  /** The id the bundled catalog registers the model under. */
+  /** The id the catalog registers the model under. */
   readonly model: string;
   /** The date the provider announced, YYYY-MM-DD. */
   readonly retiredOn: string;
 }
 
 /**
- * The bundled row of `model`, when the bundled catalog is what speaks for the
- * model and the row's retirement date has arrived. Undefined when the
- * provider's live list in this process has the model (its list wins), when
- * no bundled row is registered under exactly this id, and when the row is
- * not retired.
+ * `model` and its retirement date, when the date has arrived and nothing
+ * newer says the provider still has the model.
+ *
+ * - The provider's list in this process does not have the model: the
+ *   bundled row registered under exactly this id speaks, and the model is
+ *   retired once that row's date has arrived.
+ * - The list has the model and the provider gave the list on or after the
+ *   date (or nobody recorded when): the list wins and the model is not
+ *   retired, whatever the date.
+ * - The list has the model but the provider gave it before the date: the
+ *   list does not reach that far. The date decides, the list's own row's
+ *   when it carries one, the bundled row's otherwise.
+ *
+ * Undefined in every other case: no row under this id, a row with no date,
+ * a date still ahead.
  */
 export function retiredBundledModel(
   provider: string,
@@ -71,8 +87,24 @@ export function retiredBundledModel(
   now: Date = new Date(),
 ): RetiredBundledModel | undefined {
   const providerId = provider.trim().toLowerCase();
-  if (publishedModelCatalogEntry(providerId, model) !== undefined) return undefined;
-  const entry = findBundledModelCatalogEntry({ provider: providerId, model });
-  if (entry?.retiresOn === undefined || !isModelRetired(entry, now)) return undefined;
-  return { model: entry.model, retiredOn: entry.retiresOn };
+  const bundled = findBundledModelCatalogEntry({ provider: providerId, model });
+  const listed = publishedModelCatalogEntry(providerId, model);
+  if (listed === undefined) {
+    return bundled?.retiresOn !== undefined && isModelRetired(bundled, now)
+      ? { model: bundled.model, retiredOn: bundled.retiresOn }
+      : undefined;
+  }
+  const listReadAt = publishedModelCatalogReadAt(providerId);
+  const dated = listed.retiresOn !== undefined ? listed : bundled;
+  const start = retirementStart(dated?.retiresOn);
+  if (
+    dated?.retiresOn === undefined ||
+    start === undefined ||
+    listReadAt === undefined ||
+    listReadAt >= start ||
+    start > now.getTime()
+  ) {
+    return undefined;
+  }
+  return { model: dated.model, retiredOn: dated.retiresOn };
 }

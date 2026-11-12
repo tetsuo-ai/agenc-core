@@ -30,6 +30,8 @@ export const PUBLISHED_CATALOG_PROVIDERS: ReadonlySet<string> = new Set([
 const published = new Map<string, Map<string, RegisteredModelCatalogEntry>>();
 /** provider -> model -> when its per-model detail lookup last answered. */
 const detailed = new Map<string, Map<string, number>>();
+/** provider -> when the provider answered with its recorded complete list. */
+const listReadAt = new Map<string, number>();
 let revision = 0;
 
 function key(model: string): string {
@@ -40,11 +42,17 @@ function key(model: string): string {
  * Record one provider's published rows. `replace` (a complete list) drops
  * rows the provider no longer lists; without it the rows are merged, as a
  * per-model detail lookup (`/api/show`) adds to an earlier list.
+ *
+ * `readAt` is when the provider answered with a complete list, in epoch
+ * milliseconds: the download time, or the stamp of the cache file the list
+ * came from, never the time a cache was opened. A list says what the
+ * provider had at that moment and nothing about later
+ * (publishedModelCatalogReadAt).
  */
 export function recordPublishedModelCatalog(
   provider: string,
   entries: readonly RegisteredModelCatalogEntry[],
-  options: { readonly replace?: boolean } = {},
+  options: { readonly replace?: boolean; readonly readAt?: number } = {},
 ): void {
   if (!PUBLISHED_CATALOG_PROVIDERS.has(provider)) return;
   const current = options.replace === true
@@ -52,9 +60,13 @@ export function recordPublishedModelCatalog(
     : new Map(published.get(provider) ?? []);
   for (const entry of entries) current.set(key(entry.model), entry);
   published.set(provider, current);
-  // A complete list may come from a lookup that did not carry another
-  // lookup's per-model details, so their marks no longer hold.
-  if (options.replace === true) detailed.delete(provider);
+  if (options.replace === true) {
+    // A complete list may come from a lookup that did not carry another
+    // lookup's per-model details, so their marks no longer hold.
+    detailed.delete(provider);
+    if (options.readAt === undefined) listReadAt.delete(provider);
+    else listReadAt.set(provider, options.readAt);
+  }
   revision += 1;
 }
 
@@ -84,6 +96,15 @@ export function publishedModelCatalogEntry(
   return published.get(provider)?.get(key(model));
 }
 
+/**
+ * When the provider answered with the complete list recorded for it, in
+ * epoch milliseconds. Undefined when no list is recorded, and for a list
+ * recorded without that time.
+ */
+export function publishedModelCatalogReadAt(provider: string): number | undefined {
+  return listReadAt.get(provider);
+}
+
 /** Every published row of one provider, in the provider's list order. */
 export function publishedModelCatalogEntries(
   provider: string,
@@ -101,6 +122,7 @@ export function publishedModelCatalogRevision(): number {
 export function clearPublishedModelCatalogs(): void {
   published.clear();
   detailed.clear();
+  listReadAt.clear();
   revision += 1;
 }
 
@@ -108,5 +130,6 @@ export function clearPublishedModelCatalogs(): void {
 export function clearPublishedModelCatalog(provider: string): void {
   published.delete(provider);
   detailed.delete(provider);
+  listReadAt.delete(provider);
   revision += 1;
 }

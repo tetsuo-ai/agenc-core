@@ -139,7 +139,8 @@ describe("a bundled model with a retirement date", () => {
       liveRow(MODEL, { expiration_date: DATE }),
       liveRow("dots-studio/dots-3-note-preview:free"),
     ] })));
-    const catalog = openRouterCatalogFor({ home: ctx.home, fetchImpl });
+    // OpenRouter gives this list after the date: it still has both models.
+    const catalog = openRouterCatalogFor({ home: ctx.home, fetchImpl, now: () => late.getTime() });
     expect(hubModels(ctx, late)).not.toContain(MODEL);
     expect((await catalog.refresh()).source).toBe("live");
 
@@ -158,6 +159,35 @@ describe("a bundled model with a retirement date", () => {
       .toBe("Model switch blocked: OpenRouter retired 'bytedance-seed/seed-1.6' on 2026-11-11. Pick another model.");
     expect(text(await modelCommand.execute({ ...ctx, argsRaw: "openai/gpt-6-sol" })))
       .toContain("does not list model 'openai/gpt-6-sol'");
+  });
+
+  test("a list OpenRouter gave before the date keeps a model offered only until that date", async () => {
+    const ctx = context();
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({ data: [
+      liveRow("x-ai/grok-4.5"),
+      liveRow(MODEL, { expiration_date: DATE }),
+      liveRow("dots-studio/dots-3-note-preview:free"),
+    ] })));
+    // The list was last read a week before the date, then served from the
+    // cache or held by a long-running process.
+    const given = at("2026-12-24");
+    const catalog = openRouterCatalogFor({ home: ctx.home, fetchImpl, now: () => given.getTime() });
+    expect((await catalog.refresh()).source).toBe("live");
+
+    const all = ["x-ai/grok-4.5", MODEL, "dots-studio/dots-3-note-preview:free"];
+    expect(hubModels(ctx, at("2026-12-30", "23:59:59.999"))).toEqual(all);
+    expect(menuModels(ctx, at("2026-12-30", "23:59:59.999"))).toEqual(all);
+    // From the date on that list no longer speaks for either model: one by
+    // the date on its own row, the other by the date on its bundled row.
+    const late = at("2027-03-01");
+    expect(hubModels(ctx, late)).toEqual(["x-ai/grok-4.5"]);
+    expect(menuModels(ctx, late)).toEqual(["x-ai/grok-4.5"]);
+
+    vi.useFakeTimers({ toFake: ["Date"], now: late });
+    expect(text(await modelCommand.execute({ ...ctx, argsRaw: MODEL }))).toBe(`Model switch blocked: ${REFUSAL}`);
+    expect(text(await modelCommand.execute({ ...ctx, argsRaw: "dots-studio/dots-3-note-preview:free" })))
+      .toBe("Model switch blocked: OpenRouter retired 'dots-studio/dots-3-note-preview:free' on 2026-12-31. Pick another model.");
+    expect(text(await modelCommand.execute({ ...ctx, argsRaw: "x-ai/grok-4.5" }))).not.toContain("blocked");
   });
 
   test("an entry with no date is offered and selectable at any time", async () => {

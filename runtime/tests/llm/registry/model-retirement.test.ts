@@ -6,7 +6,9 @@ import {
 import { isModelRetired, retiredBundledModel } from "../../../src/llm/registry/model-retirement.js";
 import { openRouterCatalogEntry } from "../../../src/llm/registry/openrouter-models.js";
 import {
+  clearPublishedModelCatalog,
   clearPublishedModelCatalogs,
+  publishedModelCatalogReadAt,
   recordPublishedModelCatalog,
 } from "../../../src/llm/registry/published-model-catalog.js";
 
@@ -23,6 +25,22 @@ function recordLiveOpenRouterList(...models: readonly string[]): void {
   recordPublishedModelCatalog("openrouter", models.map((model, index) => openRouterCatalogEntry({
     model, label: model, modalities: ["text"], parameters: ["tools"], efforts: [], pricing: {},
   }, index)), { replace: true });
+}
+
+/**
+ * Record OpenRouter's list as the provider gave it at `readAt`. A row is an
+ * id, or an id with the retirement date the list itself announces for it.
+ */
+function recordOpenRouterListReadAt(
+  readAt: Date,
+  ...rows: ReadonlyArray<string | { readonly model: string; readonly expires: string }>
+): void {
+  recordPublishedModelCatalog("openrouter", rows.map((row, index) => openRouterCatalogEntry({
+    model: typeof row === "string" ? row : row.model,
+    label: typeof row === "string" ? row : row.model,
+    modalities: ["text"], parameters: ["tools"], efforts: [], pricing: {},
+    ...(typeof row === "string" ? {} : { expires: row.expires }),
+  }, index)), { replace: true, readAt: readAt.getTime() });
 }
 
 // The bundled snapshot of 2026-10-20 as issue #3447 measured it. A
@@ -122,6 +140,78 @@ describe("retiredBundledModel", () => {
     // A live list without the model does not vouch for it.
     recordLiveOpenRouterList("x-ai/grok-4.5");
     expect(retiredBundledModel("openrouter", model, at("2027-03-01"))).toEqual(retired);
+  });
+
+  test("a list the provider gave before the date does not vouch once the date has arrived", () => {
+    // A cache file last refreshed a week before, or the list a daemon
+    // downloaded then and still holds.
+    recordOpenRouterListReadAt(at("2026-12-24"), "x-ai/grok-4.5", model);
+    // Until the date the model is simply listed.
+    expect(retiredBundledModel("openrouter", model, at("2026-12-30", "23:59:59.999"))).toBeUndefined();
+    expect(retiredBundledModel("openrouter", model, at("2026-12-31", "00:00:00.000"))).toEqual(retired);
+    expect(retiredBundledModel("openrouter", model, at("2027-03-01"))).toEqual(retired);
+    // A model with no date is not touched by the age of the list.
+    expect(retiredBundledModel("openrouter", "x-ai/grok-4.5", at("2027-03-01"))).toBeUndefined();
+  });
+
+  test("a list the provider gave on the date or after it vouches", () => {
+    const late = at("2027-03-01");
+    recordOpenRouterListReadAt(at("2026-12-30", "23:59:59.999"), model);
+    expect(retiredBundledModel("openrouter", model, late)).toEqual(retired);
+    recordOpenRouterListReadAt(at("2026-12-31", "00:00:00.000"), model);
+    expect(retiredBundledModel("openrouter", model, late)).toBeUndefined();
+    recordOpenRouterListReadAt(at("2027-02-28"), model);
+    expect(retiredBundledModel("openrouter", model, late)).toBeUndefined();
+  });
+
+  test("the list's own date for a model decides over the bundled one", () => {
+    // A model the bundled snapshot has never had, with a date the list announces.
+    recordOpenRouterListReadAt(at("2026-11-01"), { model: "acme/newer-than-the-snapshot", expires: "2026-11-10" });
+    expect(retiredBundledModel("openrouter", "acme/newer-than-the-snapshot", at("2026-11-09"))).toBeUndefined();
+    expect(retiredBundledModel("openrouter", "acme/newer-than-the-snapshot", at("2026-11-10", "00:00:00.000")))
+      .toEqual({ model: "acme/newer-than-the-snapshot", retiredOn: "2026-11-10" });
+    // The provider moved the date: the list read on 2026-12-24 says 2027-06-30.
+    recordOpenRouterListReadAt(at("2026-12-24"), { model, expires: "2027-06-30" });
+    expect(retiredBundledModel("openrouter", model, at("2027-03-01"))).toBeUndefined();
+    expect(retiredBundledModel("openrouter", model, at("2027-07-01"))).toEqual({ model, retiredOn: "2027-06-30" });
+    // Text that is not a date retires nothing, on either row.
+    recordOpenRouterListReadAt(at("2026-11-01"), { model: "acme/no-real-date", expires: "2026-02-31" });
+    expect(retiredBundledModel("openrouter", "acme/no-real-date", at("2027-03-01"))).toBeUndefined();
+  });
+
+  test("a list recorded without the time it was given vouches, as before", () => {
+    recordLiveOpenRouterList(model);
+    expect(publishedModelCatalogReadAt("openrouter")).toBeUndefined();
+    expect(retiredBundledModel("openrouter", model, at("2027-03-01"))).toBeUndefined();
+  });
+
+  test("the time a list was given is kept with the list and goes with it", () => {
+    const given = at("2026-12-24");
+    recordOpenRouterListReadAt(given, model);
+    expect(publishedModelCatalogReadAt("openrouter")).toBe(given.getTime());
+    // A per-model detail merged into the list does not change when the list
+    // was given, whatever time comes with it: only a complete list has one.
+    for (const options of [{}, { readAt: at("2027-01-01").getTime() }]) {
+      recordPublishedModelCatalog("openrouter", [openRouterCatalogEntry({
+        model: "x-ai/grok-4.5", label: "Grok", modalities: ["text"], parameters: ["tools"], efforts: [], pricing: {},
+      }, 0)], options);
+      expect(publishedModelCatalogReadAt("openrouter")).toBe(given.getTime());
+    }
+    // A complete list replaces it, with its own time or with none.
+    recordOpenRouterListReadAt(at("2027-01-05"), model);
+    expect(publishedModelCatalogReadAt("openrouter")).toBe(at("2027-01-05").getTime());
+    recordLiveOpenRouterList(model);
+    expect(publishedModelCatalogReadAt("openrouter")).toBeUndefined();
+    // Forgetting the list forgets its time, for one provider and for all.
+    recordOpenRouterListReadAt(given, model);
+    clearPublishedModelCatalog("openrouter");
+    expect(publishedModelCatalogReadAt("openrouter")).toBeUndefined();
+    recordOpenRouterListReadAt(given, model);
+    clearPublishedModelCatalogs();
+    expect(publishedModelCatalogReadAt("openrouter")).toBeUndefined();
+    // Providers outside the published set record nothing at all.
+    recordPublishedModelCatalog("deepseek", [], { replace: true, readAt: given.getTime() });
+    expect(publishedModelCatalogReadAt("deepseek")).toBeUndefined();
   });
 
   test("only the row registered under exactly that id is retired", () => {

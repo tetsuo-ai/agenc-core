@@ -26,8 +26,12 @@ const tuiNotice = (model: string, date: string) =>
   ({ key: `retired-model:openrouter/${model}`, text: notice(model, date) });
 const silenceWarnings = () => vi.spyOn(console, "warn").mockImplementation(() => {});
 
-/** Leave OpenRouter's list in a home's cache, as an earlier run would have. */
-async function cacheLiveList(...models: readonly string[]): Promise<string> {
+/** Leave OpenRouter's list in a home's cache, as an earlier run would have on the day these tests start on. */
+const cacheLiveList = (...models: readonly string[]): Promise<string> =>
+  cacheLiveListGivenAt(at("2026-11-12", "00:00:00.000"), ...models);
+
+/** The same, for a run that read OpenRouter's list at `given`. */
+async function cacheLiveListGivenAt(given: Date, ...models: readonly string[]): Promise<string> {
   const path = mkdtempSync(join(tmpdir(), "startup-retired-"));
   homes.push(path);
   const body = { data: models.map((id) => ({
@@ -36,7 +40,8 @@ async function cacheLiveList(...models: readonly string[]): Promise<string> {
     supported_parameters: ["tools"], pricing: { prompt: "0.000001", completion: "0.000002" },
   })) };
   const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify(body)));
-  expect((await new OpenRouterCatalog({ home: path, fetchImpl }).refresh()).source).toBe("live");
+  expect((await new OpenRouterCatalog({ home: path, fetchImpl, now: () => given.getTime() }).refresh()).source)
+    .toBe("live");
   // A new process starts with nothing read.
   clearPublishedModelCatalogs();
   return path;
@@ -121,6 +126,41 @@ describe("a saved model the bundled catalog says is retired", () => {
     resolveCanonicalStartupSelection({ config: saved("poolside/laguna-s-2.1:free"), env: {}, metadata, now });
     expect(warning.mock.calls).toEqual([[notice("poolside/laguna-s-2.1:free", "2026-10-31")]]);
     expect(takeTuiStartupNotices()).toEqual([tuiNotice("poolside/laguna-s-2.1:free", "2026-10-31")]);
+  });
+});
+
+describe("a cached list from before the saved model's date", () => {
+  test("does not hide the notice: the list says nothing about the days since", async () => {
+    const warning = silenceWarnings();
+    const model = "poolside/laguna-xs-2.1";
+    // The last start that read OpenRouter's list was a week before the date,
+    // which is the cache every owner of that model has on the first start
+    // after it.
+    const metadata = { catalogHome: await cacheLiveListGivenAt(at("2026-10-24"), "x-ai/grok-4.5", model) };
+    expect(resolveCanonicalStartupSelection({ config: saved(model), env: {}, metadata, now: at("2026-10-30") }).model)
+      .toBe(model);
+    expect(warning).not.toHaveBeenCalled();
+    expect(takeTuiStartupNotices()).toEqual([]);
+
+    expect(resolveCanonicalStartupSelection({ config: saved(model), env: {}, metadata, now: at("2026-11-12") }).model)
+      .toBe(model);
+    expect(warning.mock.calls).toEqual([[notice(model, "2026-10-31")]]);
+    expect(takeTuiStartupNotices()).toEqual([tuiNotice(model, "2026-10-31")]);
+  });
+
+  test("does not let a retired model typed with --model through", async () => {
+    silenceWarnings();
+    const model = "bytedance-seed/seed-2.0-code";
+    const stale = { catalogHome: await cacheLiveListGivenAt(at("2026-11-10", "23:59:59.999"), "x-ai/grok-4.5", model) };
+    expect(() => resolveCanonicalStartupSelection({
+      config: saved(model), env: {}, metadata: stale, explicitModel: model, now: at("2026-11-12"),
+    })).toThrow(new Error(notice(model, "2026-11-11")));
+    // Read on the date itself, the same list vouches.
+    clearPublishedModelCatalogs();
+    const fresh = { catalogHome: await cacheLiveListGivenAt(at("2026-11-11", "00:00:00.000"), "x-ai/grok-4.5", model) };
+    expect(resolveCanonicalStartupSelection({
+      config: saved(model), env: {}, metadata: fresh, explicitModel: model, now: at("2026-11-12"),
+    }).model).toBe(model);
   });
 });
 

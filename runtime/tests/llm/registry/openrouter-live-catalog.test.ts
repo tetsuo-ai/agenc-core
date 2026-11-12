@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { OpenRouterCatalog, OPENROUTER_CATALOG_TTL_MS, openRouterCatalogFor } from "../../../src/llm/registry/openrouter-live-catalog.js";
-import { clearPublishedModelCatalogs, publishedModelCatalogEntries } from "../../../src/llm/registry/published-model-catalog.js";
+import { clearPublishedModelCatalogs, publishedModelCatalogEntries, publishedModelCatalogReadAt } from "../../../src/llm/registry/published-model-catalog.js";
 import { recordPublishedModelCosts } from "../../../src/llm/registry/published-model-costs.js";
 import { OPENROUTER_MODEL_IDS } from "../../../src/llm/registry/openrouter-model-ids.js";
 import { ModelMetadataResolver } from "../../../src/llm/model-metadata.js";
@@ -206,6 +206,34 @@ test("a catalog built before the cache existed takes the list another catalog ca
   expect(published()).toEqual(["test/live-only"]);
   expect(early.read()).toBe(taken);
   expect(early.refreshFromCache()).toBe(taken);
+});
+
+test("a list is recorded with the time OpenRouter gave it, not the time its cache was opened", async () => {
+  const path = home();
+  const downloaded = Date.parse("2026-11-05T12:00:00Z");
+  const first = new OpenRouterCatalog({ home: path, fetchImpl: fakeFetch({ data: [row()] }), now: () => downloaded });
+  expect((await first.refresh()).source).toBe("live");
+  expect(publishedModelCatalogReadAt("openrouter")).toBe(downloaded);
+
+  // Another process opens that cache a week later: the list is a week old.
+  clearPublishedModelCatalogs();
+  const weekLater = downloaded + 7 * 24 * 60 * 60_000;
+  const later = new OpenRouterCatalog({ home: path, now: () => weekLater });
+  expect(later.read().source).toBe("cache");
+  expect(publishedModelCatalogReadAt("openrouter")).toBe(downloaded);
+  // So is a list taken from the cache by a catalog that was built before it.
+  clearPublishedModelCatalogs();
+  const other = home();
+  const early = new OpenRouterCatalog({ home: other, now: () => weekLater });
+  const writer = new OpenRouterCatalog({ home: other, fetchImpl: fakeFetch({ data: [row()] }), now: () => downloaded });
+  expect((await writer.refresh()).source).toBe("live");
+  clearPublishedModelCatalogs();
+  expect(early.refreshFromCache().source).toBe("cache");
+  expect(publishedModelCatalogReadAt("openrouter")).toBe(downloaded);
+
+  // The bundled list is not an answer from OpenRouter: no time goes with it.
+  expect(new OpenRouterCatalog().read().source).toBe("bundled");
+  expect(publishedModelCatalogReadAt("openrouter")).toBeUndefined();
 });
 
 test("a cached list replaces the one held only when it is newer", async () => {

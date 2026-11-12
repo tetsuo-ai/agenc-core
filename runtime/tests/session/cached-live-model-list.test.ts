@@ -185,6 +185,56 @@ describe("a model picked in the TUI and checked by the daemon", () => {
       .toMatchObject({ applied: true, model: "poolside/laguna-s-2.1" });
   });
 
+  test("is refused with its date when the cached list is from before that date", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: NOW });
+    const home = newHome();
+    const { session, pending } = daemonSession(home, { key: KEY });
+    // The TUI last read OpenRouter's list a week before the model's date.
+    vi.setSystemTime(new Date("2026-11-04T12:00:00Z"));
+    await anotherProcessCachesLiveList(home, KEY, ["x-ai/grok-4.5", MODEL]);
+    vi.setSystemTime(NOW);
+    expect((await applyModelSwitch(session, MODEL, "openrouter")).summary)
+      .toBe(`Model switch to "${MODEL}" blocked: ${REFUSAL}`);
+    expect(pending()).toBeNull();
+    // The daemon did read that list. It speaks for what has no date to pass.
+    expect(published()).toEqual(["x-ai/grok-4.5", MODEL]);
+    expect(await applyModelSwitch(session, "x-ai/grok-4.5", "openrouter")).toMatchObject({ applied: true });
+
+    // Once the TUI has read the list again, on the date or after it, it vouches.
+    vi.setSystemTime(new Date("2026-11-11T00:00:00.000Z"));
+    await anotherProcessCachesLiveList(home, KEY, ["x-ai/grok-4.5", MODEL]);
+    vi.setSystemTime(NOW);
+    expect(await applyModelSwitch(session, MODEL, "openrouter")).toMatchObject({ applied: true, model: MODEL });
+  });
+
+  test("a model OpenRouter added since the daemon last looked is accepted once the TUI has cached it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: NOW });
+    const home = newHome();
+    const { session } = daemonSession(home, { key: KEY });
+    await anotherProcessCachesLiveList(home, KEY, ["x-ai/grok-4.5"]);
+    // A refusal makes the daemon read that list. From here on it holds one.
+    expect((await applyModelSwitch(session, MODEL, "openrouter")).summary)
+      .toBe(`Model switch to "${MODEL}" blocked: ${REFUSAL}`);
+    expect(published()).toEqual(["x-ai/grok-4.5"]);
+
+    // Two hours later OpenRouter lists a new model, and the TUI reads it.
+    vi.setSystemTime(new Date(NOW.getTime() + 2 * 60 * 60_000));
+    await anotherProcessCachesLiveList(home, KEY, ["x-ai/grok-4.5", "acme/added-since"]);
+    // The helper cleared what this process recorded; the daemon's own catalog
+    // still holds the older list, and records it again when it is read.
+    expect(openRouterCatalogFor({ home, apiKey: KEY }).read().models.map((row) => row.model)).toEqual(["x-ai/grok-4.5"]);
+    expect(published()).toEqual(["x-ai/grok-4.5"]);
+
+    // Its own list does not have the model. Before that refusal stands, it
+    // reads what the home's cache holds now.
+    expect(await applyModelSwitch(session, "acme/added-since", "openrouter"))
+      .toMatchObject({ applied: true, model: "acme/added-since" });
+    expect(published()).toEqual(["x-ai/grok-4.5", "acme/added-since"]);
+    // A model no list has is still refused.
+    expect((await applyModelSwitch(session, "acme/in-no-list", "openrouter")).summary)
+      .toContain("does not list model 'acme/in-no-list'");
+  });
+
   test("reads the list cached for the session's key, not another key's", async () => {
     vi.useFakeTimers({ toFake: ["Date"], now: NOW });
     const home = newHome();
@@ -216,7 +266,7 @@ describe("a model picked in the TUI and checked by the daemon", () => {
     expect((await applyModelSwitch(session, MODEL, "openrouter")).applied).toBe(true);
   });
 
-  test("reads the home only when a bundled date is about to refuse the model", async () => {
+  test("reads the home only when the check is about to refuse the model", async () => {
     vi.useFakeTimers({ toFake: ["Date"], now: NOW });
     const home = newHome();
     const { session } = daemonSession(home, { key: KEY });
@@ -270,6 +320,26 @@ describe("resolveSessionProviderModelSelection", () => {
     expect(readCachedLiveList.mock.calls).toEqual([["openrouter"]]);
     expect(resolveSessionProviderModelSelection(session, layer, { now: NOW }))
       .toEqual({ provider: "openrouter", model: MODEL, providerChanged: true });
+  });
+
+  test("asks once before a refusal stands, whether for a date or for a model its list lacks", async () => {
+    const home = newHome();
+    const { session } = daemonSession(home, { key: KEY });
+    await anotherProcessCachesLiveList(home, KEY, ["x-ai/grok-4.5"]);
+    // Give this process a list, so that a model outside it is refused.
+    readSessionCachedLiveModelList(session, "openrouter");
+    expect(published()).toEqual(["x-ai/grok-4.5"]);
+
+    for (const [model, refusal] of [
+      [MODEL, REFUSAL],
+      ["acme/in-no-list", "OpenRouter does not list model 'acme/in-no-list'"],
+    ] as const) {
+      const readCachedLiveList = vi.fn();
+      expect(() => resolveSessionProviderModelSelection(
+        session, { model_provider: "openrouter", model }, { now: NOW, readCachedLiveList },
+      )).toThrow(refusal);
+      expect(readCachedLiveList.mock.calls, model).toEqual([["openrouter"]]);
+    }
   });
 
   test("asks for no list while the model is not retired, or the pair is replayed", async () => {

@@ -1,7 +1,6 @@
 import {
   assertModelCatalogSelection,
   assertModelNotRetired,
-  retiredModelNotice,
 } from "../llm/model-catalog-selection.js";
 import {
   mergeProviderModelLayer,
@@ -49,8 +48,8 @@ export interface CatalogValidationOptions {
   readonly now?: Date;
   /**
    * Reads into this process the live model list the home's cache holds now
-   * for a provider (cached-live-model-list.ts). Asked only when a bundled
-   * retirement date is about to refuse the model.
+   * for a provider (cached-live-model-list.ts). Asked only when the catalog
+   * check is about to refuse the model, and then the check runs once more.
    */
   readonly readCachedLiveList?: (provider: ProviderSlug) => void;
 }
@@ -88,18 +87,25 @@ export function resolveProviderModelSelection(
   const savedOpenRouterModel = provider === "openrouter" &&
     configuredModelForProvider(config ?? {}, provider) === model;
   if (options.validateCatalog !== false) {
-    // A bundled date is about to refuse this model, and the provider's own
-    // list wins. Another process may have read that list after this one last
-    // looked (the TUI reads it for its menus, the daemon checks the model
-    // picked there), so read what the home's cache holds now before deciding.
-    if (options.readCachedLiveList !== undefined &&
-        retiredModelNotice(provider, model, options.now) !== undefined) {
+    const check = (): void => {
+      // Choosing the saved pair again skips the catalog's listing check,
+      // never its retirement date.
+      if (savedOpenRouterModel) assertModelNotRetired(provider, model, options.now);
+      else assertModelCatalogSelection(config ?? {}, provider, model, env, options.now);
+    };
+    try {
+      check();
+    } catch (refusal) {
+      // The refusal rests on the provider list this process holds, or on a
+      // bundled date for want of one. Another process may have read a newer
+      // list since this one last looked (the TUI reads it for its menus, the
+      // daemon checks the model picked there), and the provider's own list
+      // wins. So read what the home's cache holds now and decide once more:
+      // for a retirement date, and for "the provider does not list it".
+      if (options.readCachedLiveList === undefined) throw refusal;
       options.readCachedLiveList(provider);
+      check();
     }
-    // Choosing the saved pair again skips the catalog's listing check, never
-    // its retirement date.
-    if (savedOpenRouterModel) assertModelNotRetired(provider, model, options.now);
-    else assertModelCatalogSelection(config ?? {}, provider, model, env, options.now);
   }
   if (!isModelAllowed(provider, model, config ?? {})) {
     throw new ModelNotAllowedError(model);

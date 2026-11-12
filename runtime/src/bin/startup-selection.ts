@@ -122,8 +122,10 @@ function noteRetiredSavedModel(provider: ProviderName, model: string, now: Date 
   }
   if (notice === undefined || printedSavedModelNotices.has(notice)) return;
   printedSavedModelNotices.add(notice);
-  // Print mode reads this line on stderr. An interactive start draws the TUI
-  // over it, so the TUI is handed the same text to show once it has mounted.
+  // On stderr of the process that resolves the start. An interactive start
+  // draws the TUI over it, so the TUI is handed the same text to show once
+  // it has mounted. A print run served by a running daemon is resolved in
+  // the daemon: the line goes to the daemon's stderr, not to the caller's.
   console.warn(notice);
   queueTuiStartupNotice({ key: `retired-model:${provider}/${model}`, text: notice });
 }

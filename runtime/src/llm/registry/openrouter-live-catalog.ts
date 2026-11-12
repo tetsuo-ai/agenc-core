@@ -95,7 +95,7 @@ export class OpenRouterCatalog {
     const pricingMinute = Math.floor(this.#now() / 60_000);
     if (activeSnapshot !== this.#snapshot || activeRevision !== publishedModelCatalogRevision() || this.#pricingMinute !== pricingMinute) {
       if (this.#snapshot.source === "bundled") clearPublishedModelCatalog("openrouter");
-      else recordPublishedModelCatalog("openrouter", this.#snapshot.models.map(openRouterCatalogEntry), { replace: true });
+      else recordPublishedModelCatalog("openrouter", this.#snapshot.models.map(openRouterCatalogEntry), { replace: true, readAt: this.#at });
       recordPublishedModelCosts("openrouter", this.#snapshot.source === "bundled"
         ? new Map() : openRouterModelCosts(this.#snapshot.models, this.#now()));
       this.#pricingMinute = pricingMinute;
