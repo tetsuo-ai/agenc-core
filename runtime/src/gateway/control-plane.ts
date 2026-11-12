@@ -251,7 +251,8 @@ export class TelegramOwnerControl {
         [
           `telegram-control: control state '${this.#path}' is unreadable (${reason});`,
           "failing closed: public group replies are off, stored owners are ignored and /owner claims are refused.",
-          "Repair or remove the file, or have an admin owner send /stop or /start to replace it.",
+          "Repair the file, or have an admin owner send /stop or /start to replace it.",
+          "Removing the file instead resets the bot to its first-run state: public replies on, no stored owner, and open to a new /owner claim.",
         ].join(" "),
       );
     }
@@ -308,7 +309,7 @@ export class TelegramOwnerControl {
           "Owner claim refused: the owner state on the host is unreadable.",
           input.isOwner
             ? "Use /status to see how to replace it."
-            : "The host operator must repair or remove the state file first.",
+            : "The host operator must repair the state file first.",
         ].join("\n"),
       );
       return;

@@ -429,7 +429,7 @@ describe.each(UNUSABLE_STATE_FILES)(
     test("/owner is refused", async () => {
       const refused =
         "Owner claim refused: the owner state on the host is unreadable.";
-      const refusal = `${refused}\nThe host operator must repair or remove the state file first.`;
+      const refusal = `${refused}\nThe host operator must repair the state file first.`;
       const claim = `/owner ${CLAIM_CODE}`;
       expect(await replyTo(claimOnly, "mallory", "dm", claim)).toBe(refusal);
       expect(await replyTo(claimOnly, "stored", "dm", claim)).toBe(refusal);
@@ -529,7 +529,8 @@ describe("the unreadable state log line", () => {
       [
         `telegram-control: control state '${statePath}' is unreadable (the file is empty);`,
         "failing closed: public group replies are off, stored owners are ignored and /owner claims are refused.",
-        "Repair or remove the file, or have an admin owner send /stop or /start to replace it.",
+        "Repair the file, or have an admin owner send /stop or /start to replace it.",
+        "Removing the file instead resets the bot to its first-run state: public replies on, no stored owner, and open to a new /owner claim.",
       ].join(" "),
     ]);
 
