@@ -162,6 +162,10 @@ export interface ShellEnvironmentPolicy {
 export interface ToolsConfig {
   /** Live WebSearch adapter selection; WEB_SEARCH_PROVIDER wins. Keys stay in env. */
   readonly web_search_provider?: string;
+  /** Explicit standalone fetch selection, independent of the reasoning provider. */
+  readonly web_fetch_provider?: "auto" | "local" | "deepseek";
+  /** Enables approval-gated FileRead extract_text requests. Default: local. */
+  readonly file_read_provider?: "local" | "deepseek";
   /**
    * Search backend URL after session-native search. With an explicitly named
    * provider, overrides its endpoint. `AGENC_WEB_SEARCH_ENDPOINT` env wins.

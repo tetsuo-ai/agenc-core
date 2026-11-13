@@ -1,3 +1,4 @@
+import { resolveStandaloneDeepSeek, standaloneToolsConfig } from "../tools/system/deepseek-standalone.js";
 import {
   ollamaFetchBudgetMs,
   runOllamaWebFetch,
@@ -1437,6 +1438,17 @@ function sessionLLMProvider(session: Session | null): LLMProvider | undefined {
   return (session?.services as { provider?: LLMProvider } | undefined)?.provider;
 }
 
+function standaloneAuthority(opts: ModelFacingToolOptions, call: ToolCallSessionRef<Session>) {
+  const env = requireModelFacingRequestEnvironment(opts);
+  return resolveToolCallAuthority("DeepSeek tools", call, {
+    env, home: resolveSecureStorageHome(env, opts.agencHome),
+  });
+}
+
+function standaloneSearchSelected(opts: ModelFacingToolOptions, call: ToolCallSessionRef<Session>, environment: ProviderEnvironment): boolean {
+  return (environment.WEB_SEARCH_PROVIDER?.trim() || standaloneToolsConfig(call, opts.toolsConfig)?.web_search_provider) === "deepseek";
+}
+
 interface DeepSeekWebSearchBackend {
   readonly endpoint: string;
   readonly apiKey: string;
@@ -1600,10 +1612,11 @@ async function checkProviderFetchUrl(
   url: string,
   budget: AbortSignal,
   effectSignal: AbortSignal | undefined,
+  allowPreapproved = false,
 ): Promise<ProviderFetchUrlCheck> {
   if (providerFetchUrlSkipReason(kind, url) !== undefined) return "local";
   const parsed = new URL(url);
-  if (isPreapprovedHost(parsed.hostname, parsed.pathname)) return "local";
+  if (!allowPreapproved && isPreapprovedHost(parsed.hostname, parsed.pathname)) return "local";
   try {
     await assertLiveWebFetchHostAllowed(
       parsed.hostname,
@@ -1832,6 +1845,18 @@ function webSearchResultLimit(args: Record<string, unknown>): number {
  * Venice session's own search costs what its provider lists; the keyless
  * chain is free. The Grok native path reserves its own model call.
  */
+const standaloneSearchAdmissions = new WeakMap<object, Set<string>>();
+
+function noteStandaloneSearchAdmission(session: Session | null, args: Record<string, unknown>, selected: boolean): void {
+  const id = readToolRuntimeContext(args)?.callId;
+  if (session === null || id === undefined) return;
+  const calls = standaloneSearchAdmissions.get(session) ?? new Set<string>();
+  calls.delete(id);
+  if (selected) calls.add(id);
+  if (calls.size > 256) calls.delete(calls.values().next().value!);
+  standaloneSearchAdmissions.set(session, calls);
+}
+
 function webSearchMaxCostUsd(opts: ModelFacingToolOptions, args: Record<string, unknown>): number | null {
   const call = invokingCall(opts, args);
   const session = call.session;
@@ -1839,6 +1864,9 @@ function webSearchMaxCostUsd(opts: ModelFacingToolOptions, args: Record<string, 
   // The call fails closed and spends nothing.
   if ("error" in authority) return 0;
   const environment = authority.transportEnvironment;
+  const standalone = standaloneSearchSelected(opts, call, environment);
+  noteStandaloneSearchAdmission(session, args, standalone);
+  if (standalone) return DEEPSEEK_SEARCH_USD_PER_REQUEST;
   if (configuredWebSearchEndpoint(opts, environment) !== undefined ||
       configuredSearchChain(environment, opts.toolsConfig).providers.length > 0) return null;
   const gateway = resolveGatewayWebSearchBackend(opts, session, environment);
@@ -4307,7 +4335,12 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
         return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 };
       }
       const session = call.session;
-      const backend = webFetchBackend(opts, session, args.url);
+      const selected = standaloneToolsConfig(call, opts.toolsConfig)?.web_fetch_provider;
+      if (selected === "deepseek") {
+        noteWebFetchAdmission(session, args, "deepseek");
+        return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: DEEPSEEK_FETCH_USD_PER_REQUEST };
+      }
+      const backend = selected === "local" ? LOCAL_WEB_FETCH : webFetchBackend(opts, session, args.url);
       noteWebFetchAdmission(session, args, backend.kind);
       return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: webFetchBackendMaxCostUsd(backend) };
     },
@@ -4322,8 +4355,14 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
       required: ["url"],
       additionalProperties: false,
     },
-    checkPermissions: (input, context) =>
-      checkWebFetchPermissions(input, context),
+    checkPermissions: (input, context) => {
+      const decision = checkWebFetchPermissions(input, context);
+      const call = toolCallSession(context.session, opts.getSession);
+      if (standaloneToolsConfig(call, opts.toolsConfig)?.web_fetch_provider !== "deepseek" || decision.behavior === "deny") return decision;
+      return { behavior: "ask", updatedInput: ("updatedInput" in decision ? decision.updatedInput : undefined) ?? input as Record<string, unknown>,
+        message: "Send this URL to DeepSeek Fetch? DeepSeek retrieves the page and follows redirects on its servers.",
+        decisionReason: { type: "other", reason: "standalone DeepSeek fetch" } };
+    },
     execute: async (args) => {
       const effectSignal = abortSignalFromArgs(args);
       effectSignal?.throwIfAborted();
@@ -4368,13 +4407,41 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
       const session = call.session;
       const authority = webFetchAuthority(opts, call);
       if ("error" in authority) return resultWithCharge(json({ error: authority.error }, true));
+      const selected = standaloneToolsConfig(call, opts.toolsConfig)?.web_fetch_provider;
+      if (selected === "deepseek") {
+        const permissionContext = sessionToolPermissionContext(session);
+        if (permissionContext !== undefined && hasWebFetchPermissionRule(permissionContext)) {
+          return finish({ error: "DeepSeek Fetch cannot enforce web_fetch domain rules across server-side redirects. Select web_fetch_provider = local to use those rules." }, true);
+        }
+        const backendAuthority = standaloneAuthority(opts, call);
+        if ("error" in backendAuthority) return finish({ error: backendAuthority.error }, true);
+        const backend = resolveStandaloneDeepSeek(backendAuthority, call, "fetch");
+        if ("error" in backend) return finish({ error: backend.error }, true);
+        const admitted = takeWebFetchAdmission(session, args);
+        if (readToolRuntimeContext(args)?.callId !== undefined && admitted !== "deepseek") {
+          return finish({ error: "DeepSeek Fetch was not admitted at its current price. Retry the call." }, true);
+        }
+        const budgetMs = deepSeekFetchBudgetMs(numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS);
+        const budgetStartedAt = Date.now();
+        const check = await checkProviderFetchUrl("deepseek", normalized, AbortSignal.timeout(budgetMs), effectSignal, true);
+        if (check !== "send") return finish({ error: "DeepSeek Fetch requires a public URL whose DNS check completes within the request budget." }, true);
+        const outcome = await runDeepSeekFetch({ ...backend, rateLimit: true, url: normalized, timeoutMs: budgetMs, budgetStartedAt,
+          signal: effectSignal, fetchOptions: toolCallFetchOptions(backendAuthority) });
+        if (outcome.billed) providerFetchCost = DEEPSEEK_FETCH_USD_PER_REQUEST;
+        if (outcome.kind !== "content") return finish({ error: outcome.kind === "empty" ? "DeepSeek Fetch returned no page content." : "DeepSeek Fetch failed. Try later or select the local backend." }, true);
+        return finish(await webFetchPagePayload(session, {
+          head: { source: "deepseek_fetch", provider: "deepseek", title: outcome.title },
+          ok: true, url: normalized, preapproved: false, renderedAs: "markdown", body: outcome.content,
+          ...(outcome.titleTruncated ? { headTruncated: true } : {}),
+        }, { maxChars, prompt, signal: effectSignal }));
+      }
       try {
         // The session's provider fetch (DeepSeek's Fetch API, Ollama Cloud's
         // web fetch) only in a session that never asks and has no web_fetch
         // rules. A failure or an empty page falls through to the local
         // fetcher, which says why.
         const admitted = takeWebFetchAdmission(session, args);
-        const backend = webFetchBackend(opts, session, normalized);
+        const backend = selected === "local" ? LOCAL_WEB_FETCH : webFetchBackend(opts, session, normalized);
         // A dispatched call needs admission's record for this same provider
         // fetch (one evicted or never written means no fee was reserved); a
         // call without runtime context (direct use) follows the live decision.
@@ -4813,6 +4880,28 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
           };
         }
         const requestEnvironment = authority.transportEnvironment;
+        if (standaloneSearchSelected(opts, call, requestEnvironment)) {
+          const charged = (result: ToolResult, billed = false): ToolResult => ({ ...result,
+            admissionUsage: { inputTokens: 0, outputTokens: 0, costUsd: billed ? DEEPSEEK_SEARCH_USD_PER_REQUEST : 0 } });
+          const callId = readToolRuntimeContext(args)?.callId;
+          if (callId !== undefined && (session === null || !standaloneSearchAdmissions.get(session)?.delete(callId))) {
+            return charged(json({ error: "DeepSeek Search was not admitted at its current price. Retry the call." }, true));
+          }
+          const backendAuthority = standaloneAuthority(opts, call);
+          if ("error" in backendAuthority) return charged(json({ error: backendAuthority.error }, true));
+          const backend = resolveStandaloneDeepSeek(backendAuthority, call, "search");
+          if ("error" in backend) return charged(json({ error: backend.error }, true));
+          const shaped = buildDeepSeekSearchQuery(query, filters);
+          const maxResults = webSearchResultLimit(args);
+          const outcome = await runDeepSeekSearch({ ...backend, rateLimit: true, query: shaped.query,
+            count: filters.allowedDomains.length || filters.blockedDomains.length ? 10 : maxResults,
+            signal: effectSignal, fetchOptions: toolCallFetchOptions(backendAuthority) });
+          if (outcome.kind === "failed") return charged(json({ error: "DeepSeek Search failed. Try later or select another backend." }, true));
+          return charged(json({ query, ...(shaped.shortened ? { query_sent: shaped.query } : {}),
+            source: "deepseek_search", provider: "deepseek",
+            results: outcome.kind === "empty" ? [] : filterWebSearchResults(outcome.hits, filters).slice(0, maxResults),
+          }), outcome.billed);
+        }
         const endpoint = configuredWebSearchEndpoint(opts, requestEnvironment);
         const chain = configuredSearchChain(requestEnvironment, opts.toolsConfig);
         const maxResults = webSearchResultLimit(args);

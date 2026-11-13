@@ -47,7 +47,7 @@ export function isOfficialDeepSeekApiHost(baseURL: string): boolean {
   return url?.protocol === "https:" && url.hostname.toLowerCase() === OFFICIAL_DEEPSEEK_API.hostname;
 }
 
-export type DeepSeekToolApi = "search" | "fetch";
+export type DeepSeekToolApi = "search" | "fetch" | "ocr";
 
 /**
  * The tool API URL for a DeepSeek chat base URL. The official host always
