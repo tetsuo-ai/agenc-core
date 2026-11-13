@@ -1,7 +1,7 @@
 import { OpenAIProvider } from "../openai/adapter.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
 import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
-import { QWEN_TOKEN_PLAN_HOSTED_MODEL_IDS } from "../../registry/qwen-token-plan-models.js";
+import { isQwen4MaxPreviewModel, QWEN_TOKEN_PLAN_HOSTED_MODEL_IDS, QWEN_TOKEN_PLAN_PREVIEW_MODEL_IDS } from "../../registry/qwen-token-plan-models.js";
 import {
   createQwenOfficialDnsTransport,
   type QwenDnsTransport,
@@ -20,6 +20,7 @@ const TOKEN_PLAN_CHAT_MODELS = new Set([
   "qwen3.7-plus",
   "qwen3.6-flash",
   ...QWEN_TOKEN_PLAN_HOSTED_MODEL_IDS,
+  ...QWEN_TOKEN_PLAN_PREVIEW_MODEL_IDS,
 ]);
 
 function assertQwenChatModel(
@@ -28,6 +29,9 @@ function assertQwenChatModel(
 ): void {
   const normalized = model?.trim();
   if (!normalized) return;
+  if (providerName === "qwen" && isQwen4MaxPreviewModel(normalized)) {
+    throw new Error("Qwen4 Max Preview is available through Token Plan only; select qwen-token-plan");
+  }
   if (NON_CHAT_QWEN_MODEL.test(normalized)) {
     throw new Error(
       `${providerName} model "${normalized}" is not a chat-completions model; ` +

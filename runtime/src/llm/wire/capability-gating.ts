@@ -34,7 +34,7 @@ import type { ProviderReasoningProvenance } from "../types.js";
 import { isQwenFlashNextModel } from "../registry/qwen-flash-next.js";
 import { isQwenCoder30BModel } from "../registry/qwen-coder-30b.js";
 import { resolveQwenCurrentModel } from "../registry/qwen-current-models.js";
-import { resolveQwenTokenPlanHostedModel } from "../registry/qwen-token-plan-models.js";
+import { isQwen4MaxPreviewModel, resolveQwenTokenPlanHostedModel } from "../registry/qwen-token-plan-models.js";
 import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_V41_MODEL } from "../registry/agenc-deepseek.js";
 import { isNativeDeepSeekModel } from "../registry/deepseek-models.js";
 import { gatewayFamilyDefaultEffort, gatewayModelFamily } from "../model-family.js";
@@ -476,6 +476,7 @@ export function chatCompletionsCapabilityHintsForProvider(
   const usesRollingCacheMarkers = slug === "qwen-token-plan" &&
     /(?:^|[/:])qwen3\.6-(?:flash|plus)(?:$|[-_.:])/i.test(model ?? "");
   const preservesThinkingHistory =
+    (slug === "qwen-token-plan" && isQwen4MaxPreviewModel(model)) ||
     (slug === "qwen" &&
       /(?:^|[/:])qwen3\.(?:7-(?:max|plus|flash)|6-(?:max-preview|plus|flash))(?:$|[-_.:])/i.test(
         model ?? "",

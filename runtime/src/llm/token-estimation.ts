@@ -120,6 +120,16 @@ export const MODEL_TOKENIZER_CONFIGS: readonly ModelTokenizerConfig[] = [
     supportsCode: true,
   },
   {
+    // Keep the preview's two exact ids on the existing Qwen heuristic.
+    // This is an estimate, not a published Qwen4 tokenizer measurement.
+    modelFamily: "qwen",
+    providerNames: [],
+    modelMatchers: [/^qwen4(?:\.0)?-max-preview$/i],
+    bytesPerToken: 3.8,
+    supportsJson: true,
+    supportsCode: true,
+  },
+  {
     modelFamily: "llama",
     providerNames: ["ollama", "groq", "lmstudio"],
     modelMatchers: [/llama/i, /mixtral/i, /mistral/i, /qwen/i],

@@ -15,6 +15,7 @@ import { normalizeProviderIdentity } from "../provider-identity.js";
 import { isOpenAiReasoningFamilyModel } from "./registry/openai-reasoning-models.js";
 import { isRegisteredMetaChatModel } from "./registry/meta-models.js";
 import { isOllamaGptOssModel } from "./registry/ollama-gpt-oss.js";
+import { isQwen4MaxPreviewModel } from "./registry/qwen-token-plan-models.js";
 
 export interface ProviderModelCapabilities {
   readonly provider: string;
@@ -318,7 +319,7 @@ function isQwenThinkingHistoryModel(model: string): boolean {
 }
 
 function isQwenTokenPlanThinkingHistoryModel(model: string): boolean {
-  return matchesModelFamily(
+  return isQwen4MaxPreviewModel(model) || matchesModelFamily(
     model,
     /(?:^|[/:])qwen3\.(?:8-(?:max|flash)|7-(?:max|plus)|6-flash)(?:$|[-_.:])/,
   );
@@ -332,7 +333,7 @@ function isQwenVisionModel(model: string): boolean {
 }
 
 function isQwenTokenPlanVisionModel(model: string): boolean {
-  return matchesModelFamily(
+  return isQwen4MaxPreviewModel(model) || matchesModelFamily(
     model,
     /(?:^|[/:])qwen3\.(?:8-(?:max|flash)|7-plus|6-flash)(?:$|[-_.:])/,
   );
@@ -572,7 +573,7 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsExtendedThinking: isQwenTokenPlanThinkingHistoryModel,
     acceptsImageHistory: isQwenTokenPlanVisionModel,
     acceptsThinkingHistory: isQwenTokenPlanThinkingHistoryModel,
-    acceptsReasoningEffort: isQwen38ThinkingModel,
+    acceptsReasoningEffort: model => isQwen4MaxPreviewModel(model) || isQwen38ThinkingModel(model),
   },
   gemini: {
     supportsToolUse: true,

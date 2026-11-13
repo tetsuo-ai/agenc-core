@@ -60,7 +60,7 @@ const PROFILES: Readonly<Record<string, Readonly<Record<string, ChildModelProfil
     "gemini-3.5-flash": BALANCED, "gemini-3.5-flash-lite": COMPACT, "gemini-3.1-flash-lite": COMPACT,
   }),
   qwen: QWEN,
-  "qwen-token-plan": QWEN,
+  "qwen-token-plan": Object.freeze({ ...QWEN, "qwen4-max-preview": STRONG, "qwen4.0-max-preview": STRONG }),
   kimi: Object.freeze({ "kimi-k3": STRONG, "kimi-k2.7-code": BALANCED }),
   zai: ZAI,
   "zai-coding-plan": ZAI,

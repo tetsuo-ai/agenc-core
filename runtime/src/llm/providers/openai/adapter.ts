@@ -45,7 +45,7 @@ import {
 import { isProviderFundsFailure } from "../../funds.js";
 import { transportFailureOf } from "../../transport-failure.js";
 import { resolveQwenCurrentModel, type QwenCurrentModel } from "../../registry/qwen-current-models.js";
-import { resolveQwenTokenPlanHostedModel } from "../../registry/qwen-token-plan-models.js";
+import { isQwen4MaxPreviewModel, QWEN4_MAX_PREVIEW_MODEL, resolveQwenTokenPlanHostedModel } from "../../registry/qwen-token-plan-models.js";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
@@ -1504,10 +1504,13 @@ export class OpenAIProvider implements LLMProvider {
 
   /**
    * The registered QwenCloud deployment contract for this model: the PAYG
-   * catalog on `qwen`, the hosted DeepSeek and GLM deployments on the Token
-   * Plan (the same contracts under the plan's ids), nothing elsewhere.
+   * catalog on `qwen`, the hosted deployments and plan-only preview on the
+   * Token Plan, nothing elsewhere.
    */
   private qwenDeploymentContract(model: string): QwenCurrentModel | undefined {
+    if (this.name === "qwen" && isQwen4MaxPreviewModel(model)) {
+      throw new Error("Qwen4 Max Preview is available through Token Plan only; select qwen-token-plan");
+    }
     if (this.name === "qwen") return resolveQwenCurrentModel(model);
     if (this.name === "qwen-token-plan") return resolveQwenTokenPlanHostedModel(model);
     return undefined;
@@ -1534,10 +1537,17 @@ export class OpenAIProvider implements LLMProvider {
   private resolveRequestMaxTokens(
     options: LLMChatOptions | undefined,
   ): number | undefined {
-    return (
+    const requested = (
       normalizePositiveInteger(options?.maxOutputTokens) ??
       normalizePositiveInteger(this.config.maxTokens)
     );
+    if (this.name === "qwen-token-plan" && isQwen4MaxPreviewModel(options?.model?.trim() || this.config.model)) {
+      // Unlike older Qwen, thinking shares this cap. The 32k chat fallback
+      // can exhaust the whole answer budget before xhigh finishes thinking.
+      const ceiling = QWEN4_MAX_PREVIEW_MODEL.maxOutputTokens;
+      return Math.min(requested ?? ceiling, ceiling);
+    }
+    return requested;
   }
 
   private resolveContextWindowTokens(
