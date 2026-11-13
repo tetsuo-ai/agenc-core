@@ -7,6 +7,7 @@ import type { TurnState } from "../../src/session/turn-state.js";
 import type { LLMTool } from "../../src/llm/types.js";
 import { createTestConfigStore, mkCtx, mkSession } from "../fixtures.js";
 import { createSuccessfulChatResponse } from "../llm/providers/openai-compatible-test-helpers.js";
+import { createFileReadTool } from "../../src/tools/system/file-read.js";
 import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 
 const model = "deepseek-flash";
@@ -16,8 +17,12 @@ const tools: LLMTool[] = toolNames.map(name => ({ type: "function", function: {
 } }));
 
 async function capture(mode: "full" | "lean", appTools: boolean, web: "auto" | "on",
-  policy: { deny?: string; ask?: string; allow?: string; scoped?: boolean } = {}) {
+  policy: { deny?: string; ask?: string; allow?: string; scoped?: boolean } = {}, extraction = false) {
   let bytes = "";
+  const fileRead = createFileReadTool({ allowedPaths: ["/workspace"], deepseekExtraction: extraction });
+  const wireTools: LLMTool[] = extraction ? tools.map(tool => tool.function.name === "FileRead"
+    ? { type: "function", function: { name: fileRead.name, description: fileRead.description,
+        parameters: fileRead.inputSchema as LLMTool["function"]["parameters"] } } : tool) : tools;
   const provider = new DeepSeekProvider({ apiKey: "test-only", model,
     fetchImpl: vi.fn<typeof fetch>(async (_url, init) => {
       bytes = String(init?.body);
@@ -28,12 +33,13 @@ async function capture(mode: "full" | "lean", appTools: boolean, web: "auto" | "
     runtimeOptions: { lightMode: true, nonInteractive: true } as never,
     configStore: createTestConfigStore({ base: {
       light_request: mode, web_search: web, providers: { deepseek: { app_tools: appTools } },
+      ...(extraction ? { tools_config: { file_read_provider: "deepseek" as const } } : {}),
     } }), providerEnvironment: {},
   } });
   await session.services.configStore.reload();
   Object.assign(session.services, { providerService: new SessionProviderService({
     initialProvider: provider, initialProviderName: "deepseek", initialModel: model, environment: {}, sessionId: "app-tools-wire",
-  }), registry: { toLLMTools: () => policy.scoped ? tools.slice(0, 2) : tools, tools: [], getDiscoveredToolNames: () => new Set(toolNames) } });
+  }), registry: { toLLMTools: () => policy.scoped ? wireTools.slice(0, 2) : wireTools, tools: extraction ? [fileRead] : [], getDiscoveredToolNames: () => new Set(toolNames) } });
   const ctx = mkCtx({ cwd: "/workspace", currentDate: "2026-11-13", modelProviderId: "deepseek",
     modelInfo: { ...session.modelInfo, slug: model }, permissionInstructionsDeferred: true });
   const state = { modelInstructions: "You are a coding agent.", messagesForQuery: [
@@ -79,4 +85,15 @@ test.each(["full", "lean"] as const)("%s leaves the existing web path intact whe
   const noWeb = await capture(mode, true, "auto");
   expect(noWeb.options).not.toHaveProperty("deepSeekAppTools");
   expect(noWeb.bytes).not.toContain('"type":"deepseek_web_search"');
+});
+
+
+test.each(["full", "lean"] as const)("%s retains OCR upload semantics with and without native App tools", async mode => {
+  for (const appTools of [false, true]) {
+    const { bytes } = await capture(mode, appTools, "on", {}, true);
+    const read = JSON.parse(bytes).tools.find((tool: { function?: { name: string } }) => tool.function?.name === "FileRead").function;
+    expect(read.description).toContain("DeepSeek OCR");
+    expect(read.parameters.properties.extract_text).toMatchObject({ type: "boolean" });
+    expect(read.parameters.properties.extract_text.description).toContain("upload the entire file");
+  }
 });
