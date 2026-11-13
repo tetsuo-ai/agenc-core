@@ -23,6 +23,10 @@ Deep client notes: [`runtime/src/mcp-client/README.md`](../../runtime/src/mcp-cl
 Optional bearer / custom headers apply on network transports. Stdio owns env
 allow-listing, process-group cleanup, and PID-tree teardown.
 
+An `endpoint` must be the server's final URL. The HTTP and SSE transports
+follow a redirect only within the endpoint's own origin; a redirect to another
+host, port or scheme fails the connection, and the error names the target.
+
 ### Config shape
 
 Servers are configured under `mcp_servers` in config (typed as
@@ -732,6 +736,8 @@ the daemon-owned admission kernel.
 | `MCP error -32000: Connection closed` with no reason | Look for a `; server stderr:` suffix on the same error. On Linux Landlock fallback, workspace-write MCP is often `[sandbox_policy_unexpressible]`. Run `agenc doctor`. |
 | `[sandbox_landlock_fallback]` from `agenc doctor` | Bubblewrap is unusable (commonly Ubuntu AppArmor userns). Install the generated profile or stay on plugin-scoped MCP / `read-only`. See [install.md](../install.md#ubuntu-apparmor-and-bubblewrap). |
 | `[sandbox_required_unavailable]` saying the Linux helper must sit outside the workspace | A bare `agenc` opened `$HOME`. The helper lives under `~/.agenc` and can never leave a home-sized workspace. Open a project directory. See [tools-permissions-sandbox.md](tools-permissions-sandbox.md). |
+| A remote server fails with `Redirect to <url> not followed (redirectPolicy: 'same-origin')` | The server's URL answers with a redirect to another host, port or scheme, which is no longer followed (it was before MCP SDK 1.32). Set `endpoint` to the URL the error names. |
+| A stdio server's connection closes with `ReadBuffer exceeded maximum size of 10485760 bytes` | One message from the server was larger than 10 MiB. That limit applies where the MCP SDK's stdio transport is used: agent-scoped servers, the `agenc mcp` checks and `agenc doctor`. The main session's stdio transport has its own 16 MiB frame limit. Have the server return less in one message. |
 | One plugin server missing, session still starts | A broken plugin source is skipped. A duplicate command/URL is suppressed by an enabled manual server. Check `/plugin` for `mcp-server-suppressed-duplicate`. |
 | `/compact` or auto-compact denied `context_window_exceeded` on the **summary** | Summaries no longer inherit the MCP/builtin factory catalog or Grok native tools. If admission still denies, the transcript + system prompt + reserved output themselves exceed the window. Confirm the live window (not the 128k fallback), shrink `/compact` focus, or compact earlier. `/context` still shows the next-turn catalog size; that is not the summary request. |
 | Mid-turn ends `mid_turn_compact_failed` after adding MCP servers | A large catalog can raise the estimate past the fire threshold and raise provider-reported `promptTokens` past the mid-turn outer gate. The summary request should still pass admission. Check the disable-flag rules and the 2-failure digest guard on [CP-0006](../design/critical-path/0006-compaction-transaction.md), and whether last-sample `promptTokens` disagreed with the compact-module estimate. The event is a `warning` and `stopReason: "compact_failed"`; a keep-alive session stays promptable. See [daemon.md](daemon.md#compact-skip-stays-per-turn). |

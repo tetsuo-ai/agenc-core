@@ -1,6 +1,6 @@
 # MCP display attachments
 
-Core uses MCP content annotations from SDK 1.29.0, whose latest protocol version is `2025-11-25`. Its `ContentBlock` union includes annotations, embedded resources, and resource links, and Core's normalizer handles all three. Put `annotations: { audience: ["user"] }` on a content block to show it to the user without sending its payload to the model. The audience must be exactly `["user"]`. Unannotated blocks and assistant audience blocks keep their existing model behavior. Each accepted attachment contributes one short model caption; each rejected one contributes a reason caption.
+Core uses MCP content annotations from SDK 1.32.2, whose latest protocol version is `2025-11-25`. Its `ContentBlock` union includes annotations, embedded resources, and resource links, and Core's normalizer handles all three. Put `annotations: { audience: ["user"] }` on a content block to show it to the user without sending its payload to the model. The audience must be exactly `["user"]`. Unannotated blocks and assistant audience blocks keep their existing model behavior. Each accepted attachment contributes one short model caption; each rejected one contributes a reason caption.
 
 ## Blocks
 
