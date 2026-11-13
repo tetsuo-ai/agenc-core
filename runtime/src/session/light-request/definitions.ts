@@ -3,9 +3,9 @@ import type { Tool } from "../../tools/types.js";
 
 const DESCRIPTIONS: Readonly<Record<string, string>> = {
   exec_command: "Run a shell command. Returns output and status; a running session_id can be polled with write_stdin. background starts a tracked job; detach starts a lasting service when permitted. Linux sandbox jobs have private loopback: run servers and clients together. Residual processes stop on return.",
-  FileRead: "Read text, images, PDFs or notebooks. offset is 1-based; limit counts lines. PDFs over 10 pages need pages (at most 20). Reads authorize edits; a file listing does not.",
+  FileRead: "Read a text file, an image, PDF pages or a notebook. offset is 1-based; limit counts lines (default 2000). PDFs over 10 pages need pages (at most 20). Reads authorize edits; a file listing does not.",
   Write: "Create or replace a whole file. Read an existing file before overwriting it.",
-  apply_patch: "Patch files: *** Begin Patch, then *** Update File: path with @@ chunks, *** Add File: path with + lines, or *** Delete File: path; end with *** End Patch. Read existing files first.",
+  apply_patch: "Patch files: *** Begin Patch, then *** Update File: path with @@ chunks (optional *** Move to: path), *** Add File: path with + lines, or *** Delete File: path; end with *** End Patch. Read existing files first.",
   write_stdin: "Poll session_id with empty chars, or send input (requires an initial tty=true). Include input newlines. Input uses the session's sandbox_permissions.",
   kill_process: "Stop this conversation's exec sessions: session_id, session_ids, or all=true. Never find processes to kill by matching command text or file names.",
 };

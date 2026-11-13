@@ -903,6 +903,8 @@ export interface LightRequestOptions {
   readonly process_tools?: boolean;
   readonly compact_tool_definitions?: boolean;
   readonly low_effort?: boolean;
+  /** Built-in system text under short_system_prompt: the short text or the minimal one. */
+  readonly system_text?: "short" | "minimal";
 }
 
 export interface AgenCConfig {

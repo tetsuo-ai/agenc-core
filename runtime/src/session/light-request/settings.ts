@@ -14,6 +14,7 @@ export const LEAN_REQUEST_DEFAULTS: Readonly<Required<LightRequestOptions>> = Ob
   process_tools: true,
   compact_tool_definitions: true,
   low_effort: true,
+  system_text: "short",
 });
 
 export interface LightRequestSession {

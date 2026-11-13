@@ -703,7 +703,10 @@ const ROOT_FIELD_VALIDATORS = {
     if (value === undefined) return;
     const record = requirePlainObject(value, "light_request_options");
     rejectUnknownFields(record, new Set(Object.keys(LEAN_REQUEST_DEFAULTS)), "light_request_options");
-    for (const [key, item] of Object.entries(record)) optionalBoolean(item, `light_request_options.${key}`);
+    for (const [key, item] of Object.entries(record)) {
+      if (key === "system_text") optionalEnum(item, "light_request_options.system_text", ["short", "minimal"]);
+      else optionalBoolean(item, `light_request_options.${key}`);
+    }
   },
   defer_rare_tools: fieldValidator("defer_rare_tools", optionalBoolean),
   web_search: enumValidator("web_search", ["auto", "on"]),

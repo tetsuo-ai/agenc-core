@@ -29,9 +29,22 @@ describe("Light request configuration", () => {
 
   test("each part can be changed independently", () => {
     for (const [key, value] of Object.entries(LEAN_REQUEST_DEFAULTS)) {
+      if (typeof value !== "boolean") continue;
       const config: AgenCConfig = { light_request: "lean", light_request_options: { [key]: !value } };
       expect(() => validateAgenCConfigBlocks(config)).not.toThrow();
       expect(resolveLightRequest(session(config), "deepseek")).toEqual({ ...LEAN_REQUEST_DEFAULTS, [key]: !value });
+    }
+  });
+
+  test("system_text selects the short or the minimal built-in text", () => {
+    expect(["short", "minimal"]).toContain(LEAN_REQUEST_DEFAULTS.system_text);
+    for (const system_text of ["short", "minimal"] as const) {
+      const config: AgenCConfig = { light_request: "lean", light_request_options: { system_text } };
+      expect(() => validateAgenCConfigBlocks(config)).not.toThrow();
+      expect(resolveLightRequest(session(config), "deepseek")).toEqual({ ...LEAN_REQUEST_DEFAULTS, system_text });
+    }
+    for (const system_text of ["bare", true, 1, ""]) {
+      expect(() => validateAgenCConfigBlocks({ light_request_options: { system_text } } as never)).toThrow(/light_request_options\.system_text/);
     }
   });
 

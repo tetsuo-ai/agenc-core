@@ -1,5 +1,5 @@
 import { resolveLightRequest } from "../session/light-request/settings.js";
-import { leanLightSystemText } from "../session/light-request/system-text.js";
+import { leanLightSystemText, leanMinimalSystemText } from "../session/light-request/system-text.js";
 import { resolveWebSearchMode, WEB_SEARCH_ON_INSTRUCTION } from "../tools/web-search-mode.js";
 /**
  * System prompt assembly — AgenC-owned sections, static-then-dynamic,
@@ -1269,7 +1269,9 @@ export async function assembleSystemPrompt(
   );
   const lightRequest = resolveLightRequest(session, envInfoInputs.provider);
   const staticSections: Array<string | null> = lightRequest?.short_system_prompt
-    ? [leanLightSystemText(),
+    ? [lightRequest.system_text === "minimal"
+        ? leanMinimalSystemText(cwd, lightRequest.tool_result_markers)
+        : leanLightSystemText(),
         session.services?.runtimeOptions?.nonInteractive === true ? null : getMemoryInstructionsSection(opts.memoryInstructions),
         typeof session.services?.runtimeOptions?.deadlineAt === "number" ? LIGHT_BUDGET_DEADLINE : null,
       ]
