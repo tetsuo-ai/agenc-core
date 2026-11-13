@@ -158,7 +158,7 @@ export function builtTools(
       (discovered?.has(tool.function.name) === true &&
         (!tool.function.name.startsWith("mcp.") || liveMcp.has(tool.function.name))));
   }
-  const lean = resolveLightRequest(session, session.services.provider.name);
+  const lean = resolveLightRequest(session, session.services.provider?.name);
   if (lean === undefined) return advertised;
   return leanLightTools(advertised, lean, session.services.registry.tools, new Set([
     ...(session.services.registry.getDiscoveredToolNames?.() ?? []),
