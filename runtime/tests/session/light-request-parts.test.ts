@@ -225,6 +225,16 @@ test("without process tools exec cannot escape the foreground call", async () =>
   expect(execCommand).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 29_000, yield_time_ms: 30_000, onTimeout: "kill" }));
 });
 
+test.each([0, -1])("without process tools timeoutMs=%s cannot disable the hard deadline", async timeoutMs => {
+  const execCommand = vi.fn(async () => ({ output: "ok", stdout: "ok", stderr: "", exitCode: 0, exit_code: 0,
+    wall_time_seconds: 0.01, durationMs: 10, original_token_count: 1, timedOut: false, truncated: false }));
+  const manager = { maxTimeoutMs: Infinity, execCommand, writeStdin: vi.fn(), closeAll: vi.fn() } as unknown as UnifiedExecProcessManagerLike;
+  const exec = bindExplicitDangerBoundary(createExecCommandTool({ cwd: process.cwd(), unifiedExecManager: manager, foregroundOnly: () => true }));
+  await exec.execute({ cmd: "echo ok", timeoutMs });
+  // UnifiedExecProcessManager deliberately installs no timer for nonpositive values.
+  expect(execCommand).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 29_000, onTimeout: "kill" }));
+});
+
 describe("lean minimal system text", () => {
   test("keeps the safety rules of the measured text and names the marker only when results carry it", () => {
     const text = leanMinimalSystemText("/project", true);
