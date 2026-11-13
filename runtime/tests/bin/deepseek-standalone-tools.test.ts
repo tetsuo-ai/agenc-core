@@ -8,6 +8,9 @@ import type { Session } from "../../src/session/session.js";
 import { resolveHomeContext } from "../../src/config/home.js";
 import { resolveStandaloneDeepSeek } from "../../src/tools/system/deepseek-standalone.js";
 import { frameUntrustedToolResultContent } from "../../src/tools/untrusted-tool-result-framing.js";
+import { runAdmittedToolCall } from "../../src/budget/admitted-tool-call.js";
+import { createAllowAdmissionHarness } from "../budget/admission-test-harness.js";
+import { EventLog } from "../../src/session/event-log.js";
 import { attachToolRuntimeContext } from "../../src/tools/runtimes/context.js";
 
 vi.mock("../../src/auth/native-credentials.js", () => ({ readLocalByokCredential: vi.fn() }));
@@ -72,6 +75,46 @@ describe("standalone web tools", () => {
     const result = await tool("WebSearch").execute({ query: "test", allowed_domains: ["unmatched.invalid"] });
     expect(JSON.parse(result.content).results).toEqual([]); expect(result.admissionUsage?.costUsd).toBe(0.00075);
     expect(transport).toHaveBeenCalledTimes(2);
+  });
+  test.each(["WebSearch", "web_fetch"])("%s keeps billing unknown after an unusable HTTP 200", async name => {
+    const args = name === "WebSearch" ? { query: "test" } : { url: "https://example.com/" };
+    const oversized = name === "WebSearch"
+      ? { results: [{ url: "https://example.com/", snippet: "x".repeat(2_000_000) }] }
+      : { title: "Example", content: "x".repeat(8_000_000) };
+    const transport = vi.fn(async () => Response.json(oversized));
+    vi.stubGlobal("fetch", transport);
+    const selected = tool(name);
+    const overflow = await selected.execute(args);
+    expect(overflow.isError).toBe(true);
+    expect(overflow.admissionUsage).toBeUndefined();
+    expect(overflow.content).toContain("billing is unknown");
+    transport.mockImplementation(async () => new Response("malformed provider response"));
+    const malformed = await selected.execute(args);
+    expect(malformed.isError).toBe(true);
+    expect(malformed.admissionUsage).toBeUndefined();
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+  test.each(["WebSearch", "web_fetch"])("%s holds its reservation when an HTTP 200 has unknown billing", async name => {
+    const harness = createAllowAdmissionHarness({ reservationId: "web-reservation", parentScopeId: "turn-1", rejectDenialReason: false });
+    const eventLog = new EventLog();
+    Object.assign(session, { conversationId: "billing-review", eventLog,
+      rolloutStore: { assertToolAdmissionAllowed: vi.fn() }, emit: (event: never) => eventLog.emit(event),
+      abortTerminal: vi.fn(), services: { ...session.services,
+        executionAdmission: harness.admission, admissionRequired: true,
+        agentControl: { shutdownAgentTree: vi.fn() },
+      },
+    });
+    const transport = vi.fn(async () => new Response("malformed provider response"));
+    vi.stubGlobal("fetch", transport);
+    const selected = tool(name);
+    const args = name === "WebSearch" ? { query: "test" } : { url: "https://example.com/" };
+    const result = await runAdmittedToolCall({ session, turnId: "turn-1", callId: "web-call", tool: selected, args,
+      invoke: async ({ crossEffectBoundary }) => { crossEffectBoundary(); return selected.execute(args); },
+    });
+    expect(result.isError).toBe(true);
+    expect(harness.holdUnknown).toHaveBeenCalledWith("web-reservation", "missing_tool_usage");
+    expect(harness.reconcile).not.toHaveBeenCalled();
+    expect(transport).toHaveBeenCalledTimes(1);
   });
   test("an explicit selection overrides a configured generic endpoint and suppresses provider search", async () => {
     environment.AGENC_WEB_SEARCH_ENDPOINT = "https://other.invalid/search";

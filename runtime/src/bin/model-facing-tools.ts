@@ -4388,8 +4388,8 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
       const prompt = stringValue(args.prompt);
       let providerFetchFallback: string | undefined;
       let deepseekFetchFallback: string | undefined;
-      let providerFetchCost = 0;
-      const resultWithCharge = (result: ToolResult): ToolResult => ({ ...result,
+      let providerFetchCost: number | null = 0;
+      const resultWithCharge = (result: ToolResult): ToolResult => providerFetchCost === null ? result : ({ ...result,
         admissionUsage: { inputTokens: 0, outputTokens: 0, costUsd: providerFetchCost } });
       // Every result after a DeepSeek fetch that did not answer says why.
       const finish = (payload: Record<string, unknown>, isError?: boolean): ToolResult =>
@@ -4427,8 +4427,10 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
         if (check !== "send") return finish({ error: "DeepSeek Fetch requires a public URL whose DNS check completes within the request budget." }, true);
         const outcome = await runDeepSeekFetch({ ...backend, rateLimit: true, url: normalized, timeoutMs: budgetMs, budgetStartedAt,
           signal: effectSignal, fetchOptions: toolCallFetchOptions(backendAuthority) });
-        if (outcome.billed) providerFetchCost = DEEPSEEK_FETCH_USD_PER_REQUEST;
-        if (outcome.kind !== "content") return finish({ error: outcome.kind === "empty" ? "DeepSeek Fetch returned no page content." : "DeepSeek Fetch failed. Try later or select the local backend." }, true);
+        providerFetchCost = outcome.billed === null ? null : outcome.billed ? DEEPSEEK_FETCH_USD_PER_REQUEST : 0;
+        if (outcome.kind !== "content") return finish({ error: outcome.billed === null
+          ? "DeepSeek Fetch returned an unusable successful response; billing is unknown."
+          : outcome.kind === "empty" ? "DeepSeek Fetch returned no page content." : "DeepSeek Fetch failed. Try later or select the local backend." }, true);
         return finish(await webFetchPagePayload(session, {
           head: { source: "deepseek_fetch", provider: "deepseek", title: outcome.title },
           ok: true, url: normalized, preapproved: false, renderedAs: "markdown", body: outcome.content,
@@ -4471,7 +4473,8 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
             : check === "timed_out"
               ? { kind: "failed" as const, reason: deepSeekTimeoutReason(budgetMs), billed: false as const, attempts: 0 }
               : undefined;
-          if (outcome?.billed === true) providerFetchCost += DEEPSEEK_FETCH_USD_PER_REQUEST;
+          if (outcome?.billed === null) providerFetchCost = null;
+          else if (outcome?.billed === true) providerFetchCost = DEEPSEEK_FETCH_USD_PER_REQUEST;
           if (outcome?.kind === "content") {
             return finish(await webFetchPagePayload(session, {
               head: {
@@ -4881,7 +4884,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         }
         const requestEnvironment = authority.transportEnvironment;
         if (standaloneSearchSelected(opts, call, requestEnvironment)) {
-          const charged = (result: ToolResult, billed = false): ToolResult => ({ ...result,
+          const charged = (result: ToolResult, billed: boolean | null = false): ToolResult => billed === null ? result : ({ ...result,
             admissionUsage: { inputTokens: 0, outputTokens: 0, costUsd: billed ? DEEPSEEK_SEARCH_USD_PER_REQUEST : 0 } });
           const callId = readToolRuntimeContext(args)?.callId;
           if (callId !== undefined && (session === null || !standaloneSearchAdmissions.get(session)?.delete(callId))) {
@@ -4896,7 +4899,9 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
           const outcome = await runDeepSeekSearch({ ...backend, rateLimit: true, query: shaped.query,
             count: filters.allowedDomains.length || filters.blockedDomains.length ? 10 : maxResults,
             signal: effectSignal, fetchOptions: toolCallFetchOptions(backendAuthority) });
-          if (outcome.kind === "failed") return charged(json({ error: "DeepSeek Search failed. Try later or select another backend." }, true));
+          if (outcome.kind === "failed") return charged(json({ error: outcome.billed === null
+            ? "DeepSeek Search returned an unusable successful response; billing is unknown."
+            : "DeepSeek Search failed. Try later or select another backend." }, true), outcome.billed);
           return charged(json({ query, ...(shaped.shortened ? { query_sent: shaped.query } : {}),
             source: "deepseek_search", provider: "deepseek",
             results: outcome.kind === "empty" ? [] : filterWebSearchResults(outcome.hits, filters).slice(0, maxResults),
@@ -4923,12 +4928,12 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         const gateway = resolveGatewayWebSearchBackend(opts, session, requestEnvironment);
         const reportsDeepSeekCharge = (deepseek !== undefined || gateway !== undefined) &&
           endpoint === undefined && chain.providers.length === 0;
-        let deepseekBilled = false;
+        let deepseekBilled: boolean | null = false;
         let deepseekFallback: string | undefined;
         // What the session's own provider search charged, when it ran.
         let gatewayCharge = 0;
         const withDeepSeekCharge = (result: ToolResult, deepseekOnly = false): ToolResult =>
-          reportsDeepSeekCharge || deepseekOnly
+          deepseekBilled !== null && (reportsDeepSeekCharge || deepseekOnly)
             ? {
                 ...result,
                 admissionUsage: {

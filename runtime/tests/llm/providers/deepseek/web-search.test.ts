@@ -292,7 +292,7 @@ describe("runDeepSeekSearch", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{not json", { status: 200 })));
     await expect(
       runDeepSeekSearch({ endpoint: "https://api.deepseek.com/v1/tools/search", apiKey: "k", query: "q", count: 3 }),
-    ).resolves.toEqual({ kind: "failed", reason: "malformed response", billed: false });
+    ).resolves.toEqual({ kind: "failed", reason: "malformed response", billed: null });
 
     vi.stubGlobal("fetch", vi.fn(async () => {
       throw new TypeError("fetch failed");
@@ -354,7 +354,7 @@ describe("runDeepSeekSearch", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status })));
     await expect(
       runDeepSeekSearch({ endpoint: "https://api.deepseek.com/v1/tools/search", apiKey: "k", query: "q", count: 3 }),
-    ).resolves.toEqual({ kind: "failed", reason, billed: false });
+    ).resolves.toEqual({ kind: "failed", reason, billed: status === 200 ? null : false });
     expect(state.pulled).toBeLessThan(state.totalChunks);
     expect(state.pulled).toBeLessThanOrEqual(Math.ceil(DEEPSEEK_SEARCH_MAX_RESPONSE_BYTES / STREAM_CHUNK_BYTES) + 2);
     expect(state.cancelled).toBe(true);

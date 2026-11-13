@@ -867,6 +867,8 @@ endpoint must use HTTPS; HTTP is accepted only on loopback for local proxies.
 Search and Fetch cost $0.00075 per successful, nonempty request. They keep source
 URLs and pass through Core's external untrusted-data framing. Explicit standalone
 selection does not fall back to another service on errors or empty results.
+A successful HTTP 200 that is too large, truncated, or malformed leaves tool
+billing unknown. Local response failures do not prove that the service was free.
 
 With file extraction enabled, `FileRead` accepts `extract_text = true` for PDF,
 DOC/DOCX, PPT/PPTX, PNG, JPEG, WebP, GIF, BMP, and TIFF. This is useful for scanned

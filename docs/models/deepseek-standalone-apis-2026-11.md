@@ -10,6 +10,8 @@ and [chatbot overview](https://api-docs.deepseek.com/guides/build_a_chatbot)
 distinguish built-in model tools from standalone services. Core already had
 Search and Fetch clients for native DeepSeek sessions at the starting commit;
 this change adds explicit provider-independent selection and OCR extraction.
+A successful HTTP 200 that is too large, truncated, or malformed leaves tool
+billing unknown. Local response failures do not prove that the service was free.
 
 | API | Request and result | Limits | Listed fee |
 | --- | --- | --- | --- |
