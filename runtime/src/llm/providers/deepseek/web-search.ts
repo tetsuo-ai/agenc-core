@@ -14,6 +14,7 @@
  */
 
 import { readBodyBounded, type BoundedBody } from "../shared/bounded-body.js";
+import { waitForDeepSeekToolSlot } from "./tool-rate-limit.js";
 import {
   clip,
   deepSeekHttpFailureReason,
@@ -197,6 +198,8 @@ export interface DeepSeekSearchRequest {
   readonly timeoutMs?: number;
   /** Proxy/TLS options for the session environment (`getProxyFetchOptions`). */
   readonly fetchOptions?: Readonly<Record<string, unknown>>;
+  /** Standalone tools share a process-wide account rate budget. */
+  readonly rateLimit?: boolean;
 }
 
 /**
@@ -220,6 +223,7 @@ export async function runDeepSeekSearch(
   let status: number;
   let body: BoundedBody;
   try {
+    if (request.rateLimit) await waitForDeepSeekToolSlot("search", signal);
     const response = await fetch(request.endpoint, {
       ...(request.fetchOptions ?? {}),
       method: "POST",

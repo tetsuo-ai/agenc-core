@@ -206,8 +206,16 @@ export function validateToolsConfig(
     if (key === "web_search_provider") {
       optionalEnum(item, path, [
         "auto", "firecrawl", "tavily", "exa", "you", "jina", "bing",
-        "mojeek", "linkup", "custom", "ddg", "native",
+        "mojeek", "linkup", "custom", "ddg", "native", "deepseek",
       ]);
+      continue;
+    }
+    if (key === "web_fetch_provider") {
+      optionalEnum(item, path, ["auto", "local", "deepseek"]);
+      continue;
+    }
+    if (key === "file_read_provider") {
+      optionalEnum(item, path, ["local", "deepseek"]);
       continue;
     }
     if (key === "web_search_endpoint") {

@@ -20,6 +20,7 @@
 
 import { sleep } from "../../../utils/sleep.js";
 import { readBodyBounded, type BoundedBody } from "../shared/bounded-body.js";
+import { waitForDeepSeekToolSlot } from "./tool-rate-limit.js";
 import { providerFetchSkipReason } from "../shared/provider-fetch-url.js";
 import {
   clip,
@@ -140,6 +141,8 @@ export type DeepSeekFetchOutcome =
     };
 
 export interface DeepSeekFetchRequest {
+  /** Standalone tools share a process-wide account rate budget. */
+  readonly rateLimit?: boolean;
   /** From {@link deepSeekFetchEndpoint}. */
   readonly endpoint: string;
   /** The session's own DeepSeek key, sent only to the session's DeepSeek host. */
@@ -216,6 +219,7 @@ export async function runDeepSeekFetch(
   for (let attempt = 1; ; attempt += 1) {
     let response: Response;
     try {
+      if (request.rateLimit) await waitForDeepSeekToolSlot("fetch", signal);
       response = await fetch(request.endpoint, {
         ...(request.fetchOptions ?? {}),
         method: "POST",

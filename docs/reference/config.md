@@ -815,6 +815,7 @@ discovered metadata.
 | `profiles.<profile>.reasoning_effort`, `profiles.<profile>.reasoning_summary`, `profiles.<profile>.reasoning_cap_policy` | Reasoning overrides. |
 | `profiles.<profile>.approvals_reviewer`, `profiles.<profile>.model_verbosity`, `profiles.<profile>.service_tier`, `profiles.<profile>.personality` | Reviewer/presentation overrides. |
 | `profiles.<profile>.tools_config` | Profile-local tool block with the same fields as `tools_config`. |
+| `profiles.<profile>.tools_config.web_fetch_provider`, `profiles.<profile>.tools_config.file_read_provider` | Profile-local standalone fetch and file extraction selection, with the same values as the top-level tool block. |
 | `profiles.<profile>.tools_config.web_search_provider` | Live search adapter selection, with the same values and environment precedence as `tools_config.web_search_provider`. |
 | `profiles.<profile>.tools_config.web_search_endpoint`, `profiles.<profile>.tools_config.web_search_endpoint_kind` | Search URL and `duckduckgo`/`searxng`/`brave`/`json` decoder. |
 | `profiles.<profile>.tools_config.enabled_tools`, `profiles.<profile>.tools_config.disabled_tools` | Exact tool-name allow/disable arrays. |
@@ -825,8 +826,10 @@ discovered metadata.
 | Paths | Type / meaning |
 | --- | --- |
 | `tools_config` | Tool policy block. There is no `[tools]` alias in v2. |
-| `tools_config.web_search_provider` | Live WebSearch backend after session-native search: `auto` (default), `firecrawl`, `tavily`, `exa`, `you`, `jina`, `bing`, `mojeek`, `linkup`, `custom`, `ddg`, or `native`. `WEB_SEARCH_PROVIDER` wins; keys come from session env. Auto tries configured keys before DuckDuckGo; explicit names fail without switching backend. |
-| `tools_config.web_search_endpoint` | Search backend URL. With an explicitly named provider, overrides its HTTP endpoint using that provider's auth and decoder. In `auto`, uses the generic decoder below and precedes keyed adapters. `AGENC_WEB_SEARCH_ENDPOINT` wins. |
+| `tools_config.web_search_provider` | Live WebSearch backend after session-native search: `auto` (default), `firecrawl`, `tavily`, `exa`, `you`, `jina`, `bing`, `mojeek`, `linkup`, `custom`, `ddg`, `native`, or `deepseek`. Explicit `deepseek` runs the standalone Search API before any session-native backend and never falls through. `WEB_SEARCH_PROVIDER` wins; keys come from session env. Auto tries configured keys before DuckDuckGo; explicit names fail without switching backend. |
+| `tools_config.web_fetch_provider` | `auto` (default, existing behavior), `local`, or `deepseek`. Explicit DeepSeek uses its standalone Fetch API with a separate DeepSeek key, regardless of the reasoning model. It asks to send the URL and allow server-side redirects, requires public DNS, and refuses any configured `web_fetch` rules because their redirect scope cannot be enforced remotely. No fallback to another backend. |
+| `tools_config.file_read_provider` | `local` (default) or `deepseek`. DeepSeek exposes `FileRead.extract_text = true` for an explicit, approved upload of the entire local document. No upload occurs on ordinary reads. Requires a separate DeepSeek key; see the limits below. |
+| `tools_config.web_search_endpoint` | Search backend URL. DeepSeek ignores this generic override and uses its own provider base URL. With another explicitly named provider, overrides its HTTP endpoint using that provider's auth and decoder. In `auto`, uses the generic decoder below and precedes keyed adapters. `AGENC_WEB_SEARCH_ENDPOINT` wins. |
 | `tools_config.web_search_endpoint_kind` | `duckduckgo`, `searxng`, `brave`, or `json`. |
 | `tools_config.enabled_tools`, `tools_config.disabled_tools` | Exact tool-name arrays. |
 | `tools_config.<tool>` | Exact dispatch-name block for any registered tool. Quote names containing dots in TOML, for example `[tools_config."system.bash"]`. |
@@ -836,6 +839,58 @@ discovered metadata.
 | `permissions.additionalDirectories` | Additional permission-scope directories. |
 | `permissions.defaultMode` | Default mode: `default`, `acceptEdits`, `plan`, `dontAsk`, or `auto`. `bypassPermissions` is accepted only with durable exact-workspace consent; configuring it does not create consent. Internal `bubble`/`unattended` modes cannot be configured. |
 | `permissions.bypassPermissionsMode` | `allow` makes the restricted bypass mode available. It does not grant or persist consent. `disable` prohibits it. Project and local configuration cannot enable bypass mode. |
+
+### Standalone DeepSeek tools
+
+These opt-ins work with any reasoning provider, including local Ollama and
+OpenRouter. Configure the DeepSeek key through `/providers` (native secure
+storage) or the session's `DEEPSEEK_API_KEY`. Do not put a key in TOML.
+
+```toml
+[tools_config]
+web_search_provider = "deepseek"
+web_fetch_provider = "deepseek"
+file_read_provider = "deepseek"
+```
+
+Omit any line to retain that tool's existing behavior. `web_search = "on"`
+at the top level, `AGENC_WEB_SEARCH=on`, or the **Web search** row in `/model`
+or `/providers` advertises the web tools;
+it does not select this standalone backend. The separate native DeepSeek
+provider switches retain their existing meanings.
+
+The invoking session owns the configuration, credential home, and transport.
+The normal `DEEPSEEK_BASE_URL` or `[providers.deepseek] base_url` selects the
+DeepSeek service endpoint, defaulting to `https://api.deepseek.com`. A custom
+endpoint must use HTTPS; HTTP is accepted only on loopback for local proxies.
+Search and Fetch cost $0.00075 per successful, nonempty request. They keep source
+URLs and pass through Core's external untrusted-data framing. Explicit standalone
+selection does not fall back to another service on errors or empty results.
+
+With file extraction enabled, `FileRead` accepts `extract_text = true` for PDF,
+DOC/DOCX, PPT/PPTX, PNG, JPEG, WebP, GIF, BMP, and TIFF. This is useful for scanned
+PDFs and images used by text-only models. A normal file read remains local.
+Each extraction asks specifically to upload the whole file, even if ordinary
+`FileRead` calls have an allow rule. The file is bound before approval and read
+through a checked descriptor. Delegated read-only authority cannot upload.
+
+OCR accepts at most 100 MiB and 1,000 pages. Known oversized PDFs are rejected
+locally; DeepSeek validates actual format and page count for all documents.
+Page-range uploads are unsupported: export a smaller file first. `offset` and
+`limit` only select returned text. OCR has a 180-second total timeout and at most
+15 concurrent recognitions per process (the service enforces 15 per account).
+Extraction costs $0.000225 per page. Admission reserves the 1,000-page ceiling,
+$0.225, because filename extensions do not prove page count. Successful results
+record the actual fee. A lost response keeps billing unknown: disconnecting does
+not cancel recognition, so uploads are never automatically retried. The result
+identifies DeepSeek OCR, marks the text untrusted, and reports incomplete or
+locally truncated output. It does not mark the extracted representation as a
+raw-file read for editing.
+
+Excel is not accepted by OCR. DeepSeek's Files API accepts XLS/XLSX but does not
+expose downloadable extracted text; using it would require an additional
+DeepSeek chat request. Core therefore returns a local-reading or export-to-PDF
+hint without uploading spreadsheets. See the [verified API facts](../models/deepseek-standalone-apis-2026-11.md).
 
 ### MCP and protocol
 
