@@ -50,6 +50,21 @@ describe("Light request configuration", () => {
     }
   });
 
+  test("edit_mode selects tools, shell or check and rejects anything else", () => {
+    expect(LEAN_REQUEST_DEFAULTS.edit_mode).toBe("tools");
+    for (const edit_mode of ["tools", "shell", "check"] as const) {
+      const config: AgenCConfig = { light_request: "lean", light_request_options: { edit_mode } };
+      expect(() => validateAgenCConfigBlocks(config)).not.toThrow();
+      expect(resolveLightRequest(session(config), "deepseek")).toEqual({ ...LEAN_REQUEST_DEFAULTS, edit_mode });
+    }
+    for (const edit_mode of ["Shell", "write", true, 1, ""]) {
+      expect(() => validateAgenCConfigBlocks({ light_request: "lean",
+        light_request_options: { edit_mode } as never })).toThrow(/edit_mode/u);
+    }
+    // Outside lean the option has no effect.
+    expect(resolveLightRequest(session({ light_request_options: { edit_mode: "shell" } }), "deepseek")).toBeUndefined();
+  });
+
   test("system_text selects the short or the minimal built-in text", () => {
     expect(LEAN_REQUEST_DEFAULTS.system_text).toBe("minimal");
     for (const system_text of ["short", "minimal"] as const) {

@@ -1,4 +1,5 @@
 import type { LLMTool } from "../../llm/types.js";
+import { REQUIRED_CHECK_DESCRIPTION } from "../../tools/edit-then-run.js";
 import type { Tool } from "../../tools/types.js";
 
 const DESCRIPTIONS: Readonly<Record<string, string>> = {
@@ -35,8 +36,11 @@ export function leanToolDefinition(tool: LLMTool, canonical: Tool | undefined, c
   const original = canonical?.inputSchema ?? tool.function.parameters;
   const parameters = compact ? conciseSchema(original) as LLMTool["function"]["parameters"] : original;
   if (compact && parameters.properties != null && typeof parameters.properties === "object") {
+    // edit_mode = "check" requires the check command, so its purpose stays in the compact schema.
+    const hints = Array.isArray(parameters.required) && parameters.required.includes("check")
+      ? { ...FIELD_HINTS, check: REQUIRED_CHECK_DESCRIPTION } : FIELD_HINTS;
     parameters.properties = Object.fromEntries(Object.entries(parameters.properties).map(([key, schema]) =>
-      [key, FIELD_HINTS[key] === undefined ? schema : { ...schema as object, description: FIELD_HINTS[key] }]));
+      [key, hints[key] === undefined ? schema : { ...schema as object, description: hints[key] }]));
   }
   return { ...tool, function: { ...tool.function, parameters,
     description: compact ? DESCRIPTIONS[name]! : canonical?.description ?? tool.function.description,

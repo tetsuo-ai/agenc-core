@@ -8,11 +8,15 @@ import type { LLMMessage, LLMResponse } from "../../src/llm/types.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
 import { createTestConfigStore, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 
-test("a Light fast response edits and checks without another model sample", async () => {
+test.each([
+  ["AGENC_EDIT_THEN_RUN=1", { AGENC_EDIT_THEN_RUN: "1" }, {}],
+  ["lean edit_mode check", {}, { light_request: "lean" as const, light_request_options: { edit_mode: "check" as const } }],
+])("a Light fast response edits and checks without another model sample, %s", async (_name, environment, config) => {
+  const lean = "light_request" in config;
   const edit = vi.fn(async () => ({ content: "edit applied" }));
   const check = vi.fn(async () => ({ content: "check passed\n\n[exec exit_code=0 wall_time=0.0010s tokens=3]" }));
   const tools = [withEditThenRun({ name: "Write", description: "Write",
-    inputSchema: { type: "object" }, execute: edit }),
+    inputSchema: { type: "object" }, execute: edit }, lean),
   { name: "exec_command", description: "Run", inputSchema: { type: "object" }, execute: check }];
   const registry: ToolRegistry = { tools,
     toLLMTools: () => tools.map(tool => ({ type: "function", function: {
@@ -23,6 +27,7 @@ test("a Light fast response edits and checks without another model sample", asyn
   const requests: LLMMessage[][] = [];
   let fastCalls = 0;
   const provider = mkProvider();
+  if (lean) Object.assign(provider, { name: "deepseek" });
   provider.chatStream = async (messages): Promise<LLMResponse> => {
     requests.push(structuredClone(messages));
     if (oneShotFastModeActive()) fastCalls++;
@@ -31,8 +36,8 @@ test("a Light fast response edits and checks without another model sample", asyn
       : { content: "done", toolCalls: [], finishReason: "stop", model: "test-model" };
   };
   const { session, events } = mkSession({ provider, registry, services: {
-    configStore: createTestConfigStore({ base: { provider_outage_wait_ms: 0 } }),
-    providerEnvironment: { AGENC_EDIT_THEN_RUN: "1" },
+    configStore: createTestConfigStore({ base: { provider_outage_wait_ms: 0, ...config } }),
+    providerEnvironment: environment,
     runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true, nonInteractive: true,
       dangerouslyBypassApprovalsAndSandbox: true, relaxedOneShot: true, exactOutput: true }),
   } });

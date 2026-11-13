@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, test, vi } from "vitest";
+import { ConfigStore } from "../../src/config/store.js";
 import type { AgenCConfig } from "../../src/config/schema.js";
 import type { LLMMessage } from "../../src/llm/types.js";
 import { DeepSeekProvider } from "../../src/llm/providers/deepseek/index.js";
@@ -146,4 +150,57 @@ test("request options are captured per session and cannot rewrite a running prom
   expect(resolveLightRequest(session, "deepseek")).toEqual(initial);
   expect(resolveLightRequest({ services }, "deepseek")).toMatchObject(config.light_request_options!);
   expect(resolveLightRequest(session, "openai")).toBeUndefined();
+});
+
+test("a mid-session reload of edit_mode changes neither the pinned system message nor the tool list", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lean-edit-reload-"));
+  try {
+    const write = (options: string) => writeFileSync(join(home, "config.toml"),
+      `config_version = 2\nlight_request = "lean"\n\n[light_request_options]\n${options}\n`, { mode: 0o600 });
+    write('edit_mode = "shell"');
+    const configStore = new ConfigStore({ home, env: { AGENC_HOME: home }, cwd: "/tmp" });
+    await configStore.reload();
+    const bodies: { messages: { role: string; content: string }[]; tools: { function: { name: string; description: string } }[] }[] = [];
+    const model = "deepseek-flash";
+    const provider = new DeepSeekProvider({ apiKey: "test-only", model, fetchImpl: vi.fn<typeof fetch>(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return createSuccessfulChatResponse("edit-reload-fixture")(model, "Done.");
+    }) });
+    const newSession = () => {
+      const { session } = mkSession({ provider, model, services: {
+        configStore, runtimeOptions: { lightMode: true, nonInteractive: true } as never, providerEnvironment: {},
+        providerService: new SessionProviderService({ initialProvider: provider, initialProviderName: "deepseek", initialModel: model,
+          environment: {}, sessionId: "edit-reload-fixture" }),
+      } });
+      Object.assign(session.services, { registry: buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, getSession: () => session }) });
+      return session;
+    };
+    const ctx = mkCtx({ modelProviderId: "deepseek", modelInfo: newSession().modelInfo, permissionInstructionsDeferred: true });
+    const state = { modelInstructions: "Initial instructions.", messagesForQuery: [{ role: "user", content: "Fix the failing test." }] } as TurnState;
+    const send = async (session: ReturnType<typeof newSession>) => {
+      const request = buildSamplingRequestContract(state, session, ctx, undefined, true);
+      await provider.chat([...request.input], buildProviderOptions(request, ctx, new AbortController().signal, session));
+      return bodies.at(-1)!;
+    };
+    const session = newSession();
+    const first = await send(session);
+    const names = (body: typeof first) => body.tools.map(tool => tool.function.name);
+    expect(names(first)).toEqual(["exec_command", "write_stdin", "kill_process", "FileRead"]);
+
+    // The config changes the edit mode and the system text while the session runs.
+    write('edit_mode = "check"\nsystem_text = "short"');
+    await configStore.reload();
+    expect(configStore.current().light_request_options).toMatchObject({ edit_mode: "check", system_text: "short" });
+    const after = await send(session);
+    expect(after.messages[0]).toEqual(first.messages[0]);
+    expect(JSON.stringify(after)).toBe(JSON.stringify(first));
+    expect(session.services.registry.tools.find(tool => tool.name === "Write")!.inputSchema.required ?? []).not.toContain("check");
+
+    // A new session takes the reloaded settings.
+    const fresh = await send(newSession());
+    expect(names(fresh)).toEqual(["exec_command", "write_stdin", "kill_process", "FileRead", "Write", "apply_patch"]);
+    expect(fresh.messages[0]!.content).not.toBe(first.messages[0]!.content);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
