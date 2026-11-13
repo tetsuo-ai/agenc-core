@@ -1453,7 +1453,7 @@ export async function assembleSystemPrompt(
 
   const sections: string[] = [
     ...staticParts,
-    SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+    ...(lightRequest?.environment_in_system ? [] : [SYSTEM_PROMPT_DYNAMIC_BOUNDARY]),
     ...dynamicParts,
   ];
 

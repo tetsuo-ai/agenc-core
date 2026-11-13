@@ -111,6 +111,7 @@ export interface StreamModelRequestContract {
   readonly tools: ReadonlyArray<LLMTool>;
   readonly parallelToolCalls?: boolean;
   readonly baseInstructions: string;
+  readonly systemPromptLayout?: "single";
   readonly toolChoice?: LLMToolChoice;
   readonly contextWindowTokens?: number;
   readonly maxOutputTokens?: number;
@@ -324,6 +325,9 @@ export function buildProviderOptions(
     tools: transferToolOwnership ? request.tools : cloneProviderTools(request.tools),
     parallelToolCalls: request.parallelToolCalls,
     ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
+    ...(request.systemPromptLayout !== undefined
+      ? { systemPromptLayout: request.systemPromptLayout }
+      : {}),
     ...(promptCacheKey !== undefined ? { promptCacheKey } : {}),
     ...(promptCacheScopeKey !== undefined ? { promptCacheScopeKey } : {}),
     ...(traceSink !== undefined

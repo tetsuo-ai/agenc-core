@@ -219,8 +219,9 @@ function buildSamplingRequestContract(
   const promptEnvironment =
     session.services.userShell?.childEnvironment ??
     session.services.providerEnvironment;
+  const lean = resolveLightRequest(session, session.services.provider.name);
   let baseInstructions = instructionParts.join("\n\n");
-  if (sessionTailCacheEnabled(promptEnvironment, samplingContext.modelProviderId)) {
+  if (!lean?.environment_in_system && sessionTailCacheEnabled(promptEnvironment, samplingContext.modelProviderId)) {
     const volatileParts = instructionParts.includes(permissionInstructions)
       ? [permissionInstructions]
       : [];
@@ -229,7 +230,6 @@ function buildSamplingRequestContract(
       volatileParts,
     );
   }
-  const lean = resolveLightRequest(session, session.services.provider.name);
   const input = state.messagesForQuery.slice(messageStart);
   const envelope = lean === undefined ? undefined : leanLightMessages(input, baseInstructions, lean);
   const tools = builtTools(session, samplingContext);
@@ -244,6 +244,7 @@ function buildSamplingRequestContract(
   const capGateOutput = completionGateCapsOutput(state, samplingContext, session.services.provider.name);
   return {
     ...request,
+    ...(lean?.environment_in_system ? { systemPromptLayout: "single" as const } : {}),
     contextWindowTokens: getEffectiveContextWindowSizeForEnvironment({ options: {
       mainLoopModel: samplingContext.modelInfo.slug,
       contextWindowTokens: request.contextWindowTokens,
