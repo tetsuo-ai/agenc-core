@@ -905,6 +905,11 @@ export interface LightRequestOptions {
   readonly low_effort?: boolean;
   /** Built-in system text under short_system_prompt: the short text or the minimal one. */
   readonly system_text?: "short" | "minimal";
+  /**
+   * How the model edits files. tools: Write and apply_patch. shell: no Write and no apply_patch;
+   * files are written with exec_command. check: Write and apply_patch take a required check command.
+   */
+  readonly edit_mode?: "tools" | "shell" | "check";
 }
 
 export interface AgenCConfig {

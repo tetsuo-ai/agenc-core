@@ -154,3 +154,62 @@ test("the minimal lean text is the default; short is selectable; the full prose 
   expect(fullProse.messages[0].content).toContain("No approver: approval requests are denied.");
   expect(fullProse.messages[0].content).not.toContain("You work in the directory");
 });
+
+type WireTool = { function: { name: string; description: string; parameters: { properties: Record<string, { description?: string }>; required?: string[] } } };
+const shellLine = (body: { tools: WireTool[] }) => body.tools.find(t => t.function.name === "exec_command")!.function.description;
+
+test("edit_mode tools is the default and keeps the lean bytes", async () => {
+  for (const nonInteractive of [false, true]) {
+    expect(await captureLightRequest("lean", nonInteractive, { edit_mode: "tools" }))
+      .toBe(await captureLightRequest("lean", nonInteractive));
+  }
+  // Full requests ignore every lean option.
+  for (const edit_mode of ["tools", "shell", "check"] as const) {
+    expect(await captureLightRequest("full", true, { edit_mode }, { bindModel: true }))
+      .toBe(await captureLightRequest("full", true, {}, { bindModel: true }));
+  }
+});
+
+test.each([false, true])("lean edit_mode shell HTTP bytes, headless=%s", async nonInteractive => {
+  const bytes = await captureLightRequest("lean", nonInteractive, { edit_mode: "shell" });
+  const shell = JSON.parse(bytes);
+  const lean = JSON.parse(await captureLightRequest("lean", nonInteractive));
+  expect((shell.tools as WireTool[]).map(t => t.function.name)).toEqual(["exec_command", "write_stdin", "kill_process", "FileRead"]);
+  expect(shellLine(shell)).toBe(`${shellLine(lean)} Create and edit files with shell commands. One command may write files and run the check together.`);
+  // Nothing but the tool list differs from the lean request, the system message included.
+  const rest = (body: { tools: WireTool[] }) => ({ ...body, tools: body.tools
+    .filter(t => !["Write", "apply_patch"].includes(t.function.name))
+    .map(t => t.function.name === "exec_command" ? { ...t, function: { ...t.function, description: shellLine(lean) } } : t) });
+  expect(rest(shell)).toEqual(rest(lean));
+  expect(bytes).toMatchSnapshot();
+});
+
+test.each([false, true])("lean edit_mode check HTTP bytes, headless=%s", async nonInteractive => {
+  const bytes = await captureLightRequest("lean", nonInteractive, { edit_mode: "check" });
+  const check = JSON.parse(bytes);
+  const lean = JSON.parse(await captureLightRequest("lean", nonInteractive));
+  const tools = check.tools as WireTool[];
+  expect(tools.map(t => t.function.name)).toEqual(["exec_command", "write_stdin", "kill_process", "FileRead", "Write", "apply_patch"]);
+  for (const tool of tools) {
+    const editor = ["Write", "apply_patch"].includes(tool.function.name);
+    expect(tool.function.parameters.required?.includes("check") === true).toBe(editor);
+    expect("check" in tool.function.parameters.properties).toBe(editor);
+    if (!editor) continue;
+    expect(tool.function.parameters.properties.check).toEqual({ type: "string", minLength: 1,
+      description: "Shell command that verifies this edit, usually the test command or a probe. It runs right after the edit and its output comes back with the edit." });
+    delete tool.function.parameters.properties.check;
+    tool.function.parameters.required = tool.function.parameters.required!.filter(name => name !== "check");
+  }
+  // Only the required check differs from the lean request.
+  expect(check).toEqual(lean);
+  expect(bytes).toMatchSnapshot();
+});
+
+test("edit_mode check keeps the check description without compact definitions", async () => {
+  const body = JSON.parse(await captureLightRequest("lean", true, { edit_mode: "check", compact_tool_definitions: false }));
+  for (const name of ["Write", "apply_patch"]) {
+    const tool = (body.tools as WireTool[]).find(t => t.function.name === name)!;
+    expect(tool.function.parameters.required).toContain("check");
+    expect(tool.function.parameters.properties.check!.description).toContain("Shell command that verifies this edit");
+  }
+});

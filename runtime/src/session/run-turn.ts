@@ -1,4 +1,4 @@
-import { resolveLightRequest } from "./light-request/settings.js";
+import { leanEditMode, resolveLightRequest } from "./light-request/settings.js";
 import { announceLightRequest } from "./light-request/notice.js";
 import { editThenRunCommand, editThenRunEnabled } from "../tools/edit-then-run.js";
 import { applyWebSearchInstruction, resolveWebSearchMode } from "../tools/web-search-mode.js";
@@ -2829,7 +2829,8 @@ async function* runTurnKernelInner(
       },
       requiresResponse: response => {
         return response.toolCalls.length === 0 || hasConfiguredToolHooks(session) ||
-          (editThenRunEnabled(session.services.runtimeOptions?.lightMode, session.services.providerEnvironment) &&
+          (editThenRunEnabled(session.services.runtimeOptions?.lightMode, session.services.providerEnvironment,
+            leanEditMode(session, session.services.provider.name)) &&
             response.toolCalls.some(call => editThenRunCommand(call, session.services.registry) !== undefined));
       },
       completedTool: result => { state.completedToolResults.push(result); },

@@ -19,7 +19,7 @@ import { resolveMainLoopReasoningEffort } from "../../src/session/session-reason
 import { sessionConfigurationFromAgenCConfig } from "../../src/session/configuration.js";
 import { frameUntrustedToolResultContent } from "../../src/tools/untrusted-tool-result-framing.js";
 import { builtTools } from "../../src/session/run-turn-sampling-request.js";
-import type { ToolRegistry } from "../../src/tool-registry.js";
+import { buildToolRegistry, type ToolRegistry } from "../../src/tool-registry.js";
 import { backgroundStartedNote, timeoutBackgroundedNote, timeoutStoppedAtSessionLimitNote, SERVER_CHECK_NOTE } from "../../src/tools/system/exec-result-format.js";
 
 const attachmentsToMessages = (items: Parameters<typeof renderAttachments>[0]) => renderAttachments(items, true);
@@ -76,6 +76,66 @@ describe("lean message envelope", () => {
 
 const tool = (name: string): LLMTool => ({ type: "function", function: { name, description: "Original", parameters: { type: "object" } } });
 const catalog = ["system.searchTools", "exec_command", "write_stdin", "kill_process", "FileRead", "Write", "apply_patch", "mcp.demo.lookup"].map(tool);
+
+describe("lean edit_mode", () => {
+  const names = (tools: readonly LLMTool[]) => tools.map(t => t.function.name);
+  test("shell hides Write and apply_patch and extends the shell line, with and without process tools", () => {
+    expect(names(leanLightTools(catalog, { ...defaults, edit_mode: "shell" })))
+      .toEqual(["exec_command", "write_stdin", "kill_process", "FileRead"]);
+    expect(names(leanLightTools(catalog, { ...defaults, edit_mode: "shell", process_tools: false })))
+      .toEqual(["exec_command", "FileRead"]);
+    for (const options of [defaults, { ...defaults, process_tools: false }]) {
+      const plain = leanLightTools(catalog, options)[0]!.function.description;
+      expect(leanLightTools(catalog, { ...options, edit_mode: "shell" })[0]!.function.description)
+        .toBe(`${plain} Create and edit files with shell commands. One command may write files and run the check together.`);
+    }
+  });
+  test("tools and check leave the list as it is", () => {
+    expect(defaults.edit_mode).toBe("tools");
+    for (const edit_mode of ["tools", "check"] as const) {
+      expect(leanLightTools(catalog, { ...defaults, edit_mode })).toEqual(leanLightTools(catalog, defaults));
+    }
+  });
+  test("explicitly discovered tools stay listed in every mode", () => {
+    for (const edit_mode of ["tools", "shell", "check"] as const) {
+      expect(names(leanLightTools(catalog, { ...defaults, edit_mode }, [], new Set(["mcp.demo.lookup"]))))
+        .toContain("mcp.demo.lookup");
+      expect(names(leanLightTools(catalog, { ...defaults, edit_mode, tool_search: true }))).toContain("system.searchTools");
+    }
+  });
+  test("the registry requires check on the editors only in check mode", () => {
+    const schemas = (edit_mode?: "tools" | "shell" | "check", light_request: "full" | "lean" = "lean") => {
+      const configStore = createTestConfigStore({ base: { light_request,
+        light_request_options: edit_mode === undefined ? {} : { edit_mode } } });
+      const { session } = mkSession({ services: { configStore, runtimeOptions: { lightMode: true } as never, providerEnvironment: {} } });
+      Object.assign(session.services.provider, { name: "deepseek" });
+      const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, getSession: () => session });
+      return Object.fromEntries(["Write", "apply_patch", "exec_command"].map(name =>
+        [name, registry.tools.find(t => t.name === name)!.inputSchema as { required?: string[]; properties?: Record<string, unknown> }]));
+    };
+    const plain = schemas();
+    for (const edit_mode of ["tools", "shell"] as const) expect(schemas(edit_mode)).toEqual(plain);
+    expect(schemas("check", "full")).toEqual(plain);
+    const check = schemas("check");
+    for (const name of ["Write", "apply_patch"]) {
+      expect(check[name]!.required).toEqual([...plain[name]!.required ?? [], "check"]);
+      expect(check[name]!.properties!.check).toMatchObject({ type: "string", minLength: 1 });
+    }
+    expect(check.exec_command).toEqual(plain.exec_command);
+  });
+  test("the notice names the edit mode", () => {
+    const messages = (edit_mode: "tools" | "shell" | "check") => {
+      const configStore = createTestConfigStore({ base: { light_request: "lean", light_request_options: { edit_mode } } });
+      const { session, events } = mkSession({ services: { configStore, runtimeOptions: { lightMode: true } as never } });
+      Object.assign(session.services.provider, { name: "deepseek" });
+      announceLightRequest(session);
+      return events.map(event => (event.msg.payload as { message?: string }).message ?? "").join(" ");
+    };
+    expect(messages("tools")).not.toMatch(/apply_patch/u);
+    expect(messages("shell")).toContain("Files are written with shell commands; Write and apply_patch are not listed.");
+    expect(messages("check")).toContain("Write and apply_patch take a required check command that runs after the edit.");
+  });
+});
 
 describe("lean tool catalog", () => {
   test("attachments see the same catalog, including explicit web, dynamic and child tools", () => {

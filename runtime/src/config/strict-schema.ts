@@ -705,6 +705,7 @@ const ROOT_FIELD_VALIDATORS = {
     rejectUnknownFields(record, new Set(Object.keys(LEAN_REQUEST_DEFAULTS)), "light_request_options");
     for (const [key, item] of Object.entries(record)) {
       if (key === "system_text") optionalEnum(item, "light_request_options.system_text", ["short", "minimal"]);
+      else if (key === "edit_mode") optionalEnum(item, "light_request_options.edit_mode", ["tools", "shell", "check"]);
       else optionalBoolean(item, `light_request_options.${key}`);
     }
   },

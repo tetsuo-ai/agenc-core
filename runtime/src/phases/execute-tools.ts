@@ -1,4 +1,5 @@
 import { editThenRunCommand, editThenRunEnabled } from "../tools/edit-then-run.js";
+import { leanEditMode } from "../session/light-request/settings.js";
 import { withCompletedToolTiming } from "../tools/stage-timing.js";
 import { autoFixPostToolHookIsInactive } from "../services/autoFix/autoFixHook.js";
 /**
@@ -470,7 +471,8 @@ export function ensureStreamingToolExecutor(
   const activeTurnAbort = session.activeTurn?.unsafePeek()?.abortController;
   executor = new StreamingToolExecutor({
     registry: session.services.registry,
-    ...(editThenRunEnabled(session.services.runtimeOptions?.lightMode, session.services.providerEnvironment) ? {
+    ...(editThenRunEnabled(session.services.runtimeOptions?.lightMode, session.services.providerEnvironment,
+      leanEditMode(session, session.services.provider?.name)) ? {
       afterToolCall: (call: LLMToolCall, result: ToolDispatchResult, callSignal: AbortSignal, durationMs: number) =>
         runEditThenCommand(state, ctx, session, call, result, callSignal, durationMs),
     } : {}),
@@ -753,7 +755,8 @@ function recordCompletedToolCallTimed(
 }
 
 function editCheck(call: LLMToolCall, session: Session): string | undefined {
-  return editThenRunEnabled(session.services.runtimeOptions?.lightMode, session.services.providerEnvironment)
+  return editThenRunEnabled(session.services.runtimeOptions?.lightMode, session.services.providerEnvironment,
+    leanEditMode(session, session.services.provider?.name))
     ? editThenRunCommand(call, session.services.registry) : undefined;
 }
 

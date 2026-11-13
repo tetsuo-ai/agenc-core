@@ -16,7 +16,11 @@ export const LEAN_REQUEST_DEFAULTS: Readonly<Required<LightRequestOptions>> = Ob
   low_effort: true,
   // Measured in job lean12: minimal keeps the saving on workflow-engine at the control's score.
   system_text: "minimal",
+  // tools keeps Write and apply_patch. shell and check are measured in jobs edit13 and rep13.
+  edit_mode: "tools",
 });
+
+export type LeanEditMode = Required<LightRequestOptions>["edit_mode"];
 
 export interface LightRequestSession {
   readonly services?: {
@@ -55,4 +59,16 @@ export function resolveLightRequest(
   const settings = mode === "lean" ? Object.freeze({ ...LEAN_REQUEST_DEFAULTS, ...config?.light_request_options }) : null;
   sessionSettings.set(session, settings);
   return settings ?? undefined;
+}
+
+/**
+ * The session's captured lean edit mode, or undefined outside lean. The registry and the tool
+ * executor ask on every call; an invalid AGENC_LIGHT_REQUEST is left to the request builder.
+ */
+export function leanEditMode(
+  session: LightRequestSession | null | undefined,
+  provider: string | undefined,
+): LeanEditMode | undefined {
+  if (session == null) return undefined;
+  try { return resolveLightRequest(session, provider)?.edit_mode; } catch { return undefined; }
 }
