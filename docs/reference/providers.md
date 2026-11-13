@@ -1265,6 +1265,11 @@ equivalent field:
 The managed AgenC route and custom OpenAI-compatible endpoints keep their own
 contracts.
 
+Native Flash sessions also offer an off-by-default `[providers.deepseek] app_tools = true`
+setting, used together with session `web_search = "on"`. It enables the new server web tools
+on Chat Completions. See [App server web tools](../providers/deepseek-direct.md#app-server-web-tools)
+for replay, thinking and budget behavior.
+
 In a `deepseek` session on DeepSeek's own API host, the WebSearch tool searches
 through DeepSeek's Search API with the session's key, for both models, at
 $0.75 per 1,000 successful searches; see

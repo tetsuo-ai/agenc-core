@@ -92,6 +92,31 @@ Native DeepSeek sessions keep every sent tool result unchanged until compaction 
 
 Images are normalized when read or attached, preserving inspection resolution up to 1568 pixels and using a smaller high-quality encoding where possible. Admitted images stay unchanged while new images fit the 6 MiB image budget. When a new image does not fit, the oldest images leave the request in one batch, down to half the budget, and the new image is sent, so the cached prefix changes once per batch. The current turn's images leave last. An image that leaves after a request showed it is replaced by a short note saying the model already saw it and asking it to record what it needs from each image as it goes, instead of inviting it to read the image again. An image no request showed, such as one a text-only model never received, keeps the neutral note. Which images a request showed is saved with the conversation as image digests, so a resumed or restarted session gives an evicted image the same note as before. The images themselves are saved too: secret redaction's base58 wallet-key rule does not apply to the base64 body of an image block that is a complete PNG, JPEG, GIF or WebP image, so a restarted session keeps the screenshots it was showing (every other rule still applies, and a body that does not validate is redacted as text). Image pressure does not trigger an extra summary call. If natural compaction removes an image before any request showed it to the model, its recovery notice names the missing source. Every request since the last compaction counts while the image is still in the conversation, so a request to a text-only model in between does not make an image the model already saw look unseen. An image that left the conversation, through /clear or a manual compaction, stops counting at the next request. An image that a request carried only behind a budget note, because it did not fit or exceeds the limit, counts as shown, since the model read that note, and it is not named again. The notice needs that evidence from the running session: a resumed session or a restarted daemon sends none, and neither do images the model cannot view or that are not valid images. Durable secret redaction remains in effect.
 
+## App server web tools
+
+Flash sessions can opt into DeepSeek's server-side web search and URL reading. Set both switches:
+
+```toml
+web_search = "on"
+
+[providers.deepseek]
+app_tools = true
+```
+
+The session environment can override them with `AGENC_WEB_SEARCH=on` and
+`AGENC_DEEPSEEK_APP_TOOLS=on` (`off` disables App tools). This defaults off.
+Full and lean requests replace `WebSearch` and `web_fetch` with `deepseek_web_search`
+and `deepseek_read_url`, while keeping coding functions. Both web tools must be available
+in the session catalog; explicit ask/deny or domain web rules keep the local path.
+The standalone Search/Fetch settings below retain their meanings.
+
+Mixed server and local tools require thinking mode. The transcript shows server steps and
+cited sources, and subsequent native requests replay the signed provider blocks unchanged.
+Search history does not preserve earlier thinking; URL pages survive through their signatures.
+Tool fees are $0.00075 per billed query, image search or fetched page, added to token estimates.
+App tools have a per-step output cap, so hard token or dollar budget admission rejects them.
+See the [dated API contract and live findings](../models/deepseek-app-tools-2026-11.md).
+
 ## Web search
 
 In a `deepseek` session the WebSearch tool searches through DeepSeek's Search

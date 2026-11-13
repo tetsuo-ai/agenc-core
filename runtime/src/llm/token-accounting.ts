@@ -1423,6 +1423,7 @@ function promptIdentityForRequest(
     providerFraming: {
       model: options.model ?? null,
       parallelToolCalls: options.parallelToolCalls ?? null,
+      ...(options.deepSeekAppTools === true ? { deepSeekAppTools: true } : {}),
       reasoningEffort: options.reasoningEffort ?? null,
       reasoningSummary: options.reasoningSummary ?? null,
       modelVerbosity: options.modelVerbosity ?? null,

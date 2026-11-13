@@ -1,4 +1,6 @@
-import { resolveWebSearchMode, WEB_SEARCH_INITIAL_TOOLS } from "../tools/web-search-mode.js";
+import { getAskRuleForTool, getDenyRuleForTool, getContentRulesForTool } from "../permissions/rules.js";
+import { deepSeekAppToolsEnabled, DEEPSEEK_APP_TOOLS_INSTRUCTION } from "../llm/providers/deepseek/app-tools.js";
+import { resolveWebSearchMode, WEB_SEARCH_INITIAL_TOOLS, WEB_SEARCH_ON_INSTRUCTION } from "../tools/web-search-mode.js";
 import { leanLightResults } from "./light-request/results.js";
 import { resolveLightRequest } from "./light-request/settings.js";
 import { leanLightMessages } from "./light-request/messages.js";
@@ -260,7 +262,16 @@ function buildSamplingRequestContract(
     ];
   }
   const envelope = lean === undefined ? undefined : leanLightMessages(input, baseInstructions, lean);
-  const tools = builtTools(session, samplingContext);
+  const built = builtTools(session, samplingContext);
+  const appTools = deepSeekAppToolsEnabled(
+    session.services.provider.name, samplingContext.modelInfo.slug,
+    session.services.providerEnvironment ?? {}, session.services.configStore?.current(),
+  ) && [...WEB_SEARCH_INITIAL_TOOLS].every(name =>
+    built.some(tool => tool.function.name === name) &&
+    getDenyRuleForTool(permissionContext, name) === null &&
+    getAskRuleForTool(permissionContext, name) === null &&
+    (["allow", "ask", "deny"] as const).every(behavior => getContentRulesForTool(permissionContext, name, behavior).length === 0));
+  const tools = appTools ? built.filter(tool => !WEB_SEARCH_INITIAL_TOOLS.has(tool.function.name)) : built;
   const request = buildPrompt(
     lean === undefined ? input : leanLightResults(envelope?.messages ?? input, lean),
     tools,
@@ -272,6 +283,11 @@ function buildSamplingRequestContract(
   const capGateOutput = completionGateCapsOutput(state, samplingContext, session.services.provider.name);
   return {
     ...request,
+    ...(appTools ? {
+      deepSeekAppTools: true,
+      baseInstructions: request.baseInstructions.split(WEB_SEARCH_ON_INSTRUCTION).join("").trimEnd() +
+        "\n\n" + DEEPSEEK_APP_TOOLS_INSTRUCTION,
+    } : {}),
     ...(lean?.environment_in_system ? { systemPromptLayout: "single" as const } : {}),
     contextWindowTokens: getEffectiveContextWindowSizeForEnvironment({ options: {
       mainLoopModel: samplingContext.modelInfo.slug,
