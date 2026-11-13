@@ -599,7 +599,7 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `light_request_options.tool_result_markers` | Default `true`: keep untrusted-data boundaries. `false` removes their presentation only, never the sanitization or trust rules. |
 | `light_request_options.core_tools_only` | Default `true`: shell, read, write and patch. `false` permits the rest of the session's advertised tools. Tool execution permissions remain enforced. |
 | `light_request_options.tool_search` | Default `false`: advertise tool search when `true`. Discovered tools remain usable. |
-| `light_request_options.process_tools` | Default `true`: advertise `write_stdin` and `kill_process`. When disabled, foreground commands finish within a bounded call instead of yielding an inaccessible session. |
+| `light_request_options.process_tools` | Default `true`: advertise `write_stdin` and `kill_process`. When disabled, commands stop after at most 29 seconds (or a shorter requested timeout); background, detached and interactive terminal launches are refused with guidance to re-enable process controls. |
 | `light_request_options.compact_tool_definitions` | Default `true`: shorter descriptions. Operational and approval arguments remain available. |
 | `light_request_options.low_effort` | Default `true`: default to low effort only when the user has not selected effort. Explicit effort, including a cleared model-default choice, takes precedence. |
 | `defer_rare_tools` | Load rarely needed built-in tools (delegation, process, web, rare tools) through `system.searchTools` instead of sending them with every request. Unset: on for standard sessions, off for Light. `AGENC_DEFER_RARE_TOOLS` in the session environment overrides it. |
@@ -610,6 +610,41 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `stream_quiet_warning_ms` | Non-negative no-delta soft warning interval; default `600000`, `0` disables. Never ends a turn. |
 | `provider_outage_wait_ms` | Non-negative total time a turn keeps waiting for a provider outage to end once the reconnect ladder is spent; default `1800000` (30 minutes), `0` ends the turn as soon as the ladder is exhausted. |
 | `provider_outage_retry_ms` | Positive first slow-retry delay during a provider outage, doubling up to ten times this value; default `30000`. |
+
+To try the lean request, start a new native DeepSeek Light session with
+`AGENC_LIGHT_REQUEST=lean agenc --light`, or set `light_request = "lean"` in
+config.toml. The environment setting is captured per client session, including
+sessions hosted by the daemon. Set the request options before starting the
+session; its built-in prompt is assembled at startup. Saved effort choices on
+resumed sessions stay in force.
+
+```toml
+light_request = "lean"
+
+[light_request_options]
+tool_result_markers = true
+process_tools = true
+# Enable discovery when the task needs skills, agents, web or MCP tools.
+tool_search = true
+```
+
+Lean announces its reduced tool surface in the TUI and headless event stream.
+Explicitly discovered tools and active interactive planning controls remain
+available. File attachments, images, memory, workspace instructions and critical
+runtime context are preserved. Text context moves into the system message;
+image parts keep their supported provider representation. Workflow reminders
+are omitted, while permissions, budget decisions and recovery instructions
+remain effective. Timing and routine command notices disappear from the
+model's result text; failures, truncation, sandbox advice, cleanup status and
+process handles are retained. The stored transcript keeps the original results.
+
+The lean built-in text is 366 DeepSeek tokens, versus 648 for interactive
+full Light and 660 for headless full Light (cached DeepSeek tokenizer, no special
+tokens, native `deepseek-flash` with empty memory, 2026-11-13). These counts exclude
+session facts, permission text and memory instructions, which are retained.
+The lean tool catalog exposes operational fields that full Light can load
+through search, so its tool schemas can be slightly larger even with shorter
+descriptions. The `full` request retains its existing wire format.
 
 `max_budget_usd` limits the canonical admission ledger for the whole session,
 including concurrent child agents. Completed usage and outstanding reservations
