@@ -20,7 +20,10 @@ export interface LightRequestSession {
   readonly services?: {
     readonly runtimeOptions?: { readonly lightMode?: boolean; readonly simpleMode?: boolean };
     readonly providerEnvironment?: Readonly<Record<string, string | undefined>>;
-    readonly configStore?: { current(): AgenCConfig };
+    readonly configStore?: {
+      current(): AgenCConfig;
+      provenance?(key: string): { readonly scope: string } | undefined;
+    };
   };
 }
 
