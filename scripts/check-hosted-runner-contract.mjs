@@ -14,11 +14,14 @@ const FETCH_TIMEOUT_MS = 30_000;
 // GitHub no longer refreshes often (macos-15 Intel: its stable release of
 // 2026-08-24 had left the first page by 2026-10-22) is still the image the
 // runner serves, so the index is read page by page until every target has a
-// stable release, within a fixed page budget.
+// stable release, within its first ten pages of entries.
 const RELEASE_INDEX_PAGE_SIZE = 100;
-const MAX_RELEASE_INDEX_PAGES = 10;
-function releaseIndexUrl(page) {
-  return `https://api.github.com/repos/actions/runner-images/releases?per_page=${RELEASE_INDEX_PAGE_SIZE}&page=${page}`;
+const RELEASE_INDEX_DEPTH = 10 * RELEASE_INDEX_PAGE_SIZE;
+// Times the whole index is read before giving up on a list that keeps
+// changing between page reads.
+const MAX_RELEASE_INDEX_READS = 3;
+function releaseIndexUrl(page, perPage) {
+  return `https://api.github.com/repos/actions/runner-images/releases?per_page=${perPage}&page=${page}`;
 }
 // GitHub's own rollout feed per image label: the badge source in the
 // actions/runner-images README. It reads {"label":"<deployed>","message":
@@ -560,8 +563,8 @@ async function readBoundedBytes(response, maximumBytes, label) {
   return bytes;
 }
 
-async function fetchReleaseIndexPage(fetchImpl, page) {
-  const url = releaseIndexUrl(page);
+async function fetchReleaseIndexPage(fetchImpl, page, perPage) {
+  const url = releaseIndexUrl(page, perPage);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -617,16 +620,54 @@ function hasStableReleaseForEveryTarget(releases) {
 /**
  * The release index up to the page that holds a stable release of every
  * target. Newer prereleases sort before their image's stable release, so
- * they are already read by then. A release published between two page reads
- * pushes the list down by one, so an entry seen on an earlier page can come
- * back unchanged at the top of the next one; that copy is dropped. A changed
- * copy, or a duplicate within one page, is kept and fails the index checks.
+ * they are already read by then. Offset pages are not a snapshot: a release
+ * deleted between two page reads shifts the list up by one, so the first
+ * entry of the next page slides into a slot already read and is never seen.
+ * Each page after the first is therefore read at a size that makes it start
+ * at or before the last entry of the page before it. If that entry is not on
+ * the page, entries moved past it unseen and the whole index is read again;
+ * if it is, every entry after it on the page follows it in the list as it is
+ * now. A release published between two page reads pushes the list down, so
+ * entries seen on an earlier page come back unchanged near the top of the
+ * next one; those copies are dropped. A changed copy, or a duplicate within
+ * one page, is kept and fails the index checks.
  */
 async function fetchOfficialReleaseIndex(fetchImpl) {
+  for (let read = 1; read <= MAX_RELEASE_INDEX_READS; read += 1) {
+    const releases = await readOfficialReleaseIndex(fetchImpl);
+    if (releases !== null) return releases;
+  }
+  fail("official runner release index kept changing while its pages were read");
+}
+
+/**
+ * The page that holds position `read - 1`, the last entry already read, and
+ * reaches furthest past it: GitHub pages start at a multiple of their size.
+ */
+function releaseIndexPageAfter(read) {
+  let best;
+  for (let perPage = RELEASE_INDEX_PAGE_SIZE; perPage > 1; perPage -= 1) {
+    const page = Math.floor((read - 1) / perPage) + 1;
+    if (best === undefined || page * perPage > best.page * best.perPage) {
+      best = { page, perPage };
+    }
+  }
+  return best;
+}
+
+/** One pass over the index pages, or null if entries moved past a page end. */
+async function readOfficialReleaseIndex(fetchImpl) {
   const releases = [];
   const seen = new Map();
-  for (let page = 1; page <= MAX_RELEASE_INDEX_PAGES; page += 1) {
-    const batch = await fetchReleaseIndexPage(fetchImpl, page);
+  let read = 0;
+  let lastTag;
+  while (read < RELEASE_INDEX_DEPTH) {
+    const { page, perPage } =
+      read === 0 ? { page: 1, perPage: RELEASE_INDEX_PAGE_SIZE } : releaseIndexPageAfter(read);
+    const batch = await fetchReleaseIndexPage(fetchImpl, page, perPage);
+    if (read > 0 && !batch.some((release) => release?.tag_name === lastTag)) {
+      return null;
+    }
     for (const release of batch) {
       const earlier =
         typeof release?.tag_name === "string" ? seen.get(release.tag_name) : undefined;
@@ -645,12 +686,9 @@ async function fetchOfficialReleaseIndex(fetchImpl) {
         seen.set(release.tag_name, release);
       }
     }
-    if (
-      batch.length < RELEASE_INDEX_PAGE_SIZE ||
-      hasStableReleaseForEveryTarget(releases)
-    ) {
-      break;
-    }
+    if (batch.length < perPage || hasStableReleaseForEveryTarget(releases)) break;
+    lastTag = batch.at(-1)?.tag_name;
+    read = page * perPage;
   }
   return releases;
 }

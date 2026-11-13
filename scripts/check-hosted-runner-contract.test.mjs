@@ -125,15 +125,19 @@ const ROLLOUT_FEED =
   "https://gist.githubusercontent.com/hosted-runners-images-bot/79267492faab096d04cdd25ce7014cec/raw/";
 
 const RELEASE_INDEX_PAGE =
-  /^https:\/\/api\.github\.com\/repos\/actions\/runner-images\/releases\?per_page=100&page=(\d+)$/u;
+  /^https:\/\/api\.github\.com\/repos\/actions\/runner-images\/releases\?per_page=(\d+)&page=(\d+)$/u;
 
 /**
- * `releases` is the first index page; `laterPages` are pages 2, 3 and so on.
- * Requested index pages are recorded in `fetch.indexPages`.
+ * The release index is `releases` followed by `laterPages`, served at any
+ * page size. `releases` can instead be a function from the 1-based number of
+ * an index request to the whole list, for a list that changes between reads.
+ * Each index request is recorded in `fetch.indexReads` as the [start, end)
+ * positions it asked for.
  */
 function fixtureFetch(toolchain, releases = fixtureReleaseIndex(), rolloutFeeds = {}, laterPages = []) {
-  const pages = [releases, ...laterPages];
-  const indexPages = [];
+  const listForRead =
+    typeof releases === "function" ? releases : () => [releases, ...laterPages].flat();
+  const indexReads = [];
   const bodies = new Map();
   for (const [file, text] of Object.entries(rolloutFeeds)) {
     bodies.set(`${ROLLOUT_FEED}${file}`, text);
@@ -147,10 +151,13 @@ function fixtureFetch(toolchain, releases = fixtureReleaseIndex(), rolloutFeeds 
     }
   }
   const fetchImpl = async (url) => {
-    const page = RELEASE_INDEX_PAGE.exec(url)?.[1];
-    if (page !== undefined) {
-      indexPages.push(Number(page));
-      const text = JSON.stringify(pages[Number(page) - 1] ?? []);
+    const index = RELEASE_INDEX_PAGE.exec(url);
+    if (index !== null) {
+      const perPage = Number(index[1]);
+      const start = (Number(index[2]) - 1) * perPage;
+      indexReads.push([start, start + perPage]);
+      const body = listForRead(indexReads.length).slice(start, start + perPage);
+      const text = JSON.stringify(body);
       return new Response(text, {
         status: 200,
         headers: { "Content-Length": String(Buffer.byteLength(text)) },
@@ -163,7 +170,7 @@ function fixtureFetch(toolchain, releases = fixtureReleaseIndex(), rolloutFeeds 
       headers: { "Content-Length": String(Buffer.byteLength(text)) },
     });
   };
-  fetchImpl.indexPages = indexPages;
+  fetchImpl.indexReads = indexReads;
   return fetchImpl;
 }
 
@@ -367,7 +374,7 @@ test("reads later index pages until every target has a stable release", async ()
     verified.map(({ target }) => target),
     ["darwin-arm64", "darwin-x64", "win-x64"],
   );
-  assert.deepEqual(fetchImpl.indexPages, [1, 2]);
+  assert.deepEqual(fetchImpl.indexReads, [[0, 100], [99, 198]]);
 });
 
 test("stops at the page budget when a target has no stable release", async () => {
@@ -379,7 +386,16 @@ test("stops at the page budget when a target has no stable release", async () =>
     verifyHostedRunnerInventories({ toolchain, fetchImpl }),
     /official runner release index has no stable macos-15\/ release/u,
   );
-  assert.deepEqual(fetchImpl.indexPages, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  // Each read after the first starts at or before the last entry of the one
+  // before it, and together they cover the first 1000 entries.
+  const reads = fetchImpl.indexReads;
+  assert.deepEqual(reads[0], [0, 100]);
+  for (let index = 1; index < reads.length; index += 1) {
+    assert.ok(reads[index][0] <= reads[index - 1][1] - 1, `read ${index} overlaps the one before it`);
+    assert.ok(reads[index][1] > reads[index - 1][1], `read ${index} moves past the one before it`);
+  }
+  assert.equal(reads.at(-1)[1], 1000);
+  assert.equal(reads.length, 11);
 });
 
 test("stops at a short last page", async () => {
@@ -392,17 +408,20 @@ test("stops at a short last page", async () => {
     verifyHostedRunnerInventories({ toolchain, fetchImpl }),
     /official runner release index has no stable macos-15\/ release/u,
   );
-  assert.deepEqual(fetchImpl.indexPages, [1, 2]);
+  assert.deepEqual(fetchImpl.indexReads, [[0, 100], [99, 198]]);
 });
 
 test("drops a release that moved to the next page while the pages were read", async () => {
   const toolchain = fixtureToolchain();
   const [arm64, intel, windows] = fixtureReleaseIndex();
   const firstPage = [arm64, windows, ...otherImageReleases(98)];
-  const shifted = { ...firstPage.at(-1) };
-  const fetchImpl = fixtureFetch(toolchain, firstPage, {}, [[shifted, intel]]);
+  const published = otherImageReleases(1, 900)[0];
+  const fetchImpl = fixtureFetch(toolchain, (read) =>
+    read === 1 ? [...firstPage, intel] : [published, ...firstPage, intel],
+  );
   const verified = await verifyHostedRunnerInventories({ toolchain, fetchImpl });
   assert.equal(verified.length, 3);
+  assert.deepEqual(fetchImpl.indexReads, [[0, 100], [99, 198]]);
 });
 
 test("still rejects a release repeated on one page or changed on the next", async () => {
@@ -423,4 +442,62 @@ test("still rejects a release repeated on one page or changed on the next", asyn
     }),
     /official runner release index duplicated macos-15-arm64\/20260727\.0256/u,
   );
+});
+
+// Releases deleted between two page reads shift the list up: after two
+// deletions the first entry of page 2 sits in a slot of page 1 that the
+// one-entry overlap does not read again.
+test("reads the index again when releases are deleted between page reads", async () => {
+  const toolchain = fixtureToolchain();
+  const [arm64, intel, windows] = fixtureReleaseIndex();
+  const deleted = otherImageReleases(2, 500);
+  const rest = [arm64, windows, ...otherImageReleases(96, 2), intel, ...otherImageReleases(100, 98)];
+  const fetchImpl = fixtureFetch(toolchain, (read) => (read === 1 ? [...deleted, ...rest] : rest));
+  const verified = await verifyHostedRunnerInventories({ toolchain, fetchImpl });
+  assert.deepEqual(
+    verified.map(({ target }) => target),
+    ["darwin-arm64", "darwin-x64", "win-x64"],
+  );
+  assert.deepEqual(fetchImpl.indexReads, [[0, 100], [99, 198], [0, 100]]);
+});
+
+// A release before the page boundary is deleted before page 2 is read, and an
+// unrelated release is published before the next index request. The entry
+// that ended page 1 is back in its slot by then, but the newer Intel stable
+// release that slid into that slot was never read.
+test("reads the index again when a deletion and a publish meet between page reads", async () => {
+  const toolchain = fixtureToolchain();
+  const [arm64, intel, windows] = fixtureReleaseIndex();
+  const newerIntel = { ...intel, tag_name: "macos-15/20260901.0100" };
+  const deleted = otherImageReleases(1, 500)[0];
+  const published = otherImageReleases(1, 900)[0];
+  const original = [
+    arm64,
+    windows,
+    deleted,
+    ...otherImageReleases(97),
+    newerIntel,
+    intel,
+    ...otherImageReleases(100, 97),
+  ];
+  const afterDelete = original.filter((release) => release !== deleted);
+  const lists = [original, afterDelete, [published, ...afterDelete]];
+  const fetchImpl = fixtureFetch(toolchain, (read) => lists[Math.min(read, lists.length) - 1]);
+  await assert.rejects(
+    verifyHostedRunnerInventories({ toolchain, fetchImpl }),
+    /darwin-x64 is missing active official runner image 20260901\.0100\.\*/u,
+  );
+});
+
+test("gives up when the index keeps changing between page reads", async () => {
+  const toolchain = fixtureToolchain();
+  const [arm64, intel, windows] = fixtureReleaseIndex();
+  const deleted = otherImageReleases(1)[0];
+  const rest = [arm64, windows, ...otherImageReleases(97, 1), intel, ...otherImageReleases(99, 98)];
+  const fetchImpl = fixtureFetch(toolchain, (read) => (read % 2 === 1 ? [deleted, ...rest] : rest));
+  await assert.rejects(
+    verifyHostedRunnerInventories({ toolchain, fetchImpl }),
+    /official runner release index kept changing while its pages were read/u,
+  );
+  assert.equal(fetchImpl.indexReads.length, 6);
 });
