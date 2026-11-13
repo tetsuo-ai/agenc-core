@@ -19,6 +19,7 @@ export function leanLightEffort(input: {
   readonly configuredEffort?: ReasoningEffort;
   readonly followsModelDefault: boolean;
 }): ReasoningEffort | undefined {
-  return input.turnEffort ?? input.configuredEffort ??
-    (input.enabled && !input.followsModelDefault ? "low" : undefined);
+  if (input.turnEffort !== undefined) return input.turnEffort;
+  if (input.followsModelDefault) return undefined;
+  return input.configuredEffort ?? (input.enabled ? "low" : undefined);
 }

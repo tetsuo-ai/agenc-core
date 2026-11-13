@@ -193,6 +193,23 @@ describe("lean effort and visibility", () => {
       workspaceRoot: "/workspace", model: "deepseek-flash", provider: "deepseek", defaultReasoningEffort: "low" });
     expect(configuration.collaborationMode.reasoningEffort).toBe("low");
   });
+
+  test.each(["session", "skill"])("a %s model-default choice suppresses explicitly configured effort", async choice => {
+    const configStore = createTestConfigStore({ base: {
+      model_provider: "deepseek", light_request: "lean", reasoning_effort: "high",
+    } });
+    await configStore.reload();
+    const { session, state } = mkSession({ services: { configStore, runtimeOptions: { lightMode: true } as never } });
+    Object.assign(session.services.provider, { name: "deepseek" });
+    const ctx = mkCtx({ modelInfo: { ...session.modelInfo, slug: "deepseek-flash", supportedReasoningLevels: ["low", "high", "max"] } });
+    if (choice === "session") state.sessionConfiguration = { ...state.sessionConfiguration, reasoningEffortCleared: true };
+    const turn = choice === "skill" ? { ...ctx, skillInvocation: {
+      name: "review", requested: { effort: "model_default" }, effort: "model_default" as const, allowedTools: [],
+    } } : ctx;
+    expect(resolveMainLoopReasoningEffort(session, turn)).toBeUndefined();
+    // A concrete per-turn choice still outranks a previously cleared session default.
+    expect(resolveMainLoopReasoningEffort(session, { ...turn, reasoningEffort: "max" })).toBe("max");
+  });
 });
 
 test("without process tools exec cannot escape the foreground call", async () => {
