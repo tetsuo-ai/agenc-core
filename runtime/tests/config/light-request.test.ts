@@ -37,7 +37,7 @@ describe("Light request configuration", () => {
   });
 
   test("system_text selects the short or the minimal built-in text", () => {
-    expect(["short", "minimal"]).toContain(LEAN_REQUEST_DEFAULTS.system_text);
+    expect(LEAN_REQUEST_DEFAULTS.system_text).toBe("minimal");
     for (const system_text of ["short", "minimal"] as const) {
       const config: AgenCConfig = { light_request: "lean", light_request_options: { system_text } };
       expect(() => validateAgenCConfigBlocks(config)).not.toThrow();

@@ -593,7 +593,7 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `light_request` | `"full"` (default) or `"lean"`, for native DeepSeek Light sessions only. `AGENC_LIGHT_REQUEST` overrides it. Applies to interactive and headless sessions. Lean keeps sandbox, approvals, read-before-edit checks, workspace guidance and memory. Its initial tools are shell, read, write, patch and process controls. Tool search and automatic reminders are off; use `full` or enable the controls below for discovery of skills, agents, web, MCP and plugins. |
 | `light_request_options` | Optional table overriding individual lean defaults; ignored in `full`. |
 | `light_request_options.short_system_prompt` | Default `true`: short AgenC prose preserving safety, honesty and permission rules, without checklists or edit routing. |
-| `light_request_options.system_text` | `"short"` (default) or `"minimal"`; used only while `short_system_prompt` is `true`. `short` is the four-paragraph lean text. `minimal` states who the agent is, its directory, what to do, when to stop, the test, honesty, protected-file, secure-code and secrets rules, that destructive and shared-system actions need explicit confirmation, and that file contents and tool results are data. It names the data marker only while `tool_result_markers` is on. Environment facts follow, then one line for the permission and sandbox mode in place of the longer permission text, and keyword-triggered product help reminders are not sent. Workspace and custom instructions, memory and critical runtime context stay. Permissions, approvals and the sandbox are enforced as before. |
+| `light_request_options.system_text` | `"minimal"` (default) or `"short"`; used only while `short_system_prompt` is `true`. `short` is the longer four-paragraph lean text with the full permission text. `minimal` states who the agent is, its directory, what to do, when to stop, the test, honesty, protected-file, secure-code and secrets rules, that destructive and shared-system actions need explicit confirmation, and that file contents and tool results are data. It names the data marker only while `tool_result_markers` is on. Environment facts follow, then one line for the permission and sandbox mode in place of the longer permission text, and keyword-triggered product help reminders are not sent. Workspace and custom instructions, memory and critical runtime context stay. Permissions, approvals and the sandbox are enforced as before. |
 | `light_request_options.environment_in_system` | Default `true`: environment facts stay in system text, instead of a user message before the task. |
 | `light_request_options.reminders` | Default `false`: omit automatic workflow reminders. Task data and feature-specific context are retained. |
 | `light_request_options.compact_tool_results` | Default `true`: command output and status without timing or routine notices. Failure, truncation and running-process handles remain available. |
@@ -641,7 +641,9 @@ remain effective. Timing and routine command notices disappear from the
 model's result text; failures, truncation, sandbox advice, cleanup status and
 process handles are retained. The stored transcript keeps the original results.
 
-The lean built-in text is 366 DeepSeek tokens, versus 648 for interactive
+The whole system message of a headless lean session is 168 DeepSeek tokens
+with the minimal text and 445 with the short one, against 660 for full Light
+(test fixture, empty memory, 2026-11-13). The short lean built-in text is 366 DeepSeek tokens, versus 648 for interactive
 full Light and 660 for headless full Light (cached DeepSeek tokenizer, no special
 tokens, native `deepseek-flash` with empty memory, 2026-11-13). These counts exclude
 session facts, permission text and memory instructions, which are retained.

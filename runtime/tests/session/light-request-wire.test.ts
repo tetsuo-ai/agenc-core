@@ -79,7 +79,7 @@ test.each([false, true])("full native DeepSeek with bound model, headless=%s", a
 
 
 test.each([false, true])("lean native DeepSeek HTTP bytes, headless=%s", async nonInteractive => {
-  const bytes = await captureLightRequest("lean", nonInteractive);
+  const bytes = await captureLightRequest("lean", nonInteractive, { system_text: "short" });
   const body = JSON.parse(bytes);
   expect(body.reasoning_effort).toBe("low");
   expect(body.messages.filter((m: { role: string }) => m.role === "user")).toEqual([{ role: "user", content: "Fix the failing test." }]);
@@ -93,7 +93,7 @@ test.each([false, true])("lean native DeepSeek HTTP bytes, headless=%s", async n
 
 
 test.each([false, true])("lean initial streaming HTTP bytes, headless=%s", async nonInteractive => {
-  const bytes = await captureLightRequest("lean", nonInteractive, {}, { toolRound: false, stream: true });
+  const bytes = await captureLightRequest("lean", nonInteractive, { system_text: "short" }, { toolRound: false, stream: true });
   const body = JSON.parse(bytes);
   expect(body.stream).toBe(true);
   expect(body.messages.map((m: { role: string }) => m.role)).toEqual(["system", "user"]);
@@ -131,7 +131,7 @@ test.each([false, true])("lean minimal system text HTTP bytes, headless=%s", asy
   expect(body.reasoning_effort).toBe("low");
   expect(body.tools.map((t: { function: { name: string } }) => t.function.name)).toEqual(["exec_command", "write_stdin", "kill_process", "FileRead", "Write", "apply_patch"]);
   // Shorter than the short lean text of the same session.
-  const short = JSON.parse(await captureLightRequest("lean", nonInteractive, {}, { projectInstructions: "" }));
+  const short = JSON.parse(await captureLightRequest("lean", nonInteractive, { system_text: "short" }, { projectInstructions: "" }));
   expect(Buffer.byteLength(system)).toBeLessThan(Buffer.byteLength(short.messages[0].content) - 1300);
   expect(bytes).toMatchSnapshot();
 });
@@ -144,9 +144,12 @@ test("lean minimal keeps workspace instructions and omits the marker name withou
   expect(plain.messages[0].content).not.toContain("AGENC_DATA");
 });
 
-test("the short lean text is the default and ignores system_text under the full prose", async () => {
+test("the minimal lean text is the default; short is selectable; the full prose ignores system_text", async () => {
   const standard = await captureLightRequest("lean", true);
-  expect(await captureLightRequest("lean", true, { system_text: "short" })).toBe(standard);
+  expect(await captureLightRequest("lean", true, { system_text: "minimal" })).toBe(standard);
+  const short = JSON.parse(await captureLightRequest("lean", true, { system_text: "short" }));
+  expect(short.messages[0].content).toContain("Local reversible work needs no confirmation.");
+  expect(short.messages[0].content).toContain("No approver: approval requests are denied.");
   const fullProse = JSON.parse(await captureLightRequest("lean", true, { system_text: "minimal", short_system_prompt: false }));
   expect(fullProse.messages[0].content).toContain("No approver: approval requests are denied.");
   expect(fullProse.messages[0].content).not.toContain("You work in the directory");

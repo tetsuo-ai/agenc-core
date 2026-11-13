@@ -14,7 +14,8 @@ export const LEAN_REQUEST_DEFAULTS: Readonly<Required<LightRequestOptions>> = Ob
   process_tools: true,
   compact_tool_definitions: true,
   low_effort: true,
-  system_text: "short",
+  // Measured in job lean12: minimal keeps the saving on workflow-engine at the control's score.
+  system_text: "minimal",
 });
 
 export interface LightRequestSession {
