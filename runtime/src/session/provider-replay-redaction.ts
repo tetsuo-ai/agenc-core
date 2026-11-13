@@ -1,3 +1,4 @@
+import { decodeDeepSeekWebReplay, encodeDeepSeekWebReplay } from "../llm/wire/deepseek-web-tools.js";
 import { isCanonicalBase64Body } from "../llm/content-conversion.js";
 import { redactSecretsInValue } from "../secrets/sanitizer.js";
 
@@ -87,6 +88,24 @@ function redactReplay(
   value: unknown,
   redact: typeof redactSecretsInValue,
 ): unknown {
+  if (record(value) && value.version === 2 && value.provider === "deepseek" && typeof value.content === "string") {
+    const replay = decodeDeepSeekWebReplay(value.content);
+    if (replay !== undefined) {
+      const safe = redact(replay);
+      // A page signature is provider ciphertext, not a credential. Restore only
+      // this explicit protocol slot; all text, URLs and other fields stay redacted.
+      replay.server_tool_calls?.forEach((step, stepIndex) => {
+        const safeStep = safe.server_tool_calls?.[stepIndex];
+        if (!Array.isArray(step.calls) || !Array.isArray(safeStep?.calls)) return;
+        step.calls.forEach((call: unknown, callIndex: number) => {
+          const target: unknown = (safeStep.calls as unknown[])[callIndex];
+          if (record(call) && record(target) && call.type === "deepseek_read_url" && call.kind === "read_link" &&
+              typeof call.signature === "string" && isEncryptedBase64(call.signature)) target.signature = call.signature;
+        });
+      });
+      return { ...redact(value), content: encodeDeepSeekWebReplay({ ...safe }) };
+    }
+  }
   const geminiParts = signedGeminiParts(value);
   const items = geminiParts ?? encryptedItems(value);
   if (!items) return undefined;
@@ -112,9 +131,9 @@ export function redactDurableSecrets<T>(
     if (!record(original) || !record(target) || original.role !== "assistant") return;
     const replay = original[key];
     if (!record(replay) || replay.version !== 2 ||
-        (replay.provider !== "grok" && replay.provider !== "gemini")) return;
+        (replay.provider !== "grok" && replay.provider !== "gemini" && replay.provider !== "deepseek")) return;
     const safe = redactReplay(replay, redact);
-    if (safe === undefined && replay.provider === "gemini") return;
+    if (safe === undefined && (replay.provider === "gemini" || replay.provider === "deepseek")) return;
     if (safe === undefined) delete target[key];
     else target[key] = safe;
   };

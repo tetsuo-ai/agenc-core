@@ -643,6 +643,9 @@ const COST_TIER_DEEPSEEK_V4_PRO: Readonly<ModelCostEntry> = Object.freeze({
 // calls cost half; these estimates are not authoritative managed-credit usage.
 // https://api-docs.deepseek.com/quick_start/pricing/
 const COST_TIER_DEEPSEEK_V41_FLASH_NATIVE: Readonly<ModelCostEntry> = Object.freeze({
+  // App tools: billed text/image queries and fetched pages all cost $0.00075.
+  // The wire maps their billable counts into webSearchRequests, never display counts.
+  webSearchUsdPerRequest: 0.00075,
   inputUsdPer1K: 0.0003,
   outputUsdPer1K: 0.0012,
   cachedInputUsdPer1K: 0.000006,
@@ -2890,7 +2893,7 @@ export class CostSidecar implements Sidecar {
       }
       if (usage.webSearchRequests > 0) {
         usageParts.push(
-          `${formatTokenCount(usage.webSearchRequests)} web search`,
+          `${formatTokenCount(usage.webSearchRequests)} ${usage.provider === "deepseek" ? "web tools" : "web search"}`,
         );
       }
       return `${label}: ${usageParts.join(", ")} (${formatUsdCost(cost)})`;

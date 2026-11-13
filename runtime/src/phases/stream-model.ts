@@ -117,6 +117,7 @@ export interface StreamModelRequestContract {
   readonly contextWindowTokens?: number;
   readonly maxOutputTokens?: number;
   readonly skipCacheWrite?: boolean;
+  readonly deepSeekAppTools?: boolean;
 }
 
 type AdmittedModelAttempt = "primary" | "prewarm" | "prewarm_fallback";
@@ -325,6 +326,7 @@ export function buildProviderOptions(
       : {}),
     tools: transferToolOwnership ? request.tools : cloneProviderTools(request.tools),
     parallelToolCalls: request.parallelToolCalls,
+    ...(request.deepSeekAppTools === true ? { deepSeekAppTools: true } : {}),
     ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
     ...(request.systemPromptLayout !== undefined
       ? { systemPromptLayout: request.systemPromptLayout }
@@ -348,7 +350,7 @@ export function buildProviderOptions(
       : {}),
     toolRouting: { allowedToolNames },
     reasoningEffort: resolveMainLoopReasoningEffort(session, ctx),
-    ...((request.reasoningOnlyRecovery === true ||
+    ...(request.deepSeekAppTools !== true && (request.reasoningOnlyRecovery === true ||
       (request.reasoningCapSample?.kind === "extra" && session.config?.reasoningCapPolicy === "streak2" &&
         request.reasoningCapTarget?.provider === session.services.provider.name &&
         request.reasoningCapTarget.model === model)) && supportsThinkingOffRecovery(
