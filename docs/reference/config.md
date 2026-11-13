@@ -632,7 +632,9 @@ tool_search = true
 Lean announces its reduced tool surface in the TUI and headless event stream.
 Explicitly discovered tools and active interactive planning controls remain
 available. File attachments, images, memory, workspace instructions and critical
-runtime context are preserved. Text context moves into the system message;
+runtime context are preserved. Text context present before the first request
+moves into the system message; context that arrives later, such as changed-file
+notices, stays in the conversation so the system message never changes during a run;
 image parts keep their supported provider representation. Workflow reminders
 are omitted, while permissions, budget decisions and recovery instructions
 remain effective. Timing and routine command notices disappear from the

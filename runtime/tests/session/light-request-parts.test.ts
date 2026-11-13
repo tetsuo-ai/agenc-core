@@ -263,3 +263,22 @@ describe("lean tool lines state what the tools can do", () => {
     expect(line("Write")).toContain("Create or replace a whole file");
   });
 });
+
+describe("lean system message stays fixed during a run", () => {
+  test.each(["short", "minimal"] as const)("context that arrives after the first request stays in place, %s", system_text => {
+    const options = { ...defaults, system_text };
+    const early: LLMMessage = { role: "user", content: "<system-reminder>The user denied publishing.</system-reminder>", runtimeOnly: { attachmentKind: "critical_system_reminder" } };
+    const task: LLMMessage = { role: "user", content: "Fix it." };
+    const call: LLMMessage = { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "exec_command", arguments: "{}" }] };
+    const result: LLMMessage = { role: "tool", toolCallId: "c1", content: "[exit 0]" };
+    const changed: LLMMessage = { role: "user", content: '<workspace_data origin="changed file: /work/a.mjs">1\tconst a = 1;</workspace_data>', runtimeOnly: { attachmentKind: "changed_files" } };
+    const late: LLMMessage = { role: "user", content: "<system-reminder>auto</system-reminder>", runtimeOnly: { attachmentKind: "auto_mode" } };
+    const first = leanLightMessages([early, task], "Head", options);
+    const second = leanLightMessages([early, task, call, result, changed, late], "Head", options);
+    expect(first.instructions).toContain("The user denied publishing.");
+    // Byte-identical system text and prefix: the provider's prefix cache still matches.
+    expect(second.instructions).toBe(first.instructions);
+    expect(second.messages.slice(0, first.messages.length)).toEqual(first.messages);
+    expect(second.messages).toEqual([task, call, result, changed]);
+  });
+});
