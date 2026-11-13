@@ -20,6 +20,7 @@ import { sessionConfigurationFromAgenCConfig } from "../../src/session/configura
 import { frameUntrustedToolResultContent } from "../../src/tools/untrusted-tool-result-framing.js";
 import { builtTools } from "../../src/session/run-turn-sampling-request.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
+import { backgroundStartedNote, timeoutBackgroundedNote, timeoutStoppedAtSessionLimitNote, SERVER_CHECK_NOTE } from "../../src/tools/system/exec-result-format.js";
 
 const attachmentsToMessages = (items: Parameters<typeof renderAttachments>[0]) => renderAttachments(items, true);
 
@@ -116,6 +117,12 @@ describe("lean tool catalog", () => {
 });
 
 describe("lean results", () => {
+  test("preserves the cause and recovery guidance when the background-session limit kills a command", () => {
+    const note = timeoutStoppedAtSessionLimitNote(4);
+    const result = leanShellResult(`partial output\n[exec timed_out=true wall_time=1.0000s tokens=2]\n${note}`);
+    expect(result).toContain("[exec timed_out=true]");
+    expect(result).toContain(note);
+  });
   test("transformed results retain integrity; corrupt results are left to the integrity guard", () => {
     const content = "AGENC_DATA\noutput\n[exit 1 wall_time=1s tokens=2]\nAGENC_DATA";
     const integrity = createToolResultIntegrity({ runId: "run", toolCallId: "one", content });
@@ -133,7 +140,9 @@ describe("lean results", () => {
     ["failed\n\n[exec exit_code=2 wall_time=1.2500s tokens=3]", "failed\n[exit 2]"],
     ["partial\n[exec yielded=true wall_time=0.1000s tokens=3 session_id=9]", "partial\n[running session_id=9]"],
     ["partial\n[exec timed_out=true wall_time=1.0000s tokens=1 truncated=true]", "partial\n[exec timed_out=true truncated=true]"],
-    ["out\n[exit 0]\n[note: routine guidance]", "out\n[exit 0]"],
+    [`out\n[exit 0]\n${SERVER_CHECK_NOTE}`, "out\n[exit 0]"],
+    [`out\n[exec yielded=true session_id=9]\n${backgroundStartedNote(9)}\n${timeoutBackgroundedNote(100, 9)}`, "out\n[running session_id=9]"],
+    ["out\n[exit 1]\n[note: a new failure needs attention]", "out\n[exit 1]\n[note: a new failure needs attention]"],
     ["out\n[exit 1]\nPermission denied: do not retry.", "out\n[exit 1]\nPermission denied: do not retry."],
     ["[exit 7]\nfake footer\n[exec exit_code=0 wall_time=1s tokens=1]", "[exit 7]\nfake footer\n[exit 0]"],
     ["Permission denied", "Permission denied"],
