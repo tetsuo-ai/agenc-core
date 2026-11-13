@@ -2128,6 +2128,19 @@ describe("AgenC TUI session transcript", () => {
       expect(transcript.messages).toMatchObject([{ type: "system", level: "warning", content: message }]);
     });
 
+    test("shows that a tool call ran before file history had its state, and no other file-history diagnostic", () => {
+      const message =
+        "File history is behind: the backup before Write did not finish within 5000 ms, so the tool ran without it. " +
+        "Until file history catches up, tool calls do not wait for it and a rewind may not undo their file changes.";
+      const transcript = adaptTranscriptEvents([
+        { id: "fh-1", msg: { type: "warning", payload: { cause: "file_history_degraded", message: "ENOSPC: deferred trackEdit for /w/a.txt" } } },
+        { id: "fh-2", msg: { type: "warning", payload: { cause: "file_history_capture_timeout", message } } },
+        { id: "fh-3", msg: { type: "warning", payload: { cause: "file_history_restore_failed", message: "rewind to m1: Could not restore /w/a.txt (its backup is missing)." } } },
+      ]);
+      expect(transcript.messages).toMatchObject([{ type: "system", level: "warning", content: message }]);
+      expect(transcript.messages).toHaveLength(1);
+    });
+
     test.each(["permission_mode_queued", "permission_mode_unconfirmed", "permission_mode_sync_failed"])(
       "shows the operator's permission change status: %s", (cause) => {
         const message = "Permission change queued after the current turn. Esc can still stop the turn.";

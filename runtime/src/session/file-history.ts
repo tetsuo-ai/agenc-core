@@ -17,42 +17,70 @@
  * On-disk layout:
  *
  *   ~/.agenc/projects/<slug>/file-history/
- *     <pathHash>/
- *       v1                              # original contents
- *       v2                              # after first edit
- *       v3                              # etc
+ *     session-<sessionHash>/            # one directory per conversation
+ *       snapshots.json                  # published snapshot index
+ *       <pathHash>/                     # one directory per tracked file
+ *         v1-<uuid>                     # contents when first tracked
+ *         v2-<uuid>                     # contents after a later change
  *
- * `pathHash` is a short hex digest of the absolute file path. The
- * backup files are content-addressable within a tracked file (same
- * hash → same content), so parallel edits to the same path never
- * corrupt each other.
+ * `sessionHash` and `pathHash` are the first 16 hex digits of the
+ * SHA-256 of the session id and of the absolute file path. An engine
+ * created without a session id writes no index and keeps the
+ * `<pathHash>` directories directly under `file-history/`.
+ *
+ * Backups are not content-addressed. Every backup is a new file with a
+ * unique name (`v<version>-<uuid>`) that is never written again, and a
+ * snapshot entry names its backup by absolute path. A snapshot copies
+ * only the files whose content changed since their latest backup; for
+ * an unchanged file it repeats the previous entry, so consecutive
+ * snapshots can share one backup file.
+ *
+ * A backup is deleted once no retained snapshot names it. Eviction at
+ * the cap collects the backups that only evicted snapshots named; they
+ * are unlinked after the index that no longer lists them is on disk,
+ * and not while a rewind or preview is reading. Nothing lists or sweeps
+ * the directory, so a backup orphaned by a crash stays until the whole
+ * `session-<sessionHash>` directory goes: session retention
+ * (`state/pruning.ts`) removes it together with the session.
  *
  * @module
  */
 
-import type { Stats } from "node:fs";
+import {
+  createReadStream,
+  createWriteStream,
+  statSync,
+  type Stats,
+} from "node:fs";
 import {
   copyFile,
+  lstat,
   mkdir,
   open,
   readFile,
   rename,
   rm,
+  rmdir,
   stat,
-  writeFile,
+  unlink,
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { syncDirectory } from "../utils/durable-atomic-file.js";
 import { collectShellWorkspaceMutationTargets } from "../llm/shell-write-policy.js";
 import { monotonicMs } from "./_deps/utils.js";
 import { DegradedStore } from "./degraded-store.js";
 import type { Event } from "./event-log.js";
+import { fileHistorySessionDirName } from "./file-history-paths.js";
 import type { RolloutItem } from "./rollout-item.js";
 import { isDegradedErrno } from "./session-store.js";
 import type { Sidecar } from "./sidecar.js";
 
 const MAX_SNAPSHOTS = 100;
+
+/** File name of a backup, as `createBackup` writes it: `v<version>-<uuid>`. */
+const BACKUP_FILE_NAME = /^v\d+-[0-9a-f-]{36}$/;
 
 export type BackupFileName = string | null;
 
@@ -61,8 +89,10 @@ export interface FileHistoryBackup {
   readonly version: number;
   readonly backupTimeMs: number;
   /** Per-snapshot diff stats against the previous version. Undefined
-   *  on v1 (no prior version to diff against) and when the file was
-   *  newly created (backupFileName === null). */
+   *  on v1 (no prior version to diff against), when the file was
+   *  newly created (backupFileName === null), and when the entry
+   *  repeats the previous snapshot's backup because the file did not
+   *  change. */
   readonly diffStats?: DiffStats;
 }
 
@@ -96,6 +126,27 @@ export interface FileHistoryRewindPreview {
   readonly perFile: Readonly<Record<string, DiffStats>>;
 }
 
+/**
+ * What a rewind did, and what it could not do. The rewind is complete when
+ * `notRestored` is empty.
+ */
+export interface FileHistoryRewindResult {
+  /** The files whose state on disk the rewind changed, in tracking order. */
+  readonly changed: ReadonlyArray<string>;
+  /** The files that could not be put back, each with the reason. */
+  readonly notRestored: ReadonlyArray<{
+    readonly path: string;
+    readonly reason: string;
+  }>;
+  /**
+   * The files that exist although the target records them as absent, and
+   * that were left in place because a file could not be put back. One of
+   * them may hold the only copy of that file's content: a move is recorded
+   * as its source, to put back, and its destination, to remove.
+   */
+  readonly notRemoved: ReadonlyArray<string>;
+}
+
 export interface FileHistoryState {
   readonly snapshots: ReadonlyArray<FileHistorySnapshot>;
   readonly trackedFiles: ReadonlySet<string>;
@@ -121,11 +172,33 @@ function emptyFileHistoryState(): FileHistoryState {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Path hashing (content-addressable backup dir per tracked file)
+// Path hashing (one backup directory per tracked file, named by its path)
 // ─────────────────────────────────────────────────────────────────────
 
 function pathHash(absPath: string): string {
   return createHash("sha256").update(absPath).digest("hex").slice(0, 16);
+}
+
+/** Content of one backup file: its SHA-256 (hex) and its size in bytes. */
+interface BackupDigest {
+  readonly sha256: string;
+  readonly size: number;
+}
+
+/**
+ * SHA-256 (hex) of a file's bytes. The file is read as a stream, so
+ * memory use stays fixed and there is no size limit. Returns `null` on
+ * any error. Only pass regular files: opening a FIFO can block forever.
+ */
+export async function sha256OfFile(filePath: string): Promise<string | null> {
+  try {
+    const hash = createHash("sha256");
+    const chunks: AsyncIterable<Buffer> = createReadStream(filePath);
+    for await (const chunk of chunks) hash.update(chunk);
+    return hash.digest("hex");
+  } catch {
+    return null;
+  }
 }
 
 function countLines(text: string): number {
@@ -249,12 +322,47 @@ export class FileHistory {
   private pending: Promise<void> = Promise.resolve();
   private pendingDiagnostics: Promise<void> = Promise.resolve();
   private readonly withCanonicalBackgroundWork: FileHistoryOptions["withCanonicalBackgroundWork"];
+  /**
+   * Digest of each backup this engine copied or read back, keyed by
+   * `backupFileName`. Lets a snapshot tell that a file still equals its
+   * latest backup without reading the backup again. Never persisted: after
+   * a reload `digestFor` recomputes an entry from the backup file.
+   */
+  private readonly backupDigests = new Map<string, BackupDigest>();
+  /**
+   * True while the index on disk may not match the state: set when the
+   * state changes and when an index write fails, cleared when one
+   * succeeds. A `trackEdits` that changed nothing skips the index write
+   * only while this is clear. Only `indexWritten` clears it, and it empties
+   * `awaitingDurableIndex` in the same step, so the flag also stays set for
+   * as long as a deletion waits for the index.
+   */
+  private needsPersist = false;
+  /**
+   * Backups that only evicted snapshots named. The index on disk may still
+   * list those snapshots, and a reload would then need the files, so they
+   * wait here until an index write succeeds.
+   */
+  private readonly awaitingDurableIndex = new Set<string>();
+  /**
+   * Backups that neither the state nor the index on disk names any more.
+   * A deletion pass unlinks them as soon as no reader is active.
+   */
+  private readonly deletable = new Set<string>();
+  /**
+   * Rewinds and previews in flight. Each works from the state it read when
+   * it started, which can name backups evicted since, so nothing is
+   * unlinked while this is above zero.
+   */
+  private activeReaders = 0;
+  private pruneFailureReported = false;
+  private captureTimeoutReported = false;
 
   constructor(opts: FileHistoryOptions) {
     this.projectDir = opts.projectDir;
     this.historyDir = opts.sessionId === undefined
       ? join(opts.projectDir, "file-history")
-      : join(opts.projectDir, "file-history", `session-${pathHash(opts.sessionId)}`);
+      : join(opts.projectDir, "file-history", fileHistorySessionDirName(opts.sessionId));
     this.statePath = opts.sessionId === undefined ? undefined : join(this.historyDir, "snapshots.json");
     this.maxSnapshots = opts.maxSnapshots ?? MAX_SNAPSHOTS;
     this.enabled = opts.enabled !== false;
@@ -335,7 +443,14 @@ export class FileHistory {
   }
 
   private async persistState(): Promise<void> {
-    if (this.statePath === undefined) return;
+    if (this.statePath === undefined) {
+      // No index on disk, so nothing on disk can lag behind the state.
+      this.indexWritten();
+      return;
+    }
+    // Stays set unless every step below succeeds, so that the next queued
+    // operation retries a failed index write even when it changes nothing.
+    this.needsPersist = true;
     await mkdir(this.historyDir, { recursive: true });
     const tmp = `${this.statePath}.${randomUUID()}.tmp`;
     try {
@@ -348,26 +463,84 @@ export class FileHistory {
       await rename(tmp, this.statePath);
       await syncDirectory(this.historyDir);
     } finally { await rm(tmp, { force: true }); }
+    this.indexWritten();
   }
 
   /**
-   * Call BEFORE a file edit so the current contents are preserved as
-   * v1 (or the current-max-version+1) in the backup store. Idempotent
-   * within the same messageId/snapshot.
+   * The index on disk matches the state. The snapshots it lists are the
+   * retained ones, so a backup that only evicted snapshots named is named
+   * by nothing any more and may be deleted.
    */
-  async trackEdit(filePath: string, messageId: string): Promise<void> {
+  private indexWritten(): void {
+    this.needsPersist = false;
+    for (const backupFileName of this.awaitingDurableIndex) {
+      this.deletable.add(backupFileName);
+    }
+    this.awaitingDurableIndex.clear();
+  }
+
+  /**
+   * End of a queued operation that owes an index write: write the index
+   * and then delete the backups it no longer lists. A failed write rejects
+   * before the deletion pass, so those backups stay where they are.
+   */
+  private async persistAndPrune(): Promise<void> {
+    await this.persistState();
+    await this.deleteUnreferencedBackups();
+  }
+
+  /**
+   * Call BEFORE a file edit so the file's current contents are kept as
+   * its origin: a version 1 backup attached to the most recent snapshot
+   * (a first snapshot keyed by `messageId` is created when there is
+   * none). A file that does not exist is recorded as absent, with no
+   * backup. A path that already has an entry in the most recent snapshot
+   * is left alone, so repeating the call is a no-op.
+   */
+  trackEdit(filePath: string, messageId: string): Promise<void> {
+    return this.trackEdits([filePath], messageId);
+  }
+
+  /**
+   * `trackEdit` for every path in `paths`, in order, as ONE queued
+   * operation, so nothing else on the queue runs between them. The index
+   * is written at most once, after the last path, and only when the state
+   * changed or an earlier index write is still owed.
+   *
+   * `stopAtFirstUnrecorded` is for paths that are only safe to record
+   * together, each one resting on those before it: the operation ends at
+   * the first path that is not on record once its turn is over, and the
+   * paths behind it are not attempted. A path is on record when the most
+   * recent snapshot has an entry for it, from this call or an earlier one;
+   * it is not when its backup failed.
+   */
+  async trackEdits(
+    paths: readonly string[],
+    messageId: string,
+    options?: { readonly stopAtFirstUnrecorded?: boolean },
+  ): Promise<void> {
     return this.enqueue(async () => {
-      await this.trackEditNow(filePath, messageId);
-      await this.persistState();
+      for (const filePath of paths) {
+        if (await this.trackEditNow(filePath, messageId)) {
+          this.needsPersist = true;
+        } else if (
+          options?.stopAtFirstUnrecorded === true &&
+          this.state.snapshots.at(-1)?.trackedFileBackups[filePath] === undefined
+        ) {
+          break;
+        }
+      }
+      if (this.needsPersist) await this.persistAndPrune();
     });
   }
 
-  private async trackEditNow(filePath: string, messageId: string): Promise<void> {
-    if (!this.enabled) return;
+  /** Returns whether the state changed. */
+  private async trackEditNow(filePath: string, messageId: string): Promise<boolean> {
+    if (!this.enabled) return false;
     const mostRecent = this.state.snapshots.at(-1);
     if (mostRecent && mostRecent.trackedFileBackups[filePath]) {
       // Already tracked in the current snapshot.
-      return;
+      return false;
     }
     let backup: FileHistoryBackup;
     try {
@@ -394,7 +567,7 @@ export class FileHistory {
               : String(err),
         });
       }
-      return;
+      return false;
     }
     // Ensure there's at least one snapshot to attach the backup to.
     const updatedSnapshots: FileHistorySnapshot[] = [...this.state.snapshots];
@@ -419,25 +592,37 @@ export class FileHistory {
       snapshots: updatedSnapshots,
       trackedFiles: updatedTracked,
     };
+    return true;
   }
 
   /**
-   * Append a new snapshot row keyed by messageId. Call AFTER tool
-   * calls finish for the iteration. Back up any tracked file whose
-   * mtime changed since the last snapshot.
+   * Append a new snapshot row keyed by messageId, with one entry per
+   * tracked file. Call AFTER tool calls finish for the iteration. A
+   * file whose content still equals its latest backup (same size and
+   * SHA-256) repeats that backup's entry and is not copied again. A
+   * changed file gets a new backup with the next version, plus diff
+   * stats. A file that is gone gets an entry without a backup. A file
+   * whose backup fails is reported as `file_history_snapshot_failed`
+   * and has no entry in this snapshot.
    *
    * I-28 LRU eviction applies here: when snapshots exceed
    * `maxSnapshots`, evict the oldest and flip `isFileHistoryComplete=false`.
+   * The backups that only evicted snapshots named are deleted once the
+   * index without those snapshots is on disk and no rewind or preview is
+   * reading.
    */
   async makeSnapshot(messageId: string): Promise<void> {
     return this.enqueue(async () => {
-      await this.makeSnapshotNow(messageId);
-      await this.persistState();
+      this.collectUnreferencedBackups(await this.makeSnapshotNow(messageId));
+      await this.persistAndPrune();
     });
   }
 
-  private async makeSnapshotNow(messageId: string): Promise<void> {
-    if (!this.enabled) return;
+  /** Returns the snapshots the cap evicted, oldest first. */
+  private async makeSnapshotNow(
+    messageId: string,
+  ): Promise<ReadonlyArray<FileHistorySnapshot>> {
+    if (!this.enabled) return [];
     const mostRecent = this.state.snapshots.at(-1);
     const trackedFileBackups: Record<string, FileHistoryBackup> = {};
     const filesChanged: string[] = [];
@@ -448,13 +633,14 @@ export class FileHistory {
       try {
         const latest = mostRecent?.trackedFileBackups[trackingPath];
         const nextVersion = latest ? latest.version + 1 : 1;
-        let fileExists = true;
-        try {
-          await stat(trackingPath);
-        } catch {
-          fileExists = false;
-        }
-        if (!fileExists) {
+        // Any stat failure counts as "the file is gone".
+        const sourceStats = await safeStat(trackingPath);
+        if (sourceStats === null) {
+          if (latest !== undefined && latest.backupFileName === null) {
+            // Still missing: the latest entry already says so. Keep it.
+            trackedFileBackups[trackingPath] = latest;
+            continue;
+          }
           // Treat deletion as "all lines removed".
           let priorLines = 0;
           if (latest?.backupFileName) {
@@ -475,6 +661,25 @@ export class FileHistory {
           aggInsertions += diffStats.insertions;
           aggDeletions += diffStats.deletions;
           if (priorLines > 0) filesChanged.push(trackingPath);
+          continue;
+        }
+        if (
+          latest !== undefined &&
+          latest.backupFileName !== null &&
+          sourceStats.isFile() &&
+          (await this.matchesBackup(
+            trackingPath,
+            sourceStats.size,
+            latest.backupFileName,
+          ))
+        ) {
+          // Unchanged since its latest backup: share that backup instead
+          // of copying the file again. No copy, no diff.
+          trackedFileBackups[trackingPath] = {
+            backupFileName: latest.backupFileName,
+            version: latest.version,
+            backupTimeMs: latest.backupTimeMs,
+          };
           continue;
         }
         const backup = await this.createBackup(trackingPath, nextVersion);
@@ -537,11 +742,12 @@ export class FileHistory {
           : undefined,
     };
     const nextSnapshots = [...this.state.snapshots, snapshot];
+    let evictedSnapshots: FileHistorySnapshot[] = [];
     let evicted = this.state.evictedCount;
     let complete = this.state.isFileHistoryComplete;
     if (nextSnapshots.length > this.maxSnapshots) {
       const overflow = nextSnapshots.length - this.maxSnapshots;
-      nextSnapshots.splice(0, overflow);
+      evictedSnapshots = nextSnapshots.splice(0, overflow);
       evicted += overflow;
       complete = false;
       if (!this.evictionWarningEmitted) {
@@ -559,6 +765,8 @@ export class FileHistory {
       isFileHistoryComplete: complete,
       evictedCount: evicted,
     };
+    this.needsPersist = true;
+    return evictedSnapshots;
   }
 
   /**
@@ -569,25 +777,72 @@ export class FileHistory {
    * after X. Returns the list of files that changed on disk.
    *
    * Canonical restore entrypoint — delegates to the module-level
-   * `fileHistoryRewind`, which owns the origin-fallback semantics.
+   * `fileHistoryRewindWithReport`, which owns the origin-fallback
+   * semantics. `rewindWithReport` also says what could not be done.
    */
   async rewindToMessage(messageId: string): Promise<ReadonlyArray<string>> {
+    return (await this.rewindWithReport(messageId)).changed;
+  }
+
+  /**
+   * `rewindToMessage` with the full result. A rewind that could not put
+   * every file back is reported as `file_history_restore_failed` and
+   * removes nothing: see `fileHistoryRewindWithReport`.
+   */
+  async rewindWithReport(messageId: string): Promise<FileHistoryRewindResult> {
     await this.flush();
-    if (!this.enabled) return [];
+    if (!this.enabled) return { changed: [], notRestored: [], notRemoved: [] };
+    const state = this.acquireReader();
     try {
-      return await fileHistoryRewind(this.state, messageId);
+      const result = await fileHistoryRewindWithReport(state, messageId);
+      if (result.notRestored.length > 0) {
+        this.emitDiagnostic({
+          cause: "file_history_restore_failed",
+          message: `rewind to ${messageId}: ${describeIncompleteRewind(result)}`,
+        });
+      }
+      return result;
     } catch (err) {
       this.emitDiagnostic({
         cause: "file_history_restore_failed",
         message: err instanceof Error ? err.message : String(err),
       });
       throw err;
+    } finally {
+      this.releaseReader();
     }
+  }
+
+  /**
+   * `describeIncompleteRewind`, for a caller that holds the engine and
+   * does not import this module.
+   */
+  describeIncompleteRewind(result: FileHistoryRewindResult): string {
+    return describeIncompleteRewind(result);
   }
 
   /** True when a snapshot keyed by `messageId` exists. */
   hasSnapshotFor(messageId: string): boolean {
     return findSnapshotByMessageId(this.state, messageId) !== undefined;
+  }
+
+  /**
+   * For the sidecar: a tool call waited `timeoutMs` for the capture of its
+   * "before" state and then ran without it. Delivered like the engine's
+   * own diagnostics. One `file_history_capture_timeout` per engine; later
+   * timeouts are silent. The TUI shows this one to the user.
+   */
+  reportCaptureTimeout(toolName: string, timeoutMs: number): void {
+    if (this.captureTimeoutReported) return;
+    this.captureTimeoutReported = true;
+    this.emitDiagnostic({
+      cause: "file_history_capture_timeout",
+      message:
+        `File history is behind: the backup before ${toolName} did not ` +
+        `finish within ${timeoutMs} ms, so the tool ran without it. Until ` +
+        "file history catches up, tool calls do not wait for it and a " +
+        "rewind may not undo their file changes.",
+    });
   }
 
   /**
@@ -601,43 +856,40 @@ export class FileHistory {
   ): Promise<FileHistoryRewindPreview | null> {
     await this.flush();
     if (!this.enabled) return null;
-    const target = findSnapshotByMessageId(this.state, messageId);
-    if (!target) return null;
-    const filesChanged: string[] = [];
-    const perFile: Record<string, DiffStats> = {};
-    let insertions = 0;
-    let deletions = 0;
-    for (const trackingPath of this.state.trackedFiles) {
-      const targetBackup = target.trackedFileBackups[trackingPath];
-      const origin = targetBackup ?? getOriginBackup(this.state, trackingPath);
-      if (origin === undefined) continue;
-      try {
-        const diskContent = await readFileOrEmpty(trackingPath);
-        const targetContent =
-          origin.backupFileName === null
-            ? ""
-            : await readFileOrEmpty(origin.backupFileName);
-        if (diskContent === targetContent) continue;
-        const stats = computeDiffStats(diskContent, targetContent);
-        filesChanged.push(trackingPath);
-        perFile[trackingPath] = stats;
-        insertions += stats.insertions;
-        deletions += stats.deletions;
-      } catch {
-        /* best-effort — unreadable files are skipped */
-      }
-    }
-    return { filesChanged, insertions, deletions, perFile };
-  }
-
-  /** Clear all tracked files + backups. Used on `/clear` or session end. */
-  async clear(): Promise<void> {
-    await this.flush();
-    this.state = emptyFileHistoryState();
+    const state = this.acquireReader();
     try {
-      await rm(this.historyDir, { recursive: true, force: true });
-    } catch {
-      /* best-effort */
+      const target = findSnapshotByMessageId(state, messageId);
+      if (!target) return null;
+      const filesChanged: string[] = [];
+      const perFile: Record<string, DiffStats> = {};
+      let insertions = 0;
+      let deletions = 0;
+      for (const trackingPath of state.trackedFiles) {
+        const origin = restorePointFor(state, target, trackingPath);
+        if (origin === undefined) continue;
+        try {
+          // A rewind does not write to a directory, FIFO, socket or device,
+          // and reading some of these never returns.
+          const onDisk = await safeStat(trackingPath);
+          if (onDisk !== null && !onDisk.isFile()) continue;
+          const diskContent = await readFileOrEmpty(trackingPath);
+          const targetContent =
+            origin.backupFileName === null
+              ? ""
+              : await readFileOrEmpty(origin.backupFileName);
+          if (diskContent === targetContent) continue;
+          const stats = computeDiffStats(diskContent, targetContent);
+          filesChanged.push(trackingPath);
+          perFile[trackingPath] = stats;
+          insertions += stats.insertions;
+          deletions += stats.deletions;
+        } catch {
+          /* best-effort — unreadable files are skipped */
+        }
+      }
+      return { filesChanged, insertions, deletions, perFile };
+    } finally {
+      this.releaseReader();
     }
   }
 
@@ -645,12 +897,131 @@ export class FileHistory {
   // Private
   // ───────────────────────────────────────────────────────────────────
 
+  /**
+   * Start of a rewind or preview: counts the reader and hands it the state
+   * in one synchronous step, so no deletion pass can start between the two.
+   * Always paired with `releaseReader` in a `finally`.
+   */
+  private acquireReader(): FileHistoryState {
+    this.activeReaders += 1;
+    return this.state;
+  }
+
+  /**
+   * End of a rewind or preview. After the last one, a deletion pass is
+   * queued for the backups that waited for it. It is queued here, before
+   * the reader's own promise resolves, so a caller that awaits the reader
+   * and then `flush()` finds those backups gone.
+   */
+  private releaseReader(): void {
+    this.activeReaders -= 1;
+    if (this.activeReaders === 0 && this.deletable.size > 0) {
+      void this.enqueue(() => this.deleteUnreferencedBackups());
+    }
+  }
+
+  /**
+   * After an eviction: a backup that an evicted snapshot named and that no
+   * retained snapshot names is of no further use to this engine. It still
+   * has to outlive the index on disk that lists it, so it goes to
+   * `awaitingDurableIndex` first. Names are compared as strings. An
+   * unchanged file repeats its entry in every snapshot, so one backup can
+   * belong to many snapshots, and a file's origin (version 1) backup stays
+   * for as long as any retained snapshot names it.
+   */
+  private collectUnreferencedBackups(
+    evicted: ReadonlyArray<FileHistorySnapshot>,
+  ): void {
+    const unreferenced = new Set<string>();
+    for (const snapshot of evicted) {
+      for (const backup of Object.values(snapshot.trackedFileBackups)) {
+        if (backup.backupFileName !== null) unreferenced.add(backup.backupFileName);
+      }
+    }
+    for (const snapshot of this.state.snapshots) {
+      if (unreferenced.size === 0) return;
+      for (const backup of Object.values(snapshot.trackedFileBackups)) {
+        if (backup.backupFileName !== null) unreferenced.delete(backup.backupFileName);
+      }
+    }
+    for (const backupFileName of unreferenced) {
+      this.awaitingDurableIndex.add(backupFileName);
+    }
+  }
+
+  /**
+   * Deletion pass: unlink every backup in `deletable`, and the directory of
+   * a tracked path once its last backup is gone. Runs on the queue, after an
+   * index write that succeeded and again when the last reader finishes. It
+   * does nothing while a reader is active; the end of that reader queues
+   * the next pass. Every path leaves the set here whatever happens to it: a
+   * failed unlink is reported (once per engine) and not retried.
+   */
+  private async deleteUnreferencedBackups(): Promise<void> {
+    if (this.activeReaders > 0) return;
+    const backups = [...this.deletable];
+    this.deletable.clear();
+    for (const backupFileName of backups) {
+      // No snapshot names it, so no file is compared against it again.
+      this.backupDigests.delete(backupFileName);
+      if (!this.isBackupPath(backupFileName)) continue;
+      try {
+        await unlink(backupFileName);
+      } catch (err) {
+        const failure = err as NodeJS.ErrnoException;
+        // A backup that is already gone needs no deleting.
+        if (failure.code !== "ENOENT") {
+          this.reportPruneFailure(backupFileName, failure);
+          continue;
+        }
+      }
+      const backupDir = dirname(backupFileName);
+      try {
+        await rmdir(backupDir);
+      } catch (err) {
+        const failure = err as NodeJS.ErrnoException;
+        // Not empty: the tracked path still has backups in use.
+        if (failure.code !== "ENOTEMPTY" && failure.code !== "ENOENT") {
+          this.reportPruneFailure(backupDir, failure);
+        }
+      }
+    }
+  }
+
+  /**
+   * True for `<historyDir>/<directory>/v<version>-<uuid>` in exactly that
+   * spelling, which is how `createBackup` names a backup. A deletion pass
+   * unlinks nothing else: an index loaded from disk may name any path below
+   * the history directory, the index itself included. The path is rebuilt
+   * rather than taken apart with `dirname`, which only splits text and would
+   * accept `<historyDir>/../v1-...` as two levels below the history
+   * directory.
+   */
+  private isBackupPath(path: string): boolean {
+    const name = basename(path);
+    return (
+      BACKUP_FILE_NAME.test(name) &&
+      join(this.historyDir, basename(dirname(path)), name) === path
+    );
+  }
+
+  /** One `file_history_prune_failed` per engine; later failures are silent. */
+  private reportPruneFailure(path: string, failure: NodeJS.ErrnoException): void {
+    if (this.pruneFailureReported) return;
+    this.pruneFailureReported = true;
+    this.emitDiagnostic({
+      cause: "file_history_prune_failed",
+      message: `prune ${path}: ${failure.message}`,
+    });
+  }
+
   private async createBackup(
     filePath: string,
     version: number,
   ): Promise<FileHistoryBackup> {
+    let sourceStats: Stats;
     try {
-      await stat(filePath);
+      sourceStats = await stat(filePath);
     } catch {
       return {
         backupFileName: null,
@@ -658,17 +1029,63 @@ export class FileHistory {
         backupTimeMs: Date.now(),
       };
     }
+    // Opening a FIFO, socket or device can block forever, which would stall
+    // every later queued operation. A directory still reaches copyFile and
+    // fails there with EISDIR, as it always did.
+    if (!sourceStats.isFile() && !sourceStats.isDirectory()) {
+      throw new Error("not a regular file");
+    }
     const backupDir = join(this.historyDir, pathHash(filePath));
     await mkdir(backupDir, { recursive: true });
     // Published snapshots must never point at a file overwritten by a later
     // snapshot, rewind, or another engine. Version is logical, not a filename.
     const backupFileName = join(backupDir, `v${version}-${randomUUID()}`);
     await copyFile(filePath, backupFileName);
+    // Remember what was copied. A failed stat or hash keeps the backup and
+    // stores nothing; the next snapshot then tries again.
+    await this.digestFor(backupFileName);
     return {
       backupFileName,
       version,
       backupTimeMs: Date.now(),
     };
+  }
+
+  /**
+   * Digest of a backup file: the cached one, or one computed from the file
+   * (stat plus hash) and then cached. Returns `null` when the backup is
+   * missing, is not a regular file or cannot be read.
+   */
+  private async digestFor(backupFileName: string): Promise<BackupDigest | null> {
+    const cached = this.backupDigests.get(backupFileName);
+    if (cached !== undefined) return cached;
+    const backupStats = await safeStat(backupFileName);
+    if (backupStats === null || !backupStats.isFile()) return null;
+    const sha256 = await sha256OfFile(backupFileName);
+    if (sha256 === null) return null;
+    const digest: BackupDigest = { sha256, size: backupStats.size };
+    this.backupDigests.set(backupFileName, digest);
+    return digest;
+  }
+
+  /**
+   * True when the regular file at `sourcePath` (`sourceSize` bytes) still
+   * has the content of the backup `backupFileName`, so a snapshot can
+   * share that backup. Any check that fails or cannot be made means
+   * "changed", and the caller takes a fresh backup.
+   */
+  private async matchesBackup(
+    sourcePath: string,
+    sourceSize: number,
+    backupFileName: string,
+  ): Promise<boolean> {
+    const digest = await this.digestFor(backupFileName);
+    if (digest === null || sourceSize !== digest.size) return false;
+    // The digest may be older than the file it describes. One stat keeps a
+    // backup that was truncated or deleted since from being shared again.
+    const backupStats = await safeStat(backupFileName);
+    if (backupStats === null || backupStats.size !== digest.size) return false;
+    return (await sha256OfFile(sourcePath)) === digest.sha256;
   }
 
   private emitDiagnostic(d: { cause: string; message: string }): void {
@@ -681,7 +1098,7 @@ export class FileHistory {
     this.pendingDiagnostics = this.pendingDiagnostics.then(() =>
       this.runCanonicalWork(() => { this.onDiagnostic?.(d); })).catch(() => {});
     // Diagnostics are best-effort. A failed delivery must not poison later
-    // publications or prevent restore, preview, clear, or stop from draining.
+    // publications or prevent restore, preview, or stop from draining.
   }
 
   /**
@@ -720,10 +1137,24 @@ export interface FileHistorySidecarOpts {
   /**
    * Workspace root used to resolve the files a shell command removes or
    * moves (`rm`, `rmdir`, `unlink`, `mv`), so they are backed up before the
-   * command runs the way Edit and Write targets are. Without it shell
-   * deletions are not tracked.
+   * call runs the way Edit and Write targets are. Without it neither shell
+   * deletions nor `system.move` and `system.delete` are tracked.
    */
   readonly workspaceRoot?: string;
+  /**
+   * The session's working directory at the moment it is asked. `system.move`
+   * and `system.delete` read a relative path against it
+   * (tools/system/filesystem.ts), and it stops being the workspace root when
+   * the session enters a worktree. Their paths are resolved the same way
+   * here, so that the file on record is the file the tool touches. Without
+   * it, and whenever it has no answer, `workspaceRoot` is used.
+   */
+  readonly workingDirectory?: () => string | undefined;
+  /**
+   * Longest time, in milliseconds, that `captureBeforeToolCall` makes a
+   * tool call wait. Defaults to 5000.
+   */
+  readonly captureTimeoutMs?: number;
 }
 
 const DEFAULT_EDIT_TOOL_NAMES: ReadonlyArray<string> = [
@@ -733,6 +1164,8 @@ const DEFAULT_EDIT_TOOL_NAMES: ReadonlyArray<string> = [
   "NotebookEdit",
   "apply_patch",
 ];
+
+const DEFAULT_CAPTURE_TIMEOUT_MS = 5000;
 
 /**
  * Shell tools whose command text names the files they delete, and where each
@@ -753,15 +1186,93 @@ const APPLY_PATCH_FILE_MARKERS = [
 ] as const;
 
 /**
- * Extract the file path(s) a mutating tool call touches from its raw
- * JSON args. The live tool schemas use `file_path` (Edit / MultiEdit /
- * Write) and `notebook_path` (NotebookEdit); `path`/`filePath` are kept
- * for legacy callers. `apply_patch` carries a multi-file patch payload
- * in `input` — its hunk headers name every touched file.
+ * The filesystem tools that move or remove the file at a path they are
+ * given (tools/system/filesystem.ts).
  */
-function extractEditedFilePaths(
-  args: Record<string, unknown> | null,
-): ReadonlyArray<string> {
+const MOVE_TOOL_NAME = "system.move";
+const DELETE_TOOL_NAME = "system.delete";
+
+/**
+ * The files a tool call is about to change, worked out from its name and
+ * its JSON args before it runs. The sidecar uses the one answer for both
+ * of its jobs: backing a file up when the call's start event arrives, and
+ * holding the call back in `captureBeforeToolCall` until that is done.
+ *
+ * - Edit tools (`editToolNames`, by default Edit, MultiEdit, Write,
+ *   NotebookEdit and apply_patch): the path or paths named in the args,
+ *   resolved against `workspaceRoot`. Without a root the path is returned
+ *   as written. A leading `~` is not expanded. `regularFilesOnly` is false.
+ * - Shell tools (exec_command, system.bash): the workspace paths the
+ *   command would write, remove or move. Nothing without a root.
+ *   `regularFilesOnly` is true: a caller backs up only the targets that
+ *   are regular files or do not exist yet.
+ * - system.move: the source and the destination, when the source is a
+ *   regular file. system.delete: the path, when it is a regular file. A
+ *   leading `~` is the home directory, as in those tools, and a relative
+ *   path is relative to `workingDirectory` (the session's, which is where
+ *   the tools resolve it), or to `workspaceRoot` when that is not given.
+ *   Nothing without a root. `regularFilesOnly` is true.
+ * - Any other tool: no paths.
+ *
+ * Synchronous, but it reads the file system: for a shell command (a move
+ * into a directory resolves differently from a move onto a file) and for
+ * system.move and system.delete (what the source or the path is). Two calls
+ * with the same input can therefore give different answers.
+ */
+export function resolveFileHistoryTargets(input: {
+  toolName: string;
+  args: Record<string, unknown> | null;
+  workspaceRoot: string | undefined;
+  /** Base of a relative `system.move` or `system.delete` path. */
+  workingDirectory?: string;
+  editToolNames?: readonly string[];
+}): { paths: string[]; regularFilesOnly: boolean } {
+  const { toolName, args, workspaceRoot } = input;
+  if ((input.editToolNames ?? DEFAULT_EDIT_TOOL_NAMES).includes(toolName)) {
+    // Daemon cwd is AGENC_HOME, while tool paths are relative to the
+    // session workspace. Backups and restores must use the tool path.
+    return {
+      paths: editToolPaths(args).map((filePath) =>
+        workspaceRoot === undefined ? filePath : resolve(workspaceRoot, filePath)),
+      regularFilesOnly: false,
+    };
+  }
+  // Own keys only: a tool may be called "constructor".
+  const shellKeys = Object.hasOwn(SHELL_TOOL_ARG_KEYS, toolName)
+    ? SHELL_TOOL_ARG_KEYS[toolName]
+    : undefined;
+  if (shellKeys !== undefined) {
+    return {
+      paths: shellMutationPaths(toolName, shellKeys, args, workspaceRoot),
+      regularFilesOnly: true,
+    };
+  }
+  if (toolName === MOVE_TOOL_NAME || toolName === DELETE_TOOL_NAME) {
+    // Tracked only in a workspace. The base of a relative path is where the
+    // tool itself resolves it.
+    const base =
+      workspaceRoot === undefined
+        ? undefined
+        : (input.workingDirectory ?? workspaceRoot);
+    return {
+      paths:
+        toolName === MOVE_TOOL_NAME
+          ? moveToolPaths(args, base)
+          : deleteToolPaths(args, base),
+      regularFilesOnly: true,
+    };
+  }
+  return { paths: [], regularFilesOnly: false };
+}
+
+/**
+ * The file path(s) in the raw JSON args of an edit tool call. The live tool
+ * schemas use `file_path` (Edit / MultiEdit / Write) and `notebook_path`
+ * (NotebookEdit); `path`/`filePath` are kept for legacy callers.
+ * `apply_patch` carries a multi-file patch payload in `input`, and its hunk
+ * headers name every touched file.
+ */
+function editToolPaths(args: Record<string, unknown> | null): string[] {
   if (args === null) return [];
   const single =
     args.file_path ?? args.notebook_path ?? args.path ?? args.filePath;
@@ -781,17 +1292,192 @@ function extractEditedFilePaths(
   return [];
 }
 
+/**
+ * Workspace paths a shell tool call is about to write, remove or move, as
+ * absolute normalized paths. Resolved against the call's working directory
+ * under the workspace root; empty when the root is unknown.
+ */
+function shellMutationPaths(
+  toolName: string,
+  keys: { readonly command: string; readonly cwd: string },
+  args: Record<string, unknown> | null,
+  workspaceRoot: string | undefined,
+): string[] {
+  if (workspaceRoot === undefined || args === null) return [];
+  const command = args[keys.command];
+  if (typeof command !== "string" || command.trim().length === 0) return [];
+  const cwd = args[keys.cwd];
+  return [
+    ...collectShellWorkspaceMutationTargets({
+      toolName,
+      args: {
+        command,
+        ...(Array.isArray(args.args) ? { args: args.args } : {}),
+        ...(typeof cwd === "string" ? { cwd } : {}),
+      },
+      workspaceRoot,
+    }),
+  ];
+}
+
+/**
+ * The source and the destination of a `system.move` call, in that order,
+ * as absolute normalized paths. Empty when the root is unknown, when either
+ * argument is not a path, and when the source is not a regular file:
+ *
+ * - A missing source: the tool refuses the call.
+ * - A directory: its files are not tracked one by one. Tracking its new
+ *   name as a file that "did not exist" would fail in every later snapshot,
+ *   because the path is a directory from then on.
+ * - A FIFO, socket or device: it has no content to back up, so the source
+ *   could not be restored, while a destination on record as "did not exist"
+ *   would be removed by a rewind. The moved object would be gone from both
+ *   places.
+ *
+ * The destination is returned whatever it is. A caller leaves out one that
+ * exists and is not a regular file (`regularFilesOnly`), and records the
+ * two as a pair (`isMovePair`).
+ */
+function moveToolPaths(
+  args: Record<string, unknown> | null,
+  base: string | undefined,
+): string[] {
+  if (base === undefined || args === null) return [];
+  const source = filesystemToolPath(args.source, base);
+  const destination = filesystemToolPath(args.destination, base);
+  if (source === null || destination === null) return [];
+  return isRegularFile(source) ? [source, destination] : [];
+}
+
+/**
+ * True when `targets` are the two sides of a `system.move`, the source
+ * first (`moveToolPaths`). The sidecar records them as a pair: the
+ * destination only once the source is on record.
+ *
+ * A rewind removes a destination that is on record as "did not exist", and
+ * writes the old content back to one that the move replaced. Either way the
+ * moved file is gone from there afterwards, which is safe only while the
+ * same rewind can put it back at its source. When the source cannot be
+ * backed up (it cannot be read, or the history directory cannot be
+ * written), nothing of the move goes on record: a rewind then leaves the
+ * file where the tool put it and does not destroy its only copy.
+ *
+ * A source that is on record as absent counts as on record: the file was
+ * created after that snapshot, so a rewind to it rightly removes the file,
+ * wherever the move has put it.
+ */
+function isMovePair(
+  toolName: string,
+  targets: { readonly regularFilesOnly: boolean },
+): boolean {
+  // An edit tool list that names system.move makes it an edit tool, and its
+  // targets are then an edit tool's.
+  return targets.regularFilesOnly && toolName === MOVE_TOOL_NAME;
+}
+
+/**
+ * The path of a `system.delete` call as an absolute normalized path, when
+ * it names a regular file. Empty otherwise: a missing path is refused by
+ * the tool, and a directory is removed without its files being tracked one
+ * by one. Empty as well when the root is unknown.
+ */
+function deleteToolPaths(
+  args: Record<string, unknown> | null,
+  base: string | undefined,
+): string[] {
+  if (base === undefined || args === null) return [];
+  const target = filesystemToolPath(args.path, base);
+  return target !== null && isRegularFile(target) ? [target] : [];
+}
+
+/**
+ * The file a path argument of `system.move` or `system.delete` names: a
+ * leading `~` is the home directory and a relative path is relative to
+ * `base`, the session's working directory. Not resolved further: like the
+ * edit tools' paths, the key is the path as written and not its `realpath`.
+ * `null` when the argument is not a usable path.
+ */
+function filesystemToolPath(raw: unknown, base: string): string | null {
+  if (typeof raw !== "string" || raw.trim().length === 0) return null;
+  return resolve(base, expandHomeDirectory(raw));
+}
+
+/**
+ * `~` and `~/...` as the filesystem tools read them: HOME, or USERPROFILE
+ * when HOME is not set. The same rule as `expandHomeDirectory` in
+ * tools/system/filesystem.ts, repeated here because this module must not
+ * import that one. The edit tools do not expand `~`, and neither does the
+ * resolver for them.
+ */
+function expandHomeDirectory(rawPath: string): string {
+  if (
+    rawPath === "~" ||
+    rawPath.startsWith("~/") ||
+    rawPath.startsWith("~\\")
+  ) {
+    const home = process.env.HOME ?? process.env.USERPROFILE;
+    if (!home || home.trim().length === 0) return rawPath;
+    if (rawPath === "~") return home;
+    return resolve(home, rawPath.slice(2));
+  }
+  return rawPath;
+}
+
+/**
+ * True when `filePath` is a regular file, or a symlink to one. False for
+ * anything else and for a path that cannot be examined.
+ */
+function isRegularFile(filePath: string): boolean {
+  try {
+    return statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
 export class FileHistorySidecar implements Sidecar {
   readonly name = "file-history";
   private readonly history: FileHistory;
   private readonly editToolNames: ReadonlyArray<string>;
   private readonly workspaceRoot: string | undefined;
+  private readonly workingDirectory: (() => string | undefined) | undefined;
+  private readonly captureTimeoutMs: number;
   private lastEditStartedAtMs: number | null = null;
+  /**
+   * The newest `user_message` barrier snapshot while it is still queued or
+   * running, `null` once it has settled. `captureBeforeToolCall` holds a
+   * tool call back for as long as this is set.
+   */
+  private pendingBarrier: Promise<void> | null = null;
+  /**
+   * True from the moment a call's capture runs into `captureTimeoutMs`
+   * until that capture settles after all: the queue is stuck, or far
+   * behind. While it is set, `captureBeforeToolCall` queues the backups
+   * and does not make the call wait for them.
+   */
+  private captureStalled = false;
 
   constructor(opts: FileHistorySidecarOpts) {
     this.history = opts.fileHistory;
     this.editToolNames = opts.editToolNames ?? DEFAULT_EDIT_TOOL_NAMES;
     this.workspaceRoot = opts.workspaceRoot;
+    this.workingDirectory = opts.workingDirectory;
+    this.captureTimeoutMs = opts.captureTimeoutMs ?? DEFAULT_CAPTURE_TIMEOUT_MS;
+  }
+
+  /**
+   * The session's working directory now, or `undefined` when nobody told
+   * the sidecar how to ask or the answer is unusable.
+   */
+  private currentWorkingDirectory(): string | undefined {
+    try {
+      const directory = this.workingDirectory?.();
+      return typeof directory === "string" && directory.trim().length > 0
+        ? directory
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async start(): Promise<void> {
@@ -810,23 +1496,34 @@ export class FileHistorySidecar implements Sidecar {
   onEvent(event: Event): void {
     const msg = event.msg;
     if (msg.type === "tool_call_started") {
-      if (this.editToolNames.includes(msg.payload.toolName)) {
+      const toolName = msg.payload.toolName;
+      const targets = resolveFileHistoryTargets({
+        toolName,
+        args: this.tryParseArgs(msg.payload.args),
+        workspaceRoot: this.workspaceRoot,
+        workingDirectory: this.currentWorkingDirectory(),
+        editToolNames: this.editToolNames,
+      });
+      // A call to an edit tool is an edit even when its args name no file.
+      // A call to any other tool is one when it has targets.
+      if (targets.paths.length > 0 || this.editToolNames.includes(toolName)) {
         this.lastEditStartedAtMs = monotonicMs();
-        const args = this.tryParseArgs(msg.payload.args);
-        for (const filePath of extractEditedFilePaths(args)) {
-          // Daemon cwd is AGENC_HOME, while tool paths are relative to the
-          // session workspace. Backups and restores must use the tool path.
-          void this.history.trackEdit(this.workspaceRoot === undefined
-            ? filePath : resolve(this.workspaceRoot, filePath), event.id);
-        }
-      } else {
-        const deleted = this.shellDeletionPaths(
-          msg.payload.toolName,
-          this.tryParseArgs(msg.payload.args),
-        );
-        if (deleted.length > 0) {
-          this.lastEditStartedAtMs = monotonicMs();
-          void this.trackShellDeletions(deleted, event.id);
+      }
+      if (targets.paths.length > 0) {
+        if (targets.regularFilesOnly) {
+          void this.trackRegularFiles(
+            targets.paths,
+            event.id,
+            isMovePair(toolName, targets),
+          );
+        } else {
+          // Queued before this handler returns. execute-tools announces the
+          // calls of a batch in one loop without an await, so the backups
+          // for all of them are queued before the first call gets as far as
+          // `captureBeforeToolCall`, which then waits for the lot: a call
+          // that also changes a file of a later call cannot get ahead of
+          // that file's backup.
+          void this.history.trackEdits(targets.paths, event.id);
         }
       }
     } else if (msg.type === "tool_call_completed") {
@@ -837,15 +1534,162 @@ export class FileHistorySidecar implements Sidecar {
     } else if (msg.type === "turn_complete") {
       void this.history.makeSnapshot(`turn-${event.id}`);
     } else if (msg.type === "user_message") {
-      // Barrier snapshot: capture the tracked files' state at the
-      // moment a user message arrives, keyed by the event id that
-      // `runTurn` also stamps into the seed LLMMessage's
-      // `runtimeOnly.userMessageId`. Conversation rewind restores to
-      // this barrier — "the files as they were before you sent this
-      // message". Tool execution starts only after a full sampling
-      // round-trip, so the async backup always wins the race.
-      void this.history.makeSnapshot(event.id);
+      // Barrier snapshot: the tracked files as they are when a user message
+      // arrives, keyed by the event id that `runTurn` also stamps into the
+      // seed LLMMessage's `runtimeOnly.userMessageId`. Conversation rewind
+      // restores to this barrier: "the files as they were before you sent
+      // this message".
+      //
+      // The snapshot only joins the queue here. What makes it a true
+      // "before" state is `captureBeforeToolCall`: every tool call the
+      // router dispatches waits there for this snapshot, and for the backup
+      // of the files it is itself about to change, before it executes. The
+      // promise is kept until it settles so that a call with no file target
+      // of its own (`git checkout -- f`, a formatter run) waits as well.
+      //
+      // The wait is bounded: after `captureTimeoutMs` the call runs anyway
+      // and `file_history_capture_timeout` is reported. And it exists on
+      // the router's dispatch path only. The one-shot fast loop calls its
+      // tools directly and emits their events afterwards, so there every
+      // snapshot still trails the tools. Sub-agent sessions have no file
+      // history at all.
+      const barrier = this.history.makeSnapshot(event.id);
+      this.pendingBarrier = barrier;
+      const settled = (): void => {
+        // A newer user message may have replaced it in the meantime.
+        if (this.pendingBarrier === barrier) this.pendingBarrier = null;
+      };
+      void barrier.then(settled, settled);
     }
+  }
+
+  /**
+   * Call directly before a tool runs, and start the tool only once the
+   * returned promise has resolved. By then file history has on record,
+   * ahead of the tool's first write:
+   *
+   * - the barrier snapshot of the latest user message, if that was still
+   *   queued or running, and
+   * - the state of every file the call is about to change (its targets,
+   *   see `resolveFileHistoryTargets`): a backup, or the fact that the
+   *   file does not exist.
+   *
+   * Returns `undefined`, and no promise, when there is nothing to wait
+   * for: the engine is disabled, or the call has no targets and no barrier
+   * snapshot is pending. Most calls are of that kind and start without an
+   * extra await.
+   *
+   * The promise never rejects. It also resolves when `signal` aborts (the
+   * caller then stops the call), and after `captureTimeoutMs`. In that case
+   * the tool runs although its capture has not finished, which is reported
+   * as `file_history_capture_timeout`, once. Without that bound a queue
+   * that is stuck would hold up every later tool call for good.
+   *
+   * One call pays that wait, not every call behind it. Until the capture
+   * that timed out settles, later calls get `undefined` as well: their
+   * backups are queued as usual and the tools run without waiting, as
+   * they would without this step.
+   */
+  captureBeforeToolCall(
+    toolName: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<void> | undefined {
+    if (!this.history.enabled) return undefined;
+    const targets = this.targetsOf(toolName, args);
+    const barrier = this.pendingBarrier;
+    if (targets.paths.length === 0 && barrier === null) return undefined;
+    // An aborted call does not run, so there is nothing to capture for it.
+    if (signal?.aborted) return Promise.resolve();
+    const work = this.capture(targets, barrier, isMovePair(toolName, targets));
+    if (this.captureStalled) {
+      void work.catch(() => undefined);
+      return undefined;
+    }
+    return this.settleWithin(toolName, signal, work);
+  }
+
+  /**
+   * The targets of a call that is about to run. A failure to work them out
+   * counts as "no targets": the call must still wait for a pending barrier.
+   */
+  private targetsOf(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): { paths: string[]; regularFilesOnly: boolean } {
+    try {
+      return resolveFileHistoryTargets({
+        toolName,
+        args,
+        workspaceRoot: this.workspaceRoot,
+        workingDirectory: this.currentWorkingDirectory(),
+        editToolNames: this.editToolNames,
+      });
+    } catch {
+      return { paths: [], regularFilesOnly: false };
+    }
+  }
+
+  /**
+   * The work `captureBeforeToolCall` waits for. It awaits queue promises
+   * only, never `flush()`: that also waits for diagnostics, and those are
+   * delivered behind canonical background work such as a compaction, which
+   * can take as long as it likes.
+   */
+  private async capture(
+    targets: { paths: string[]; regularFilesOnly: boolean },
+    barrier: Promise<void> | null,
+    movePair: boolean,
+  ): Promise<void> {
+    const paths = targets.regularFilesOnly
+      ? await this.regularOrMissing(targets.paths, movePair)
+      : targets.paths;
+    // One queued operation for all of the call's targets. The id only names
+    // a first snapshot, when the engine has none to attach the backups to.
+    const tracked = paths.length > 0
+      ? this.history.trackEdits(paths, `capture-${randomUUID()}`, {
+          stopAtFirstUnrecorded: movePair,
+        })
+      : null;
+    if (barrier !== null) await barrier;
+    if (tracked !== null) await tracked;
+  }
+
+  /**
+   * Resolves when `work` settles, when `signal` aborts or when
+   * `captureTimeoutMs` has passed, whichever comes first. Never rejects.
+   * The timer and the abort listener are gone by the time it resolves.
+   */
+  private settleWithin(
+    toolName: string,
+    signal: AbortSignal | undefined,
+    work: Promise<void>,
+  ): Promise<void> {
+    return new Promise<void>((resolveCapture) => {
+      const finish = (): void => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", finish);
+        resolveCapture();
+      };
+      const timer = setTimeout(() => {
+        // Later calls stop waiting until this capture has settled.
+        this.captureStalled = true;
+        const caughtUp = (): void => {
+          this.captureStalled = false;
+        };
+        void work.then(caughtUp, caughtUp);
+        try {
+          this.history.reportCaptureTimeout(toolName, this.captureTimeoutMs);
+        } catch {
+          // A report that cannot be delivered must not keep the tool waiting.
+        }
+        finish();
+      }, this.captureTimeoutMs);
+      // A pending capture alone must not keep the process alive.
+      timer.unref();
+      signal?.addEventListener("abort", finish, { once: true });
+      void work.then(finish, finish);
+    });
   }
 
   private tryParseArgs(raw: string): Record<string, unknown> | null {
@@ -857,50 +1701,52 @@ export class FileHistorySidecar implements Sidecar {
   }
 
   /**
-   * Workspace files a shell tool call is about to remove or move. Resolved
-   * against the call's working directory under the sidecar's workspace root;
-   * empty when the root is unknown or the tool is not a shell.
+   * Back up the targets of a shell, move or delete call when its start
+   * event arrives: the same selection and the same single queued operation
+   * as in `captureBeforeToolCall`.
    */
-  private shellDeletionPaths(
-    toolName: string,
-    args: Record<string, unknown> | null,
-  ): ReadonlyArray<string> {
-    const keys = SHELL_TOOL_ARG_KEYS[toolName];
-    if (keys === undefined || this.workspaceRoot === undefined || args === null) {
-      return [];
+  private async trackRegularFiles(
+    paths: readonly string[],
+    messageId: string,
+    movePair: boolean,
+  ): Promise<void> {
+    const kept = await this.regularOrMissing(paths, movePair);
+    if (kept.length > 0) {
+      await this.history.trackEdits(kept, messageId, {
+        stopAtFirstUnrecorded: movePair,
+      });
     }
-    const command = args[keys.command];
-    if (typeof command !== "string" || command.trim().length === 0) return [];
-    const cwd = args[keys.cwd];
-    return collectShellWorkspaceMutationTargets({
-      toolName,
-      args: {
-        command,
-        ...(Array.isArray(args.args) ? { args: args.args } : {}),
-        ...(typeof cwd === "string" ? { cwd } : {}),
-      },
-      workspaceRoot: this.workspaceRoot,
-    });
   }
 
   /**
-   * Back up the regular files among `paths` before the shell removes them.
-   * Directories and missing paths have no content to preserve; a later
-   * snapshot records the removal itself, as it does for any tracked file.
+   * The paths among `paths` to track for a tool whose targets are
+   * `regularFilesOnly`: regular files, and paths that do not exist, which
+   * are tracked as "did not exist" so that a rewind removes what the tool
+   * creates there. A directory has no content to preserve, and opening a
+   * FIFO, socket or device can block forever, so anything else that exists
+   * is left out. A later snapshot records the removal of a tracked file.
+   *
+   * For the two sides of a move (`movePair`), a source that is left out
+   * takes its destination with it: see `isMovePair`.
    */
-  private async trackShellDeletions(
-    paths: ReadonlyArray<string>,
-    messageId: string,
-  ): Promise<void> {
+  private async regularOrMissing(
+    paths: readonly string[],
+    movePair: boolean,
+  ): Promise<string[]> {
+    const kept: string[] = [];
     for (const filePath of paths) {
-      let isDirectory = false;
+      let regular = true;
       try {
-        isDirectory = (await stat(filePath)).isDirectory();
+        regular = (await stat(filePath)).isFile();
       } catch {
         // Missing paths must be tracked so rewind removes new shell files.
       }
-      if (!isDirectory) await this.history.trackEdit(filePath, messageId);
+      if (regular) kept.push(filePath);
     }
+    // The source comes first. The resolver saw a regular file there, so it
+    // is left out only when it was replaced since.
+    if (movePair && kept[0] !== paths[0]) return [];
+    return kept;
   }
 
   getSnapshotState(): FileHistoryState {
@@ -913,9 +1759,10 @@ export class FileHistorySidecar implements Sidecar {
 //
 // These helpers reuse
 // the existing FileHistory on-disk layout (`backupFileName` is the
-// absolute path to the backup artifact under `projectDir/file-history/
-// <pathHash>/v<N>`), so a snapshot carries the fully-resolved backup
-// path and these helpers can operate without knowing `projectDir`.
+// absolute path to the backup artifact, `v<version>-<uuid>` in the
+// `<pathHash>` directory described at the top of this file), so a
+// snapshot carries the fully-resolved backup path and these helpers can
+// operate without knowing `projectDir`.
 // ─────────────────────────────────────────────────────────────────────
 
 function findSnapshotByMessageId(
@@ -930,17 +1777,17 @@ function findSnapshotByMessageId(
 }
 
 /**
- * Locate the first (earliest) tracked backup for `trackingPath` across
- * the snapshot log, used when rewinding to a target where the file has
- * not yet been tracked. Returns `null` when v1 recorded that the file
- * did not exist, or `undefined` when no v1 entry can be found at all
- * (the latter is a hard "unknown origin" and callers must not touch
- * the file).
+ * Locate the origin entry for `trackingPath`: the earliest version 1
+ * entry in the snapshot log, used when rewinding to a target where the
+ * file has not yet been tracked. A file that did not exist at tracking
+ * time still has an origin entry; its `backupFileName` is `null`.
+ * Returns `undefined` when no version 1 entry can be found at all (a
+ * hard "unknown origin": callers must not touch the file).
  */
 function getOriginBackup(
   state: FileHistoryState,
   trackingPath: string,
-): FileHistoryBackup | null | undefined {
+): FileHistoryBackup | undefined {
   for (const snapshot of state.snapshots) {
     const backup = snapshot.trackedFileBackups[trackingPath];
     if (backup !== undefined && backup.version === 1) {
@@ -948,6 +1795,34 @@ function getOriginBackup(
     }
   }
   return undefined;
+}
+
+/**
+ * The entry a rewind to `target` takes `trackingPath` back to: its entry
+ * in the target snapshot or, for a file first tracked after the target,
+ * its origin entry. `undefined` means "leave the file alone".
+ *
+ * That is also the answer when the target has no entry for the file while
+ * an older retained snapshot has one. The file was tracked by then, so its
+ * backup failed when the target was taken, and its origin is an older
+ * state than the one asked for. An unchanged file keeps its version from
+ * snapshot to snapshot, so its version 1 entry can outlive the snapshot it
+ * was first tracked in and would otherwise be taken for the target state.
+ */
+function restorePointFor(
+  state: FileHistoryState,
+  target: FileHistorySnapshot,
+  trackingPath: string,
+): FileHistoryBackup | undefined {
+  const atTarget = target.trackedFileBackups[trackingPath];
+  if (atTarget !== undefined) return atTarget;
+  for (const snapshot of state.snapshots) {
+    if (snapshot === target) break;
+    if (snapshot.trackedFileBackups[trackingPath] !== undefined) {
+      return undefined;
+    }
+  }
+  return getOriginBackup(state, trackingPath);
 }
 
 async function safeStat(filePath: string): Promise<Stats | null> {
@@ -1030,44 +1905,203 @@ export async function fileHistoryCanRestore(
  * Rewind the tracked files on disk to the snapshot identified by
  * `messageId`. Returns the list of files that changed. Throws when
  * the snapshot does not exist so callers can surface a clear error.
+ * A restored file gets its directory back when that is gone as well.
+ * `fileHistoryRewindWithReport` also says what could not be done.
  */
 export async function fileHistoryRewind(
   state: FileHistoryState,
   messageId: string,
 ): Promise<ReadonlyArray<string>> {
+  return (await fileHistoryRewindWithReport(state, messageId)).changed;
+}
+
+/**
+ * `fileHistoryRewind` with the full result.
+ *
+ * The files to put back come first, and the files the target records as
+ * absent are removed only when every one of the first kind is in place. A
+ * move is on record as two separate files: its source, to put back, and
+ * its destination, to remove. Removing the destination while the source
+ * could not be written would leave the content in neither place, so a
+ * rewind that cannot put a file back removes nothing and says so in
+ * `notRestored` and `notRemoved`. It still puts back every file it can.
+ */
+export async function fileHistoryRewindWithReport(
+  state: FileHistoryState,
+  messageId: string,
+): Promise<FileHistoryRewindResult> {
   const target = findSnapshotByMessageId(state, messageId);
   if (!target) {
     throw new Error(
       `FileHistory: Snapshot for messageId=${messageId} not found`,
     );
   }
-  const changed: string[] = [];
+  const toRestore: Array<{ path: string; backupFileName: string }> = [];
+  const toRemove: string[] = [];
   for (const trackingPath of state.trackedFiles) {
-    const targetBackup = target.trackedFileBackups[trackingPath];
-    const origin = targetBackup ?? getOriginBackup(state, trackingPath);
-    if (origin === undefined) continue;
-
-    try {
-      if (origin.backupFileName === null) {
-        // Target said "file did not exist" — delete if present.
-        try {
-          await rm(trackingPath);
-          changed.push(trackingPath);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        }
-        continue;
-      }
-      if (await checkOriginFileChanged(trackingPath, origin.backupFileName)) {
-        const contents = await readFile(origin.backupFileName);
-        await writeFile(trackingPath, contents);
-        changed.push(trackingPath);
-      }
-    } catch {
-      // Rewind is best-effort: a path that cannot be restored is skipped.
+    const point = restorePointFor(state, target, trackingPath);
+    if (point === undefined) continue;
+    if (point.backupFileName === null) {
+      toRemove.push(trackingPath);
+    } else {
+      toRestore.push({
+        path: trackingPath,
+        backupFileName: point.backupFileName,
+      });
     }
   }
-  return changed;
+
+  const changed = new Set<string>();
+  const notRestored: Array<{ path: string; reason: string }> = [];
+  const notRemoved: string[] = [];
+  const failed = (path: string, error: unknown): void => {
+    notRestored.push({
+      path,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  };
+
+  for (const { path, backupFileName } of toRestore) {
+    try {
+      if (await restoreFromBackup(path, backupFileName)) changed.add(path);
+    } catch (error) {
+      failed(path, error);
+    }
+  }
+
+  if (notRestored.length > 0) {
+    for (const path of toRemove) {
+      if ((await safeStat(path)) !== null) notRemoved.push(path);
+    }
+  } else {
+    let removedSome = false;
+    for (const path of toRemove) {
+      if (await removeRecordedAsAbsent(path)) {
+        changed.add(path);
+        removedSome = true;
+      }
+    }
+    if (removedSome) {
+      // A removal takes a restored file with it when one of the two paths
+      // leads to the other through a symbolic link. Such a file is written
+      // again, so that its content is not lost.
+      for (const { path, backupFileName } of toRestore) {
+        if ((await safeStat(path)) !== null) continue;
+        try {
+          await writeBackupTo(backupFileName, path);
+          changed.add(path);
+        } catch (error) {
+          failed(path, error);
+        }
+      }
+    }
+  }
+
+  return {
+    changed: [...state.trackedFiles].filter((path) => changed.has(path)),
+    notRestored,
+    notRemoved,
+  };
+}
+
+/**
+ * Put `filePath` back to the content of its backup. Returns whether the
+ * file on disk changed. Throws when it could not be done.
+ */
+async function restoreFromBackup(
+  filePath: string,
+  backupFileName: string,
+): Promise<boolean> {
+  // A directory, FIFO, socket or device where the file should be cannot
+  // take the content, and opening some of these never returns.
+  const onDisk = await safeStat(filePath);
+  if (onDisk !== null && !onDisk.isFile()) {
+    throw new Error("the path is not a regular file any more");
+  }
+  // Without this, a file that is gone along with its backup would count
+  // as unchanged.
+  if ((await safeStat(backupFileName)) === null) {
+    throw new Error("its backup is missing");
+  }
+  if (!(await checkOriginFileChanged(filePath, backupFileName))) return false;
+  await writeBackupTo(backupFileName, filePath);
+  return true;
+}
+
+/**
+ * Write the content of the backup `backupFileName` to `filePath`, with the
+ * directory when that is gone as well: a file is moved out of it and the
+ * emptied directory removed.
+ *
+ * The backup is opened before anything is touched, so a backup that cannot
+ * be read changes nothing. The content is streamed, because `readFile`
+ * refuses a file of 2 GiB or more. A file that has to be created gets the
+ * permission bits of the backup, which `copyFile` took from the original.
+ * `copyFile` is not used for the way back: it also resets the mode of a
+ * file that exists and unlinks the destination when it fails.
+ */
+async function writeBackupTo(
+  backupFileName: string,
+  filePath: string,
+): Promise<void> {
+  const backup = await open(backupFileName, "r");
+  try {
+    const { mode } = await backup.stat();
+    await mkdir(dirname(filePath), { recursive: true });
+    await pipeline(
+      backup.createReadStream({ autoClose: false }),
+      createWriteStream(filePath, { mode: mode & 0o777 }),
+    );
+  } finally {
+    await backup.close();
+  }
+}
+
+/**
+ * Remove `filePath`, which the target records as absent. Returns whether
+ * it was removed; a path that is not there or cannot be removed is
+ * skipped.
+ *
+ * A symbolic link that leads nowhere stays. `stat` calls such a link
+ * absent, so the record does not say that the link was not there.
+ */
+async function removeRecordedAsAbsent(filePath: string): Promise<boolean> {
+  try {
+    if (
+      (await lstat(filePath)).isSymbolicLink() &&
+      (await safeStat(filePath)) === null
+    ) {
+      return false;
+    }
+    await rm(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** At most three of `items`, and how many more there are. */
+function listed(items: ReadonlyArray<string>): string {
+  const shown = items.slice(0, 3).join(", ");
+  return items.length > 3 ? `${shown} and ${items.length - 3} more` : shown;
+}
+
+/**
+ * What an incomplete rewind could not do, in words: for the diagnostic and
+ * for the user.
+ */
+export function describeIncompleteRewind(
+  result: FileHistoryRewindResult,
+): string {
+  const failures = listed(
+    result.notRestored.map(({ path, reason }) => `${path} (${reason})`),
+  );
+  if (result.notRemoved.length === 0) return `Could not restore ${failures}.`;
+  return (
+    `Could not restore ${failures}. Nothing was removed, so that no content ` +
+    `is lost: ${listed(result.notRemoved)} ` +
+    `${result.notRemoved.length === 1 ? "is" : "are"} still there.`
+  );
 }
 
 /**

@@ -14,6 +14,7 @@ import {
   isPathAllowed,
 } from "./filesystem.js";
 import type { Tool } from "../types.js";
+import { validateToolArgs } from "../argument-validation.js";
 import { runWithCwdOverride } from "../../../src/utils/cwd.js";
 import { runWithCurrentRuntimeSession } from "../../../src/session/current-session.js";
 import type { Session } from "../../../src/session/session.js";
@@ -71,6 +72,7 @@ function createMockDir(
         },
       };
     },
+    read: vi.fn(async () => (index < entries.length ? entries[index++] : null)),
     close: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -691,27 +693,322 @@ describe("system.delete", () => {
 describe("system.move", () => {
   let tool: Tool;
 
+  const MOVE = {
+    source: "/workspace/old.txt",
+    destination: "/workspace/new.txt",
+  };
+
+  type Kind = "file" | "directory" | "symlink" | "fifo";
+
+  /** What `stat` and `lstat` report with `{ bigint: true }`, as far as the tool reads it. */
+  function bigintStats(kind: Kind, ino: bigint, dev = 1n) {
+    return {
+      dev,
+      ino,
+      isFile: () => kind === "file",
+      isDirectory: () => kind === "directory",
+      isSymbolicLink: () => kind === "symlink",
+    } as never;
+  }
+
+  function errno(code: string): NodeJS.ErrnoException {
+    return Object.assign(new Error(`${code}: mocked failure`), { code });
+  }
+
+  /** The source, and what the probe of the destination finds there. */
+  function sourceAndDestination(source: Kind, destination: Kind | null): void {
+    mockStat.mockResolvedValueOnce(bigintStats(source, 10n));
+    if (destination === null) mockLstat.mockRejectedValueOnce(errno("ENOENT"));
+    else mockLstat.mockResolvedValueOnce(bigintStats(destination, 20n));
+  }
+
+  function expectRefusedBeforeAnyEffect(result: Awaited<ReturnType<Tool["execute"]>>): string {
+    expect(result.isError).toBe(true);
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    expect(mockMkdir).not.toHaveBeenCalled();
+    expect(mockRename).not.toHaveBeenCalled();
+    return parseResult(result).error as string;
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks keeps queued results. A probe result left over from
+    // another test would decide whether the destination exists here.
+    mockLstat.mockReset();
+    mockStat.mockReset();
+    mockMkdir.mockReset();
+    mockRename.mockReset();
+    mockOpendir.mockReset();
     mockRealpath.mockImplementation(async (p: string) => p as never);
     tool = findTool(createFilesystemTools(CONFIG), "system.move");
   });
 
   it("moves a file within allowed paths", async () => {
-    mockStat.mockResolvedValueOnce({
-      isDirectory: () => false,
-    } as never);
+    sourceAndDestination("file", null);
     mockMkdir.mockResolvedValueOnce(undefined);
     mockRename.mockResolvedValueOnce(undefined);
 
-    const result = await tool.execute({
-      source: "/workspace/old.txt",
-      destination: "/workspace/new.txt",
-    });
+    const result = await tool.execute({ ...MOVE });
     const parsed = parseResult(result);
 
     expect(result.isError).toBeUndefined();
-    expect(parsed.moved).toBe(true);
+    expect(parsed).toEqual({ ...MOVE, moved: true });
+    // The destination is probed without following a link, after the source
+    // was found and before its parent directory is created.
+    expect(mockStat).toHaveBeenCalledWith("/workspace/old.txt", { bigint: true });
+    expect(mockLstat).toHaveBeenCalledWith("/workspace/new.txt", { bigint: true });
+    expect(mockLstat.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockStat.mock.invocationCallOrder[0]!,
+    );
+    expect(mockMkdir.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockLstat.mock.invocationCallOrder[0]!,
+    );
+    expect(mockMkdir).toHaveBeenCalledWith("/workspace", { recursive: true });
+    expect(mockRename).toHaveBeenCalledWith("/workspace/old.txt", "/workspace/new.txt");
+  });
+
+  it("reports no replacement when overwrite is set and nothing was there", async () => {
+    sourceAndDestination("file", null);
+
+    const result = await tool.execute({ ...MOVE, overwrite: true });
+
+    expect(result.isError).toBeUndefined();
+    expect(parseResult(result)).toEqual({ ...MOVE, moved: true });
+    expect(mockRename).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["left out", {}],
+    ["false", { overwrite: false }],
+  ])("refuses an existing destination when overwrite is %s", async (_label, flag) => {
+    sourceAndDestination("file", "file");
+
+    const result = await tool.execute({ ...MOVE, ...flag });
+
+    const error = expectRefusedBeforeAnyEffect(result);
+    // Names the destination as the caller wrote it, and the way out.
+    expect(error).toContain("already exists: /workspace/new.txt");
+    expect(error).toContain("overwrite: true");
+  });
+
+  it("replaces an existing destination when overwrite is true, and says so", async () => {
+    sourceAndDestination("file", "file");
+    mockMkdir.mockResolvedValueOnce(undefined);
+    mockRename.mockResolvedValueOnce(undefined);
+
+    const result = await tool.execute({ ...MOVE, overwrite: true });
+
+    expect(result.isError).toBeUndefined();
+    expect(parseResult(result)).toEqual({ ...MOVE, moved: true, overwritten: true });
+    expect(mockRename).toHaveBeenCalledWith("/workspace/old.txt", "/workspace/new.txt");
+  });
+
+  it.each([["true"], [1], [null], [{}]])(
+    "refuses a non-boolean overwrite (%j) before it looks at a file",
+    async (overwrite) => {
+      const result = await tool.execute({ ...MOVE, overwrite });
+
+      expect(expectRefusedBeforeAnyEffect(result)).toBe("overwrite must be a boolean");
+      expect(mockStat).not.toHaveBeenCalled();
+      expect(mockLstat).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["a file", "file", {}],
+    ["a file", "file", { overwrite: true }],
+    // Anything that is not a directory: rename cannot put it into one.
+    ["a FIFO", "fifo", { overwrite: true }],
+  ] as const)(
+    "refuses %s onto an existing directory (%s, %j)",
+    async (_label, source, flag) => {
+      sourceAndDestination(source, "directory");
+
+      const result = await tool.execute({ ...MOVE, ...flag });
+
+      const error = expectRefusedBeforeAnyEffect(result);
+      expect(error).toContain("existing directory: /workspace/new.txt");
+      expect(error).toContain("full destination path");
+      // The flag cannot make this work, so the message does not offer it.
+      expect(error).not.toContain("overwrite");
+    },
+  );
+
+  it.each([
+    ["a file", "file", {}],
+    ["a file", "file", { overwrite: true }],
+    ["a dangling symlink", "symlink", { overwrite: true }],
+    ["a FIFO", "fifo", { overwrite: true }],
+  ] as const)(
+    "refuses a directory onto %s (%s, %j)",
+    async (_label, destination, flag) => {
+      sourceAndDestination("directory", destination);
+
+      const result = await tool.execute({ ...MOVE, ...flag });
+
+      const error = expectRefusedBeforeAnyEffect(result);
+      expect(error).toContain("/workspace/new.txt");
+      expect(error).toContain("not a directory");
+      expect(error).not.toContain("overwrite");
+    },
+  );
+
+  it("moves a directory onto an empty directory only with overwrite", async () => {
+    sourceAndDestination("directory", "directory");
+    const empty = createMockDir([]);
+    mockOpendir.mockResolvedValueOnce(empty as never);
+    const refused = await tool.execute({ ...MOVE });
+    expect(expectRefusedBeforeAnyEffect(refused)).toContain("overwrite: true");
+    expect(mockOpendir).toHaveBeenCalledWith("/workspace/new.txt");
+    expect(empty.close).toHaveBeenCalledTimes(1);
+
+    sourceAndDestination("directory", "directory");
+    mockOpendir.mockResolvedValueOnce(createMockDir([]) as never);
+    const replaced = await tool.execute({ ...MOVE, overwrite: true });
+    expect(replaced.isError).toBeUndefined();
+    expect(parseResult(replaced)).toEqual({ ...MOVE, moved: true, overwritten: true });
+  });
+
+  it.each([
+    ["without the flag", {}],
+    ["with overwrite: true", { overwrite: true }],
+  ])("refuses a directory onto a directory that is not empty, %s", async (_label, flag) => {
+    sourceAndDestination("directory", "directory");
+    const occupied = createMockDir([
+      { name: "kept.txt", isDirectory: () => false, isFile: () => true },
+    ]);
+    mockOpendir.mockResolvedValueOnce(occupied as never);
+
+    const result = await tool.execute({ ...MOVE, ...flag });
+
+    const error = expectRefusedBeforeAnyEffect(result);
+    expect(error).toBe(
+      "Destination directory is not empty: /workspace/new.txt. Only an empty directory can be replaced.",
+    );
+    // rename fails with ENOTEMPTY whatever the flag says, so it is not offered.
+    expect(error).not.toContain("overwrite");
+    expect(occupied.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a directory onto a directory it cannot look into", async () => {
+    sourceAndDestination("directory", "directory");
+    mockOpendir.mockRejectedValueOnce(errno("EACCES"));
+
+    const result = await tool.execute({ ...MOVE, overwrite: true });
+
+    expect(expectRefusedBeforeAnyEffect(result)).toContain("destination check");
+  });
+
+  it("does not look into the destination unless both are directories", async () => {
+    sourceAndDestination("file", "file");
+    const replaced = await tool.execute({ ...MOVE, overwrite: true });
+    expect(replaced.isError).toBeUndefined();
+    expect(mockOpendir).not.toHaveBeenCalled();
+  });
+
+  it("a dangling symlink at the destination counts as an existing destination", async () => {
+    sourceAndDestination("file", "symlink");
+    const refused = await tool.execute({ ...MOVE });
+    expect(expectRefusedBeforeAnyEffect(refused)).toContain("already exists");
+
+    sourceAndDestination("file", "symlink");
+    const replaced = await tool.execute({ ...MOVE, overwrite: true });
+    expect(parseResult(replaced)).toEqual({ ...MOVE, moved: true, overwritten: true });
+  });
+
+  it.each([
+    ["without the flag", {}],
+    ["with overwrite: true", { overwrite: true }],
+  ])(
+    "renames %s when both names are the same file, and reports no replacement",
+    async (_label, flag) => {
+      // A case-only rename on a case-folding mount, a hard link, a self-move.
+      mockStat.mockResolvedValueOnce(bigintStats("file", 77n, 5n));
+      mockLstat.mockResolvedValueOnce(bigintStats("file", 77n, 5n));
+
+      const result = await tool.execute({
+        source: "/workspace/readme.md",
+        destination: "/workspace/README.md",
+        ...flag,
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(parseResult(result)).toEqual({
+        source: "/workspace/readme.md",
+        destination: "/workspace/README.md",
+        moved: true,
+      });
+      expect(mockRename).toHaveBeenCalledWith(
+        "/workspace/readme.md",
+        "/workspace/README.md",
+      );
+    },
+  );
+
+  it.each([
+    ["an inode number of 0 on both", [0n, 5n], [0n, 5n]],
+    ["the same inode number on another device", [77n, 5n], [77n, 6n]],
+    ["another inode number on the same device", [77n, 5n], [78n, 5n]],
+  ] as const)("does not take %s for the same file", async (_label, source, destination) => {
+    mockStat.mockResolvedValueOnce(bigintStats("file", source[0], source[1]));
+    mockLstat.mockResolvedValueOnce(bigintStats("file", destination[0], destination[1]));
+
+    const result = await tool.execute({ ...MOVE });
+
+    expect(expectRefusedBeforeAnyEffect(result)).toContain("already exists");
+  });
+
+  it("refuses before any effect when the destination cannot be examined", async () => {
+    mockStat.mockResolvedValueOnce(bigintStats("file", 10n));
+    mockLstat.mockRejectedValueOnce(errno("EACCES"));
+
+    const result = await tool.execute({ ...MOVE, overwrite: true });
+
+    // Not the bare error of a failed move, and not "Source not found".
+    expect(expectRefusedBeforeAnyEffect(result)).toBe("EACCES: destination check failed");
+  });
+
+  it("fails on a missing source before the destination is examined or its parent created", async () => {
+    mockStat.mockRejectedValueOnce(errno("ENOENT"));
+
+    const result = await tool.execute({ ...MOVE, overwrite: true });
+
+    expect(expectRefusedBeforeAnyEffect(result)).toBe("Source not found: /workspace/old.txt");
+    expect(mockLstat).not.toHaveBeenCalled();
+  });
+
+  it("keeps a failure of the rename itself a bare error", async () => {
+    // Past the effect boundary: the directory was empty when the tool looked
+    // into it and has an entry by the time of the rename.
+    sourceAndDestination("directory", "directory");
+    mockOpendir.mockResolvedValueOnce(createMockDir([]) as never);
+    mockRename.mockRejectedValueOnce(errno("ENOTEMPTY"));
+
+    const result = await tool.execute({ ...MOVE, overwrite: true });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toBe("ENOTEMPTY: move failed");
+    expect(result.effectDisposition).toBeUndefined();
+  });
+
+  it("declares overwrite as an optional boolean", () => {
+    const schema = tool.inputSchema as {
+      properties: Record<string, { type: string }>;
+      required: string[];
+    };
+    expect(schema.properties.overwrite?.type).toBe("boolean");
+    expect(schema.required).toEqual(["source", "destination"]);
+    expect(tool.description).toContain("overwrite");
+
+    // What tool dispatch checks a call against before it runs the tool.
+    for (const flag of [{}, { overwrite: true }, { overwrite: false }]) {
+      expect(validateToolArgs(schema, { ...MOVE, ...flag }).valid).toBe(true);
+    }
+    for (const overwrite of ["true", 1, null]) {
+      const validation = validateToolArgs(schema, { ...MOVE, overwrite });
+      expect(validation.valid).toBe(false);
+      expect(validation.errors.map((error) => error.path)).toEqual(["overwrite"]);
+    }
   });
 
   it("rejects when destination is outside allowed paths", async () => {

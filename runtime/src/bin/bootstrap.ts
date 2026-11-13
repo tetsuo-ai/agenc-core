@@ -2225,9 +2225,17 @@ async function bootstrapLocalRuntimeSessionScoped(
             }),
         });
         await fileHistory.loadFromDisk();
-        const fileHistorySidecar = new FileHistorySidecar({ fileHistory, workspaceRoot });
+        const fileHistorySidecar = new FileHistorySidecar({
+          fileHistory,
+          workspaceRoot,
+          // system.move and system.delete resolve a relative path against
+          // the session's working directory, which a worktree changes.
+          workingDirectory: () => s.sessionConfiguration.cwd,
+        });
         sidecarManager.register(deferredFileHistory?.attach(fileHistorySidecar) ?? fileHistorySidecar);
-        s.attachFileHistory(fileHistory);
+        // The sidecar itself, not the deferred wrapper: tool dispatch asks it
+        // to capture a file's state before the tool writes.
+        s.attachFileHistory(fileHistory, fileHistorySidecar);
 
         errorLogSidecar = new ErrorLogSidecar({
           projectDir,

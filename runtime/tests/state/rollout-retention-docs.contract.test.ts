@@ -20,6 +20,8 @@ describe("session rollout retention docs", () => {
     expect(text).toContain("review_status = 'pending'");
     expect(text).toContain("compaction_retention_pins.state != 'released'");
     expect(text).toContain("reason `retention`");
+    expect(text).toContain("file-history/session-<hash>/");
+    expect(text).toContain("session-<hash>.pruning-<pid>-<time>");
     expect(text).toContain("daemon rollout retention deleted");
     expect(text).toContain("first **20**");
     expect(text).toContain("recoverPendingEffectReviewsOnStartup");
@@ -41,10 +43,12 @@ describe("session rollout retention docs", () => {
 
     expect(config).toContain("daemon.md#session-rollout-retention");
     expect(config).toContain("Newest-rollout-mtime window");
+    expect(config).toContain("rollout files and file-history backups");
     expect(cli).toContain("daemon.md#session-rollout-retention");
     expect(cli).toContain('reasonCode: "source_changed"');
     expect(cli).toContain("agenc config set agent.retention.rollout_days 0");
     expect(architecture).toContain("reference/daemon.md#session-rollout-retention");
+    expect(architecture).toContain("`file-history/` (project-scoped)");
     expect(durable).toContain("../reference/daemon.md#session-rollout-retention");
     expect(durable).toContain("review_status = pending");
     expect(index).toContain("session rollout retention");

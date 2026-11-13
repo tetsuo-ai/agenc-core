@@ -331,6 +331,10 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "max_output_tokens_exhausted",
   "prompt_too_long_exhausted",
   "stop_hook_loop",
+  // A tool call ran before file history had its "before" state on record,
+  // after a wait the user saw as a pause. A later rewind may not undo that
+  // call. Reported once per session.
+  "file_history_capture_timeout",
   // `/goal`: the runtime, not the agent, decides when a goal is met. Each
   // round's verdict and every stop explain why the turn kept going or ended.
   "goal_round",

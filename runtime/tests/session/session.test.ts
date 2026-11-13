@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -3110,20 +3111,25 @@ describe("Session file rewind (previewFileRewind / rewindFilesToMessage)", () =>
     }
   });
 
-  async function buildFileRewindFixture(): Promise<{
+  async function buildFileRewindFixture(otherFiles = 0): Promise<{
     session: Session;
     file: string;
+    others: string[];
   }> {
     const { FileHistory } = await import("./file-history.js");
     project = mkdtempSync(join(tmpdir(), "agenc-session-rewind-"));
     const file = join(project, "tracked.txt");
+    const others = Array.from({ length: otherFiles }, (_, index) =>
+      join(project, `other-${index}.txt`));
     writeFileSync(file, "original", "utf8");
+    for (const other of others) writeFileSync(other, "original", "utf8");
     const hist = new FileHistory({ projectDir: project });
     // Barrier snapshot the sidecar would take when the user message
     // with id "user-msg-1" arrived, followed by an edit.
-    await hist.trackEdit(file, "user-msg-1");
+    await hist.trackEdits([file, ...others], "user-msg-1");
     await hist.makeSnapshot("user-msg-1");
     writeFileSync(file, "modified-by-turn", "utf8");
+    for (const other of others) writeFileSync(other, "modified-by-turn", "utf8");
     await hist.makeSnapshot("post-edit");
 
     const session = buildSession();
@@ -3138,8 +3144,37 @@ describe("Session file rewind (previewFileRewind / rewindFilesToMessage)", () =>
         { role: "assistant", content: "edited your file" },
       ];
     });
-    return { session, file };
+    return { session, file, others };
   }
+
+  it.each([
+    [0, "No file was restored."],
+    [1, "Restored 1 file."],
+    [2, "Restored 2 files."],
+  ])("rewindFilesToMessage fails when a file cannot be put back, with %i other files restored", async (otherFiles, restored) => {
+    const { session, file, others } = await buildFileRewindFixture(otherFiles);
+    const created = join(project, "created-by-turn.txt");
+    // A directory took the tracked file's name, and the turn created a file.
+    rmSync(file);
+    mkdirSync(file);
+    await session["attachedFileHistory"]!.trackEdit(created, "post-edit-call");
+    writeFileSync(created, "new", "utf8");
+
+    const result = await session.rewindFilesToMessage({ messageOrdinal: 0 });
+
+    // Not `ok`: the TUI shows a message only for a failed restore.
+    expect(result).toEqual({
+      ok: false,
+      sessionId: session.conversationId,
+      code: "RESTORE_INCOMPLETE",
+      message:
+        `${restored} Could not restore ${file} (the path is not a regular file any more). ` +
+        `Nothing was removed, so that no content is lost: ${created} is still there. ` +
+        "Fix the cause and restore again.",
+    });
+    for (const other of others) expect(readFileSync(other, "utf8")).toBe("original");
+    expect(readFileSync(created, "utf8")).toBe("new");
+  });
 
   it("previews and restores a durable checkpoint after its prompt leaves compacted history", async () => {
     const { session, file } = await buildFileRewindFixture();
@@ -3218,5 +3253,93 @@ describe("Session file rewind (previewFileRewind / rewindFilesToMessage)", () =>
     expect(preview.ok).toBe(true);
     if (!preview.ok) throw new Error(preview.message);
     expect(preview.canRestoreFiles).toBe(false);
+  });
+});
+
+describe("Session file-state capture before a tool call (#3436)", () => {
+  let project = "";
+
+  afterEach(() => {
+    if (project) {
+      rmSync(project, { recursive: true, force: true });
+      project = "";
+    }
+  });
+
+  async function buildCaptureFixture() {
+    const { FileHistory, FileHistorySidecar } = await import("./file-history.js");
+    project = mkdtempSync(join(tmpdir(), "agenc-session-capture-"));
+    const fileHistory = new FileHistory({ projectDir: project, sessionId: "capture" });
+    const sidecar = new FileHistorySidecar({ fileHistory, workspaceRoot: project });
+    return { fileHistory, sidecar, file: join(project, "edited.txt") };
+  }
+
+  it("returns undefined while no file history is attached", () => {
+    const session = buildSession();
+    expect(
+      session.captureFileStateBeforeToolCall("Write", { file_path: "a.txt", content: "a" }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined on a session that was built without the constructor", () => {
+    const session = Object.create(Session.prototype) as Session;
+    expect(
+      session.captureFileStateBeforeToolCall("Write", { file_path: "a.txt", content: "a" }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when only the engine is attached", async () => {
+    const { fileHistory, file } = await buildCaptureFixture();
+    const session = buildSession();
+    try {
+      session.attachFileHistory(fileHistory);
+      expect(
+        session.captureFileStateBeforeToolCall("Write", { file_path: file, content: "a" }),
+      ).toBeUndefined();
+      await fileHistory.flush();
+      expect(fileHistory.getState().trackedFiles.size).toBe(0);
+    } finally {
+      fileHistory.stop();
+    }
+  });
+
+  it("asks the attached sidecar, which backs the file up before the promise resolves", async () => {
+    const { fileHistory, sidecar, file } = await buildCaptureFixture();
+    writeFileSync(file, "before the tool\n", "utf8");
+    const session = buildSession();
+    const capture = vi.spyOn(sidecar, "captureBeforeToolCall");
+    try {
+      session.attachFileHistory(fileHistory, sidecar);
+      const signal = new AbortController().signal;
+      const args = { file_path: file, content: "after the tool\n" };
+
+      const pending = session.captureFileStateBeforeToolCall("Write", args, signal);
+
+      expect(capture).toHaveBeenCalledExactlyOnceWith("Write", args, signal);
+      expect(pending).toBeInstanceOf(Promise);
+      await expect(pending).resolves.toBeUndefined();
+      const origin = fileHistory.getState().snapshots[0]!.trackedFileBackups[file]!;
+      expect(readFileSync(origin.backupFileName!, "utf8")).toBe("before the tool\n");
+      // The sidecar's answer is passed on as it is, "nothing to wait for" included.
+      expect(session.captureFileStateBeforeToolCall("FileRead", { file_path: file })).toBeUndefined();
+      // The rewind surface still works off the same engine.
+      expect(fileHistory.hasSnapshotFor(fileHistory.getState().snapshots[0]!.messageId)).toBe(true);
+    } finally {
+      fileHistory.stop();
+    }
+  });
+
+  it("drops the sidecar again when the engine is re-attached without one", async () => {
+    const { fileHistory, sidecar, file } = await buildCaptureFixture();
+    const session = buildSession();
+    try {
+      session.attachFileHistory(fileHistory, sidecar);
+      session.attachFileHistory(fileHistory);
+      expect(
+        session.captureFileStateBeforeToolCall("Write", { file_path: file, content: "a" }),
+      ).toBeUndefined();
+    } finally {
+      fileHistory.stop();
+    }
   });
 });

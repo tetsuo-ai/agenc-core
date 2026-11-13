@@ -621,7 +621,7 @@ from a late CLI layer is rejected.
 | --- | --- |
 | `autoUpdates`, `autoUpdatesChannel` | Update enablement and `latest`/`stable` channel. Absent enablement preserves the updater default. |
 | `respectGitignore`, `includeGitInstructions` | Git-aware discovery and instruction behavior. |
-| `transcriptPersistenceEnabled` | Persist session transcripts (default `true`). Retention: `agent.retention.rollout_days`, default 30 days; sessions whose newest rollout file is older than the window are deleted with their rollout files; 0 keeps every session. See [session rollout retention](daemon.md#session-rollout-retention). |
+| `transcriptPersistenceEnabled` | Persist session transcripts (default `true`). Retention: `agent.retention.rollout_days`, default 30 days; sessions whose newest rollout file is older than the window are deleted with their rollout files and file-history backups; 0 keeps every session. See [session rollout retention](daemon.md#session-rollout-retention). |
 | `outputStyle` | Named assistant response style. |
 | `defaultShell` | `bash` or `powershell`. |
 | `language` | Preferred response language. |

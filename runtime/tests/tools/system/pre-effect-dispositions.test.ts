@@ -1,4 +1,15 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import {
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  readlink,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -14,6 +25,7 @@ import {
 import { UnifiedExecProcessManager } from "../../../src/unified-exec/process-manager.js";
 import type { ToolResult } from "../../../src/tools/types.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+import { itWhen } from "../../helpers/platform-registration.js";
 
 // #2190: a bare isError from a side-effecting tool is filed as an unknown
 // outcome and gates the session behind /resolve. Every refusal below happens
@@ -163,4 +175,221 @@ describe("filesystem refusals before mkdir, rm or rename", () => {
   test("a rejected argument", async () => {
     expectNoEffect(await toolNamed("system.delete").execute({}), "must be a non-empty string");
   });
+
+  test("an overwrite flag that is not a boolean", async () => {
+    await writeFile(join(root, "draft.txt"), "DRAFT\n");
+
+    expectNoEffect(
+      await toolNamed("system.move").execute({
+        source: join(root, "draft.txt"),
+        destination: join(root, "moved.txt"),
+        overwrite: "true",
+      }),
+      "overwrite must be a boolean",
+    );
+
+    expect(await readdir(root)).toEqual(["draft.txt"]);
+  });
+
+  // #3437: rename replaces an existing destination without saying so.
+  test("a destination that already exists", async () => {
+    const source = join(root, "draft.txt");
+    const destination = join(root, "config.txt");
+    await writeFile(source, "DRAFT\n");
+    await writeFile(destination, "IMPORTANT EXISTING CONTENT\n");
+
+    expectNoEffect(
+      await toolNamed("system.move").execute({ source, destination }),
+      `Destination already exists: ${destination}. Pass overwrite: true to replace it.`,
+    );
+    expectNoEffect(
+      await toolNamed("system.move").execute({ source, destination, overwrite: false }),
+      "Destination already exists",
+    );
+
+    // Nothing moved and nothing was replaced.
+    expect(await readFile(source, "utf8")).toBe("DRAFT\n");
+    expect(await readFile(destination, "utf8")).toBe("IMPORTANT EXISTING CONTENT\n");
+    expect((await readdir(root)).sort()).toEqual(["config.txt", "draft.txt"]);
+  });
+
+  test("a move that rename cannot perform, whatever the flag says", async () => {
+    const file = join(root, "notes.txt");
+    const directory = join(root, "docs");
+    await writeFile(file, "NOTES\n");
+    await mkdir(directory);
+    await writeFile(join(directory, "kept.txt"), "KEPT\n");
+
+    for (const overwrite of [undefined, true]) {
+      const flag = overwrite === undefined ? {} : { overwrite };
+      const intoDirectory = await toolNamed("system.move").execute({
+        source: file,
+        destination: directory,
+        ...flag,
+      });
+      expectNoEffect(intoDirectory, "Give the full destination path");
+      expect(String(intoDirectory.content)).not.toContain("overwrite");
+
+      const ontoFile = await toolNamed("system.move").execute({
+        source: directory,
+        destination: file,
+        ...flag,
+      });
+      expectNoEffect(ontoFile, "it exists and is not a directory");
+      expect(String(ontoFile.content)).not.toContain("overwrite");
+    }
+
+    expect(await readFile(file, "utf8")).toBe("NOTES\n");
+    expect(await readdir(directory)).toEqual(["kept.txt"]);
+  });
+
+  test("a directory onto an existing directory without the flag", async () => {
+    const source = join(root, "build");
+    const destination = join(root, "dist");
+    await mkdir(source);
+    await writeFile(join(source, "out.js"), "OUT\n");
+    await mkdir(destination);
+
+    expectNoEffect(
+      await toolNamed("system.move").execute({ source, destination }),
+      "Pass overwrite: true to replace it.",
+    );
+
+    expect(await readdir(source)).toEqual(["out.js"]);
+    expect(await readdir(destination)).toEqual([]);
+  });
+
+  test.each([
+    ["without the flag", {}],
+    ["with overwrite: true", { overwrite: true }],
+  ])("a directory onto a directory that is not empty, %s", async (_label, flag) => {
+    const source = join(root, "build");
+    const destination = join(root, "dist");
+    await mkdir(source);
+    await writeFile(join(source, "out.js"), "OUT\n");
+    await mkdir(destination);
+    await writeFile(join(destination, "kept.js"), "KEPT\n");
+
+    // rename would fail with ENOTEMPTY, after the effect boundary.
+    expectNoEffect(
+      await toolNamed("system.move").execute({ source, destination, ...flag }),
+      "Destination directory is not empty",
+    );
+
+    expect(await readdir(source)).toEqual(["out.js"]);
+    expect(await readdir(destination)).toEqual(["kept.js"]);
+  });
+
+  itWhen(process.platform !== "win32")(
+    "a dangling symlink at the destination",
+    async () => {
+      const source = join(root, "draft.txt");
+      const destination = join(root, "link.txt");
+      await writeFile(source, "DRAFT\n");
+      await symlink(join(root, "not-there.txt"), destination);
+
+      // stat would call the link absent, and rename would replace it.
+      expectNoEffect(
+        await toolNamed("system.move").execute({ source, destination }),
+        "Destination already exists",
+      );
+
+      expect(await readlink(destination)).toBe(join(root, "not-there.txt"));
+      expect(await readFile(source, "utf8")).toBe("DRAFT\n");
+    },
+  );
+});
+
+describe("system.move onto an existing destination that is not refused (#3437)", () => {
+  function move(args: Record<string, unknown>): Promise<ToolResult> {
+    const tool = createFilesystemTools({ allowedPaths: [root] }).find(
+      (candidate) => candidate.name === "system.move",
+    );
+    if (tool === undefined) throw new Error("no tool system.move");
+    return tool.execute(args);
+  }
+
+  test("overwrite: true replaces a file and says so", async () => {
+    const source = join(root, "draft.txt");
+    const destination = join(root, "config.txt");
+    await writeFile(source, "DRAFT\n");
+    await writeFile(destination, "IMPORTANT EXISTING CONTENT\n");
+
+    const result = await move({ source, destination, overwrite: true });
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(String(result.content))).toEqual({
+      source,
+      destination,
+      moved: true,
+      overwritten: true,
+    });
+    expect(await readFile(destination, "utf8")).toBe("DRAFT\n");
+    expect(await readdir(root)).toEqual(["config.txt"]);
+  });
+
+  test("overwrite: true replaces an empty directory with a directory", async () => {
+    const source = join(root, "build");
+    const destination = join(root, "dist");
+    await mkdir(source);
+    await writeFile(join(source, "out.js"), "OUT\n");
+    await mkdir(destination);
+
+    const result = await move({ source, destination, overwrite: true });
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(String(result.content)).overwritten).toBe(true);
+    expect(await readdir(root)).toEqual(["dist"]);
+    expect(await readFile(join(destination, "out.js"), "utf8")).toBe("OUT\n");
+  });
+
+  test("a destination that does not exist needs no flag, in a directory that does not exist either", async () => {
+    const source = join(root, "draft.txt");
+    const destination = join(root, "archive", "2026", "draft.txt");
+    await writeFile(source, "DRAFT\n");
+
+    const result = await move({ source, destination });
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(String(result.content))).toEqual({ source, destination, moved: true });
+    expect(await readFile(destination, "utf8")).toBe("DRAFT\n");
+    expect(await readdir(root)).toEqual(["archive"]);
+  });
+
+  test("the same file under both names is renamed without the flag", async () => {
+    const source = join(root, "notes.txt");
+    const hardLink = join(root, "notes-link.txt");
+    await writeFile(source, "NOTES\n");
+    await link(source, hardLink);
+    expect((await lstat(source, { bigint: true })).ino).toBe(
+      (await lstat(hardLink, { bigint: true })).ino,
+    );
+
+    // Onto itself, and onto a hard link to itself: nothing is replaced.
+    for (const destination of [source, hardLink]) {
+      const result = await move({ source, destination });
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(String(result.content))).toEqual({ source, destination, moved: true });
+    }
+
+    expect(await readFile(hardLink, "utf8")).toBe("NOTES\n");
+  });
+
+  itWhen(process.platform !== "win32")(
+    "overwrite: true replaces a dangling symlink and leaves its target alone",
+    async () => {
+      const source = join(root, "draft.txt");
+      const destination = join(root, "link.txt");
+      await writeFile(source, "DRAFT\n");
+      await symlink(join(root, "not-there.txt"), destination);
+
+      const result = await move({ source, destination, overwrite: true });
+
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(String(result.content)).overwritten).toBe(true);
+      expect((await lstat(destination)).isFile()).toBe(true);
+      expect(await readFile(destination, "utf8")).toBe("DRAFT\n");
+      expect(await readdir(root)).toEqual(["link.txt"]);
+    },
+  );
 });

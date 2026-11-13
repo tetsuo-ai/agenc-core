@@ -9,7 +9,14 @@
  *   3. `AGENC_MAX_TOOL_USE_CONCURRENCY=2` caps parallel dispatch.
  */
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -49,7 +56,17 @@ import { StreamingToolExecutor } from "../tools/streaming-executor.js";
 import { SHARED_READ, ToolCallRuntime } from "../tools/concurrency.js";
 import { routerFromRegistry } from "../tools/router.js";
 import { readToolRuntimeContext } from "../tools/runtimes/context.js";
-import { SESSION_ALLOWED_ROOTS_ARG } from "../tools/system/filesystem.js";
+import {
+  clearSessionReadState,
+  seedSessionReadState,
+  SESSION_ALLOWED_ROOTS_ARG,
+} from "../tools/system/filesystem.js";
+import {
+  FileHistory,
+  FileHistorySidecar,
+  type FileHistoryBackup,
+} from "../session/file-history.js";
+import { SidecarManager } from "../session/sidecar.js";
 import { verifyToolResultIntegrity } from "../session/tool-result-integrity.js";
 
 const UNTRUSTED_TOOL_RESULT_BOUNDARY =
@@ -2830,6 +2847,265 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]!.content).toContain("File created successfully");
     expect(readFileSync(planPath, "utf8")).toContain("Fix plan write access");
+  });
+
+  /**
+   * The real Write tool behind the real dispatch path, with a real
+   * FileHistory and FileHistorySidecar wired the way bootstrap wires them:
+   * the sidecar hears the session's events through a SidecarManager, and the
+   * session is given both through `attachFileHistory`, the entry point that
+   * tool dispatch asks before a tool runs. `order` records when the capture
+   * of a call's file state finished and when its tool started.
+   */
+  async function fileHistoryDispatchFixture() {
+    const workspaceRoot = realpathSync(
+      mkdtempSync(join(tmpdir(), "agenc-fh-dispatch-ws-")),
+    );
+    const projectDir = mkdtempSync(join(tmpdir(), "agenc-fh-dispatch-project-"));
+    tempDirs.push(workspaceRoot, projectDir);
+    const order: string[] = [];
+    let sideEffect = (_args: Record<string, unknown>): void => {};
+    const writeTool = createFileWriteTool({ allowedPaths: [workspaceRoot] });
+    const log = new EventLog();
+    const session = mkSession({
+      log,
+      registry: mkRegistry([
+        {
+          ...writeTool,
+          execute: (args) => {
+            order.push("tool started");
+            sideEffect(args);
+            return writeTool.execute(args);
+          },
+        },
+      ]),
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext({
+          mode: "default",
+          alwaysAllowRules: { session: ["Write"] },
+        }),
+      ),
+      withDenialTracking: true,
+    });
+    const fileHistory = new FileHistory({ projectDir, sessionId: "conv-1" });
+    const sidecar = new FileHistorySidecar({ fileHistory, workspaceRoot });
+    const sidecars = new SidecarManager();
+    sidecars.register(sidecar);
+    await sidecars.start(log);
+    // The fixture session is a plain object: give it the real entry points.
+    const { Session: SessionClass } = await import("../session/session.js");
+    Object.assign(session, {
+      attachFileHistory: SessionClass.prototype.attachFileHistory,
+      captureFileStateBeforeToolCall:
+        SessionClass.prototype.captureFileStateBeforeToolCall,
+    });
+    session.attachFileHistory(fileHistory, sidecar);
+    const realCapture = sidecar.captureBeforeToolCall.bind(sidecar);
+    const capture = vi
+      .spyOn(sidecar, "captureBeforeToolCall")
+      .mockImplementation((toolName, args, signal) => {
+        const pending = realCapture(toolName, args, signal);
+        void pending?.then(() => order.push("state captured"));
+        return pending;
+      });
+    let releaseQueue = (): void => {};
+    const queueHeld = new Promise<void>((resolveHeld) => {
+      releaseQueue = resolveHeld;
+    });
+
+    return {
+      workspaceRoot,
+      session,
+      fileHistory,
+      order,
+      /** Keep the engine's queue busy with an earlier operation. */
+      holdQueue: (): void => {
+        void fileHistory["enqueue"](() => queueHeld);
+      },
+      releaseQueue: (): void => releaseQueue(),
+      /** Something a tool does besides its own write, run when it starts. */
+      whenAToolStarts: (effect: (args: Record<string, unknown>) => void): void => {
+        sideEffect = effect;
+      },
+      /**
+       * Dispatch one batch of Write calls, `[file, content]` each, and
+       * return once the first of them has asked for its capture.
+       */
+      async dispatchWrites(...writes: ReadonlyArray<readonly [string, string]>) {
+        const state = mkState({
+          toolCalls: writes.map(([filePath, content], index) => ({
+            id: `write-${index + 1}`,
+            name: "Write",
+            arguments: JSON.stringify({ file_path: filePath, content }),
+          })),
+        });
+        // danger_full_access: a plain `vitest` run keeps its temp tree, this
+        // workspace included, inside the home that workspace_write reserves.
+        const running = executeTools(
+          state,
+          mkCtx({
+            cwd: workspaceRoot,
+            sandboxPolicy: { value: "danger_full_access" },
+          }),
+          session,
+        );
+        await vi.waitFor(() => expect(capture).toHaveBeenCalled(), {
+          timeout: 10_000,
+          interval: 5,
+        });
+        return { state, running };
+      },
+      /** The first state on record for `path`: what a rewind falls back to. */
+      firstStateOf(path: string): FileHistoryBackup | undefined {
+        for (const snapshot of fileHistory.getState().snapshots) {
+          const entry = snapshot.trackedFileBackups[path];
+          if (entry !== undefined) return entry;
+        }
+        return undefined;
+      },
+      async cleanup(): Promise<void> {
+        releaseQueue();
+        await sidecars.stop();
+        clearSessionReadState("conv-1", tmpdir());
+      },
+    };
+  }
+
+  test("a Write of a new file dispatched while a snapshot is still queued records the file as absent (#3436)", async () => {
+    const fixture = await fileHistoryDispatchFixture();
+    const { workspaceRoot, fileHistory, order } = fixture;
+    try {
+      // An earlier call changed a file. The snapshot of its completion is
+      // still queued when the next call is dispatched.
+      const earlier = join(workspaceRoot, "earlier.txt");
+      writeFileSync(earlier, "one\n", "utf8");
+      await fileHistory.trackEdit(earlier, "earlier-edit");
+      writeFileSync(earlier, "two\n", "utf8");
+      fixture.holdQueue();
+      void fileHistory.makeSnapshot("earlier-call-done");
+
+      const target = join(workspaceRoot, "brand-new.txt");
+      const { state, running } = await fixture.dispatchWrites([target, "NEW\n"]);
+      // The tool has not started: its "before" state is not on record yet.
+      expect(order).toEqual([]);
+      expect(existsSync(target)).toBe(false);
+      expect(fileHistory.hasSnapshotFor("earlier-call-done")).toBe(false);
+
+      fixture.releaseQueue();
+      await running;
+      await fileHistory.flush();
+
+      expect(order).toEqual(["state captured", "tool started"]);
+      expect(state.messages).toHaveLength(1);
+      expect(state.messages[0]!.content).toContain("File created successfully");
+      expect(readFileSync(target, "utf8")).toBe("NEW\n");
+      // Its first state is "did not exist", not the content the tool wrote.
+      expect(fixture.firstStateOf(target)).toMatchObject({
+        backupFileName: null,
+        version: 1,
+      });
+      // So a rewind to before the call removes the file again.
+      await expect(
+        fileHistory.rewindToMessage("earlier-call-done"),
+      ).resolves.toEqual([target]);
+      expect(existsSync(target)).toBe(false);
+      expect(readFileSync(earlier, "utf8")).toBe("two\n");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  test("a file tracked in an earlier turn keeps its pre-edit content in the barrier snapshot (#3436)", async () => {
+    const fixture = await fileHistoryDispatchFixture();
+    const { workspaceRoot, session, fileHistory, order } = fixture;
+    try {
+      const tracked = join(workspaceRoot, "tracked.txt");
+      writeFileSync(tracked, "FIRST TURN\n", "utf8");
+      await fileHistory.trackEdit(tracked, "turn-1-edit");
+      await fileHistory.makeSnapshot("turn-1-done");
+      // Changed by hand between the turns, and read by the model since.
+      writeFileSync(tracked, "BEFORE TURN 2\n", "utf8");
+      seedSessionReadState("conv-1", [
+        { path: tracked, content: "BEFORE TURN 2\n", viewKind: "full" },
+      ]);
+
+      // The next user message arrives while the queue is busy, and the
+      // model's first tool call is dispatched right behind it.
+      fixture.holdQueue();
+      session.emit({
+        id: "user-2",
+        msg: { type: "user_message", payload: { message: "rewrite it" } },
+      } as Parameters<Session["emit"]>[0]);
+      const { state, running } = await fixture.dispatchWrites([tracked, "AFTER\n"]);
+      // The tool has not started: the barrier snapshot is not complete yet.
+      expect(order).toEqual([]);
+      expect(readFileSync(tracked, "utf8")).toBe("BEFORE TURN 2\n");
+      expect(fileHistory.hasSnapshotFor("user-2")).toBe(false);
+
+      fixture.releaseQueue();
+      await running;
+      await fileHistory.flush();
+
+      expect(order).toEqual(["state captured", "tool started"]);
+      expect(state.messages).toHaveLength(1);
+      expect(state.messages[0]!.content).toContain("has been updated successfully");
+      expect(readFileSync(tracked, "utf8")).toBe("AFTER\n");
+      const barrier = fileHistory
+        .getState()
+        .snapshots.find((snapshot) => snapshot.messageId === "user-2");
+      const atBarrier = barrier?.trackedFileBackups[tracked];
+      expect(atBarrier?.backupFileName).toEqual(expect.any(String));
+      expect(readFileSync(atBarrier!.backupFileName!, "utf8")).toBe(
+        "BEFORE TURN 2\n",
+      );
+      // "The files as they were before you sent this message."
+      await expect(fileHistory.rewindToMessage("user-2")).resolves.toEqual([
+        tracked,
+      ]);
+      expect(readFileSync(tracked, "utf8")).toBe("BEFORE TURN 2\n");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  test("a call that also changes a later call's file does not get ahead of that file's backup (#3436)", async () => {
+    const fixture = await fileHistoryDispatchFixture();
+    const { workspaceRoot, fileHistory } = fixture;
+    try {
+      await fileHistory.makeSnapshot("before-the-batch");
+      const first = join(workspaceRoot, "first.txt");
+      const second = join(workspaceRoot, "second.txt");
+      // The first call's tool leaves more behind than the file it was asked
+      // for: it also creates the file the second call is about to write.
+      fixture.whenAToolStarts((args) => {
+        if (args.file_path === first) {
+          writeFileSync(second, "left behind by the first call\n", "utf8");
+        }
+      });
+
+      const { state, running } = await fixture.dispatchWrites(
+        [first, "FIRST\n"],
+        [second, "SECOND\n"],
+      );
+      await running;
+      await fileHistory.flush();
+
+      // Both calls were announced before the first tool ran, so the second
+      // file is on record as it was then: absent. (The Write tool refuses
+      // the second call, since the file now exists unread.)
+      expect(state.messages).toHaveLength(2);
+      expect(readFileSync(first, "utf8")).toBe("FIRST\n");
+      expect(readFileSync(second, "utf8")).toBe("left behind by the first call\n");
+      expect(fixture.firstStateOf(first)).toMatchObject({ backupFileName: null, version: 1 });
+      expect(fixture.firstStateOf(second)).toMatchObject({ backupFileName: null, version: 1 });
+      await expect(
+        fileHistory.rewindToMessage("before-the-batch"),
+      ).resolves.toEqual([first, second]);
+      expect(existsSync(first)).toBe(false);
+      expect(existsSync(second)).toBe(false);
+    } finally {
+      await fixture.cleanup();
+    }
   });
 
   test("W4 session without denialTracking still runs via evaluator fallback", async () => {
