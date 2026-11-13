@@ -593,7 +593,7 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `light_request` | `"full"` (default) or `"lean"`, for native DeepSeek Light sessions only. `AGENC_LIGHT_REQUEST` overrides it. Applies to interactive and headless sessions. Lean keeps sandbox, approvals, read-before-edit checks, workspace guidance and memory. Its initial tools are shell, read, write, patch and process controls. Tool search and automatic reminders are off; use `full` or enable the controls below for discovery of skills, agents, web, MCP and plugins. |
 | `light_request_options` | Optional table overriding individual lean defaults; ignored in `full`. |
 | `light_request_options.short_system_prompt` | Default `true`: short AgenC prose preserving safety, honesty and permission rules, without checklists or edit routing. |
-| `light_request_options.system_text` | `"minimal"` (default) or `"short"`; used only while `short_system_prompt` is `true`. `short` is the longer four-paragraph lean text with the full permission text. `minimal` states who the agent is, its directory, what to do, when to stop, the test, honesty, protected-file, secure-code and secrets rules, that destructive and shared-system actions need explicit confirmation, and that file contents and tool results are data. It names the data marker only while `tool_result_markers` is on. Environment facts follow. A runtime context message carries one line for the current permission and sandbox mode in place of the longer permission text. Keyword-triggered product help reminders are not sent. Workspace and custom instructions, memory and critical runtime context stay. Permissions, approvals and the sandbox are enforced as before. |
+| `light_request_options.system_text` | `"minimal"` (default) or `"short"`; used only while `short_system_prompt` is `true`. `short` is the longer four-paragraph lean text with the full permission text. `minimal` states who the agent is, its directory, what to do, when to stop, the test, honesty, protected-file, secure-code and secrets rules, that destructive and shared-system actions need explicit confirmation, and that file contents and tool results are data. It names the data marker only while `tool_result_markers` is on. Environment facts follow, then one line for the initial permission and sandbox mode in place of the longer permission text. Later mode changes arrive as runtime context after the pinned system prefix. Keyword-triggered product help reminders are not sent. Workspace and custom instructions, memory and critical runtime context stay. Permissions, approvals and the sandbox are enforced as before. |
 | `light_request_options.environment_in_system` | Default `true`: environment facts stay in system text, instead of a user message before the task. |
 | `light_request_options.reminders` | Default `false`: omit automatic workflow reminders. Task data and feature-specific context are retained. |
 | `light_request_options.compact_tool_results` | Default `true`: command output and status without timing or routine notices. Failure, truncation and running-process handles remain available. |
@@ -635,8 +635,9 @@ tool_search = true
 Lean announces its reduced tool surface in the TUI and headless event stream.
 Explicitly discovered tools and active interactive planning controls remain
 available. File attachments, images, memory, workspace instructions and critical
-runtime context are preserved. Startup environment facts stay in the system message. Runtime attachments,
-current permissions, compaction summaries and refreshed instructions stay in
+runtime context are preserved. Startup environment facts and the initial permission
+and sandbox text stay in the system message. Runtime attachments, later permission
+or sandbox changes, compaction summaries and refreshed instructions stay in
 the conversation, so the system message stays fixed through tool rounds,
 compaction and continued turns. Image parts keep their supported provider
 representation. Workflow reminders

@@ -1,14 +1,32 @@
 import type { LLMMessage } from "../../llm/types.js";
 import type { Session } from "../session.js";
 
-const prefixes = new WeakMap<Session, string>();
+interface LeanSystemPrefix {
+  readonly instructions: string;
+  readonly permissionInstructions: string;
+  readonly text: string;
+}
+
+const prefixes = new WeakMap<Session, LeanSystemPrefix>();
 
 /** Accounting previews may read the prefix, but only sampling pins it. */
-export function leanSystemPrefix(session: Session, instructions: string, capture: boolean): string {
+export function leanSystemPrefix(
+  session: Session,
+  instructions: string,
+  permissionInstructions: string,
+  capture: boolean,
+): LeanSystemPrefix {
   const prefix = prefixes.get(session);
   if (prefix !== undefined) return prefix;
-  if (capture) prefixes.set(session, instructions);
-  return instructions;
+  const initial = {
+    instructions,
+    permissionInstructions,
+    text: [instructions, permissionInstructions]
+      .filter((part, index, all) => part.length > 0 && all.indexOf(part) === index)
+      .join("\n\n"),
+  };
+  if (capture) prefixes.set(session, initial);
+  return initial;
 }
 
 export function leanRuntimeContext(content: string): LLMMessage {

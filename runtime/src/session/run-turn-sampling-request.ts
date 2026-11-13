@@ -240,18 +240,20 @@ function buildSamplingRequestContract(
   }
   let input = state.messagesForQuery.slice(messageStart);
   if (lean !== undefined) {
-    // Keep only the initial instruction envelope in the cached system text.
-    // Compaction, permissions, resumed turns and refreshed context remain
-    // current without changing that prefix. Preflight token estimates never
-    // pin a prefix before the actual sampling boundary.
-    const prefix = leanSystemPrefix(session, currentInstructions, captureSystemPrefix);
-    const liveContext = instructionParts.filter(part => part !== currentInstructions);
+    // Pin the initial instructions and permission text in the measured layout.
+    // Later permission changes and other runtime context follow that prefix.
+    // Preflight token estimates never pin it before the sampling boundary.
+    const prefix = leanSystemPrefix(session, currentInstructions, sentPermissionInstructions, captureSystemPrefix);
+    const liveContext = instructionParts.filter(part => part !== currentInstructions && part !== sentPermissionInstructions);
+    if (sentPermissionInstructions.length > 0 && sentPermissionInstructions !== prefix.permissionInstructions) {
+      liveContext.push(sentPermissionInstructions);
+    }
     const responseDetail = getResponseDetailSection(samplingContext.responseDetailOverride ?? null);
     if (responseDetail !== null) liveContext.push(responseDetail);
-    if (currentInstructions !== prefix) {
+    if (currentInstructions !== prefix.instructions) {
       liveContext.push(`Updated session context and instructions:\n${currentInstructions}`);
     }
-    baseInstructions = prefix;
+    baseInstructions = prefix.text;
     input = [
       ...(liveContext.length > 0 ? [leanRuntimeContext(liveContext.join("\n\n"))] : []),
       ...input.map(leanHistoricalContext),

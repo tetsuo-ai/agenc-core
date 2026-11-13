@@ -7,10 +7,65 @@ import { assembleSystemPrompt } from "../../src/prompts/system-prompt.js";
 import { buildSamplingRequestContract } from "../../src/session/run-turn-sampling-request.js";
 import { SessionProviderService } from "../../src/session/provider-service.js";
 import { resolveLightRequest } from "../../src/session/light-request/settings.js";
+import type { TurnContext } from "../../src/session/turn-context.js";
 import type { TurnState } from "../../src/session/turn-state.js";
 import { buildToolRegistry } from "../../src/tool-registry.js";
 import { createTestConfigStore, mkCtx, mkSession } from "../fixtures.js";
 import { createSuccessfulChatResponse } from "../llm/providers/openai-compatible-test-helpers.js";
+
+test.each([
+  { system_text: "short", environment_in_system: true },
+  { system_text: "minimal", environment_in_system: true },
+  { system_text: "short", environment_in_system: false },
+  { system_text: "minimal", environment_in_system: false },
+] as const)("lean $system_text pins initial permissions and sends mode changes after the prefix, environment_in_system=$environment_in_system", async options => {
+  const bodies: { messages: { role: string; content: string }[] }[] = [];
+  const model = "deepseek-flash";
+  const provider = new DeepSeekProvider({ apiKey: "test-only", model, fetchImpl: vi.fn<typeof fetch>(async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return createSuccessfulChatResponse("permission-cache-fixture")(model, "Done.");
+  }) });
+  const { session } = mkSession({ provider, model, services: {
+    configStore: createTestConfigStore({ base: { light_request: "lean", light_request_options: options } }),
+    runtimeOptions: { lightMode: true, nonInteractive: true } as never, providerEnvironment: {},
+  } });
+  const ctx = mkCtx({ modelProviderId: "deepseek", modelInfo: session.modelInfo, permissionInstructionsDeferred: true });
+  const task: LLMMessage = { role: "user", content: "Finish the review." };
+  const state = { modelInstructions: "Initial instructions.", messagesForQuery: [task] } as TurnState;
+  const send = async (turn: TurnContext = ctx) => {
+    const request = buildSamplingRequestContract(state, session, turn, undefined, true);
+    await provider.chat([...request.input], buildProviderOptions(request, turn, new AbortController().signal, session));
+    return bodies.at(-1)!;
+  };
+  // Neither preview instructions nor preview permissions may pin the prefix.
+  buildSamplingRequestContract({ ...state, modelInstructions: "Preview only." }, session, ctx,
+    { ...session.permissionModeRegistry.current(), mode: "plan" });
+  const first = await send();
+  expect(first.messages.map(message => message.role)).toEqual(["system", "user"]);
+  expect(first.messages[1]).toEqual(task);
+  const system = first.messages[0]!.content;
+  expect(system).toContain("Initial instructions.\n\nPermission mode: default. Sandbox read-only:");
+  expect(system).not.toContain("Preview only.");
+  expect(system).not.toContain("Permission mode: plan");
+  expect((await send()).messages).toEqual(first.messages);
+
+  const expectMode = (body: typeof first, permission: string) => {
+    expect(body.messages.filter(message => message.role === "system")).toEqual([first.messages[0]]);
+    expect(body.messages.map(message => message.role)).toEqual(["system", "user", "user"]);
+    expect(body.messages[1]!.content).toContain(`<system-reminder>\n${permission}`);
+    expect(body.messages[1]!.content).toContain("</system-reminder>");
+    expect(body.messages[2]).toEqual(task);
+  };
+  await session.permissionModeRegistry.update({ ...session.permissionModeRegistry.current(), mode: "plan" });
+  expectMode(await send(), "Permission mode: plan. Sandbox read-only:");
+  // Sandbox changes must be visible even when the permission mode is unchanged.
+  const writable = { ...ctx, sandboxPolicy: { value: "workspace_write" as const } };
+  expectMode(await send(writable), "Permission mode: plan. Sandbox workspace-write:");
+  await session.permissionModeRegistry.update({ ...session.permissionModeRegistry.current(), mode: "default" });
+  expectMode(await send(writable), "Permission mode: default. Sandbox workspace-write:");
+  // Runtime context is request-local. Returning to both initial modes needs no reminder.
+  expect((await send()).messages).toEqual(first.messages);
+});
 
 test.each(["short", "minimal"] as const)("lean %s system bytes survive compaction, resumed turns and refreshed context", async system_text => {
   const bodies: { messages: { role: string; content: string }[] }[] = [];
