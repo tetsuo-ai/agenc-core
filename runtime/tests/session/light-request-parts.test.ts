@@ -58,9 +58,10 @@ describe("lean message envelope", () => {
     const image: LLMMessage = { role: "user", runtimeOnly: { attachmentKind: "changed_image" },
       content: [{ type: "image_url", image_url: { url: "data:image/png;base64,eA==" } }] };
     const result = leanLightMessages([...context, image], "Head", defaults);
-    expect(result.messages).toEqual([image]);
-    expect(result.instructions).toContain("Memory path: /project/memory");
-    expect(result.instructions).toContain("denied publishing");
+    expect(result.messages).toEqual([...context, image]);
+    expect(result.instructions).toBe("Head");
+    expect(JSON.stringify(result.messages)).toContain("Memory path: /project/memory");
+    expect(JSON.stringify(result.messages)).toContain("denied publishing");
   });
 
   test("reminders and environment placement are independently reversible", () => {
@@ -68,7 +69,7 @@ describe("lean message envelope", () => {
     const instructions = `Head\n${boundary}\nWorkspace: /project`;
     expect(leanLightMessages(messages, instructions, { ...defaults, reminders: true, environment_in_system: false }))
       .toEqual({ messages, instructions });
-    expect(leanLightMessages(messages, instructions, { ...defaults, reminders: true }).instructions).toContain("Auto Mode");
+    expect(leanLightMessages(messages, instructions, { ...defaults, reminders: true })).toEqual({ messages, instructions });
   });
 });
 
@@ -264,12 +265,12 @@ describe("lean minimal system text", () => {
     const critical: LLMMessage = { role: "user", content: "<system-reminder>The user denied publishing.</system-reminder>", runtimeOnly: { attachmentKind: "critical_system_reminder" } };
     const task: LLMMessage = { role: "user", content: "Add undo." };
     const sent = leanLightMessages([help, critical, task], "Head", minimal);
-    expect(sent.messages).toEqual([task]);
-    expect(sent.instructions).toContain("The user denied publishing.");
+    expect(sent.messages).toEqual([critical, task]);
+    expect(sent.instructions).toBe("Head");
     expect(sent.instructions).not.toContain("/rewind");
-    expect(leanLightMessages([help, critical, task], "Head", short).instructions).toContain("/rewind");
+    expect(leanLightMessages([help, critical, task], "Head", short).messages).toEqual([help, critical, task]);
     // Under the full prose the option changes nothing.
-    expect(leanLightMessages([help, task], "Head", { ...minimal, short_system_prompt: false }).instructions).toContain("/rewind");
+    expect(leanLightMessages([help, task], "Head", { ...minimal, short_system_prompt: false }).messages).toEqual([help, task]);
   });
 });
 
@@ -302,10 +303,11 @@ describe("lean system message stays fixed during a run", () => {
     const late: LLMMessage = { role: "user", content: "<system-reminder>auto</system-reminder>", runtimeOnly: { attachmentKind: "auto_mode" } };
     const first = leanLightMessages([early, task], "Head", options);
     const second = leanLightMessages([early, task, call, result, changed, late], "Head", options);
-    expect(first.instructions).toContain("The user denied publishing.");
+    expect(first.instructions).toBe("Head");
+    expect(first.messages).toEqual([early, task]);
     // Byte-identical system text and prefix: the provider's prefix cache still matches.
     expect(second.instructions).toBe(first.instructions);
     expect(second.messages.slice(0, first.messages.length)).toEqual(first.messages);
-    expect(second.messages).toEqual([task, call, result, changed]);
+    expect(second.messages).toEqual([early, task, call, result, changed]);
   });
 });

@@ -1211,7 +1211,8 @@ export async function assembleSystemPrompt(
     ...(ctx.currentDate !== undefined ? { currentDate: ctx.currentDate } : {}),
   };
   // Managed routing is resolved later by the delegated concrete adapter.
-  const responseDetail = envInfoInputs.provider === "openai" || envInfoInputs.provider === "agenc"
+  const lightRequest = resolveLightRequest(session, envInfoInputs.provider);
+  const responseDetail = envInfoInputs.provider === "openai" || envInfoInputs.provider === "agenc" || lightRequest !== undefined
     ? null
     : getResponseDetailSection(ctx.responseDetailOverride);
 
@@ -1267,7 +1268,6 @@ export async function assembleSystemPrompt(
     readConfiguredLeanSystemPrompt(session),
     envInfoInputs.model,
   );
-  const lightRequest = resolveLightRequest(session, envInfoInputs.provider);
   const staticSections: Array<string | null> = lightRequest?.short_system_prompt
     ? [lightRequest.system_text === "minimal"
         ? leanMinimalSystemText(cwd, lightRequest.tool_result_markers)

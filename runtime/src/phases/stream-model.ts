@@ -1,4 +1,5 @@
 import { projectRepeatedReads } from "../tools/read-result-projection.js";
+import { resolveLightRequest } from "../session/light-request/settings.js";
 import { DegenerateTextDetector } from "../llm/degenerate-text.js";
 import { completeReasoningCapSample, type ReasoningCapSample } from "../session/reasoning-cap-policy.js";
 /**
@@ -357,7 +358,10 @@ export function buildProviderOptions(
     reasoningSummary: ctx.reasoningSummary,
     ...(ctx.reasoningSummaryIsDefault === true ? { reasoningSummaryIsDefault: true as const } : {}),
     modelVerbosity: ctx.modelVerbosity,
-    responseDetailOverride: ctx.responseDetailOverride ?? undefined,
+    // Lean carries this live preference in runtime context, outside the
+    // pinned system prefix. Do not let the wire fallback append it again.
+    responseDetailOverride: resolveLightRequest(session, session.services.provider.name) === undefined
+      ? ctx.responseDetailOverride ?? undefined : undefined,
     serviceTier:
       ctx.serviceTier === "priority" ||
       ctx.serviceTier === "flex"

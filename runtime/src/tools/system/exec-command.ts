@@ -1238,7 +1238,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       const invokingSession = readInvokingSession(args);
       const foregroundOnly = invokingSession === undefined
         ? config?.foregroundOnly?.() === true
-        : resolveLightRequest(invokingSession, invokingSession.services.provider.name)?.process_tools === false;
+        : resolveLightRequest(invokingSession, invokingSession.services.provider?.name)?.process_tools === false;
       const timeoutMs = foregroundOnly ? leanForegroundLimit(asNumber(args.timeoutMs)) : asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
       const detach = asBoolean(args.detach) === true;

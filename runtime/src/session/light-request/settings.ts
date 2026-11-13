@@ -29,6 +29,10 @@ export interface LightRequestSession {
   };
 }
 
+// The prompt is assembled at startup. Reloading presentation switches later
+// must not leave its text, tool surface and wire layout on different profiles.
+const sessionSettings = new WeakMap<LightRequestSession, Readonly<Required<LightRequestOptions>> | null>();
+
 export function parseLightRequest(value: string): "full" | "lean" {
   const mode = value.trim().toLowerCase();
   if (mode === "full" || mode === "lean") return mode;
@@ -43,8 +47,12 @@ export function resolveLightRequest(
   const services = session.services;
   if (services?.runtimeOptions?.lightMode !== true || services.runtimeOptions.simpleMode === true ||
       provider !== "deepseek") return undefined;
+  const captured = sessionSettings.get(session);
+  if (captured !== undefined) return captured ?? undefined;
   const config = services.configStore?.current();
   const override = services.providerEnvironment?.AGENC_LIGHT_REQUEST;
   const mode = override === undefined ? config?.light_request ?? DEFAULT_LIGHT_REQUEST : parseLightRequest(override);
-  return mode === "lean" ? { ...LEAN_REQUEST_DEFAULTS, ...config?.light_request_options } : undefined;
+  const settings = mode === "lean" ? Object.freeze({ ...LEAN_REQUEST_DEFAULTS, ...config?.light_request_options }) : null;
+  sessionSettings.set(session, settings);
+  return settings ?? undefined;
 }

@@ -4,6 +4,8 @@ import { resolveLightRequest } from "./light-request/settings.js";
 import { leanLightMessages } from "./light-request/messages.js";
 import { leanPermissionSentence } from "./light-request/system-text.js";
 import { leanLightTools } from "./light-request/tools.js";
+import { leanHistoricalContext, leanRuntimeContext, leanSystemPrefix } from "./light-request/system-prefix.js";
+import { getResponseDetailSection } from "../prompts/response-detail.js";
 /**
  * The provider-facing sampling request contract: prompt shape, the tool
  * list visible to the model, direct MCP tool discovery, the retry-stable
@@ -172,6 +174,7 @@ function buildSamplingRequestContract(
   session: Session,
   ctx: TurnContext,
   permissionContext: ToolPermissionContext = session.permissionModeRegistry.current(),
+  captureSystemPrefix = false,
 ): StreamModelRequestContract {
   const samplingContext = { ...ctx, permissionMode: permissionContext.mode };
   let messageStart = 0;
@@ -235,7 +238,25 @@ function buildSamplingRequestContract(
       volatileParts,
     );
   }
-  const input = state.messagesForQuery.slice(messageStart);
+  let input = state.messagesForQuery.slice(messageStart);
+  if (lean !== undefined) {
+    // Keep only the initial instruction envelope in the cached system text.
+    // Compaction, permissions, resumed turns and refreshed context remain
+    // current without changing that prefix. Preflight token estimates never
+    // pin a prefix before the actual sampling boundary.
+    const prefix = leanSystemPrefix(session, currentInstructions, captureSystemPrefix);
+    const liveContext = instructionParts.filter(part => part !== currentInstructions);
+    const responseDetail = getResponseDetailSection(samplingContext.responseDetailOverride ?? null);
+    if (responseDetail !== null) liveContext.push(responseDetail);
+    if (currentInstructions !== prefix) {
+      liveContext.push(`Updated session context and instructions:\n${currentInstructions}`);
+    }
+    baseInstructions = prefix;
+    input = [
+      ...(liveContext.length > 0 ? [leanRuntimeContext(liveContext.join("\n\n"))] : []),
+      ...input.map(leanHistoricalContext),
+    ];
+  }
   const envelope = lean === undefined ? undefined : leanLightMessages(input, baseInstructions, lean);
   const tools = builtTools(session, samplingContext);
   const request = buildPrompt(

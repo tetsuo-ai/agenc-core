@@ -1086,7 +1086,7 @@ async function prepareSamplingRequestBoundary(
     );
   }
 
-  const request = buildSamplingRequestContract(state, session, samplingContext, permissionContext);
+  const request = buildSamplingRequestContract(state, session, samplingContext, permissionContext, true);
   state.samplingRequestMaxOutputTokens = request.maxOutputTokens;
 
   return {
@@ -3719,7 +3719,7 @@ async function* runTurnKernelInner(
           session.permissionModeRegistry.current().mode,
         ).messages;
         projectSamplingImages(state, ctx, session, session.services.configStore!.current());
-        const wrapupRequest = buildSamplingRequestContract(state, session, ctx);
+        const wrapupRequest = buildSamplingRequestContract(state, session, ctx, undefined, true);
         rememberSentContextImages(session, wrapupRequest.input, state.messages);
         const wrapped = await stepLimitWrapup({ session, ctx,
           request: wrapupRequest, signal,
