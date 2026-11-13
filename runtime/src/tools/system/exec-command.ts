@@ -1,4 +1,5 @@
 import { leanForegroundLimit, LEAN_PROCESS_REFUSAL } from "../../session/light-request/processes.js";
+import { resolveLightRequest } from "../../session/light-request/settings.js";
 import { sessionDurableMemoryDirectoriesOf } from "../../services/extractMemories/memory-paths.js";
 import { canonicalAuthorityPath, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
 import { observationCapableShell } from "../side-effect-free-shell.js";
@@ -1232,7 +1233,12 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         requestedWorkdir !== undefined && requestedWorkdir.trim().length > 0
           ? resolve(config?.cwd ?? process.cwd(), requestedWorkdir)
           : undefined;
-      const foregroundOnly = config?.foregroundOnly?.() === true;
+      // A delegated child runs its parent's tool object. The runtime's
+      // invoking session owns the request profile, not that tool's closure.
+      const invokingSession = readInvokingSession(args);
+      const foregroundOnly = invokingSession === undefined
+        ? config?.foregroundOnly?.() === true
+        : resolveLightRequest(invokingSession, invokingSession.services.provider.name)?.process_tools === false;
       const timeoutMs = foregroundOnly ? leanForegroundLimit(asNumber(args.timeoutMs)) : asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
       const detach = asBoolean(args.detach) === true;
