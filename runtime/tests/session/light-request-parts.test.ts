@@ -85,15 +85,16 @@ describe("lean edit_mode", () => {
     expect(names(leanLightTools(catalog, { ...defaults, edit_mode: "shell", process_tools: false })))
       .toEqual(["exec_command", "FileRead"]);
     for (const options of [defaults, { ...defaults, process_tools: false }]) {
-      const plain = leanLightTools(catalog, options)[0]!.function.description;
+      const plain = leanLightTools(catalog, { ...options, edit_mode: "tools" })[0]!.function.description;
       expect(leanLightTools(catalog, { ...options, edit_mode: "shell" })[0]!.function.description)
         .toBe(`${plain} Create and edit files with shell commands. One command may write files and run the check together.`);
     }
   });
-  test("tools and check leave the list as it is", () => {
-    expect(defaults.edit_mode).toBe("tools");
+  test("shell is the default; tools and check restore the editors", () => {
+    expect(names(leanLightTools(catalog, defaults))).toEqual(["exec_command", "write_stdin", "kill_process", "FileRead"]);
     for (const edit_mode of ["tools", "check"] as const) {
-      expect(leanLightTools(catalog, { ...defaults, edit_mode })).toEqual(leanLightTools(catalog, defaults));
+      expect(names(leanLightTools(catalog, { ...defaults, edit_mode })))
+        .toEqual(["exec_command", "write_stdin", "kill_process", "FileRead", "Write", "apply_patch"]);
     }
   });
   test("explicitly discovered tools stay listed in every mode", () => {
@@ -124,15 +125,21 @@ describe("lean edit_mode", () => {
     expect(check.exec_command).toEqual(plain.exec_command);
   });
   test("the notice names the edit mode", () => {
-    const messages = (edit_mode: "tools" | "shell" | "check") => {
-      const configStore = createTestConfigStore({ base: { light_request: "lean", light_request_options: { edit_mode } } });
+    const messages = (edit_mode?: "tools" | "shell" | "check") => {
+      const configStore = createTestConfigStore({ base: { light_request: "lean",
+        light_request_options: edit_mode === undefined ? {} : { edit_mode } } });
       const { session, events } = mkSession({ services: { configStore, runtimeOptions: { lightMode: true } as never } });
       Object.assign(session.services.provider, { name: "deepseek" });
       announceLightRequest(session);
       return events.map(event => (event.msg.payload as { message?: string }).message ?? "").join(" ");
     };
     expect(messages("tools")).not.toMatch(/apply_patch/u);
-    expect(messages("shell")).toContain("Files are written with shell commands; Write and apply_patch are not listed.");
+    expect(messages()).toBe(messages("shell"));
+    expect(messages()).toContain("The initial tool set is shell and read;");
+    expect(messages()).toContain('Shell edits are the lean default; Write and apply_patch are not listed. Set light_request_options.edit_mode = "tools" to restore them.');
+    expect(messages()).not.toContain("shell, read, write and patch");
+    expect(messages("tools")).toContain("shell, read, write and patch");
+    expect(messages("tools")).not.toContain("Shell edits are the lean default");
     expect(messages("check")).toContain("Write and apply_patch take a required check command that runs after the edit.");
   });
 });
@@ -163,16 +170,16 @@ describe("lean tool catalog", () => {
     expect(definition.function.parameters).toMatchObject({ properties: { sandbox_permissions: { enum: expect.arrayContaining(["require_escalated"]) } } });
   });
   test("keeps core and process tools; never invents a tool disabled by policy", () => {
-    expect(leanLightTools(catalog, defaults).map(t => t.function.name)).toEqual(catalog.slice(1, -1).map(t => t.function.name));
+    expect(leanLightTools(catalog, defaults).map(t => t.function.name)).toEqual(["exec_command", "write_stdin", "kill_process", "FileRead"]);
     expect(leanLightTools([tool("exec_command")], defaults)).toHaveLength(1);
     expect(leanLightTools(catalog, { ...defaults, process_tools: false }).map(t => t.function.name))
-      .toEqual(["exec_command", "FileRead", "Write", "apply_patch"]);
+      .toEqual(["exec_command", "FileRead"]);
   });
   test("search, extended tools, and explicit discoveries remain usable", () => {
     expect(leanLightTools(catalog, { ...defaults, tool_search: true })[0]!.function.name).toBe("system.searchTools");
     expect(leanLightTools(catalog, defaults, [], new Set(["mcp.demo.lookup"])).at(-1)!.function.name).toBe("mcp.demo.lookup");
     expect(leanLightTools(catalog, { ...defaults, core_tools_only: false }).at(-1)!.function.name).toBe("mcp.demo.lookup");
-    expect(leanLightTools([tool("Write")], { ...defaults, compact_tool_definitions: false })[0]!.function.description).toBe("Original");
+    expect(leanLightTools([tool("Write")], { ...defaults, edit_mode: "tools", compact_tool_definitions: false })[0]!.function.description).toBe("Original");
   });
 });
 

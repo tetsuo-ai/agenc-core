@@ -48,7 +48,7 @@ test.each([false, true])("lean turn executes and polls, keeps followups and cont
   expect(requests).toHaveLength(3);
   for (const request of requests) {
     expect(request.options?.reasoningEffort).toBe("low");
-    expect(request.options?.tools?.map(t => t.function.name)).toEqual(["exec_command", "write_stdin", "kill_process", "FileRead", "Write", "apply_patch"]);
+    expect(request.options?.tools?.map(t => t.function.name)).toEqual(["exec_command", "write_stdin", "kill_process", "FileRead"]);
     expect(request.messages.filter(m => m.role === "user" && m.runtimeOnly?.mergeBoundary === undefined).map(m => m.content)).toEqual(["Check the workspace."]);
     expect(request.options?.systemPrompt).toContain("Workspace: /tmp");
   }

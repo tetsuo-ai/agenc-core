@@ -16,8 +16,8 @@ export const LEAN_REQUEST_DEFAULTS: Readonly<Required<LightRequestOptions>> = Ob
   low_effort: true,
   // Measured in job lean12: minimal keeps the saving on workflow-engine at the control's score.
   system_text: "minimal",
-  // tools keeps Write and apply_patch. shell and check are measured in jobs edit13 and rep13.
-  edit_mode: "tools",
+  // Shell edits reduced measured cost at equal score; tools restores Write and apply_patch.
+  edit_mode: "shell",
 });
 
 export type LeanEditMode = Required<LightRequestOptions>["edit_mode"];

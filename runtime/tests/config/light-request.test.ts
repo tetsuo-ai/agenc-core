@@ -51,7 +51,8 @@ describe("Light request configuration", () => {
   });
 
   test("edit_mode selects tools, shell or check and rejects anything else", () => {
-    expect(LEAN_REQUEST_DEFAULTS.edit_mode).toBe("tools");
+    expect(LEAN_REQUEST_DEFAULTS.edit_mode).toBe("shell");
+    expect(resolveLightRequest(session({ light_request: "lean" }), "deepseek")?.edit_mode).toBe("shell");
     for (const edit_mode of ["tools", "shell", "check"] as const) {
       const config: AgenCConfig = { light_request: "lean", light_request_options: { edit_mode } };
       expect(() => validateAgenCConfigBlocks(config)).not.toThrow();
