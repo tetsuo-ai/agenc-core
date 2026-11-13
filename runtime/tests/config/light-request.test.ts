@@ -3,6 +3,8 @@ import { applyEnvOverrides } from "../../src/config/env.js";
 import { validateAgenCConfigBlocks, type AgenCConfig } from "../../src/config/schema.js";
 import { snapshotProviderEnvironment } from "../../src/llm/provider-environment.js";
 import { LEAN_REQUEST_DEFAULTS, resolveLightRequest } from "../../src/session/light-request/settings.js";
+import { collectDaemonClientEnvOverrides, mergeDaemonClientEnvironment, captureRecoverableSessionEnvironment,
+  readRecoverableSessionEnvironment } from "../../src/app-server/client-env-snapshot.js";
 
 const session = (config: AgenCConfig = {}, env = {}, lightMode = true) => ({ services: {
   configStore: { current: () => config }, providerEnvironment: env, runtimeOptions: { lightMode },
@@ -25,6 +27,18 @@ describe("Light request configuration", () => {
     expect(resolveLightRequest(session({ light_request: "full" }, env), "deepseek")).toEqual(LEAN_REQUEST_DEFAULTS);
     expect(resolveLightRequest(session({ light_request: "lean" }, { AGENC_LIGHT_REQUEST: "full" }), "deepseek")).toBeUndefined();
     expect(() => applyEnvOverrides({}, { AGENC_LIGHT_REQUEST: "bare" })).toThrow(/full or lean/);
+  });
+
+  test("forwards the override through daemon ingress and recovery without leaking another client's choice", () => {
+    const client = collectDaemonClientEnvOverrides({ AGENC_LIGHT_REQUEST: "lean" });
+    expect(client.AGENC_LIGHT_REQUEST).toBe("lean");
+    const env = mergeDaemonClientEnvironment({ AGENC_LIGHT_REQUEST: "full" }, client)!;
+    expect(applyEnvOverrides({}, env).light_request).toBe("lean");
+    const saved = captureRecoverableSessionEnvironment(client);
+    expect(readRecoverableSessionEnvironment(saved)?.values.AGENC_LIGHT_REQUEST).toBe("lean");
+    const ordinary = mergeDaemonClientEnvironment(env, collectDaemonClientEnvOverrides({}))!;
+    expect(ordinary).not.toHaveProperty("AGENC_LIGHT_REQUEST");
+    expect(applyEnvOverrides({}, ordinary)).not.toHaveProperty("light_request");
   });
 
   test("each part can be changed independently", () => {

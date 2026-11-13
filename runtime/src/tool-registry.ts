@@ -855,7 +855,7 @@ export function buildToolRegistry(
       hardTimeout: () => execHardTimeout(),
       foregroundOnly: () => {
         const session = options.getSession?.();
-        return session != null && resolveLightRequest(session, session.services.provider.name)?.process_tools === false;
+        return session != null && resolveLightRequest(session, session.services.provider?.name)?.process_tools === false;
       },
       waitWhileBusy: () => execWaitWhileBusy(),
       ...(options.bashExecObserver !== undefined
