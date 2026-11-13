@@ -33,11 +33,14 @@ import { relevantMemoryFingerprint } from "./relevant-memory-fingerprint.js";
  */
 export function attachmentsToMessages(
   attachments: readonly Attachment[],
+  includeProvenance = false,
 ): LLMMessage[] {
   const out: LLMMessage[] = [];
   for (const attachment of attachments) {
     const message = renderAttachment(attachment);
-    if (message !== null) out.push(message);
+    if (message !== null) out.push(includeProvenance ? { ...message,
+      runtimeOnly: { ...message.runtimeOnly, attachmentKind: attachment.kind },
+    } : message);
   }
   return out;
 }

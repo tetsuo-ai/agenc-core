@@ -1,3 +1,5 @@
+import { leanLightEffort } from "./light-request/effort.js";
+import { resolveLightRequest } from "./light-request/settings.js";
 /**
  * The reasoning effort a session's model calls send. The main loop sends it
  * on every sampling request, and compaction summary calls send the same
@@ -200,10 +202,16 @@ export function resolveMainLoopReasoningEffort(
     turn.providerBinding !== undefined &&
     liveRevision !== undefined &&
     turn.providerBinding.revision !== liveRevision;
+  const followsModelDefault = configuration?.reasoningEffortCleared === true ||
+    skillInvocationFollowsModelDefault(session, turn);
+  const turnEffort = switchedInTurn ? configuration.collaborationMode.reasoningEffort : turn.reasoningEffort;
+  const lean = resolveLightRequest(session, session.services.provider.name);
+  const effortSource = session.services.configStore?.provenance?.("reasoning_effort")?.scope;
+  const configuredEffort = effortSource === "default" ? undefined : session.services.configStore?.current().reasoning_effort;
   return resolveSessionReasoningEffort(
-    switchedInTurn
-      ? configuration.collaborationMode.reasoningEffort
-      : turn.reasoningEffort,
+    lean === undefined || !lean.low_effort ? turnEffort : leanLightEffort({
+      enabled: true, turnEffort, configuredEffort, followsModelDefault,
+    }),
     turn.modelInfo.supportedReasoningLevels,
     {
       provider: session.services.provider.name,
@@ -213,8 +221,7 @@ export function resolveMainLoopReasoningEffort(
         ?.provenance?.("reasoning_effort")?.scope,
       // The session cleared its level, or the turn's skill runs its model at
       // the model's default.
-      followsModelDefault: configuration?.reasoningEffortCleared === true ||
-        skillInvocationFollowsModelDefault(session, turn),
+      followsModelDefault,
     },
   );
 }

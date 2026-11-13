@@ -10,7 +10,6 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
   kill_process: "Stop this conversation's exec sessions: session_id, session_ids, or all=true. Never find processes to kill by matching command text or file names.",
 };
 
-
 const FIELD_HINTS: Readonly<Record<string, string>> = {
   offset: "First line, 1-based.", limit: "Number of lines.", pages: "PDF page range, for example 1-5; at most 20 pages.",
   timeoutMs: "Timeout in ms; normally yields a running session, or stops it when hard timeout is configured.",

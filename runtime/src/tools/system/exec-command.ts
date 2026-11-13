@@ -1,3 +1,4 @@
+import { leanForegroundLimit, LEAN_PROCESS_REFUSAL } from "../../session/light-request/processes.js";
 import { sessionDurableMemoryDirectoriesOf } from "../../services/extractMemories/memory-paths.js";
 import { canonicalAuthorityPath, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
 import { observationCapableShell } from "../side-effect-free-shell.js";
@@ -122,6 +123,8 @@ export interface ExecCommandToolConfig extends BashToolConfig {
    * session.
    */
   readonly hardTimeout?: () => boolean;
+  /** Lean without process tools must not yield a session the model cannot poll. */
+  readonly foregroundOnly?: () => boolean;
   /**
    * Whether a Light command still using CPU at the end of its yield keeps
    * the call waiting (`AGENC_EXEC_WAIT_WHILE_BUSY`, tools/system/exec-wait-mode.ts).
@@ -1229,10 +1232,16 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         requestedWorkdir !== undefined && requestedWorkdir.trim().length > 0
           ? resolve(config?.cwd ?? process.cwd(), requestedWorkdir)
           : undefined;
-      const timeoutMs = asNumber(args.timeoutMs);
+      const foregroundOnly = config?.foregroundOnly?.() === true;
+      const timeoutMs = foregroundOnly ? leanForegroundLimit(asNumber(args.timeoutMs)) : asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
       const detach = asBoolean(args.detach) === true;
       const background = asBoolean(args.background) === true;
+      if (foregroundOnly && (background || detach || tty === true)) {
+        return { content: LEAN_PROCESS_REFUSAL, isError: true,
+          effectDisposition: confirmedNoEffectDisposition("tool:system.exec-command:foreground-only", LEAN_PROCESS_REFUSAL),
+        };
+      }
       // A read-only child launches in the cwd its trusted inspection resolved
       // against the child session, not the registry's workspace. Check, gate
       // and record that same directory.
@@ -1336,7 +1345,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           ...(ownerBinding !== undefined ? { ownerBinding } : {}),
           cmd,
           callId: asString(args.__callId),
-          ...(asNumber(args.yield_time_ms) !== undefined
+          ...(foregroundOnly ? { yield_time_ms: 30_000 } : asNumber(args.yield_time_ms) !== undefined
             ? { yield_time_ms: asNumber(args.yield_time_ms) }
             : background
               ? { yield_time_ms: BACKGROUND_START_YIELD_TIME_MS }
@@ -1370,7 +1379,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
                   ? { readOnlyShell, workdir: readOnlyShell.cwd }
                   : { ...shellRequest, ...(tty !== undefined ? { tty } : {}) }),
               ...(timeoutMs !== undefined
-                ? { timeoutMs, onTimeout: config?.hardTimeout?.() === true ? "kill" as const : "background" as const }
+                ? { timeoutMs, onTimeout: foregroundOnly || config?.hardTimeout?.() === true ? "kill" as const : "background" as const }
                 : {}),
               ...(background ? { startInBackground: true } : {}),
               ...(waitsWhileBusy(config, args, { background, tty })

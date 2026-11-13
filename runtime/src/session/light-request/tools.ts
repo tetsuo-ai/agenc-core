@@ -8,7 +8,6 @@ const PROCESS = new Set(["write_stdin", "kill_process"]);
 // Explicitly activated features remain usable, including interactive planning.
 const INTERACTIVE = new Set(["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"]);
 
-
 export function leanLightTools(
   tools: readonly LLMTool[],
   options: Required<LightRequestOptions>,

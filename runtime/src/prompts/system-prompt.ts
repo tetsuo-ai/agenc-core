@@ -1,3 +1,5 @@
+import { resolveLightRequest } from "../session/light-request/settings.js";
+import { leanLightSystemText } from "../session/light-request/system-text.js";
 import { resolveWebSearchMode, WEB_SEARCH_ON_INSTRUCTION } from "../tools/web-search-mode.js";
 /**
  * System prompt assembly — AgenC-owned sections, static-then-dynamic,
@@ -1265,7 +1267,13 @@ export async function assembleSystemPrompt(
     readConfiguredLeanSystemPrompt(session),
     envInfoInputs.model,
   );
-  const staticSections: Array<string | null> = light
+  const lightRequest = resolveLightRequest(session, envInfoInputs.provider);
+  const staticSections: Array<string | null> = lightRequest?.short_system_prompt
+    ? [leanLightSystemText(),
+        session.services?.runtimeOptions?.nonInteractive === true ? null : getMemoryInstructionsSection(opts.memoryInstructions),
+        typeof session.services?.runtimeOptions?.deadlineAt === "number" ? LIGHT_BUDGET_DEADLINE : null,
+      ]
+    : light
     ? [
         lightBudgetWorkflow(
           opts.outputStyle != null,

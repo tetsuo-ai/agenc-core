@@ -1,3 +1,8 @@
+import { resolveWebSearchMode, WEB_SEARCH_INITIAL_TOOLS } from "../tools/web-search-mode.js";
+import { leanLightResults } from "./light-request/results.js";
+import { resolveLightRequest } from "./light-request/settings.js";
+import { leanLightMessages } from "./light-request/messages.js";
+import { leanLightTools } from "./light-request/tools.js";
 /**
  * The provider-facing sampling request contract: prompt shape, the tool
  * list visible to the model, direct MCP tool discovery, the retry-stable
@@ -150,7 +155,15 @@ export function builtTools(
       (discovered?.has(tool.function.name) === true &&
         (!tool.function.name.startsWith("mcp.") || liveMcp.has(tool.function.name))));
   }
-  return advertised;
+  const lean = resolveLightRequest(session, session.services.provider.name);
+  if (lean === undefined) return advertised;
+  return leanLightTools(advertised, lean, session.services.registry.tools, new Set([
+    ...(session.services.registry.getDiscoveredToolNames?.() ?? []),
+    ...ctx.dynamicTools.map(tool => tool.name),
+    // Explicit web mode and a delegated child's assigned tools remain usable.
+    ...(resolveWebSearchMode(session.services.providerEnvironment ?? {}, session.services.configStore?.current().web_search) === "on" ? WEB_SEARCH_INITIAL_TOOLS : []),
+    ...(ctx.depth > 0 ? advertised.map(tool => tool.function.name) : []),
+  ]));
 }
 
 function buildSamplingRequestContract(
@@ -216,11 +229,15 @@ function buildSamplingRequestContract(
       volatileParts,
     );
   }
+  const lean = resolveLightRequest(session, session.services.provider.name);
+  const input = state.messagesForQuery.slice(messageStart);
+  const envelope = lean === undefined ? undefined : leanLightMessages(input, baseInstructions, lean);
+  const tools = builtTools(session, samplingContext);
   const request = buildPrompt(
-    state.messagesForQuery.slice(messageStart),
-    builtTools(session, samplingContext),
+    lean === undefined ? input : leanLightResults(envelope?.messages ?? input, lean),
+    tools,
     samplingContext,
-    baseInstructions,
+    envelope?.instructions ?? baseInstructions,
   );
   const outputLimit = state.maxOutputTokensOverride ?? request.maxOutputTokens;
   // Thinking shares output tokens; only non-reasoning gates use the bookkeeping cap.

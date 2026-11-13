@@ -1,3 +1,4 @@
+import { resolveLightRequest } from "./session/light-request/settings.js";
 import { editThenRunEnabled, withEditThenRun } from "./tools/edit-then-run.js";
 import { suggestToolForUnknownName } from "./tools/tool-name-suggestion.js";
 import { unknownToolResult } from "./tools/results.js";
@@ -852,6 +853,10 @@ export function buildToolRegistry(
           : {}),
       onEscalationAdvised,
       hardTimeout: () => execHardTimeout(),
+      foregroundOnly: () => {
+        const session = options.getSession?.();
+        return session != null && resolveLightRequest(session, session.services.provider.name)?.process_tools === false;
+      },
       waitWhileBusy: () => execWaitWhileBusy(),
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }

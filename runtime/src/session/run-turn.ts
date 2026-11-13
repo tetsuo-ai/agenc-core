@@ -1,3 +1,5 @@
+import { resolveLightRequest } from "./light-request/settings.js";
+import { announceLightRequest } from "./light-request/notice.js";
 import { editThenRunCommand, editThenRunEnabled } from "../tools/edit-then-run.js";
 import { applyWebSearchInstruction, resolveWebSearchMode } from "../tools/web-search-mode.js";
 import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
@@ -1061,7 +1063,8 @@ async function prepareSamplingRequestBoundary(
       session.conversationId,
       attachments,
     );
-    const attachmentMessages = attachmentsToMessages(attachments);
+    const attachmentMessages = attachmentsToMessages(attachments,
+      resolveLightRequest(session, session.services.provider.name) !== undefined);
     if (attachmentMessages.length > 0) {
       state.messagesForQuery = placeRetainedAttachments(
         state,
@@ -2194,6 +2197,7 @@ export async function* runTurnKernel(
   opts: RunTurnOptions = {},
 ): AsyncGenerator<PhaseEvent, Terminal> {
   session.rolloutStore?.assertModelExecutionAllowed?.();
+  announceLightRequest(session);
   // T6 gap #119: canonical turn-lifecycle emits. Each `runTurn`
   // invocation must flank its work with a `turn_started` +
   // `turn_context` pair and either a matching `turn_complete` (happy
