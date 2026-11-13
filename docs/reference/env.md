@@ -28,6 +28,7 @@ Boolean-like values that go through `applyEnvOverrides` treat
 | `AGENC_MODEL` | Session model (`grok-4.6` when unset and config is fresh) |
 | `AGENC_PROVIDER` | Canonical provider slug. Retired selector spellings are rejected; use `grok` and `openai-compatible` directly |
 | `AGENC_EFFORT_LEVEL` | Reasoning effort captured into canonical session config: `minimal`, `low`, `medium`, `high`, `xhigh`, or `none`; other values are rejected |
+| `AGENC_LIGHT_REQUEST` | Native DeepSeek Light request: `full` (default) or `lean`. Overrides `light_request` in the session config. Lean uses shorter prose, system-side environment facts, compact results, core tools and low effort when none was chosen. Applies to interactive and headless Light; other providers and standard sessions are unchanged. See [config.md](config.md) for component switches and capability differences. |
 | `AGENC_PROFILE` | Named config profile (`--profile`) |
 | `AGENC_AUTONOMOUS` | Truthy enables autonomous tick mode |
 | `AGENC_MAX_OUTPUT_TOKENS` | Positive integer output-token budget. Max-output-tokens escalation runs only with no explicit budget (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or `providers.<provider>.max_output_tokens`). It does not change the 3-retry continuation limit or the 64_000 escalate target. See [daemon.md](daemon.md#max-output-tokens-recovery) |

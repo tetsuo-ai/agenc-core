@@ -891,6 +891,20 @@ export interface BudgetConfig {
 // Canonical AgenCConfig
 // ─────────────────────────────────────────────────────────────────────
 
+/** Independent parts of the native DeepSeek lean Light request. */
+export interface LightRequestOptions {
+  readonly short_system_prompt?: boolean;
+  readonly environment_in_system?: boolean;
+  readonly reminders?: boolean;
+  readonly compact_tool_results?: boolean;
+  readonly tool_result_markers?: boolean;
+  readonly core_tools_only?: boolean;
+  readonly tool_search?: boolean;
+  readonly process_tools?: boolean;
+  readonly compact_tool_definitions?: boolean;
+  readonly low_effort?: boolean;
+}
+
 export interface AgenCConfig {
   // ── Runtime fields ─────────────────────────────────────────────────
   readonly configVersion?: number;
@@ -1010,6 +1024,9 @@ export interface AgenCConfig {
    * keep the mode they started with.
    */
   readonly light_mode?: boolean;
+  /** Native DeepSeek Light request presentation. Defaults to full. */
+  readonly light_request?: "full" | "lean";
+  readonly light_request_options?: LightRequestOptions;
   /**
    * Load rarely needed built-in tools through system.searchTools instead of
    * sending them with every request. Unset: on for standard sessions, off for
@@ -1183,6 +1200,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "agents",
   "stream_degenerate_guard",
   "light_mode",
+  "light_request",
+  "light_request_options",
   "defer_rare_tools",
   "web_search",
   "lean_system_prompt",
