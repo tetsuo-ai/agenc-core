@@ -11,7 +11,7 @@ import { chmodSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import Database from "better-sqlite3";
+import { openSqliteDatabase } from "../state/sqlite-engine.js";
 import type BetterSqlite3 from "better-sqlite3";
 import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
 import { getAgenCHomeDir } from "../utils/envUtils.js";
@@ -578,7 +578,7 @@ export class PersistentFuzzyFileIndex {
     const directory = dirname(this.databasePath);
     mkdirSync(directory, { recursive: true, mode: INDEX_DIRECTORY_MODE });
     chmodSync(directory, INDEX_DIRECTORY_MODE);
-    this.#db = new Database(this.databasePath);
+    this.#db = openSqliteDatabase(this.databasePath);
     try {
       configureDatabase(this.#db);
       initializeSchema(this.#db);

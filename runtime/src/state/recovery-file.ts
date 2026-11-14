@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import Database from "better-sqlite3";
+import { openSqliteDatabase } from "./sqlite-engine.js";
 import type BetterSqlite3 from "better-sqlite3";
 
 import { SessionLockedError } from "../session/session-store.js";
@@ -1036,7 +1036,7 @@ export class DiskCanonicalIdentityRegistry implements RecoveryRunIdentityRegistr
     );
     let database: BetterSqlite3.Database | undefined;
     try {
-      database = new Database(join(directory, "identities.sqlite"));
+      database = openSqliteDatabase(join(directory, "identities.sqlite"));
       database.pragma("journal_mode = OFF");
       database.pragma("synchronous = OFF");
       database.pragma(`cache_size = -${RECOVERY_IDENTITY_CACHE_KIB}`);

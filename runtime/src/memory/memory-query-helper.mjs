@@ -3,6 +3,9 @@
 import { Buffer } from "node:buffer";
 import process from "node:process";
 
+import { existsSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+
 import Database from "better-sqlite3";
 
 const PROTOCOL_VERSION = 2;
@@ -84,11 +87,57 @@ function decodeRequest(frame) {
   return request;
 }
 
-function runQuery(request) {
-  const database = new Database(request.databasePath, {
-    readonly: true,
-    fileMustExist: true,
+/**
+ * Windows uses Node's built-in SQLite: Smart App Control refuses the unsigned
+ * better-sqlite3 addon there. Elsewhere better-sqlite3 stays unless it cannot
+ * load. AGENC_SQLITE_BACKEND=node or =native chooses explicitly. Matches
+ * openSqliteDatabase in state/sqlite-engine.ts for this read-only query.
+ */
+function openReadonlyDatabase(path) {
+  const requested = process.env.AGENC_SQLITE_BACKEND?.trim().toLowerCase();
+  const explicit = requested !== undefined && requested !== "";
+  const useNode =
+    requested === "node" ||
+    requested === "builtin" ||
+    (!(requested === "native" || requested === "better-sqlite3") && process.platform === "win32");
+  if (!useNode) {
+    try {
+      return new Database(path, { readonly: true, fileMustExist: true });
+    } catch (error) {
+      if (explicit || !isNativeLoadError(error)) throw error;
+    }
+  }
+  if (!existsSync(path)) throw new Error("unable to open database file");
+  const database = new DatabaseSync(path, {
+    readOnly: true,
+    timeout: 5000,
+    allowBareNamedParameters: true,
+    allowUnknownNamedParameters: true,
   });
+  return {
+    pragma(source) {
+      database.prepare(`PRAGMA ${source}`).all();
+    },
+    prepare(sql) {
+      const statement = database.prepare(sql);
+      return { all: (...args) => statement.all(...args).map((row) => ({ ...row })) };
+    },
+    close() {
+      if (database.isOpen) database.close();
+    },
+  };
+}
+
+function isNativeLoadError(error) {
+  if (!(error instanceof Error)) return false;
+  if (error.code === "ERR_DLOPEN_FAILED" || error.code === "MODULE_NOT_FOUND") return true;
+  return /better_sqlite3\.node|Could not locate the bindings file|Application Control policy|NODE_MODULE_VERSION/.test(
+    error.message,
+  );
+}
+
+function runQuery(request) {
+  const database = openReadonlyDatabase(request.databasePath);
   try {
     database.pragma("query_only = ON");
     database.pragma("trusted_schema = OFF");

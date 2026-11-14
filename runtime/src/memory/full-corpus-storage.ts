@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 
-import Database from "better-sqlite3";
+import { openSqliteDatabase } from "../state/sqlite-engine.js";
 import type BetterSqlite3 from "better-sqlite3";
 
 import {
@@ -47,7 +47,7 @@ export function openMemoryIndexDatabase(
   let database: BetterSqlite3.Database | undefined;
   let ftsAvailable: boolean;
   try {
-    database = new Database(databasePath);
+    database = openSqliteDatabase(databasePath);
     configureDatabase(database);
     assertDatabaseIntegrity(database);
     ftsAvailable = probeFtsCapability(database);
@@ -58,7 +58,7 @@ export function openMemoryIndexDatabase(
     const recoverable = classifyRecoverableDatabaseError(error);
     if (recoverable === null) throw error;
     rotateIncompatibleDatabase(databasePath, recoverable);
-    database = new Database(databasePath);
+    database = openSqliteDatabase(databasePath);
     configureDatabase(database);
     ftsAvailable = probeFtsCapability(database);
     initializeSchema(database, ftsAvailable);
