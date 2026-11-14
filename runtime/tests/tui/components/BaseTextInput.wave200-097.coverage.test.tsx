@@ -28,6 +28,7 @@ vi.mock("../../utils/config.js", () => ({
 vi.mock("../../utils/terminalBackground.js", () => ({
   getTerminalBackground: () => "dark",
   resolveThemeSetting: () => "dark",
+  autoThemeForBackground: () => "dark",
 }));
 
 vi.mock("../hooks/usePasteHandler.js", () => ({

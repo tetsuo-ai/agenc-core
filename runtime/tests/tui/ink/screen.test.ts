@@ -142,6 +142,30 @@ describe('screen pools and cell access', () => {
     )
     expect(filterOutHyperlinkStyles([osc8, invalid] as never)).toEqual([invalid])
   })
+
+  test('a theme selection fg replaces the cell fg and dim but keeps bold and underline', () => {
+    const styles = new StylePool()
+    const red = { code: '\x1b[31m', endCode: '\x1b[39m', type: 'ansi' } as const
+    const dim = { code: '\x1b[2m', endCode: '\x1b[22m', type: 'ansi' } as const
+    const bold = { code: '\x1b[1m', endCode: '\x1b[22m', type: 'ansi' } as const
+    const underline = { code: '\x1b[4m', endCode: '\x1b[24m', type: 'ansi' } as const
+    const selectionBg = { code: '\x1b[48;2;118;96;140m', endCode: '\x1b[49m', type: 'ansi' } as const
+    const selectionFg = { code: '\x1b[38;2;255;255;255m', endCode: '\x1b[39m', type: 'ansi' } as const
+    const base = styles.intern([red, dim, bold, underline])
+
+    styles.setSelectionBg(selectionBg)
+    // Without a selection fg the cell keeps its own fg and dim.
+    expect(styles.get(styles.withSelectionBg(base))).toEqual([red, dim, bold, underline, selectionBg])
+
+    styles.setSelectionFg(selectionFg)
+    const selected = styles.withSelectionBg(base)
+    expect(styles.get(selected)).toEqual([bold, underline, selectionBg, selectionFg])
+    // Cached until the selection colors change.
+    expect(styles.withSelectionBg(base)).toBe(selected)
+
+    styles.setSelectionFg(null)
+    expect(styles.get(styles.withSelectionBg(base))).toEqual([red, dim, bold, underline, selectionBg])
+  })
 })
 
 describe('screen mutations and diffs', () => {

@@ -61,13 +61,15 @@ malformed chords, duplicate JSON keys, normalized alias collisions, and
 disagreement with existing canonical keybindings block the migration.
 
 Theme is an operator preference at `tui.theme` in `config.toml`. Accepted values are
-`auto`, `dark`, `light`, `light-daltonized`, `dark-daltonized`, `light-ansi`,
-`dark-ansi`, and `olive` (the default); `system` is not a value. `auto` shows
-olive on a dark terminal and light on a light one: it first uses `$COLORFGBG`
-when available, otherwise starts with a dark fallback, and an OSC 11 terminal
-background response can then update the detected light/dark palette. In the
-TUI, `/theme` previews the themes and saves the choice here; the open TUI
-also follows `/config reload` after a hand edit.
+`auto` (the default), `dark`, `light`, `light-daltonized`, `dark-daltonized`,
+`light-ansi`, `dark-ansi`, and `olive`; `system` is not a value. `auto` shows
+olive on a dark terminal and light on a light one. At startup the TUI asks the
+terminal for its background (OSC 11, with DA1 as the end marker, one round
+trip) before the first frame, falls back to `$COLORFGBG` and then to dark when
+the terminal does not say, and keeps polling OSC 11 so a terminal that changes
+from dark to light (or back) is followed live. In the TUI, `/theme` previews
+the themes and saves the choice here; the open TUI also follows
+`/config reload` after a hand edit.
 
 `--bare` is the CLI ingress for the typed `runtimeOptions.simpleMode` value;
 embedding clients carry the same required typed value on the daemon protocol.
@@ -329,7 +331,7 @@ otherwise.
 | `providers.grok.enable_image_search` | `true` |
 | `providers.grok.enable_image_understanding` | `true` |
 | `providers.grok.enable_video_understanding` | `true` |
-| `tui.theme` | `olive` |
+| `tui.theme` | `auto` |
 | `tui.showTurnDuration` | `true` |
 | `tui.terminalProgressBarEnabled` | `true` |
 | `tui.copyOnSelect` | `true` |

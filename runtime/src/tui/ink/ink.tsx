@@ -1223,6 +1223,29 @@ export default class Ink {
   }
 
   /**
+   * Set the selection foreground the theme pairs with its selection bg, or
+   * null to keep each cell's own fg. Same color forms and NUL-split as
+   * setSelectionBgColor.
+   */
+  setSelectionFgColor(color: string | null): void {
+    if (color === null) {
+      this.stylePool.setSelectionFg(null);
+      return;
+    }
+    const wrapped = colorize('\0', color, 'foreground');
+    const nul = wrapped.indexOf('\0');
+    if (nul <= 0 || nul === wrapped.length - 1) {
+      this.stylePool.setSelectionFg(null);
+      return;
+    }
+    this.stylePool.setSelectionFg({
+      type: 'ansi',
+      code: wrapped.slice(0, nul),
+      endCode: wrapped.slice(nul + 1) // always \x1b[39m for fg
+    });
+  }
+
+  /**
    * Capture text from rows about to scroll out of the viewport during
    * drag-to-scroll. Must be called BEFORE the ScrollBox scrolls so the
    * screen buffer still holds the outgoing content. Accumulated into

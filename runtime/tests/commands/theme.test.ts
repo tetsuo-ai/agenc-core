@@ -86,7 +86,7 @@ describe("/theme", () => {
   });
 
   it("sets a theme directly and keeps it for the next session", async () => {
-    expect(store.current().tui?.theme).toBe("olive");
+    expect(store.current().tui?.theme).toBe("auto");
 
     expect(await run("/theme dark")).toEqual({
       kind: "text",
@@ -119,7 +119,7 @@ describe("/theme", () => {
       kind: "error",
       message: `Unknown theme "neon". Choose one of: ${VALID_NAMES}.`,
     });
-    expect(store.current().tui?.theme).toBe("olive");
+    expect(store.current().tui?.theme).toBe("auto");
     await expect(readFile(join(home, "config.toml"), "utf8")).rejects.toThrow();
   });
 
@@ -147,8 +147,9 @@ describe("/theme", () => {
     const listed = await themeCommand.execute(context());
     expect(listed.kind).toBe("text");
     const text = (listed as { text: string }).text;
-    expect(text.split("\n")[0]).toBe("Theme: olive");
-    expect(text).toContain("olive             olive, cream and wine, for dark terminals (current)");
+    expect(text.split("\n")[0]).toBe("Theme: auto");
+    expect(text).toContain("auto              olive on dark terminals, light on light ones (current)");
+    expect(text).toContain("olive             olive, cream and wine, for dark terminals");
     expect(text).toContain("light-daltonized  color-blind friendly, light");
     expect(text.split("\n").at(-1)).toBe("Use /theme <name> to change it.");
   });
