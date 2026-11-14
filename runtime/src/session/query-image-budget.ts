@@ -23,7 +23,7 @@
  *
  * `boundContextImageBytes` applies exactly that and keeps a contiguous suffix
  * of the newest images. Providers whose cached prompt depends on unchanged
- * earlier content use `admitContextImageBytes`: the same batches, and the
+ * earlier content use `admitContextImageBytes`: batches down to a tenth of the budget, and the
  * current turn's own images (those sent with the request that started the
  * turn, and those of the latest tool results) are never left out while they
  * fit the budget together; older images go first.
@@ -393,7 +393,10 @@ function replayAdmission(
   messages: readonly LLMMessage[],
   budgetBytes: number,
 ): { readonly verdicts: readonly AdmissionVerdict[]; readonly retainedBytes: number } {
-  const target = Math.floor(budgetBytes / 2);
+  // Long screenshot runs repeatedly invalidate hundreds of thousands of cached
+  // tokens. Leave 90% free after a batch; keep current-turn images even when
+  // they exceed this target. The non-prefix projection retains its half budget.
+  const target = Math.floor(budgetBytes / 10);
   const verdicts: AdmissionVerdict[] = [];
   const admitted: AdmittedImage[] = [];
   let retainedBytes = 0;
@@ -425,7 +428,7 @@ function replayAdmission(
         continue;
       }
       if (retainedBytes + bytes > budgetBytes) {
-        // One batch: the oldest images outside the current turn, down to half.
+        // One batch: the oldest images outside the current turn, down to a tenth.
         for (let position = 0; position < admitted.length && retainedBytes + bytes > target;) {
           if (ownedByTurn(admitted[position]!)) position += 1;
           else leaveOut(position);

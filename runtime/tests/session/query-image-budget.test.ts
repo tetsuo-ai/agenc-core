@@ -192,6 +192,17 @@ describe("boundContextImageBytes", () => {
 });
 
 describe("admitContextImageBytes", () => {
+  test("leaves nine tenths of a prefix-cache budget free between eviction batches", () => {
+    const requests = readingRequests(Array(25).fill(1000), 10_000);
+    expect(prefixRepeats(requests).flatMap((repeats, index) => repeats ? [] : [index + 2]))
+      .toEqual([11, 21]);
+    expect(requests[10]!.retainedBytes).toBe(1000);
+    for (const request of requests) {
+      expect(imageSlots(request.messages).at(-1)).toBe("IMG");
+      expect(request.retainedBytes).toBeLessThanOrEqual(10_000);
+    }
+  });
+
   test("leaves a history under budget untouched and changes nothing as images arrive", () => {
     const requests = readingRequests([1000, 1000, 1000, 1000, 1000], 6000);
     expect(requests.map(({ omitted }) => omitted)).toEqual([0, 0, 0, 0, 0]);
@@ -205,9 +216,9 @@ describe("admitContextImageBytes", () => {
     const full = requests[6]!;
     // The new screenshot reaches the model; the oldest leave in one batch.
     expect(imageSlots(full.messages)).toEqual([
-      EVICTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT, "IMG", "IMG", "IMG",
+      EVICTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT, "IMG",
     ]);
-    expect(full.retainedBytes).toBe(3000);
+    expect(full.retainedBytes).toBe(1000);
     expect(JSON.stringify(full.messages)).not.toContain("not inspected");
   });
 
@@ -240,10 +251,10 @@ describe("admitContextImageBytes", () => {
   test("repeated reads past the budget break the cache once per batch, not once per image", () => {
     const requests = readingRequests(Array(20).fill(1000), 6000);
     expect(requests.map((request) => request.retainedBytes / 1000))
-      .toEqual([1, 2, 3, 4, 5, 6, 3, 4, 5, 6, 3, 4, 5, 6, 3, 4, 5, 6, 3, 4]);
+      .toEqual([1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6, 1, 2]);
     const repeats = prefixRepeats(requests);
-    expect(repeats.filter((repeated) => !repeated)).toHaveLength(4);
-    expect(repeats.flatMap((repeated, index) => repeated ? [] : [index + 1])).toEqual([6, 10, 14, 18]);
+    expect(repeats.filter((repeated) => !repeated)).toHaveLength(3);
+    expect(repeats.flatMap((repeated, index) => repeated ? [] : [index + 1])).toEqual([6, 12, 18]);
     // Every request shows the image it just returned.
     for (const request of requests) expect(imageSlots(request.messages).at(-1)).toBe("IMG");
   });
@@ -268,7 +279,7 @@ describe("admitContextImageBytes", () => {
     const later: LLMMessage[] = [...turn, { role: "assistant", content: "Done." }, { role: "user", content: "Check four more screens." }];
     for (const index of [0, 1, 2, 3]) later.push(...readImage(`later-${index}`, 1000));
     expect(imageSlots(admitContextImageBytes(later, 6000, shownBefore).messages)).toEqual([
-      evicted, evicted, evicted, evicted, evicted, evicted, evicted, "IMG", "IMG", "IMG",
+      evicted, evicted, evicted, evicted, evicted, evicted, evicted, evicted, evicted, "IMG",
     ]);
     // Until that batch, the earlier verdicts stand byte for byte.
     expect(admitContextImageBytes(later.slice(0, -2), 6000, shownBefore).messages.slice(0, turn.length)).toEqual(bounded.messages);
