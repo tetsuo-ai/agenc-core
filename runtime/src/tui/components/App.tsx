@@ -5188,6 +5188,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     toolJSX.shouldHidePromptInput === true;
   const inlineToolJSX =
     toolJSX !== null && !toolOwnsPrompt ? toolJSX.jsx : null;
+  // Phase 5 #53: hide PromptInput while a permission overlay or
+  // elicitation prompt is active so a single Enter doesn't fire both.
+  // Text answers go through the overlay's own input.
+  const showPromptInput = shouldShowPromptInputState({
+    isMessageSelectorVisible,
+    permissionRequestCount: permissionRequests.length,
+    hasElicitationPrompt: elicitation.prompt !== null,
+    completionPipelineOwnsPrompt: completionPipelineActive,
+    toolShouldHidePromptInput: toolJSX?.shouldHidePromptInput === true,
+  });
   const modalToolJSX = toolOwnsPrompt ? toolJSX.jsx : null;
   const scrollableContent = (
     <>
@@ -5226,7 +5236,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           viewport in fullscreen mode. */}
       {fullscreen ? <Box flexGrow={1} /> : null}
       {fullscreen ? (
-        <PromptInputQueuedCommands queueOwner={commandQueueOwner} listAll={reviewBlocksPrompt} />
+        // Typed inputs wait inside the prompt band; they are listed here only
+        // while the prompt is hidden, so they never drop out of view.
+        <PromptInputQueuedCommands
+          queueOwner={commandQueueOwner}
+          listAll={reviewBlocksPrompt}
+          showInputs={!showPromptInput}
+        />
       ) : null}
     </>
   );
@@ -5253,16 +5269,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       <ElicitationRequestOverlay elicitation={elicitation} />
     ) : null;
 
-  // Phase 5 #53: hide PromptInput while a permission overlay or
-  // elicitation prompt is active so a single Enter doesn't fire both.
-  // Text answers go through the overlay's own input.
-  const showPromptInput = shouldShowPromptInputState({
-    isMessageSelectorVisible,
-    permissionRequestCount: permissionRequests.length,
-    hasElicitationPrompt: elicitation.prompt !== null,
-    completionPipelineOwnsPrompt: completionPipelineActive,
-    toolShouldHidePromptInput: toolJSX?.shouldHidePromptInput === true,
-  });
   const promptInputElement = showPromptInput ? (
     <PromptInput
       debug={false}
@@ -5300,6 +5306,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       getToolUseContext={getToolUseContext}
       onBashSubmit={runQueuedBashCommand}
       queueOwner={commandQueueOwner}
+      listAllQueuedInputs={reviewBlocksPrompt}
       queueExecutionCwd={queueWorkspaceRoot}
       restoreComposerDraft={restoreComposerDraft}
       draftRestoreRevision={draftRestoreRevision}

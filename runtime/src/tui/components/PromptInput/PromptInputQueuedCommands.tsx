@@ -32,6 +32,7 @@ import { escapeXml } from "../../../utils/xml.js";
 import { truncateToWidth } from "../../../utils/truncate.js";
 import { useContentWidth } from "../../context/contentWidthContext.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
+import { stringWidth } from "../../ink/stringWidth.js";
 import { wrapAnsi } from "../../ink/wrapAnsi.js";
 import ThemedText from "../design-system/ThemedText.js";
 import { Message } from "../Message.js";
@@ -89,11 +90,30 @@ export function formatQueuedInputRows(
   width: number,
   maxListed: number = MAX_LISTED_QUEUED_INPUTS,
 ): string[] {
+  return formatQueuedInputEntries(inputs, width, maxListed).map(
+    (row) => `${row.marker}${row.text}`,
+  );
+}
+
+/** One row of the queued inputs list: the number cell (or its hang) and the text. */
+export interface QueuedInputRow {
+  readonly marker: string;
+  readonly text: string;
+  /** The closing "N more queued" row, drawn quieter than an input. */
+  readonly more?: boolean;
+}
+
+/** The rows of {@link formatQueuedInputRows}, with the number cell kept apart. */
+export function formatQueuedInputEntries(
+  inputs: readonly string[],
+  width: number,
+  maxListed: number = MAX_LISTED_QUEUED_INPUTS,
+): QueuedInputRow[] {
   const listed = inputs.slice(0, maxListed);
   const numberWidth = String(listed.length).length;
   const hang = " ".repeat(numberWidth + 2);
   const textWidth = Math.max(8, Math.floor(width) - hang.length);
-  const rows: string[] = [];
+  const rows: QueuedInputRow[] = [];
   listed.forEach((input, index) => {
     const lines = wrapAnsi(input, textWidth, { hard: true, trim: true }).split("\n");
     const shown = lines.slice(0, MAX_QUEUED_INPUT_ROWS);
@@ -106,15 +126,17 @@ export function formatQueuedInputRows(
       shown[shown.length - 1] = truncateToWidth(rest, textWidth);
     }
     shown.forEach((line, lineIndex) => {
-      rows.push(
-        lineIndex === 0
-          ? `${String(index + 1).padStart(numberWidth)}  ${line}`
-          : `${hang}${line}`,
-      );
+      rows.push({
+        marker:
+          lineIndex === 0
+            ? `${String(index + 1).padStart(numberWidth)}  `
+            : hang,
+        text: line,
+      });
     });
   });
   const more = inputs.length - listed.length;
-  if (more > 0) rows.push(`${hang}${more} more queued`);
+  if (more > 0) rows.push({ marker: hang, text: `${more} more queued`, more: true });
   return rows;
 }
 
@@ -185,20 +207,12 @@ function processQueuedCommands(
   };
   return [...otherCommands, ...visibleNotifications, overflowCommand];
 }
-function PromptInputQueuedCommandsImpl({
-  queueOwner,
-  listAll = false,
-}: {
-  readonly queueOwner?: QueuedCommandOwner;
-  /**
-   * List every queued input, however many. Set while the prompts cannot be
-   * sent (a tool outcome waits for review): the user then needs to see all
-   * that wait, not the first five and a count.
-   */
-  readonly listAll?: boolean;
-}): React.ReactNode {
+/** The queued commands of one TUI mount (all of them when no owner is given). */
+function useOwnedQueuedCommands(
+  queueOwner: QueuedCommandOwner | undefined,
+): readonly QueuedCommand[] {
   const allQueuedCommands = useCommandQueue();
-  const queuedCommands = useMemo(
+  return useMemo(
     () =>
       queueOwner === undefined
         ? allQueuedCommands
@@ -212,6 +226,103 @@ function PromptInputQueuedCommandsImpl({
           ),
     [allQueuedCommands, queueOwner],
   );
+}
+
+/** Cells of the prompt glyph and its space ("❯ "): the queue lines up with the typed text. */
+export const PROMPT_BAND_INPUT_INSET = 2;
+/** The left word of the header row inside the prompt band. */
+const IN_BAND_HEADER = "next";
+
+/**
+ * The inputs typed while a turn runs, inside the prompt band above the line
+ * the user types on (owner pick 2026-11-14, queue option A):
+ *
+ *   next                                   ctrl+x backspace drops the last
+ *   1  check the vbmeta flags too
+ *   2  then flash boot_b, reboot into slot b and tell me if root works
+ *   ────────────────────────────────────────────────────────────────────
+ *   ❯ (the input line)
+ *
+ * The block is drawn only while something is queued, so the band grows
+ * with it and returns to its usual height when the queue empties. `width`
+ * is the band's inner width; the block starts under the typed text. On a
+ * narrow band the hint goes first, before any entry is cut.
+ */
+export function PromptBandQueuedInputs({
+  queueOwner,
+  listAll = false,
+  width,
+}: {
+  readonly queueOwner?: QueuedCommandOwner;
+  /** List every queued input (prompts wait for a tool outcome review). */
+  readonly listAll?: boolean;
+  readonly width: number;
+}): React.ReactNode {
+  const queuedCommands = useOwnedQueuedCommands(queueOwner);
+  const viewingAgent = useAppState((s: AppState) => !!s.viewingAgentTaskId);
+  const blockWidth = Math.max(8, Math.floor(width) - PROMPT_BAND_INPUT_INSET);
+  const rows = useMemo(
+    () =>
+      formatQueuedInputEntries(
+        queuedCommands
+          .filter((cmd) => isQueuedCommandVisible(cmd) && isQueuedUserInput(cmd))
+          .map(queuedInputText),
+        blockWidth - 1,
+        listAll ? Number.POSITIVE_INFINITY : MAX_LISTED_QUEUED_INPUTS,
+      ),
+    [queuedCommands, blockWidth, listAll],
+  );
+  if (viewingAgent || rows.length === 0) return null;
+  // The keycap is lowercased so the hint reads like the footer's hints.
+  const hint = `${getShortcutDisplay("chat:dropQueuedInput", "Chat", "ctrl+x backspace").toLowerCase()} drops the last`;
+  const showHint =
+    stringWidth(IN_BAND_HEADER) + 2 + stringWidth(hint) <= blockWidth;
+  return (
+    <Box
+      flexDirection="column"
+      marginLeft={PROMPT_BAND_INPUT_INSET}
+      width={blockWidth}
+      flexShrink={0}
+    >
+      <Box flexDirection="row" justifyContent="space-between">
+        <ThemedText color="text2" bold>
+          {IN_BAND_HEADER}
+        </ThemedText>
+        {showHint ? <ThemedText color="text3">{hint}</ThemedText> : null}
+      </Box>
+      {rows.map((row, i) => (
+        <Box key={i} flexDirection="row">
+          <ThemedText color="text3">{row.marker}</ThemedText>
+          <ThemedText color={row.more ? "text3" : "text"} wrap="truncate-end">
+            {row.text}
+          </ThemedText>
+        </Box>
+      ))}
+      <ThemedText color="subtle">{"─".repeat(blockWidth)}</ThemedText>
+    </Box>
+  );
+}
+
+function PromptInputQueuedCommandsImpl({
+  queueOwner,
+  listAll = false,
+  showInputs = false,
+}: {
+  readonly queueOwner?: QueuedCommandOwner;
+  /**
+   * List every queued input, however many. Set while the prompts cannot be
+   * sent (a tool outcome waits for review): the user then needs to see all
+   * that wait, not the first five and a count.
+   */
+  readonly listAll?: boolean;
+  /**
+   * Also list the queued inputs here. They normally wait inside the prompt
+   * band (PromptBandQueuedInputs); this is for when the prompt is hidden
+   * (a permission request or another overlay owns it), so they stay in view.
+   */
+  readonly showInputs?: boolean;
+}): React.ReactNode {
+  const queuedCommands = useOwnedQueuedCommands(queueOwner);
   const viewingAgent = useAppState((s: AppState) => !!s.viewingAgentTaskId);
   // Brief layout: dim queue items + skip the paddingX (brief messages
   // already indent themselves). Gate mirrors the brief-spinner/message
@@ -230,14 +341,16 @@ function PromptInputQueuedCommandsImpl({
   // own message rendering below.
   const queuedInputRows = useMemo(
     () =>
-      formatQueuedInputRows(
-        queuedCommands
-          .filter((cmd) => isQueuedCommandVisible(cmd) && isQueuedUserInput(cmd))
-          .map(queuedInputText),
-        contentWidth - QUEUED_INPUTS_INSET - 1,
-        listAll ? Number.POSITIVE_INFINITY : MAX_LISTED_QUEUED_INPUTS,
-      ),
-    [queuedCommands, contentWidth, listAll],
+      showInputs
+        ? formatQueuedInputRows(
+            queuedCommands
+              .filter((cmd) => isQueuedCommandVisible(cmd) && isQueuedUserInput(cmd))
+              .map(queuedInputText),
+            contentWidth - QUEUED_INPUTS_INSET - 1,
+            listAll ? Number.POSITIVE_INFINITY : MAX_LISTED_QUEUED_INPUTS,
+          )
+        : [],
+    [queuedCommands, contentWidth, listAll, showInputs],
   );
 
   // createUserMessage mints a fresh UUID per call; without memoization, streaming
@@ -278,7 +391,13 @@ function PromptInputQueuedCommandsImpl({
   }, [queuedCommands]);
 
   // Don't show leader's queued commands when viewing any agent's transcript
-  if (viewingAgent || (messages === null && queuedInputRows.length === 0)) {
+  // Typed inputs now wait in the prompt band, so with nothing else queued
+  // this draws nothing at all (not even its blank row).
+  if (
+    viewingAgent ||
+    ((messages === null || messages.length === 0) &&
+      queuedInputRows.length === 0)
+  ) {
     return null;
   }
   return (
