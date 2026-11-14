@@ -46,27 +46,15 @@ export const TOKEN_ACCOUNTING_CALIBRATION_HEADROOM = 1.02;
 export const TOKEN_ACCOUNTING_CALIBRATION_MAX_FACTOR = 4;
 export const TOKEN_ACCOUNTING_CALIBRATION_MAX_SCOPES = 256;
 /**
- * Two-way calibration from reported prompt tokens, for providers whose report counts the whole prompt (see
- * {@link reportsCompletePromptTokens}). The conservative fallback for those requests stays the first-call bound,
- * but once a request of the same conversation and request shape has been reported, the estimate is anchored on
- * that report instead of the fallback alone:
- *
- *   estimate = min(fallback, anchorFallback) x ratio x headroom + max(0, fallback - anchorFallback)
- *
- * The anchor is the newest reported request; `ratio` is the largest reported-to-fallback ratio among the last
- * {@link TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_SAMPLES} reports. The part of the request the provider has already
- * measured is scaled by that ratio, and only what grew since the anchor keeps the conservative fallback rate, so a
- * large dense tool result is still bounded at two bytes per token while the history around it is not counted at
- * twice its size again. Measured on 6,580 recorded DeepSeek requests (2026-10-20): the fallback was 2.45x the
- * provider's count (p5 2.19, max 3.19); replaying the recorded sessions through this rule gave a median of 1.18x and
- * a minimum of 1.03x over 4,389 calibrated main and subagent calls. The headroom covers the drift of the ratio
- * between consecutive calls; the minimum factor bounds the damage of an implausibly low report (it keeps at least
- * 30% of the fallback, about six bytes per token). Content denser than the fallback's own floor (random base64 is
- * about 1.4 bytes per DeepSeek token) is undercounted on growth exactly as a first call undercounts it; a refusal
- * for context length then records the provider's own count (see `recordContextOverflow`) before compaction retries.
+ * Complete prompt reports anchor the next request on the latest response, not
+ * the densest of several earlier requests. Only growth since that response
+ * keeps the conservative fallback rate. A smaller projection uses the latest
+ * measured ratio; unrelated tool-free calls never anchor an agent turn.
+ * The measured part needs only 2% headroom: new content already carries the
+ * fallback margin, and proactive compaction separately reserves window space.
+ * Missing/partial reports keep the conservative fallback or upward calibration.
  */
-export const TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_HEADROOM = 1.1;
-export const TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_SAMPLES = 8;
+export const TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_HEADROOM = 1.02;
 export const TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_MIN_FACTOR = 0.3;
 export const TOKEN_FALLBACK_MARGIN_RATIO = 0.1;
 export const TOKEN_FALLBACK_MARGIN_TOKENS = 256;
@@ -626,7 +614,7 @@ export class TokenAccountingService {
     }
     const calibrated =
       samples !== undefined && samples.length > 0
-        ? withAnchoredCalibration(result, samples, factor)
+        ? withAnchoredCalibration(result, samples)
         : factor !== undefined && factor > 1
           ? withCalibration(result, factor)
           : { ...result };
@@ -749,8 +737,7 @@ export class TokenAccountingService {
   }
 
   #recordAnchoredSample(key: string, sample: AnchoredCalibrationSample): void {
-    const previous = this.#anchoredSamples.get(key) ?? [];
-    const samples = [...previous.slice(-(TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_SAMPLES - 1)), sample];
+    const samples = [sample];
     this.#anchoredSamples.delete(key);
     this.#anchoredSamples.set(key, samples);
     while (this.#anchoredSamples.size > this.#calibrationMaxScopes) {
@@ -1140,14 +1127,12 @@ function anchoredCalibrationKeyFor(
 function withAnchoredCalibration(
   result: TokenAccountingResult,
   samples: readonly AnchoredCalibrationSample[],
-  upwardFactor: number | undefined,
 ): TokenAccountingResult {
   const anchor = samples[samples.length - 1]!;
-  let ratio = TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_MIN_FACTOR;
-  for (const sample of samples) {
-    ratio = Math.max(ratio, sample.reportedInputTokens / sample.basisInputTokens);
-  }
-  ratio = Math.min(TOKEN_ACCOUNTING_CALIBRATION_MAX_FACTOR, ratio);
+  const ratio = Math.min(TOKEN_ACCOUNTING_CALIBRATION_MAX_FACTOR, Math.max(
+    TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_MIN_FACTOR,
+    anchor.reportedInputTokens / anchor.basisInputTokens,
+  ));
   const scale = ratio * TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_HEADROOM;
   const basis = result.inputTokens;
   // The provider measured the anchor; what this request adds beyond it keeps
@@ -1156,14 +1141,6 @@ function withAnchoredCalibration(
   const measured = Math.min(basis, anchor.basisInputTokens) * scale;
   const growth = Math.max(0, basis - anchor.basisInputTokens) * Math.max(1, scale);
   let inputTokens = Math.ceil(measured + growth);
-  // A report from another request of this conversation that the fallback
-  // undercounted still raises this one, as upward-only calibration does.
-  if (upwardFactor !== undefined && upwardFactor > 1) {
-    inputTokens = Math.max(
-      inputTokens,
-      Math.ceil(basis * upwardFactor * TOKEN_ACCOUNTING_CALIBRATION_HEADROOM),
-    );
-  }
   inputTokens = Math.max(
     TOKEN_ACCOUNTING_MINIMUM_INPUT_TOKENS,
     Math.min(Number.MAX_SAFE_INTEGER, inputTokens),

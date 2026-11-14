@@ -12,9 +12,12 @@
 import {
   createTokenAccountingRequest,
   estimateTokenAccountingRequest,
+  reportsCompletePromptTokens,
   tokenAccountingService,
   type TokenAccountingResult,
 } from "../../../llm/token-accounting.js";
+import { boundContextImagesForProvider, contextImageShownBefore, resolveContextImageBudgetBytes } from "../../../session/query-image-budget.js";
+import { getSelectedProviderEnvironment } from "../../../utils/model/providers.js";
 import { readProviderFactoryOptions } from "../../../llm/provider.js";
 import { readGeminiRuntimeOptions } from "../../../llm/providers/gemini/runtime-options.js";
 import type { LLMMessage } from "../../../llm/types.js";
@@ -36,6 +39,16 @@ export function estimateMessagesTokens(
 ): number {
   const provider = context?.provider?.name ?? "unknown";
   const model = context?.options?.mainLoopModel ?? "unknown";
+  const calibrationScope = options.calibrationScope ??
+    (reportsCompletePromptTokens(provider, model) ? context?.admissionSession?.conversationId : undefined);
+  const accountingMessages = messages.map(toAccountingMessage);
+  // Durable screenshots can exceed the request byte cap even though the
+  // actual image projection fits. Count that projection before calibrating.
+  const projectedMessages = calibrationScope && reportsCompletePromptTokens(provider, model)
+    ? boundContextImagesForProvider(accountingMessages,
+        resolveContextImageBudgetBytes(getSelectedProviderEnvironment()), provider,
+        context?.admissionSession ? contextImageShownBefore(context.admissionSession) : () => false).messages
+    : accountingMessages;
   const factoryOptions = context?.provider
     ? readProviderFactoryOptions(context.provider)
     : undefined;
@@ -55,7 +68,7 @@ export function estimateMessagesTokens(
   const request = createTokenAccountingRequest({
     provider,
     model,
-    messages: messages.map(toAccountingMessage),
+    messages: projectedMessages,
     options: {
       ...(systemPrompt !== undefined ? { systemPrompt } : {}),
       ...(context?.options?.tools !== undefined
@@ -76,9 +89,9 @@ export function estimateMessagesTokens(
     },
     contextWindowTokens: context?.options?.contextWindowTokens,
     reservedOutputTokens: context?.options?.maxOutputTokens,
-    ...(options.calibrationScope
+    ...(calibrationScope
       ? {
-          calibrationScope: options.calibrationScope,
+          calibrationScope,
           ...(factoryOptions?.baseURL !== undefined
             ? { endpointIdentity: factoryOptions.baseURL }
             : {}),
@@ -87,7 +100,7 @@ export function estimateMessagesTokens(
   });
   let result: TokenAccountingResult;
   try {
-    result = options.calibrationScope
+    result = calibrationScope
       ? tokenAccountingService.estimate(request)
       : estimateTokenAccountingRequest(request);
   } catch {
