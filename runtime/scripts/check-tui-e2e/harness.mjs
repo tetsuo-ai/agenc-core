@@ -890,6 +890,9 @@ export class TuiSession {
       this.term.write(ch);
       await sleep(perCharMs);
     }
+    // Remember what was typed, so the reply check can find the sent prompt
+    // by its text (a sent prompt shows no caret since 0.19.34).
+    this.typedSinceSubmit = (this.typedSinceSubmit ?? "") + text;
   }
 
   /**
@@ -907,7 +910,8 @@ export class TuiSession {
   async submit(text = "") {
     this.throwIfAborted();
     if (text) await this.type(text);
-    this.lastSubmittedText = text;
+    this.lastSubmittedText = this.typedSinceSubmit ?? text;
+    this.typedSinceSubmit = "";
     await sleep(80);
     this.mark();
     this.term.write("\r");
