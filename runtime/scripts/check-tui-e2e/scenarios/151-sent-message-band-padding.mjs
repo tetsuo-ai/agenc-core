@@ -12,6 +12,9 @@ import { renderPtyRows } from "../harness.mjs";
 export const meta = {
   description: "A sent message band has one empty band row above and below its text, dark and light.",
   timeoutMs: 90_000,
+  // The band is a background color. A bare CI=1 (no known CI vendor) turns
+  // color off, so the scenario asks for it instead of taking it from the host.
+  env: { FORCE_COLOR: "3" },
 };
 
 const MESSAGE = "Reply with the single word ALPHA";
