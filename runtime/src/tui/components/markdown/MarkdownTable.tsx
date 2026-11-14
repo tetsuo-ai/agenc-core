@@ -58,13 +58,15 @@ function getMarkdownTableGlyphs(): TableGlyphs {
       }
     };
   }
+  // A quiet frame: rounded outer corners; the only inner rule sits under
+  // the header row (see renderBorderLine callers).
   return {
     vertical: '│',
     horizontal: '─',
     borders: {
-      top: ['┌', '┬', '┐'],
+      top: ['╭', '┬', '╮'],
       middle: ['├', '┼', '┤'],
-      bottom: ['└', '┴', '┘']
+      bottom: ['╰', '┴', '╯']
     }
   };
 }
@@ -121,6 +123,9 @@ export function MarkdownTable({
   const inheritedContentWidth = useContentWidth();
   const terminalWidth = Math.max(1, Math.floor(forceWidth ?? inheritedContentWidth ?? actualTerminalWidth));
   const tableGlyphs = getMarkdownTableGlyphs();
+  // The frame is a quiet theme gray (the terminal gray on ANSI themes), so
+  // the cells, not the lines, carry the table.
+  const border = color('subtle', theme);
 
   // Format cell content to ANSI string. Memoized per render by the cell's
   // `tokens` reference: the ~4-5 layout passes (getMinWidth, getIdealWidth,
@@ -235,7 +240,9 @@ export function MarkdownTable({
     // Get wrapped lines for each cell (preserving ANSI formatting)
     const cellLines = cells.map((cell, colIndex_1) => {
       const formattedText = formatCell(cell.tokens);
-      const themedText = !isHeader && colIndex_1 === 0 ? color('agenc', theme)(formattedText) : formattedText;
+      const themedText = isHeader
+        ? `${ANSI_BOLD_START}${formattedText}${ANSI_BOLD_END}`
+        : colIndex_1 === 0 ? color('agenc', theme)(formattedText) : formattedText;
       const width = columnWidths[colIndex_1]!;
       return wrapText(themedText, width);
     });
@@ -243,22 +250,24 @@ export function MarkdownTable({
     // Find max number of lines in this row
     const maxLines_0 = maxOf(cellLines.map(lines => lines.length), 1);
 
-    // Calculate vertical offset for each cell (to center vertically)
-    const verticalOffsets = cellLines.map(lines_0 => Math.floor((maxLines_0 - lines_0.length) / 2));
+    // Every cell starts on the row's first line. With no rules between body
+    // rows, the first line of a row is where its cells begin.
+    const verticalOffsets = cellLines.map(() => 0);
 
     // Build each line of the row as a single string
     const result: string[] = [];
     for (let lineIdx = 0; lineIdx < maxLines_0; lineIdx++) {
-      let line = tableGlyphs.vertical;
+      let line = border(tableGlyphs.vertical);
       for (let colIndex_2 = 0; colIndex_2 < cells.length; colIndex_2++) {
         const lines_1 = cellLines[colIndex_2]!;
         const offset = verticalOffsets[colIndex_2]!;
         const contentLineIdx = lineIdx - offset;
         const lineText = contentLineIdx >= 0 && contentLineIdx < lines_1.length ? lines_1[contentLineIdx]! : '';
         const width_0 = columnWidths[colIndex_2]!;
-        // Headers always centered; data uses table alignment
-        const align = isHeader ? 'center' : token.align?.[colIndex_2] ?? 'left';
-        line += ' ' + padAligned(lineText, stringWidth(lineText), width_0, align) + ` ${tableGlyphs.vertical}`;
+        // Headers and data follow the column's alignment (left by default),
+        // so a header sits over its column's text.
+        const align = token.align?.[colIndex_2] ?? 'left';
+        line += ' ' + padAligned(lineText, stringWidth(lineText), width_0, align) + ' ' + border(tableGlyphs.vertical);
       }
       result.push(line);
     }
@@ -273,7 +282,7 @@ export function MarkdownTable({
       line_0 += tableGlyphs.horizontal.repeat(width_1 + 2);
       line_0 += colIndex_3 < columnWidths.length - 1 ? cross : right;
     });
-    return line_0;
+    return border(line_0);
   }
 
   // Render vertical format (key-value pairs) for extra-narrow terminals
@@ -281,7 +290,7 @@ export function MarkdownTable({
     const lines_2: string[] = [];
     const headers = token.header.map(h => getPlainText(h.tokens));
     const separatorWidth = Math.max(1, Math.min(terminalWidth - 1, 40));
-    const separator = tableGlyphs.horizontal.repeat(separatorWidth);
+    const separator = border(tableGlyphs.horizontal.repeat(separatorWidth));
     // Small indent for wrapped lines (just 2 spaces)
     const wrapIndent = '  ';
     // A table with no data rows (also a streamed table whose first row has
@@ -347,11 +356,16 @@ export function MarkdownTable({
   tableLines.push(renderBorderLine('top'));
   tableLines.push(...renderRowLines(token.header, true));
   tableLines.push(renderBorderLine('middle'));
-  token.rows.forEach((row_3, rowIndex_0) => {
-    tableLines.push(...renderRowLines(row_3, false));
-    if (rowIndex_0 < token.rows.length - 1) {
-      tableLines.push(renderBorderLine('middle'));
-    }
+  // No rules between body rows: one rule under the header is enough. When a
+  // row wraps onto several lines, an empty line inside the frame keeps the
+  // rows apart, so a wrapped cell never reads as the start of the next row.
+  const bodyRows = token.rows.map(row_3 => renderRowLines(row_3, false));
+  const spaceRows = bodyRows.some(lines_3 => lines_3.length > 1);
+  const spacerLine = border(tableGlyphs.vertical) +
+    columnWidths.map(width_2 => ' '.repeat(width_2 + 2) + border(tableGlyphs.vertical)).join('');
+  bodyRows.forEach((lines_4, rowIndex_0) => {
+    if (rowIndex_0 > 0 && spaceRows) tableLines.push(spacerLine);
+    tableLines.push(...lines_4);
   });
   tableLines.push(renderBorderLine('bottom'));
 

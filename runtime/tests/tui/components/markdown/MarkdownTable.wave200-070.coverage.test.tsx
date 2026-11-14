@@ -48,7 +48,7 @@ describe('MarkdownTable narrow layout', () => {
     expect(output).toContain('Field: Owner')
     expect(output).toContain('Value: Ada')
     expect(lines).toContain('─'.repeat(29))
-    expect(output).not.toContain('┌')
+    expect(output).not.toMatch(/[╭┌]/)
     expect(output).not.toContain('┬')
     expect(lines.every(line => line.length <= 30)).toBe(true)
   })

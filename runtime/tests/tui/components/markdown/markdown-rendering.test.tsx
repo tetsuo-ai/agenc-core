@@ -121,8 +121,8 @@ describe('markdown rendering components', () => {
     expect(output).toContain('Count')
     expect(output).toContain('Alpha')
     expect(output).toContain('42')
-    expect(output).toContain('┌')
-    expect(output).toContain('┘')
+    expect(output).toContain('╭')
+    expect(output).toContain('╯')
   })
 
   test('uses inherited content width for long markdown tables in constrained panes', async () => {
@@ -144,7 +144,7 @@ describe('markdown rendering components', () => {
 
     expect(output).toContain('Contract Row:')
     expect(output).toContain('BufferEditorProvider')
-    expect(output).not.toContain('┌')
+    expect(output).not.toMatch(/[╭┌]/)
     for (const line of output.split('\n')) {
       expect(stringWidth(line)).toBeLessThanOrEqual(72)
     }
@@ -190,7 +190,7 @@ describe('markdown rendering components', () => {
     expect(output).toContain('-')
     expect(output).toMatch(/\|\s+7\s+\|/)
     expect(output).toMatch(/\|\s+42\s+\|/)
-    expect(output).not.toContain('┌')
+    expect(output).not.toMatch(/[╭┌]/)
     expect(output).not.toContain('┘')
     expect(output).not.toContain('│')
   })

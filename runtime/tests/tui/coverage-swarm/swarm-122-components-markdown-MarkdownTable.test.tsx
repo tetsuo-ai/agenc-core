@@ -40,7 +40,7 @@ describe('MarkdownTable coverage swarm row 122', () => {
     }
   })
 
-  test('renders a compact table with centered headers and aligned data cells', async () => {
+  test('renders a compact table whose headers follow their column alignment', async () => {
     const output = await renderTable(
       [
         '| Agent | Status | Score |',
@@ -51,9 +51,12 @@ describe('MarkdownTable coverage swarm row 122', () => {
       80,
     )
 
-    expect(output).toContain('┌')
-    expect(output).toContain('┘')
+    expect(output).toContain('╭')
+    expect(output).toContain('╯')
+    expect(output).not.toContain('┌')
     expect(output).toMatch(/│ Agent\s+│\s+Status\s+│ Score │/)
+    // One rule under the header and none between the body rows.
+    expect(output.split('\n').filter(line => line.includes('┼'))).toHaveLength(1)
     expect(output).toMatch(/│ Alpha\s+│\s+ready\s+│\s+7 │/)
     expect(output).toMatch(/│ Empty\s+│\s+│\s+1024 │/)
   })
@@ -70,7 +73,7 @@ describe('MarkdownTable coverage swarm row 122', () => {
     )
     const lines = nonEmptyLines(output)
 
-    expect(output).toContain('┌')
+    expect(output).toContain('╭')
     expect(output).toContain('Alpha wraps')
     expect(output).toContain('several compact')
     expect(output).toMatch(/│\s+7 │/)
@@ -90,7 +93,7 @@ describe('MarkdownTable coverage swarm row 122', () => {
     const lines = nonEmptyLines(output)
 
     // Two columns of six cells do not fit in 17: the words stay whole.
-    expect(output).not.toContain('┌')
+    expect(output).not.toContain('╭')
     expect(lines).toEqual(['Key: abcdef', 'Value: uvwxyz'])
   })
 
@@ -105,7 +108,7 @@ describe('MarkdownTable coverage swarm row 122', () => {
     )
     const lines = nonEmptyLines(output)
 
-    expect(output).toContain('┌')
+    expect(output).toContain('╭')
     expect(output).toMatch(/│ name\s+│/)
     expect(lines.every(line => line.length <= 40)).toBe(true)
     const address = lines
@@ -130,7 +133,7 @@ describe('MarkdownTable coverage swarm row 122', () => {
     expect(output).toContain('+')
     expect(output).toContain('|')
     expect(output).toContain('-')
-    expect(output).not.toContain('┌')
+    expect(output).not.toContain('╭')
     expect(output).not.toContain('│')
   })
 
@@ -151,6 +154,6 @@ describe('MarkdownTable coverage swarm row 122', () => {
     expect(output).toContain('Name: Beta')
     expect(output).toContain('Value: done')
     expect(lines).toContain('─'.repeat(9))
-    expect(output).not.toContain('┌')
+    expect(output).not.toMatch(/[╭┌]/)
   })
 })
