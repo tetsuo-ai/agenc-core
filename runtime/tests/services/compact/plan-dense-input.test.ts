@@ -100,6 +100,7 @@ describe("compaction input is planned at the dense bytes-per-token bound", () =>
     });
     // 400 KB at 2 bytes per token is 200k tokens; the catalogue would say 100k.
     expect(accounting.inputTokens).toBeGreaterThanOrEqual(200_000);
+    // No larger output ceiling is advertised for this route.
     expect(accounting.totalTokens).toBe(accounting.inputTokens + OUTPUT_RESERVE_TOKENS);
     expect(accounting.confidence).toBe("conservative");
   });

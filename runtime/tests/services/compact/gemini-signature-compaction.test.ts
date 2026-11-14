@@ -32,7 +32,7 @@ const writeTool: LLMTool = {
  * redacted (an `API_KEY=` line is enough); Gemini 3 and newer still need the
  * call's real signature on the next request, or they answer HTTP 400.
  */
-describe("Gemini signatures across compaction", () => {
+describe.each(["gemini-4-argon", "gemini-4-carbon"])("%s signatures across compaction", (model) => {
   for (const [label, content] of [
     ["plain code", "print('hello')\n"],
     ["an API_KEY line", "API_KEY=placeholder\n"],
@@ -56,7 +56,7 @@ describe("Gemini signatures across compaction", () => {
           role: "assistant", content: "",
           toolCalls: [{ id: "call_4242", name: "Write", arguments: args }],
           providerReasoningContent: JSON.stringify(parts),
-          providerReasoningProvenance: { provider: "gemini", model: "gemini-4-argon" },
+          providerReasoningProvenance: { provider: "gemini", model },
         },
         {
           role: "tool", content: toolResult, toolCallId: "call_4242", toolName: "Write",
@@ -84,7 +84,7 @@ describe("Gemini signatures across compaction", () => {
         const provider = new GeminiProvider({
           credentialPlan: { kind: "api-key", credential: "gemini-test", source: "factory" },
           endpointPlan: createGeminiEndpointPlan(),
-          model: "gemini-4-argon",
+          model,
           fetchImpl,
         });
         await provider.chat(after, { tools: [writeTool] });

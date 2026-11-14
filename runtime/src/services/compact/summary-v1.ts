@@ -402,8 +402,10 @@ export function parseCompactionBodyV1(
   if (bytes > MAX_COMPACTION_OUTPUT_UTF8_BYTES_PER_CALL) {
     throw limit("provider output exceeds the per-call byte limit");
   }
-  const parsed = parseJsonIteratively(json);
+  const fenced = /^```[A-Za-z0-9_-]*[ \t]*\r?\n([\s\S]*?)\r?\n```$/u.exec(json.trim());
+  const parsed = parseJsonIteratively(fenced?.[1] ?? json);
   const cloned = cloneAndValidateProgrammaticJson(parsed.value);
+  normalizeBody(cloned, allowedSourceRefIds);
   const body = validateBody(cloned, allowedSourceRefIds, parsed.workUnits);
   return {
     body,
@@ -881,6 +883,52 @@ function measureJsonValue(value: JsonValue): { readonly nodes: number; readonly 
   return { nodes, workUnits };
 }
 
+/** Repair presentation only. Validate every retained or dropped record first. */
+function normalizeBody(value: JsonValue, allowed: ReadonlySet<string>): void {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return;
+  const occupied = new Set<string>();
+  for (const list of [value.facts, value.open_actions]) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (item !== null && typeof item === "object" && !Array.isArray(item) && typeof item.id === "string") {
+        occupied.add(item.id);
+      }
+    }
+  }
+  const earlierIds = new Set<string>();
+  let nextId = 1;
+  for (const [label, maximum] of [["facts", MAX_COMPACTION_FACTS_PER_OUTPUT], ["open_actions", MAX_COMPACTION_OPEN_ACTIONS_PER_OUTPUT]] as const) {
+    const list = value[label];
+    if (!Array.isArray(list)) continue;
+    if (list.length > maximum) throw limit(`${label} exceeds its record limit`);
+    const listIds = new Set<string>();
+    value[label] = list.filter((item, index) => {
+      if (item === null || typeof item !== "object" || Array.isArray(item)) return true;
+      // Unknown fields still fail strict validation, including empty records.
+      const missingCitation = !Object.prototype.hasOwnProperty.call(item, "source_ref_ids");
+      requireExactObject(item, missingCitation ? ["id", "text"] : ["id", "text", "source_ref_ids"], `${label}[${index}]`);
+      const id = requireBoundedString(item.id, MAX_COMPACTION_RECORD_ID_UTF8_BYTES, `${label}[${index}].id`);
+      if (listIds.has(id)) throw invalid(`${label} contains duplicate id ${id}`);
+      listIds.add(id);
+      if (allowed.size === 1 && (missingCitation || (Array.isArray(item.source_ref_ids) && item.source_ref_ids.length === 0))) {
+        item.source_ref_ids = [...allowed];
+      }
+      if (earlierIds.has(id)) {
+        let replacement: string;
+        do { replacement = `record-${nextId++}`; } while (occupied.has(replacement));
+        occupied.add(replacement);
+        item.id = replacement;
+      }
+      const empty = typeof item.text === "string" && item.text.trim().length === 0;
+      if (empty && item.text !== "") assertBoundedText(item.text as string, MAX_COMPACTION_RECORD_TEXT_UTF8_BYTES, `${label}[${index}].text`);
+      // This checks citations, markers and string bounds even on empty records.
+      validateRecords([{ ...item, text: empty ? "empty record" : item.text }], 1, label, allowed, new Set(), () => {});
+      return !empty;
+    });
+    for (const id of listIds) earlierIds.add(id);
+  }
+}
+
 function validateBody(
   value: JsonValue,
   allowedSourceRefIds: ReadonlySet<string>,
@@ -916,6 +964,7 @@ function validateBody(
     body.narrative,
     MAX_COMPACTION_NARRATIVE_UTF8_BYTES,
     "narrative",
+    true,
   );
   const recordIds = new Set<string>();
   const facts = validateRecords(
@@ -1097,8 +1146,10 @@ function requireBoundedString(
   value: JsonValue | undefined,
   maximumBytes: number,
   label: string,
+  allowEmpty = false,
 ): string {
   if (typeof value !== "string") throw invalid(`${label} must be a string`);
+  if (allowEmpty && value.length === 0) return value;
   assertBoundedText(value, maximumBytes, label);
   assertNoReservedControlMarker(value);
   return value;

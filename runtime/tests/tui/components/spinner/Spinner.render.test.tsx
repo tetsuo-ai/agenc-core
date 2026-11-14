@@ -264,6 +264,26 @@ describe("Spinner render paths", () => {
     harness.reset();
   });
 
+  test.each([false, true])("adds the live efficiency line with brief mode %s", async brief => {
+    if (brief) {
+      harness.features.add("KAIROS");
+      harness.getKairosActive = true;
+      harness.appState.isBriefOnly = true;
+    }
+    const rendered = await renderToText(<SpinnerWithVerb {...spinnerProps({
+      turnEfficiency: {
+        modelCalls: 3,
+        lastRequest: { inputTokens: 128_000, cachedInputTokens: 124_160, outputTokens: 2100 },
+        usage: { inputTokens: 256_000, cachedInputTokens: 248_320, outputTokens: 4200 },
+      },
+    })} />);
+    try {
+      expect(rendered.output()).toContain("3 calls · input 128K · cached 97%");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
   test("renders the compact spinner glyph", async () => {
     const rendered = await renderToText(<Spinner />);
 

@@ -1,6 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { Box, Text } from '../../ink.js';
+import { LiveRunLine } from '../LiveRunLine.js';
+import type { TurnEfficiency } from '../../turn-efficiency.js';
 import { AgenCActivityMark } from './AgenCActivityMark.js';
 import * as React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -57,6 +59,7 @@ type Props = {
   /** Immutable provider/auth authority captured by the owning TUI session. */
   providerAuthContext: ProviderAuthReadContext;
   streamQuietWarning?: string | null;
+  turnEfficiency?: TurnEfficiency | null;
 };
 
 // Thin wrapper: branches on isBriefOnly so the two variants have independent
@@ -78,7 +81,10 @@ export function SpinnerWithVerb(props: Props): React.ReactNode {
   // BriefTool.ts would leak tool-name strings into external builds. Single
   // spinner instance → hooks stay unconditional (two subs, negligible).
   if ((feature('KAIROS') || feature('KAIROS_BRIEF')) && (getKairosActive() || getUserMsgOptIn() && (briefEnvEnabled || false)) && isBriefOnly && !viewingAgentTaskId) {
-    return <BriefSpinner mode={props.mode} overrideMessage={props.overrideMessage} />;
+    return <>
+      <BriefSpinner mode={props.mode} overrideMessage={props.overrideMessage} />
+      {props.turnEfficiency && !props.leaderIsIdle && <LiveRunLine turn={props.turnEfficiency} />}
+    </>;
   }
   return <SpinnerWithVerbInner {...props} />;
 }
@@ -98,6 +104,7 @@ function SpinnerWithVerbInner({
   showLeaderTokenStats = true,
   leaderIsIdle = false,
   streamQuietWarning,
+  turnEfficiency,
 }: Props): React.ReactNode {
   const settings = useSettings();
   const reducedMotion = settings?.prefersReducedMotion ?? false;
@@ -287,6 +294,7 @@ function SpinnerWithVerbInner({
   }
   return <Box flexDirection="column" width="100%" alignItems="flex-start">
       <SpinnerAnimationRow mode={mode} reducedMotion={reducedMotion} hasActiveTools={hasActiveTools} responseLengthRef={responseLengthRef} message={message} messageColor={messageColor} shimmerColor={shimmerColor} overrideColor={overrideColor} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} spinnerSuffix={spinnerSuffix} verbose={verbose} columns={columns} hasRunningTeammates={hasRunningTeammates} teammateTokens={teammateTokens} foregroundedTeammate={foregroundedTeammate} leaderIsIdle={leaderIsIdle} thinkingStatus={thinkingStatus} effortSuffix="" streamQuietWarning={streamQuietWarning} showLeaderTokenStats={showLeaderTokenStats} />
+      {turnEfficiency && !leaderIsIdle && !foregroundedTeammate && <LiveRunLine turn={turnEfficiency} />}
       {hasRunningLocalAgents && <RunningLocalAgentsLine agents={runningLocalAgents} />}
       {showSpinnerTree && hasRunningTeammates ? <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderVerb={leaderIsIdle ? undefined : leaderVerb} leaderIdleText={leaderIsIdle ? 'Idle' : undefined} leaderTokenCount={leaderTokenCount} spinnerVerbs={spinnerVerbs} /> : (showExpandedTodos || hasOpenTodoTasks) && tasksV2 && tasksV2.length > 0 ? <Box width="100%" flexDirection="column">
           <MessageResponse>

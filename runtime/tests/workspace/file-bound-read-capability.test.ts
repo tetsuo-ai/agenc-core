@@ -76,6 +76,21 @@ describe("descriptor-bound file reads", () => {
     }
   });
 
+  test("counted windows retain bounded lines and count the entire file", async () => {
+    root = await mkdtemp(join(tmpdir(), "bound-counted-window-"));
+    const file = join(root, "large.txt");
+    await writeFile(file, "aaaa\nbbbb\ncccc\ndddd\n");
+    const capability = await bindWorkspaceFileReadCapability(file);
+    try {
+      const legacy = await capability.readTextWindow(2, 1, 4096);
+      expect(legacy.totalLines).toBe(2);
+      const counted = await capability.readTextWindow(2, 100, 10, true);
+      expect(counted.content).toBe("bbbb\ncccc");
+      expect(counted.totalLines).toBe(4);
+      expect(counted.endLine).toBe(3);
+    } finally { await capability.dispose(); }
+  });
+
   test("keeps the production helper launch plan below Windows process boundaries", () => {
     const plan = __workspaceBoundHelperLaunchPlanForTests({
       executable: String.raw`C:\Program Files\nodejs\node.exe`,

@@ -1,3 +1,8 @@
+import { resolveProviderModelCapabilities } from "../../llm/capabilities.js";
+import { resolveRegisteredModelCatalogEntry } from "../../llm/registry/model-catalog.js";
+import { chatCompletionsCapabilityHintsForProvider } from "../../llm/wire/capability-gating.js";
+import type { ModelInfo } from "../../session/turn-context.js";
+import { supportsThinkingOffRecovery } from "../../session/reasoning-recovery-capability.js";
 import {
   assertTokenAccountingWithinContext,
   conservativeBytesPerToken,
@@ -181,6 +186,8 @@ export interface BuildCompactionPlanOptions {
   readonly providerName: string;
   readonly model: string;
   readonly messageSourceRefs: readonly RolloutSpanRefV1[];
+  /** Model-free plans do not reserve provider reasoning. */
+  readonly includeReasoningAllowance?: boolean;
 }
 
 /**
@@ -496,6 +503,7 @@ function evaluateChunkCandidate(params: {
     params.options.model,
     params.contextWindow,
     params.outputReserve,
+    params.options.includeReasoningAllowance,
   );
   return { end: params.end, units, sourceRef, messages, accounting };
 }
@@ -536,6 +544,7 @@ function buildCallDag(
       providerName: options.providerName,
       model: options.model,
       contextWindowTokens: options.contextWindow,
+      includeReasoningAllowance: options.includeReasoningAllowance,
       outputReserveTokens: options.outputReserve,
     }, planningWork);
     calls.push({
@@ -573,13 +582,14 @@ function buildCallDag(
         providerName: options.providerName,
         model: options.model,
         contextWindowTokens: options.contextWindow,
+        includeReasoningAllowance: options.includeReasoningAllowance,
         outputReserveTokens: options.outputReserve,
       }, planningWork);
       const upperBound = safeSum(
         wrapper.inputTokens,
         group.length * options.outputReserve,
       );
-      if (safeSum(upperBound, options.outputReserve) > options.contextWindow) {
+      if (safeSum(upperBound, wrapper.reservedOutputTokens) > options.contextWindow) {
         throw new CompactionCannotReduceError(
           "context_limit",
           `planned ${stage} call ${callIndex} cannot fit its frozen worst-case child outputs`,
@@ -623,13 +633,14 @@ function selectReductionFanIn(
       providerName: options.providerName,
       model: options.model,
       contextWindowTokens: options.contextWindow,
+      includeReasoningAllowance: options.includeReasoningAllowance,
       outputReserveTokens: options.outputReserve,
     }, planningWork);
     const childOutputs = candidate * options.outputReserve;
     if (
       safeSum(
         safeSum(wrapper.inputTokens, childOutputs),
-        options.outputReserve,
+        wrapper.reservedOutputTokens,
       ) <= options.contextWindow
     ) {
       return candidate;
@@ -684,6 +695,29 @@ function childRecord(
   return { id: record.id, text: record.text };
 }
 
+/** Keep the answer reserve separate from reasoning on routes without an off switch. */
+export function compactionProviderOutputReserve(
+  answerTokens: number,
+  provider: string,
+  model: string,
+  contextWindow: number,
+  modelInfo?: Pick<ModelInfo, "maxOutputTokensUpperLimit" | "maxOutputTokens" | "supportsReasoning">,
+): number {
+  const entry = resolveRegisteredModelCatalogEntry({ provider, model });
+  const routeCeiling = chatCompletionsCapabilityHintsForProvider(provider, model).outputTokensCeiling;
+  const ceilings = [modelInfo?.maxOutputTokensUpperLimit ?? modelInfo?.maxOutputTokens,
+    entry?.maxOutputTokensUpperLimit ?? entry?.maxOutputTokens, routeCeiling]
+    .filter((value): value is number => value !== undefined && Number.isFinite(value) && value > 0);
+  // An unknown route has no proven room above the caller's answer reserve.
+  const ceiling = ceilings.length > 0 ? Math.min(...ceilings) : answerTokens;
+  const reasons = modelInfo?.supportsReasoning === true || entry?.supportsThinking === true ||
+    (entry?.supportedReasoningLevels.length ?? 0) > 0 ||
+    resolveProviderModelCapabilities({ provider, model }).supportsExtendedThinking;
+  const allowance = reasons && !supportsThinkingOffRecovery(provider, model)
+    ? Math.min(answerTokens, Math.floor(contextWindow / 8)) : 0;
+  return Math.min(answerTokens + allowance, ceiling);
+}
+
 export function accountCompactionCall(params: {
   readonly messages: readonly LLMMessage[];
   readonly systemPrompt: string;
@@ -691,6 +725,7 @@ export function accountCompactionCall(params: {
   readonly model: string;
   readonly contextWindowTokens: number;
   readonly outputReserveTokens: number;
+  readonly includeReasoningAllowance?: boolean;
 }): TokenAccountingResult {
   return accountCall(
     params.messages,
@@ -704,6 +739,7 @@ export function accountCompactionCall(params: {
     params.model,
     params.contextWindowTokens,
     params.outputReserveTokens,
+    params.includeReasoningAllowance,
   );
 }
 
@@ -1117,6 +1153,7 @@ function accountCall(
   model: string,
   contextWindow: number,
   outputReserve: number,
+  includeReasoningAllowance = true,
 ): TokenAccountingResult {
   const accounting = accountCallWithoutContextAssertion(
     messages,
@@ -1125,6 +1162,7 @@ function accountCall(
     model,
     contextWindow,
     outputReserve,
+    includeReasoningAllowance,
   );
   assertTokenAccountingWithinContext(accounting, contextWindow);
   return accounting;
@@ -1137,7 +1175,12 @@ function accountCallWithoutContextAssertion(
   model: string,
   contextWindow: number,
   outputReserve: number,
+  includeReasoningAllowance = true,
 ): TokenAccountingResult {
+  if (includeReasoningAllowance) {
+    outputReserve = compactionProviderOutputReserve(outputReserve, providerName, model, contextWindow);
+  }
+  options = { ...options, maxOutputTokens: outputReserve };
   if (contextWindow - outputReserve < COMPACTION_MINIMUM_INPUT_TOKEN_BUDGET) {
     throw new CompactionCannotReduceError(
       "context_limit",

@@ -1780,11 +1780,11 @@ describe("T11 W3-B — permission evaluator integration", () => {
     }
   });
 
-  test("FileRead accepts numeric string offset and limit through schema validation", async () => {
+  test.each(["", "\n"])("FileRead accepts numeric string offset and limit through schema validation (ending %j)", async (ending) => {
     const workspace = await mkdtemp(join(tmpdir(), "agenc-exec-workspace-"));
     try {
       const file = join(workspace, "lines.txt");
-      await writeFile(file, "one\ntwo\nthree\nfour\n", "utf8");
+      await writeFile(file, `one\ntwo\nthree\nfour${ending}`, "utf8");
       const tool = createFileReadTool({ allowedPaths: [workspace] });
 
       const out = await runToolUse(
@@ -1797,7 +1797,7 @@ describe("T11 W3-B — permission evaluator integration", () => {
       );
 
       expect(out.isError).toBe(false);
-      expect(out.content).toBe("2→two\n3→three");
+      expect(out.content).toBe("2→two\n3→three\n[lines 2-3 of 4; next offset 4]");
       expect(out.content).not.toContain("InputValidationError");
     } finally {
       await rm(workspace, { recursive: true, force: true });

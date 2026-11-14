@@ -80,8 +80,8 @@ describe("FileRead tool", () => {
     const result = await tool.execute({ file_path: file });
 
     expect(result.isError).toBeUndefined();
-    // Trailing empty line from `\n` end-of-file is preserved by split.
-    expect(result.content).toBe("1→alpha\n2→beta\n3→gamma\n4→");
+    // A final newline terminates gamma without inventing a fourth line.
+    expect(result.content).toBe("1→alpha\n2→beta\n3→gamma");
     expect(tool.name).toBe(FILE_READ_TOOL_NAME);
   });
 
@@ -167,7 +167,7 @@ describe("FileRead tool", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(result.content).toBe("10→line-10");
+    expect(result.content).toBe("10→line-10\n[lines 10-10 of 50; next offset 11]");
   });
 
   test("offset without limit uses the default bounded window over the byte cap", async () => {
@@ -261,7 +261,7 @@ describe("FileRead tool", () => {
     }
 
     // One line short of the whole file stays partial.
-    const short = await tool.execute({ file_path: file, offset: 1, limit: 3, __agencSessionId: sessionId });
+    const short = await tool.execute({ file_path: file, offset: 1, limit: 2, __agencSessionId: sessionId });
     expect(short.isError).toBeUndefined();
     expect(getSessionReadSnapshot(sessionId, file)?.viewKind).toBe("partial");
   });
@@ -278,7 +278,7 @@ describe("FileRead tool", () => {
       __agencSessionId: sessionId,
     });
     expect(result.isError).toBeUndefined();
-    expect(result.content).toBe("2→b\n3→c");
+    expect(result.content).toBe("2→b\n3→c\n[lines 2-3 of 6; next offset 4]");
 
     // User-initiated partial reads satisfy the read-before-write gate.
     expect(hasSessionRead(sessionId, file)).toBe(true);

@@ -154,6 +154,33 @@ function mkState(opts: Partial<TurnState> = {}): TurnState {
 }
 
 describe("runMaxOutputTokensRecovery — T8 hardening", () => {
+  test.each([64_000, 128_000])("keeps paid output when escalation cannot raise the %i token limit", (currentMaxOutputTokens) => {
+    const partial = { role: "assistant" as const, content: "Already completed part one." };
+    const state = mkState({
+      messages: [{ role: "user", content: "Finish both parts" }, partial],
+      messagesAtSampleStart: 1,
+      assistantMessages: [{ uuid: "partial", role: "assistant", text: partial.content, toolCalls: [], apiError: "max_output_tokens" }],
+    });
+    expect(runMaxOutputTokensRecovery({
+      session: mkSession(new EventLog()), state, currentMaxOutputTokens,
+      escalatedMaxOutputTokens: 64_000,
+    })).toEqual({ kind: "continuation" });
+    expect(state.messages).toContainEqual(partial);
+    expect(state.assistantMessages).toHaveLength(1);
+    expect(state.maxOutputTokensOverride).toBeUndefined();
+    expect(state.maxOutputTokensRecoveryCount).toBe(1);
+    expect(state.transition?.reason).toBe("max_output_tokens_recovery");
+  });
+
+  test("raises a smaller sampled limit to a genuinely larger ceiling", () => {
+    const state = mkState();
+    expect(runMaxOutputTokensRecovery({
+      session: mkSession(new EventLog()), state, currentMaxOutputTokens: 8_192,
+      escalatedMaxOutputTokens: 32_000,
+    })).toEqual({ kind: "escalate" });
+    expect(state.maxOutputTokensOverride).toBe(32_000);
+  });
+
   test("reasoning-only retries ask for an action without raising an explicit ceiling", () => {
     const session = mkSession(new EventLog());
     const state = mkState({

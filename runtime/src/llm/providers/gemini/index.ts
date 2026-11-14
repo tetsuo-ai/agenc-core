@@ -65,6 +65,7 @@ import {
   requestUsageFromGemini,
   type GeminiUsageDiagnosticSink,
 } from "./usage.js";
+import { geminiTransportFetch } from "./transport.js";
 
 export interface GeminiProviderConfig extends Omit<LLMProviderConfig, "baseURL"> {
   readonly credentialPlan: GeminiCredentialPlan;
@@ -3590,7 +3591,10 @@ export class GeminiProvider implements LLMProvider {
         "Vertex Gemini token counting cannot represent tool choice or cached content",
       );
     }
-    const session = this.client.createTurnSession({ wireApi: "custom" });
+    const session = this.client.createTurnSession({
+      wireApi: "custom",
+      fetchImpl: geminiTransportFetch(model, this.config.fetchImpl),
+    });
     const response = await session.requestJson<Record<string, unknown>>({
       path: modelPath(model, "countTokens"),
       method: "POST",
@@ -3652,7 +3656,10 @@ export class GeminiProvider implements LLMProvider {
 
     let singleAttemptPending = options?.singleWireAttempt === true;
     try {
-      const session = this.client.createTurnSession({ wireApi: "custom" });
+      const session = this.client.createTurnSession({
+        wireApi: "custom",
+        fetchImpl: geminiTransportFetch(model, this.config.fetchImpl),
+      });
       const response = await session.requestJson<Record<string, unknown>>({
         path: modelPath(model, "generateContent"),
         method: "POST",
@@ -3704,7 +3711,10 @@ export class GeminiProvider implements LLMProvider {
 
     let singleAttemptPending = options?.singleWireAttempt === true;
     try {
-      const session = this.client.createTurnSession({ wireApi: "custom" });
+      const session = this.client.createTurnSession({
+        wireApi: "custom",
+        fetchImpl: geminiTransportFetch(model, this.config.fetchImpl),
+      });
       const response = await session.requestStream({
         path: modelPath(model, "streamGenerateContent"),
         method: "POST",

@@ -5036,6 +5036,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       pauseStartTimeRef={pauseStartTimeRef}
       responseLengthRef={responseLengthRef}
       streamQuietWarning={transcript.streamQuietWarning}
+      turnEfficiency={transcript.turnEfficiency}
       verbose={false}
       providerAuthContext={remoteAuthSessionContext}
       hasActiveTools={hasActiveToolActivity}

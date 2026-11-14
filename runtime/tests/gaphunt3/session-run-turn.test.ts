@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildChatCompletionsRequest } from "../../src/llm/wire/chat-completions.js";
 import { buildPrompt } from "src/session/run-turn.js";
 import type { TurnContext, ModelInfo } from "src/session/turn-context.js";
 
@@ -9,7 +10,7 @@ import type { TurnContext, ModelInfo } from "src/session/turn-context.js";
  * #35 buildPrompt must NOT hard-default unknown models to serial tool calls.
  *     When the catalog omits supportsParallelToolCalls it infers from the
  *     PROVIDER FAMILY for known-parallel providers (anthropic/openai) while
- *     keeping genuinely-unknown providers serial.
+ *     leaving genuinely-unknown support unset.
  *
  * (Finding #36 — making the time-based microcompact retention window live —
  * was reverted: enabling it preserves every result within clearAfterMs, which
@@ -61,16 +62,18 @@ describe("gaphunt3 #35 — buildPrompt provider-aware parallelToolCalls", () => 
     expect(promptOpenAI.parallelToolCalls).toBe(true);
   });
 
-  it("keeps genuinely-unknown providers serial when the catalog flag is unset", () => {
-    // Conservative behavior preserved: a custom/unknown provider id with a
-    // silent catalog must stay serial (false), exactly as before the fix.
+  it("omits the parallel policy when provider support is unknown", () => {
+    // Let the provider choose its default when support is unknown.
     const prompt = buildPrompt(
       [{ role: "user", content: "hi" }],
       [],
       turnContextWith({ modelProviderId: "some-custom-endpoint" }),
       "base",
     );
-    expect(prompt.parallelToolCalls).toBe(false);
+    expect(prompt.parallelToolCalls).toBeUndefined();
+    expect(buildChatCompletionsRequest({ model: "test-model", messages: prompt.input,
+      tools: prompt.tools, options: { parallelToolCalls: prompt.parallelToolCalls },
+    })).not.toHaveProperty("parallel_tool_calls");
   });
 
   it("respects an explicit catalog flag over the provider heuristic", () => {
@@ -85,6 +88,9 @@ describe("gaphunt3 #35 — buildPrompt provider-aware parallelToolCalls", () => 
       "base",
     );
     expect(forcedOff.parallelToolCalls).toBe(false);
+    expect(buildChatCompletionsRequest({ model: "test-model", messages: forcedOff.input,
+      tools: forcedOff.tools, options: { parallelToolCalls: forcedOff.parallelToolCalls },
+    })).toHaveProperty("parallel_tool_calls", false);
 
     // Explicit true must win even for an unknown family.
     const forcedOn = buildPrompt(

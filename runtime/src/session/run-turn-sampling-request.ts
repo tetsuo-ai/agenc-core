@@ -7,7 +7,7 @@
  * @module
  */
 
-import { COMPLETION_GATE_MAX_OUTPUT_TOKENS } from "../phases/completion-gate.js";
+import { COMPLETION_GATE_MAX_OUTPUT_TOKENS, completionGateCapsOutput } from "../phases/completion-gate.js";
 import { randomUUID } from "node:crypto";
 import type { LLMMessage, LLMTool } from "../llm/types.js";
 import { cloneLlmMessageSnapshot } from "../llm/content-conversion.js";
@@ -36,19 +36,14 @@ import {
 export interface BuiltPrompt {
   readonly input: ReadonlyArray<LLMMessage>;
   readonly tools: ReadonlyArray<LLMTool>;
-  readonly parallelToolCalls: boolean;
+  readonly parallelToolCalls?: boolean;
   readonly baseInstructions: string;
   readonly contextWindowTokens?: number;
   readonly maxOutputTokens?: number;
 }
 
-// gaphunt3 #35: provider families that are known to support parallel tool
-// calls. When the model catalog omits `supportsParallelToolCalls`, we infer
-// from the provider family ONLY for these known-parallel providers and keep
-// genuinely-unknown providers serial (the prior conservative default). This
-// avoids penalizing the common multi-file-read fan-out on Anthropic/OpenAI-
-// family endpoints whose catalog entry is silent, while never flipping an
-// unknown provider to parallel.
+// Preserve known provider defaults and explicit catalog flags. Unknown support
+// leaves the request parameter unset so the provider can apply its default.
 const KNOWN_PARALLEL_TOOL_CALL_PROVIDERS = new Set<string>([
   "anthropic",
   "openai",
@@ -56,15 +51,14 @@ const KNOWN_PARALLEL_TOOL_CALL_PROVIDERS = new Set<string>([
   "azure",
 ]);
 
-function inferParallelToolCallSupport(ctx: TurnContext): boolean {
-  // gaphunt3 #35: respect an explicit catalog flag when present; otherwise
-  // fall back to the provider family heuristic (false for unknown providers).
+function inferParallelToolCallSupport(ctx: TurnContext): boolean | undefined {
   if (ctx.modelInfo.supportsParallelToolCalls !== undefined) {
     return ctx.modelInfo.supportsParallelToolCalls;
   }
   const providerId = ctx.modelProviderId?.trim().toLowerCase();
-  if (providerId === undefined || providerId.length === 0) return false;
-  return KNOWN_PARALLEL_TOOL_CALL_PROVIDERS.has(providerId);
+  return providerId !== undefined && KNOWN_PARALLEL_TOOL_CALL_PROVIDERS.has(providerId)
+    ? true
+    : undefined;
 }
 
 /**
@@ -91,8 +85,6 @@ export function buildPrompt(
   return {
     input,
     tools: visibleTools,
-    // gaphunt3 #35: provider-family-aware default (see
-    // inferParallelToolCallSupport) instead of a hard `?? false`.
     parallelToolCalls: inferParallelToolCallSupport(ctx),
     baseInstructions,
     ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
@@ -169,7 +161,8 @@ function buildSamplingRequestContract(
 ): StreamModelRequestContract {
   const samplingContext = { ...ctx, permissionMode: permissionContext.mode };
   let messageStart = 0;
-  const leadingSystemParts: string[] = [];
+  // A child's inherited system-shaped text leads, as it would at the head of the history.
+  const leadingSystemParts: string[] = [...(session.inheritedSystemHistory ?? [])];
   while (state.messagesForQuery[messageStart]?.role === "system") {
     leadingSystemParts.push(messageText(state.messagesForQuery[messageStart]!));
     messageStart += 1;
@@ -230,7 +223,8 @@ function buildSamplingRequestContract(
     baseInstructions,
   );
   const outputLimit = state.maxOutputTokensOverride ?? request.maxOutputTokens;
-  const gateActive = state.completionGate !== undefined && state.completionGateRound > 0 && !state.completionGateSettled;
+  // Thinking shares output tokens; only non-reasoning gates use the bookkeeping cap.
+  const capGateOutput = completionGateCapsOutput(state, samplingContext, session.services.provider.name);
   return {
     ...request,
     contextWindowTokens: getEffectiveContextWindowSizeForEnvironment({ options: {
@@ -240,7 +234,7 @@ function buildSamplingRequestContract(
     ...(state.reasoningOnlyRecoveryPending === true
       ? { reasoningOnlyRecovery: true as const }
       : {}),
-    ...(gateActive
+    ...(capGateOutput
       ? { maxOutputTokens: Math.min(outputLimit ?? Infinity, request.maxOutputTokens ?? Infinity, COMPLETION_GATE_MAX_OUTPUT_TOKENS) }
       : outputLimit !== undefined ? { maxOutputTokens: outputLimit } : {}),
     ...(state.skipCacheWrite !== undefined

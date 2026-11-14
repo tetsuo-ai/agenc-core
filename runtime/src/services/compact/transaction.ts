@@ -1,6 +1,7 @@
 import { readCompactionTransactionAdapter } from "./transaction-adapter.js";
 export { readCompactionTransactionAdapter } from "./transaction-adapter.js";
 import { resolveReasoningEffort } from "../../llm/reasoning-effort.js";
+import { supportsThinkingOffRecovery } from "../../session/reasoning-recovery-capability.js";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
@@ -34,6 +35,7 @@ import {
 import type { BaseHookInput } from "../../entrypoints/sdk/coreTypes.js";
 import {
   accountCompactionCall,
+  compactionProviderOutputReserve,
   buildCompactionMapReducePlan,
   canonicalCompactionSourceMessages,
   compactionSourceRefAlias,
@@ -53,6 +55,7 @@ import {
   canonicalizeJson,
   createCompactionSummaryV1,
   digestWithDomain,
+  digestSourceWithDomain,
   parseCompactionBodyV1,
   sha256Hex,
   validateCompactionProvenance,
@@ -187,9 +190,37 @@ async function acquireCompactionTransactionLease(
 }
 
 
+interface SummaryRecovery {
+  calls: number;
+  inputTokens: number;
+  readonly startedAt: number;
+  correction?: { readonly key: string; readonly error: string };
+  readonly responses: Map<string, { readonly content: string; readonly outputTokenUpperBound: number }>;
+}
+
 export async function compactConversationTransactionally(
   context: CompactContext,
   options: TransactionalCompactionOptions,
+): Promise<CompactionResult> {
+  const recovery: SummaryRecovery = {
+    calls: 0, inputTokens: 0, startedAt: performance.now(), responses: new Map(),
+  };
+  try {
+    return await compactConversationAttempt(context, options, recovery);
+  } catch (error) {
+    if (!(error instanceof CompactionSummaryRejectedError) || error.reason !== "output_schema_invalid" ||
+      recovery.correction === undefined || context.abortController?.signal.aborted === true) throw error;
+    // A second wire attempt needs its own admission reservation. End the
+    // failed transaction before retrying, preserving the frozen DAG and the
+    // unchanged source. Both attempts share parent admission and hard budgets.
+    return compactConversationAttempt(context, options, recovery);
+  }
+}
+
+async function compactConversationAttempt(
+  context: CompactContext,
+  options: TransactionalCompactionOptions,
+  recovery: SummaryRecovery,
 ): Promise<CompactionResult> {
   const adapter = readCompactionTransactionAdapter(context);
   if (adapter === undefined) {
@@ -216,7 +247,7 @@ export async function compactConversationTransactionally(
     await lease.release();
     throw error;
   }
-  const deadline = createCompactionDeadline(admissionScope.context);
+  const deadline = createCompactionDeadline(admissionScope.context, recovery.startedAt);
   try {
     return await compactConversationTransactionBody(
       deadline.context,
@@ -225,6 +256,7 @@ export async function compactConversationTransactionally(
       adapter,
       attemptId,
       progress,
+      recovery,
     );
   } catch (error) {
     progress.fail(error);
@@ -291,6 +323,7 @@ async function compactConversationTransactionBody(
   adapter: CompactionTransactionAdapter,
   attemptId: string,
   progress: CompactionProgressReporter,
+  recovery: SummaryRecovery,
 ): Promise<CompactionResult> {
   deadline.assertActive();
   const provider = context.provider;
@@ -448,6 +481,7 @@ async function compactConversationTransactionBody(
     providerName,
     model,
     messageSourceRefs: selected.sourceRefs,
+    includeReasoningAllowance: options.summarizer === undefined,
   });
   deadline.assertActive();
   const rawBoundaryMarker = options.createBoundaryMarker();
@@ -552,8 +586,9 @@ async function compactConversationTransactionBody(
       providerName,
       model,
       reasoningEffort,
-      startedAt,
+      startedAt: recovery.startedAt,
       progress,
+      recovery,
     }));
     deadline.assertActive();
     progress.send("validate", 85);
@@ -633,6 +668,11 @@ async function compactConversationTransactionBody(
       committed = adapter.commit(commitInput);
     } catch (error) {
       if (error instanceof CompactionTransactionError) throw error;
+      // The commit record reached the rollout, but its fsync or the state
+      // database did not confirm it: the attempt is committed and the session
+      // is rebuilt from it. A failure record after it would give the attempt a
+      // second terminal record, and the rollout could not be opened again.
+      if (error instanceof CompactionReconstructionRequiredError) throw error;
       // Name the cause and the commit's size facts in the message itself:
       // the warning that reaches the rollout, the TUI, and stderr carries
       // the message, and a disk-full write must be distinguishable from a
@@ -756,6 +796,9 @@ async function compactConversationTransactionBody(
       ].includes(error.reason)
     ) {
       throw new CompactionSummaryRejectedError(reason, error.message, { cause: error });
+    }
+    if (!(error instanceof CompactionTransactionError) && !(error instanceof CompactionCannotReduceError)) {
+      throw new CompactionTransactionError(reason, errorDetail(error), { cause: error });
     }
     throw error;
   }
@@ -1062,6 +1105,7 @@ async function runSummaryTree(params: {
   readonly reasoningEffort: LLMChatOptions["reasoningEffort"];
   readonly startedAt: number;
   readonly progress: CompactionProgressReporter;
+  readonly recovery: SummaryRecovery;
 }): Promise<{
   readonly finalSummary: CompactionSummaryV1;
   readonly summaryDag: CompactionSummaryDagV1;
@@ -1070,7 +1114,6 @@ async function runSummaryTree(params: {
   const allowedChildren = new Map<string, ReadonlySet<string>>();
   let totals = { bytes: 0, nodes: 0, workUnits: 0 };
   let callCount = 0;
-  let inputTokens = 0;
   const call = async (
     stage: CompactionStage,
     messages: readonly LLMMessage[],
@@ -1107,11 +1150,18 @@ async function runSummaryTree(params: {
         "compaction exceeded its wall-clock budget",
       );
     }
+    const key = digestSourceWithDomain(`compaction-summary-retry:${stage}:`, messages);
+    const cached = params.recovery.responses.get(key);
+    const localSummarizer = params.summarizer ?? (cached === undefined ? undefined : () => cached.content);
+    if (params.recovery.correction?.key === key) {
+      messages = [...messages.slice(0, -1), { ...messages.at(-1)!, content: `${messages.at(-1)!.content}\n${params.recovery.correction.error}` }];
+    }
     let response: { readonly content: string; readonly finishReason: string };
     let outputTokenUpperBound: number;
     params.progress.summary(callCount - 1, params.plan.planned_provider_calls, 0, params.plan.output_reserve_tokens, true);
-    if (params.summarizer !== undefined) {
-      // Emergency ladder tier (#2497): the summary is produced locally and
+    if (localSummarizer !== undefined) {
+      // Emergency ladder tier or a validated node from the failed attempt:
+      // the summary is produced locally and
       // nothing reaches a provider. The step still passes through execution
       // admission, reserved as an explicitly unpriced zero-token call and
       // reconciled at zero, so the canonical scanner sees the same
@@ -1141,7 +1191,7 @@ async function runSummaryTree(params: {
       const reservationId = lease.reservation.reservationId;
       let content: string;
       try {
-        content = params.summarizer({
+        content = localSummarizer({
           stage,
           messages,
           allowedSourceRefIds: sourceRefs.map((_, index) => compactionSourceRefAlias(index)),
@@ -1157,8 +1207,14 @@ async function runSummaryTree(params: {
       });
       client.reconcile(reservationId, { inputTokens: 0, outputTokens: 0, costUsd: 0 });
       response = { content, finishReason: "stop" };
-      outputTokenUpperBound = conservativeOutputTokenEstimate(content);
+      outputTokenUpperBound = cached?.outputTokenUpperBound ?? conservativeOutputTokenEstimate(content);
     } else {
+      params.recovery.calls += 1;
+      if (params.recovery.calls > MAX_COMPACTION_PROVIDER_CALLS) {
+        throw new CompactionTransactionError(
+          "plan_limit_exceeded", "summary retry exceeded the aggregate provider call limit",
+        );
+      }
       accountCompactionCall({
         messages,
         systemPrompt: params.policyMaterial[stage],
@@ -1178,15 +1234,15 @@ async function runSummaryTree(params: {
         attemptId: params.attemptId,
         contextWindowTokens: params.plan.context_window_tokens,
         outputReserveTokens: params.plan.output_reserve_tokens,
-        remainingInputTokens: MAX_COMPACTION_TOTAL_INPUT_TOKENS - inputTokens,
+        remainingInputTokens: MAX_COMPACTION_TOTAL_INPUT_TOKENS - params.recovery.inputTokens,
         onSummaryTokens: (received) => params.progress.summary(callCount - 1,
           params.plan.planned_provider_calls, received, params.plan.output_reserve_tokens),
       });
-      inputTokens = safeBudgetSum(
-        inputTokens,
+      params.recovery.inputTokens = safeBudgetSum(
+        params.recovery.inputTokens,
         invocation.accounting.inputTokens,
       );
-      if (inputTokens > MAX_COMPACTION_TOTAL_INPUT_TOKENS) {
+      if (params.recovery.inputTokens > MAX_COMPACTION_TOTAL_INPUT_TOKENS) {
         throw new CompactionTransactionError(
           "token_budget_exceeded",
           "exact provider token counts exceeded the aggregate compaction budget",
@@ -1222,7 +1278,15 @@ async function runSummaryTree(params: {
     }
     const allowedIds = new Set(sourceRefs.map((ref) => ref.ref_id));
     const aliases = new Map(sourceRefs.map((ref, index) => [compactionSourceRefAlias(index), ref.ref_id]));
-    const wireBody = parseCompactionBodyV1(response.content, new Set(aliases.keys())).body;
+    let wireBody;
+    try {
+      wireBody = parseCompactionBodyV1(response.content, new Set(aliases.keys())).body;
+    } catch (error) {
+      if (error instanceof CompactionTransactionError && error.reason === "output_schema_invalid" && localSummarizer === undefined) {
+        params.recovery.correction = { key, error: error.message };
+      }
+      throw error;
+    }
     const bindRecords = (records: typeof wireBody.facts) => records.map((record) => ({
       ...record,
       source_ref_ids: record.source_ref_ids.map((id) => aliases.get(id)!),
@@ -1241,6 +1305,7 @@ async function runSummaryTree(params: {
     if (validated.body.tool_pairs.length > 0) {
       assertExactToolPairs(validated.body.tool_pairs, expectedToolPairs);
     }
+    if (localSummarizer === undefined) params.recovery.responses.set(key, { content: response.content, outputTokenUpperBound });
     const body = { ...validated.body, tool_pairs: expectedToolPairs };
     totals = accumulateCompactionOutputBudget(totals, validated.budget);
     const summary = createCompactionSummaryV1({
@@ -1516,12 +1581,23 @@ async function invokeCompactionProvider(params: {
   const provider = params.context.provider!;
   const session = params.context.admissionSession!;
   const signal = params.context.abortController?.signal;
+  const modelInfo = params.context.turn?.modelInfo ?? session.modelInfo;
+  const providerOutputReserve = compactionProviderOutputReserve(
+    params.outputReserveTokens, params.providerName, params.model, params.contextWindowTokens,
+    modelInfo?.slug === params.model ? modelInfo : undefined,
+  );
   const options: LLMChatOptions = {
     model: params.model,
     systemPrompt: params.systemPrompt,
-    maxOutputTokens: params.outputReserveTokens,
+    maxOutputTokens: providerOutputReserve,
     contextWindowTokens: params.contextWindowTokens,
     reasoningEffort: params.reasoningEffort,
+    // A summary is a transcription task. Where the route can answer without
+    // thinking, it does: thinking shares the output limit with the answer, and
+    // a summary cut off by its own reasoning is a failed attempt.
+    ...(supportsThinkingOffRecovery(params.providerName, params.model)
+      ? { disableThinkingForRecovery: true as const }
+      : {}),
     // Compaction is a constrained summarization call, not an agent turn. Keep
     // it explicitly tool-free so constructor-scoped client tools and
     // provider-native server tools cannot be added after preflight token
@@ -1537,7 +1613,7 @@ async function invokeCompactionProvider(params: {
     messages: [...params.messages],
     options,
     contextWindowTokens: params.contextWindowTokens,
-    reservedOutputTokens: params.outputReserveTokens,
+    reservedOutputTokens: providerOutputReserve,
   });
   const exactAccounting = requireAdmissibleTokenAccounting(
     await tokenAccountingService.count(request, {
@@ -1582,17 +1658,15 @@ async function invokeCompactionProvider(params: {
         content: candidate.content,
         signal: admittedOptions.signal,
       });
-      // `coerceUsage` normalises an ABSENT usage object AND a partial one
-      // (prompt-only or total-only) to completionTokens 0, and marks the partial
-      // case `availability: "reported"`. So neither the value nor `availability`
-      // can distinguish "the provider counted zero output tokens" from "the
-      // provider never counted the output at all". Trusting the coerced 0
-      // BYPASSED this bound whenever usage was unknown or partial; a response
-      // carrying a valid completion count was always bounded correctly. A
-      // non-empty body cannot have cost zero
-      // completion tokens, so a non-positive count against real content is not a
-      // count: fall back to the estimate, which is what this bound exists to apply.
-      const reportedCompletion = candidate.usage?.completionTokens;
+      // Inclusive completion usage can contain hidden reasoning. Count the
+      // answer itself on those routes. With thinking disabled, a positive
+      // completion count is the answer count; absent or coerced zero usage
+      // still falls back to the bounded content estimate. Keep the independent
+      // native under-report check against total completion usage on every route.
+      const totalReportedCompletion = candidate.usage?.completionTokens;
+      const reportedCompletion = options.disableThinkingForRecovery === true
+        ? candidate.usage?.completionTokens
+        : undefined;
       const reported =
         reportedCompletion !== undefined && reportedCompletion > 0
           ? reportedCompletion
@@ -1602,8 +1676,8 @@ async function invokeCompactionProvider(params: {
         : Math.max(reported ?? 0, outputAccounting.tokens);
       if (
         outputAccounting.exact &&
-        reported !== undefined &&
-        outputAccounting.tokens > reported
+        totalReportedCompletion !== undefined && totalReportedCompletion > 0 &&
+        outputAccounting.tokens > totalReportedCompletion
       ) {
         throw new CompactionTransactionError(
           "output_limit_exceeded",
@@ -1903,7 +1977,12 @@ function toProjectionMessage(message: RuntimeMessage): CompactionProjectionMessa
     ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
     ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
-    ...(message.uuid !== undefined ? { id: message.uuid } : {}),
+    // Projection UUIDs identify envelopes, not user submissions. Preserve the
+    // durable identity when present and never mint a user ID for a runtime nudge.
+    ...((message.runtimeOnly?.responseItemId ?? message.runtimeOnly?.userMessageId ??
+      (normalizedRole === "user" ? undefined : message.uuid)) !== undefined
+      ? { id: message.runtimeOnly?.responseItemId ?? message.runtimeOnly?.userMessageId ?? message.uuid }
+      : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
     ...(message.runtimeOnly?.toolResultIsError === true
       ? { toolResultIsError: true as const }
@@ -2272,9 +2351,8 @@ function classifyFailure(
   if (context.abortController?.signal.aborted === true) return "aborted";
   if (error instanceof AdmissionDeniedError) return "provider_rate_limited";
   if (error instanceof Error) {
-    if (error.name === "AbortError") return "aborted";
     const message = error.message.toLowerCase();
-    if (message.includes("timeout")) return "provider_timeout";
+    if (message.includes("timeout") || message.includes("timed out")) return "provider_timeout";
     if (message.includes("rate") || message.includes("429")) {
       return "provider_rate_limited";
     }
@@ -2328,7 +2406,7 @@ function safeBudgetSum(left: number, right: number): number {
   return sum;
 }
 
-function createCompactionDeadline(context: CompactContext): CompactionDeadline {
+function createCompactionDeadline(context: CompactContext, startedAt: number): CompactionDeadline {
   const controller = new AbortController();
   const upstream = context.abortController?.signal;
   const pendingWork = new Set<Promise<unknown>>();
@@ -2362,7 +2440,7 @@ function createCompactionDeadline(context: CompactContext): CompactionDeadline {
         `compaction exceeded its ${MAX_COMPACTION_WALL_MS} ms wall-clock deadline`,
       ),
     );
-  }, MAX_COMPACTION_WALL_MS);
+  }, Math.max(0, MAX_COMPACTION_WALL_MS - (performance.now() - startedAt)));
   timer.unref();
 
   const assertActive = (): void => {

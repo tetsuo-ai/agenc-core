@@ -280,7 +280,32 @@ that has printed nothing for a minute adds one line with its processes' state
 and CPU time, the CPU used since the previous check and the members that
 exited since then (Linux `/proc`, macOS `ps`; nothing on Windows). The line
 names the command's own processes only: AgenC's process broker, bubblewrap
-and session sandbox executor around the command are left out. On Linux
+and session sandbox executor around the command are left out. In Light
+sessions a wait does not end at its yield while the command is clearly still
+working: when an `exec_command` yield passes (the default 30 s or a longer
+explicit `yield_time_ms`; not `background: true`, `tty` or `detach`), or the
+yield of an empty `write_stdin` poll passes (no yield or one of at least 30 s,
+of a session not started with `background: true`), and the command's own processes
+used at least a quarter of a CPU core since the previous check, the call keeps
+waiting, checking every 5 s, until the command exits, stops using CPU (a
+server waiting for requests, a `sleep`, a stalled script), its `timeoutMs`
+passes, or 240 s have passed since the call started. The result is then the
+command's exit with all its output instead of a `session_id` the model would
+poll with another model call. A prompt queued for the conversation, which the
+turn gives the model after the tool phase, ends the wait at once, with the
+command still running as a session, and so does the start of the deadline
+reserve of a run started with `--deadline`. An interrupt stops the wait as it
+stops a yield.
+Platforms without a process reader (Windows) keep the yield. A check that
+finds no process of the command left (its root gone, or in the persistent
+sandbox and the reusable command server only their executor) waits up to a
+second for its exit, so the result is the exit rather than a session that has
+ended. With
+`AGENC_DIAGNOSTICS_FILE` set, every wait that went past its yield writes one
+`exec_busy_wait` line: how it ended, how long it held the call, and the CPU
+share measured at each check.
+`AGENC_EXEC_WAIT_WHILE_BUSY=0` in the session environment turns this off;
+Standard sessions never wait past the yield. On Linux
 the environment note of the system prompt adds one line with the cgroup CPU
 quota and memory limit (cgroup v2 `cpu.max` and `memory.max` on the process's
 cgroup path, or the v1 controllers) when one is stricter than what `nproc` and

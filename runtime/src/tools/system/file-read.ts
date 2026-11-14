@@ -9,8 +9,8 @@ import { sideEffectFreeTool } from "../side-effect-free.js";
  * Key behaviors preserved from AgenC:
  *   - Token-aware text-file size cap (defaults to 25k tokens, matching
  *     the upstream `DEFAULT_MAX_OUTPUT_TOKENS`). When the rough estimate
- *     exceeds the cap, the read is rejected with the exact error
- *     message AgenC emits so model-side recovery copy still works.
+ *     exceeds the cap, range-note mode returns a bounded line prefix.
+ *     Legacy mode retains the existing actionable cap error.
  *   - Image multimodal output: PNG/JPG/JPEG/GIF/WEBP read as bytes,
  *     base64-encoded, and returned via `contentItems` as
  *     `input_image` with a data URL. The text `content` carries a
@@ -40,20 +40,22 @@ import { sideEffectFreeTool } from "../side-effect-free.js";
  * @module
  */
 
+import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { dirname, extname, isAbsolute, resolve } from "node:path";
-import { createInterface } from "node:readline";
 import {
   hasReadOnlyDelegationReadGuard,
   readOnlyDelegationReadPathAllowed,
 } from "../../permissions/readonly-read-guard.js";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
+import { readRangeNoteEnabled, readDedupEnabled } from "../read-result-options.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
 import type { FunctionCallOutputContentItem } from "../context.js";
 import { addLineNumbers } from "./_deps/line-numbers.js";
 import {
+  getSessionReadSnapshot,
   recordSessionRead,
   resolveSessionId,
   safePathAllowingSessionPlanFile,
@@ -374,8 +376,8 @@ function estimateTokens(content: string, fileExtension = ""): number {
  * in the first 8 KB). Same heuristic AgenC uses in
  * `constants/files.ts:isBinaryContent`.
  */
-function isBinaryContent(buffer: Buffer): boolean {
-  const checkSize = Math.min(buffer.length, 8192);
+function isBinaryContent(buffer: Buffer, maxBytes = 8192): boolean {
+  const checkSize = Math.min(buffer.length, maxBytes);
   let nonPrintable = 0;
   for (let i = 0; i < checkSize; i += 1) {
     const byte = buffer[i] ?? 0;
@@ -416,6 +418,7 @@ interface SliceResult {
   readonly startLine: number;
   readonly endLine: number;
   readonly totalLines: number;
+  readonly totalLinesIsLowerBound?: true;
   readonly numLines: number;
   readonly isPartial: boolean;
 }
@@ -426,6 +429,9 @@ function sliceLines(
   limit: number | undefined,
 ): SliceResult {
   const lines = text.length === 0 ? [] : text.split(/\r?\n/);
+  // A terminal delimiter ends the preceding line; it does not create one.
+  // Preserve the legacy switch's existing result bytes.
+  if (readRangeNoteEnabled() && text.endsWith("\n")) lines.pop();
   const totalLines = lines.length;
   const startLine = Math.max(1, offset);
   const effectiveLimit = limit ?? DEFAULT_LINE_LIMIT;
@@ -449,6 +455,30 @@ function sliceLines(
   };
 }
 
+function withRangeNote(numbered: string, sliced: SliceResult): string {
+  if (!readRangeNoteEnabled() || !sliced.isPartial || sliced.numLines === 0) return numbered;
+  const next = sliced.totalLinesIsLowerBound || sliced.endLine < sliced.totalLines ? `; next offset ${sliced.endLine + 1}` : "";
+  return `${numbered}\n[lines ${sliced.startLine}-${sliced.endLine} of ${sliced.totalLinesIsLowerBound ? "at least " : ""}${sliced.totalLines}${next}]`;
+}
+
+/** Keep complete lines. A single oversized line still uses the existing actionable error. */
+function fitTextSlice(sliced: SliceResult, opts: TextReadOpts): SliceResult {
+  if (!readRangeNoteEnabled()) return sliced;
+  const lines = sliced.content.split("\n");
+  let low = 0;
+  let high = lines.length;
+  while (low < high) {
+    const count = Math.ceil((low + high) / 2);
+    const content = lines.slice(0, count).join("\n");
+    if (Buffer.byteLength(content, "utf8") <= opts.maxTextBytes &&
+        estimateTokens(content, extname(opts.displayPath)) <= opts.maxTokens) low = count;
+    else high = count - 1;
+  }
+  if (low === 0 || low === lines.length) return sliced;
+  return { ...sliced, content: lines.slice(0, low).join("\n"),
+    endLine: sliced.startLine + low - 1, numLines: low, isPartial: true };
+}
+
 async function readInitialBytes(
   filePath: string,
   maxBytes: number,
@@ -467,26 +497,80 @@ async function sliceTextFileByLineStream(
   filePath: string,
   offset: number,
   limit: number | undefined,
+  maxBytes = Number.POSITIVE_INFINITY,
+  countAll = false,
 ): Promise<SliceResult> {
   const startLine = Math.max(1, offset);
   const effectiveLimit = limit ?? DEFAULT_LINE_LIMIT;
   const selected: string[] = [];
   let totalLines = 0;
 
-  const input = createReadStream(filePath, { encoding: "utf8" });
-  const reader = createInterface({ input, crlfDelay: Infinity });
-  try {
-    for await (const line of reader) {
-      totalLines += 1;
-      if (totalLines >= startLine && selected.length < effectiveLimit) {
-        selected.push(line);
+  const input = createReadStream(filePath, { encoding: "utf8", highWaterMark: 64 * 1024 });
+  let countedBytes = 0;
+  let totalLinesIsLowerBound: true | undefined;
+  let selectedBytes = 0;
+  let windowFull = false;
+  let line = "";
+  let lineBytes = 0;
+  let hasLineContent = false;
+  let skipLF = false;
+  // Readline buffers an entire line even outside the requested window. Scan
+  // fixed-size chunks instead, retaining only complete lines that fit the cap.
+  // Keep this scanner in sync with the descriptor-bound read_text_window helper.
+  const append = (part: string): void => {
+    hasLineContent ||= part.length > 0;
+    if (totalLines + 1 < startLine || selected.length >= effectiveLimit || windowFull) return;
+    const bytes = Buffer.byteLength(part, "utf8");
+    if (selectedBytes + lineBytes + bytes + (selected.length > 0 ? 1 : 0) > maxBytes) {
+      if (!countAll || selected.length === 0) {
+        throw Object.assign(new Error(
+          `File slice exceeds the text-read limit of ${formatBytes(maxBytes)}. Use a smaller offset and limit window.`,
+        ), { code: "FILE_TOO_LARGE" });
       }
-      if (selected.length >= effectiveLimit) {
+      windowFull = true;
+      line = "";
+      lineBytes = 0;
+      return;
+    }
+    line += part;
+    lineBytes += bytes;
+  };
+  const finishLine = (): void => {
+    totalLines += 1;
+    if (totalLines >= startLine && selected.length < effectiveLimit && !windowFull) {
+      selectedBytes += lineBytes + (selected.length > 0 ? 1 : 0);
+      selected.push(line);
+    }
+    line = "";
+    lineBytes = 0;
+    hasLineContent = false;
+  };
+  try {
+    chunks: for await (const chunk of input) {
+      // Only scan beyond the exact requested window while the counting budget
+      // remains. Fetching another chunk proves the count is a lower bound.
+      if (countAll && countedBytes >= 1024 * 1024 &&
+          (selected.length >= effectiveLimit || windowFull)) {
+        totalLinesIsLowerBound = true;
         break;
       }
+      countedBytes += Buffer.byteLength(chunk, "utf8");
+      let start: number = skipLF && chunk.startsWith("\n") ? 1 : 0;
+      skipLF = false;
+      const breaks = /\r\n|\r|\n/g;
+      breaks.lastIndex = start;
+      let match: RegExpExecArray | null;
+      while ((match = breaks.exec(chunk)) !== null) {
+        append(chunk.slice(start, match.index));
+        finishLine();
+        start = match.index + match[0].length;
+        skipLF = start === chunk.length && match[0] === "\r";
+        if (!countAll && selected.length >= effectiveLimit) break chunks;
+      }
+      append(chunk.slice(start));
     }
+    if (hasLineContent) finishLine();
   } finally {
-    reader.close();
     input.destroy();
   }
 
@@ -502,6 +586,7 @@ async function sliceTextFileByLineStream(
     startLine,
     endLine,
     totalLines,
+    ...(totalLinesIsLowerBound ? { totalLinesIsLowerBound } : {}),
     numLines: selected.length,
     isPartial: true,
   };
@@ -645,6 +730,7 @@ async function readTextFile(
     readonly size: number;
     readonly mtimeMs: number;
   } | null = rawFileStats;
+  const rangeNote = readRangeNoteEnabled();
   const explicitWindow = opts.offset > 1 || opts.limit !== undefined;
   let boundFile: WorkspaceBoundReadFile | undefined;
   let boundWindow:
@@ -657,6 +743,7 @@ async function readTextFile(
           opts.offset,
           opts.limit ?? DEFAULT_LINE_LIMIT,
           opts.maxTextBytes,
+          rangeNote,
         );
       } catch (error) {
         if (error instanceof WorkspaceBoundReadFileTooLargeError) {
@@ -665,30 +752,38 @@ async function readTextFile(
               opts.maxTextBytes,
             )}. Use a smaller offset and limit window.`,
           );
-        }
-        throw error;
+        } else throw error;
       }
       fileStats = boundWindow.stats;
     } else {
       try {
         boundFile = await boundRead.readFile(opts.maxTextBytes);
       } catch (error) {
-        if (error instanceof WorkspaceBoundReadFileTooLargeError) {
+        if (error instanceof WorkspaceBoundReadFileTooLargeError && rangeNote) {
+          try {
+            boundWindow = await boundRead.readTextWindow(opts.offset, opts.limit ?? DEFAULT_LINE_LIMIT, opts.maxTextBytes, true);
+          } catch (windowError) {
+            if (!(windowError instanceof WorkspaceBoundReadFileTooLargeError)) throw windowError;
+            return errorResult(
+              `File slice exceeds the text-read limit of ${formatBytes(opts.maxTextBytes)}. Use a smaller offset and limit window.`,
+            );
+          }
+          fileStats = boundWindow.stats;
+        } else if (error instanceof WorkspaceBoundReadFileTooLargeError) {
           return errorResult(
             `File size ${formatBytes(error.size)} exceeds the text-read limit of ${formatBytes(
               opts.maxTextBytes,
             )}. Use offset and limit to read a slice, or a different tool for large binary blobs.`,
           );
-        }
-        throw error;
+        } else throw error;
       }
-      fileStats = boundFile.stats;
+      fileStats = boundFile?.stats ?? boundWindow?.stats ?? null;
     }
   }
   const authoritativeBytes =
     boundWindow?.stats.size ?? boundFile?.stats.size ?? fileStats?.size ?? 0;
   opts.readGuard?.();
-  if (!explicitWindow && authoritativeBytes > opts.maxTextBytes) {
+  if (!rangeNote && !explicitWindow && authoritativeBytes > opts.maxTextBytes) {
     return errorResult(
       `File size ${formatBytes(authoritativeBytes)} exceeds the text-read limit of ${formatBytes(
         opts.maxTextBytes,
@@ -697,7 +792,7 @@ async function readTextFile(
   }
   const shouldStreamWindow =
     boundRead === undefined &&
-    explicitWindow &&
+    (explicitWindow || rangeNote) &&
     authoritativeBytes > opts.maxTextBytes;
   const binarySample =
     boundWindow?.binarySample ??
@@ -715,15 +810,24 @@ async function readTextFile(
     shouldStreamWindow || boundWindow !== undefined
       ? undefined
       : binarySample.toString("utf-8");
-  const sliced =
+  const sliced = fitTextSlice(
     boundWindow ??
     (shouldStreamWindow
       ? await sliceTextFileByLineStream(
           resolvedPath.canonical,
           opts.offset,
           opts.limit,
+          opts.maxTextBytes,
+          rangeNote,
         )
-      : sliceLines(text ?? "", opts.offset, opts.limit));
+      : sliceLines(text ?? "", opts.offset, opts.limit)), opts);
+  // The header sample cannot vouch for the bounded window we actually return.
+  // Check all selected bytes before recording or exposing this as a text read.
+  if (isBinaryContent(Buffer.from(sliced.content, "utf8"), Infinity)) {
+    return errorResult(
+      "This tool cannot read binary files. The file contains non-text bytes. Use a different tool (e.g. a hex viewer or shell tooling) for binary file analysis.",
+    );
+  }
   const slicedBytes = Buffer.byteLength(sliced.content, "utf8");
   if (slicedBytes > opts.maxTextBytes) {
     return errorResult(
@@ -748,8 +852,9 @@ async function readTextFile(
   // auto-injected processed partial views; AgenC does not populate that
   // path here.
   opts.readGuard?.();
+  const observedContent = !sliced.isPartial && text !== undefined ? text : sliced.content;
   recordSessionRead(sessionId, resolvedPath.canonical, {
-    content: sliced.content,
+    content: observedContent,
     timestamp:
       fileStats !== null &&
       typeof fileStats.mtimeMs === "number" &&
@@ -775,7 +880,7 @@ async function readTextFile(
     });
   }
 
-  if (sliced.content.length === 0) {
+  if (sliced.content.length === 0 && (!rangeNote || sliced.numLines === 0 || sliced.totalLines === 0)) {
     if (sliced.totalLines === 0) {
       return {
         content:
@@ -801,11 +906,25 @@ async function readTextFile(
     };
   }
 
+  const snapshot = readDedupEnabled() ? getSessionReadSnapshot(sessionId, resolvedPath.canonical) : undefined;
+  const observedRange = snapshot?.viewKind === "partial"
+    ? [snapshot.readOffset, snapshot.readLimit ?? null] : [1, null];
   return {
-    content: formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers),
+    content: withRangeNote(sliced.content.length === 0 && sliced.numLines > 0
+      ? `${sliced.startLine}→`
+      : formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers), sliced),
     metadata: {
+      ...(rawFileStats !== null && snapshot?.content === observedContent &&
+          snapshot.timestamp === rawFileStats.mtimeMs ? {
+        readObservationKey: createHash("sha256").update(JSON.stringify([
+          resolvedPath.canonical, rawFileStats.dev, rawFileStats.ino, rawFileStats.size,
+          rawFileStats.mtimeMs, rawFileStats.ctimeMs, opts.offset, opts.limit ?? null,
+          observedRange, snapshot.content,
+        ])).digest("hex"),
+      } : {}),
       filePath: opts.displayPath,
       totalLines: sliced.totalLines,
+      ...(sliced.totalLinesIsLowerBound ? { totalLinesIsLowerBound: true } : {}),
       startLine: sliced.startLine,
       endLine: sliced.endLine,
       numLines: sliced.numLines,
@@ -1110,7 +1229,7 @@ async function readNotebookFile(
     };
   }
 
-  const numbered = formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers);
+  const numbered = withRangeNote(formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers), sliced);
   const selectedImages = rendered.ok.images.filter(
     (image) =>
       image.lineNumber >= sliced.startLine &&

@@ -26,6 +26,7 @@
  * @module
  */
 
+import type { RelevantMemoriesAttachment } from "../prompts/attachments/types.js";
 import type { SwarmRoutingDecision } from "../agents/swarm-routing.js";
 import {
   createAttachmentRetentionLedger,
@@ -139,6 +140,12 @@ export interface AttachmentTrackingState {
    * keyed memory injection when turn 0 carries no substantive query).
    */
   sessionStartMemoryRecallChecked: boolean;
+  /** Frozen selection and rendered content for the latest human turn. Kept
+   * across compaction so a tool continuation never reranks or rereads it. */
+  relevantMemoryRecall?: {
+    readonly turnId: string;
+    readonly memories: RelevantMemoriesAttachment["memories"];
+  };
   /**
    * Paths selected for fresh recall in the current request. Cleared at the
    * start of every producer run; retained attachment fingerprints separately

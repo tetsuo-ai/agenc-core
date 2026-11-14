@@ -1,3 +1,5 @@
+import { resolveHomeContext } from "../config/home.js";
+import { FullOutputLog, MAX_FULL_OUTPUT_LOG_BYTES, MAX_RETAINED_OUTPUT_LOGS, logOutputEnabled, reduceLogsTogether } from "./log-output.js";
 import { OneShotProcessServer, OneShotProcessServerCleanupError } from "./one-shot-process-server.js";
 import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { SessionSandbox, SessionSandboxCleanupError, type SessionSandboxAvailability } from "../sandbox/linux-launcher/session-sandbox.js";
@@ -27,6 +29,7 @@ import {
   truncateHeadTailTogether,
 } from "./head-tail-buffer.js";
 import {
+  type BusyWaitWake,
   type DetachedProcessRequest,
   type ExecCommandRequest,
   type ExecCommandToolOutput,
@@ -95,6 +98,7 @@ import {
   type SessionProcessCheck,
 } from "./process-state.js";
 import { readOomKillCount } from "../utils/resource-limits.js";
+import { logForDiagnosticsNoPII } from "../utils/diagLogs.js";
 import { constants as osConstants } from "node:os";
 
 const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
@@ -151,6 +155,29 @@ const PTY_ARGV0_EXECVE_SCRIPT =
  * its processes are doing (state, CPU time, members that exited).
  */
 const QUIET_PROCESS_STATE_AFTER_MS = 60_000;
+/**
+ * A wait that may continue while its command is busy (`waitWhileBusy`)
+ * checks the command's processes this often after the yield passes. A
+ * command that exits ends the wait at once, so the step only bounds how late
+ * a command that stopped working is noticed.
+ */
+const BUSY_WAIT_CHECK_MS = 5_000;
+/**
+ * CPU share, in cores, that counts as still working since the previous check.
+ * Headless Chromium captures, builds and test runs used one to two cores in
+ * the recorded MPV and Superyat runs; a server waiting for requests, a
+ * `sleep` or a command waiting on the network uses close to none.
+ */
+const BUSY_WAIT_MIN_CPU_SHARE = 0.25;
+/**
+ * How long after the call started a wait that continues while its command is
+ * busy ends at the latest, leaving the command running as a session. Four
+ * minutes covered all but a few of the recorded captures and builds (most
+ * ran 30-190 s), and it keeps a provider's five-minute prompt cache warm for
+ * the next request unless the model took over a minute to produce this call;
+ * DeepSeek's disk cache is not affected either way.
+ */
+const BUSY_WAIT_MAX_MS = 240_000;
 /**
  * Live background sessions one owner may hold. Past it a timeout stops the
  * command again and a background start is refused: on a one-CPU container
@@ -236,10 +263,13 @@ export class ProcessOutputBuffer {
   /** When the process last wrote anything (creation time until it does). */
   lastOutputAt = Date.now();
 
-  constructor(private readonly maxChars = DEFAULT_OUTPUT_BUFFER_CHARS) {}
+  /** True when the live buffer has lost pending bytes, even if a later result fits. */
+  truncated = false;
+  constructor(private readonly maxChars = DEFAULT_OUTPUT_BUFFER_CHARS, readonly fullLog?: FullOutputLog) {}
 
   append(stream: UnifiedExecStream, chunk: string): void {
     if (chunk.length === 0) return;
+    this.fullLog?.append(chunk);
     this.lastOutputAt = Date.now();
     this.outputBytes += Buffer.byteLength(chunk);
     this.outputTail = chunk.length >= TASK_OUTPUT_TAIL_CHARS
@@ -296,6 +326,7 @@ export class ProcessOutputBuffer {
   private collapsePending(): void {
     if (this.totalChars <= this.maxChars) return;
     this.collapseCountForTest += 1;
+    this.truncated = true;
 
     // The cap is still exceeded by pending (undrained) output. Rather than
     // dropping the most-recent unconsumed bytes wholesale (which previously
@@ -324,7 +355,7 @@ export class ProcessOutputBuffer {
     // `[... omitted N chars ...]` marker between the preserved head and tail,
     // so it replaces the pending chunks directly, stdout before stderr for
     // deterministic output; an empty stream contributes no chunk.
-    const [stdout, stderr] = truncateHeadTailTogether(
+    const [stdout, stderr] = (this.fullLog?.path === undefined ? truncateHeadTailTogether : reduceLogsTogether)(
       [stdoutText, stderrText],
       this.maxChars,
     );
@@ -465,11 +496,38 @@ interface ProcessEntry {
   processCheck?: SessionProcessCheck;
   /** The slot this background start holds until it is a live session. */
   backgroundReservation?: BackgroundStartReservation;
+  /**
+   * Started with `startInBackground` (exec_command `background: true`): the
+   * model asked for control back while it runs, so its polls keep their
+   * yield instead of waiting while it is busy.
+   */
+  startedInBackground?: boolean;
 }
 
 /** A background start's slot, held from admission until it is a live session or has failed. */
 interface BackgroundStartReservation {
   readonly ownerId: string | undefined;
+}
+
+/**
+ * Where a wait that may continue while its command is busy measures CPU from:
+ * the command's processes and their CPU time when the wait started (none for
+ * a command it just spawned), and when that was (performance.now()).
+ */
+interface BusyWaitStart {
+  readonly kind: "exec" | "poll";
+  readonly baseline: SessionProcessCheck;
+  readonly baselineAt: number;
+  /** Ends the wait early with the command still running (`busyWaitWake`). */
+  readonly wake?: () => BusyWaitWake;
+}
+
+/** How one busy wait went, for its diagnostics line. */
+interface BusyWaitTrace {
+  reason?: "exit" | "idle" | "cap" | "limit" | "stopped" | "woken" | "no_reader" | "root_gone" | "no_command";
+  wokenBy?: string;
+  /** CPU share in cores at each check, rounded to 0.01. */
+  readonly shares: number[];
 }
 
 /** An ended background session whose notice no result has carried yet. */
@@ -630,15 +688,27 @@ function createResult(params: {
   readonly timeoutBackgroundedMs?: number;
   readonly timeoutStoppedAtSessionLimit?: number;
   readonly processState?: string;
+  readonly logMode?: boolean;
+  readonly fullLogPath?: string;
+  readonly fullLogTruncated?: boolean;
+  readonly bufferTruncated?: boolean;
 }): ExecCommandToolOutput {
   // max_output_tokens bounds the whole result, so stdout and stderr share it.
-  const [stdout, stderr] = truncateHeadTailTogether(
+  const budget = params.logMode === true && params.exitCode === 0
+    ? Math.min(maxCharsForTokens(params.maxOutputTokens), 8_000)
+    : maxCharsForTokens(params.maxOutputTokens);
+  const savedNote = params.logMode === true
+    ? params.fullLogPath === undefined ? "\n[full output log unavailable]" : params.fullLogTruncated ? `\n[output log (first ${MAX_FULL_OUTPUT_LOG_BYTES} bytes): ${params.fullLogPath}]` : `\n[full output: ${params.fullLogPath}]`
+    : "";
+  const reducer = params.logMode === true && params.fullLogPath !== undefined ? reduceLogsTogether : truncateHeadTailTogether;
+  const [stdout, stderr] = reducer(
     [params.stdout, params.stderr],
-    maxCharsForTokens(params.maxOutputTokens),
+    params.logMode === true ? Math.max(128, budget - savedNote.length) : budget,
   );
+  const reduced = stdout.truncated || stderr.truncated || (params.logMode === true && params.bufferTruncated === true);
   const output = [stdout.text, stderr.text]
     .filter((part) => part.length > 0)
-    .join("");
+    .join("") + (reduced ? savedNote : "");
   const originalText = `${params.stdout}${params.stderr}`;
   return {
     output,
@@ -652,7 +722,7 @@ function createResult(params: {
     durationMs: params.durationMs,
     wall_time_seconds: params.durationMs / 1000,
     timedOut: params.timedOut,
-    truncated: stdout.truncated || stderr.truncated,
+    truncated: reduced,
     original_token_count: approximateTokenCount(originalText),
     ...(params.residualProcessesTerminated === true
       ? { residual_processes_terminated: true }
@@ -717,6 +787,33 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly env?: Record<string, string>;
   private readonly baseEnv: Readonly<Record<string, string | undefined>>;
   private readonly sessionTempRoot: string;
+  private readonly outputLogs = new Map<FullOutputLog, string | undefined>();
+
+  private createOutputLog(ownerId: string | undefined): FullOutputLog | undefined {
+    try {
+      // The broker protects AgenC home even when a workspace or TMPDIR grant
+      // contains it. Child command environment overrides never choose this root.
+      const log = new FullOutputLog(resolveHomeContext(this.baseEnv).path);
+      this.outputLogs.set(log, ownerId);
+      return log;
+    } catch { return undefined; }
+  }
+
+  private disposeOutputLogs(ownerId?: string): void {
+    for (const [log, owner] of this.outputLogs) {
+      if (ownerId !== undefined && owner !== ownerId) continue;
+      log.dispose();
+      this.outputLogs.delete(log);
+    }
+  }
+
+  private pruneOutputLogs(): void {
+    const retained = [...this.outputLogs.keys()].filter(log => log.isClosed && log.wasReferenced);
+    for (const log of retained.slice(0, Math.max(0, retained.length - MAX_RETAINED_OUTPUT_LOGS))) {
+      log.dispose();
+      this.outputLogs.delete(log);
+    }
+  }
   /** Shell used when a request names none. */
   readonly shellPath: string;
 
@@ -793,6 +890,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly sessionSandboxesInUse = new Set<SessionSandbox>();
   private readonly maxBackgroundSessions: number;
   private readonly quietProcessStateAfterMs: number;
+  private readonly busyWaitCheckMs: number;
+  private readonly busyWaitMaxMs: number;
   /** Background starts admitted and not yet live sessions (see execCommand). */
   private readonly backgroundStartReservations = new Set<BackgroundStartReservation>();
   private pendingEndNotices: PendingEndNotice[] = [];
@@ -873,6 +972,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       options.maxBackgroundSessions ?? DEFAULT_MAX_BACKGROUND_SESSIONS,
     ));
     this.quietProcessStateAfterMs = options.quietProcessStateAfterMs ?? QUIET_PROCESS_STATE_AFTER_MS;
+    this.busyWaitCheckMs = Math.max(1, options.busyWaitCheckMs ?? BUSY_WAIT_CHECK_MS);
+    this.busyWaitMaxMs = options.busyWaitMaxMs ?? BUSY_WAIT_MAX_MS;
     this.env = options.env === undefined
       ? undefined
       : Object.freeze({ ...options.env });
@@ -1083,6 +1184,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         : {}),
     });
     const startedAt = Date.now();
+    const spawnedAtMonotonic = performance.now();
     const callId = request.callId ?? `exec-${processId}`;
     const ownerId =
       typeof request.ownerId === "string" && request.ownerId.trim().length > 0
@@ -1119,6 +1221,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       sandboxAuthorityGeneration,
     });
     if (reservation !== undefined) entry.backgroundReservation = reservation;
+    if (request.startInBackground === true) entry.startedInBackground = true;
     const releaseWorkspaceOperation = retainCurrentWorkspaceOperation();
     void entry.exitPromise.then(
       releaseWorkspaceOperation,
@@ -1167,6 +1270,18 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       signal: request.__abortSignal,
       maxOutputTokens: request.max_output_tokens,
       onProgress: request.__onProgress,
+      // Every process of a new command started after the spawn: the CPU it
+      // used up to the yield all counts.
+      ...(request.waitWhileBusy === true && !tty && request.startInBackground !== true
+        ? {
+            busyWait: {
+              kind: "exec" as const,
+              baseline: { cpuSeconds: 0, members: new Map() },
+              baselineAt: spawnedAtMonotonic,
+              ...(request.busyWaitWake !== undefined ? { wake: request.busyWaitWake } : {}),
+            },
+          }
+        : {}),
     });
     request.observer?.onEnd?.({
       callId,
@@ -1438,12 +1553,20 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       }
     }
 
+    // An empty poll that may continue while the command is busy measures the
+    // command's CPU from here. Input writes, tty sessions and sessions started
+    // in the background keep their yield.
+    const busyWait = request.waitWhileBusy === true && input.length === 0 && !entry.tty &&
+      entry.startedInBackground !== true && entry.exitState === null && !entry.stopRequested
+      ? await this.busyWaitBaseline(entry, request.busyWaitWake)
+      : undefined;
     const collected = {
       ...await this.collect(entry, {
         yieldMs: clampWriteYield(request.yield_time_ms, input),
         signal: request.__abortSignal,
         maxOutputTokens: request.max_output_tokens,
         onProgress: request.__onProgress,
+        ...(busyWait !== undefined ? { busyWait } : {}),
       }),
       sandboxApplied: entry.runtimeSandbox !== undefined,
     };
@@ -1630,6 +1753,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     for (const entry of entries) {
       if (entry.exitState !== null) this.releaseProcessId(entry.processId);
     }
+    this.disposeOutputLogs();
     if (sandboxOutcome!.status === "rejected") {
       this.poisonSandboxAuthority(sandboxOutcome.reason);
       throw sandboxOutcome.reason;
@@ -1765,6 +1889,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         throw error;
       }
       // Keep settled yielded entries for status/output collection and pruning.
+      this.disposeOutputLogs(lifetime.ownerId);
       lifetime.closed = true;
       for (const key of [...this.sessionSandboxAvailability.keys()]) {
         if (isOwnerSessionSandboxKey(key, lifetime.ownerId)) this.sessionSandboxAvailability.delete(key);
@@ -1799,6 +1924,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       if (this.sandboxAuthorityCleanupFailure !== undefined) {
         failures.push(this.sandboxAuthorityCleanupFailure);
       }
+      this.disposeOutputLogs();
       if (failures.length > 0) {
         const error = new AggregateError(failures,
           "unified exec cleanup is unproven at durable close");
@@ -2128,6 +2254,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     // released, even if the entry never reached complete() (idempotent).
     entry?.detachUpstreamAbort?.();
     if (entry) entry.detachUpstreamAbort = undefined;
+    if (entry?.output.fullLog !== undefined && !entry.output.fullLog.wasReferenced) {
+      entry.output.fullLog.dispose();
+      this.outputLogs.delete(entry.output.fullLog);
+    }
     this.processes.delete(processId);
   }
 
@@ -2184,7 +2314,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }): Promise<ProcessEntry> {
     this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
     this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
-    const output = new ProcessOutputBuffer();
+    const output = new ProcessOutputBuffer(DEFAULT_OUTPUT_BUFFER_CHARS,
+      logOutputEnabled({ ...this.baseEnv, ...this.env }) ? this.createOutputLog(params.ownerId) : undefined);
     const abortController = new AbortController();
     const exit = makeDeferredExit();
     const notifyData = (stream: UnifiedExecStream, chunk: string): void => {
@@ -2217,6 +2348,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       if (entry.exitState !== null) return;
       entry.exitState = state;
       entry.endedAt = Date.now();
+      entry.output.fullLog?.close();
       // gaphunt3 #44: the process settled — drop the upstream-abort listener so
       // it does not survive (the normal-exit path the `{ once: true }` never covered).
       entry.detachUpstreamAbort?.();
@@ -2631,26 +2763,35 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       readonly signal?: AbortSignal;
       readonly maxOutputTokens?: number;
       readonly onProgress?: (event: UnifiedExecProgressEvent) => void;
+      /** Keep waiting past the yield while the command is busy (`waitWhileBusy`). */
+      readonly busyWait?: BusyWaitStart;
     },
   ): Promise<ExecCommandToolOutput> {
     let timedOut = true;
     const deadline = new AbortController();
+    const waitStartedAt = performance.now();
     try {
-      const timeout = delay(options.yieldMs, "timeout" as const, {
-        signal: options.signal === undefined
-          ? deadline.signal
-          : AbortSignal.any([options.signal, deadline.signal]),
-      });
+      const waitSignal = options.signal === undefined
+        ? deadline.signal
+        : AbortSignal.any([options.signal, deadline.signal]);
+      const timeout = delay(options.yieldMs, "timeout" as const, { signal: waitSignal });
       // A background time limit that passes during this wait ends it now,
       // the way the old kill did, but the command keeps running.
       const timeLimit = entry.timeLimit?.reachedAt === undefined
         ? entry.timeLimit?.reached
         : undefined;
-      const outcome = await Promise.race([
+      let outcome = await Promise.race([
         timeout,
         entry.exitPromise.then(() => "exit" as const),
         ...(timeLimit === undefined ? [] : [timeLimit]),
       ]);
+      if (outcome === "timeout" && options.busyWait !== undefined) {
+        outcome = await this.waitWhileBusy(entry, options.busyWait, {
+          startedAt: waitStartedAt,
+          signal: waitSignal,
+          timeLimit,
+        });
+      }
       if (
         outcome === "timeout" &&
         entry.hardTimeoutExpired === true &&
@@ -2716,7 +2857,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       entry.processCheck = sample.check;
       processState = sample.line;
     }
-    return createResult({
+    const result = createResult({
+      logMode: entry.output.fullLog !== undefined,
+      fullLogPath: entry.output.fullLog?.path,
+      fullLogTruncated: entry.output.fullLog?.truncated,
+      bufferTruncated: entry.output.truncated,
       stdout,
       stderr,
       exitCode: entry.exitState?.exitCode ?? null,
@@ -2735,6 +2880,14 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         : {}),
       ...(processState !== undefined ? { processState } : {}),
     });
+    const log = entry.output.fullLog;
+    if (result.truncated && log?.path !== undefined) log.markReferenced();
+    if (!running && log !== undefined && !log.wasReferenced) {
+      log.dispose();
+      this.outputLogs.delete(log);
+    }
+    this.pruneOutputLogs();
+    return result;
   }
 
   /**
@@ -2756,6 +2909,154 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       return { line: formatSessionProcessReport(report, quietMs), check: report.check };
     } catch {
       return undefined;
+    }
+  }
+
+  /**
+   * The start of an empty poll that may continue while its command is busy:
+   * the session's processes and CPU now. Undefined where this platform has no
+   * process reader or the session's root is gone; the poll then keeps its
+   * yield.
+   */
+  private async busyWaitBaseline(
+    entry: ProcessEntry,
+    wake: (() => BusyWaitWake) | undefined,
+  ): Promise<BusyWaitStart | undefined> {
+    try {
+      const report = await checkSessionProcesses(entry.stored.process.pid, undefined);
+      return report === undefined
+        ? undefined
+        : {
+            kind: "poll",
+            baseline: report.check,
+            baselineAt: performance.now(),
+            ...(wake !== undefined ? { wake } : {}),
+          };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The yield of a `waitWhileBusy` call passed with the command still
+   * running. A model that gets a session_id back almost always spends its next
+   * call, with the whole conversation resent, polling it (238 of 256
+   * still-running results in nine recorded MPV and Superyat runs; one was
+   * stopped, the rest left running while the model worked on). So while the
+   * command's processes keep using CPU (at least {@link BUSY_WAIT_MIN_CPU_SHARE}
+   * of a core since the previous check: a build, a test run, a headless
+   * browser capture), keep waiting, one check every `busyWaitCheckMs`, until
+   * it exits, stops using CPU (a server waiting for requests, a `sleep`, a
+   * stalled script), its time limit passes, a stop is requested, or
+   * `busyWaitMaxMs` has passed since the call started. The caller's abort
+   * signal ends the wait as it ends the yield. Returns how the wait ended, as
+   * the yield's race does: "timeout" leaves the command running as a session.
+   * Observation only: nothing here signals or adopts a process.
+   */
+  private async waitWhileBusy(
+    entry: ProcessEntry,
+    start: BusyWaitStart,
+    options: {
+      readonly startedAt: number;
+      readonly signal: AbortSignal;
+      readonly timeLimit: Promise<"limit"> | undefined;
+    },
+  ): Promise<"timeout" | "exit" | "limit"> {
+    const busyStartedAt = performance.now();
+    const trace: BusyWaitTrace = { shares: [] };
+    const wake = start.wake?.();
+    try {
+      return await this.waitWhileBusyChecks(entry, start, options, wake?.signal, trace);
+    } finally {
+      wake?.dispose();
+      // One line per wait that went past its yield (AGENC_DIAGNOSTICS_FILE
+      // only): how it ended, how long it held the call, the CPU it measured.
+      if (trace.reason === "woken" && typeof wake?.signal.reason === "string") trace.wokenBy = wake.signal.reason;
+      const now = performance.now();
+      logForDiagnosticsNoPII("info", "exec_busy_wait", {
+        kind: start.kind,
+        end: trace.reason ?? "aborted",
+        ...(trace.wokenBy !== undefined ? { woken_by: trace.wokenBy } : {}),
+        busy_ms: Math.round(now - busyStartedAt),
+        wait_ms: Math.round(now - options.startedAt),
+        checks: trace.shares.length,
+        cpu_shares: trace.shares.slice(-64),
+      });
+    }
+  }
+
+  private async waitWhileBusyChecks(
+    entry: ProcessEntry,
+    start: BusyWaitStart,
+    options: {
+      readonly startedAt: number;
+      readonly signal: AbortSignal;
+      readonly timeLimit: Promise<"limit"> | undefined;
+    },
+    wake: AbortSignal | undefined,
+    trace: BusyWaitTrace,
+  ): Promise<"timeout" | "exit" | "limit"> {
+    let baseline = start.baseline;
+    let baselineAt = start.baselineAt;
+    const end = (
+      outcome: "timeout" | "exit" | "limit",
+      reason: NonNullable<BusyWaitTrace["reason"]>,
+    ): "timeout" | "exit" | "limit" => {
+      trace.reason = reason;
+      return outcome;
+    };
+    // Linux reads /proc and Darwin runs ps; elsewhere nothing measures CPU.
+    if (process.platform !== "linux" && process.platform !== "darwin") return end("timeout", "no_reader");
+    // Queued input ends the wait as a yield does: the command keeps running.
+    const woken = wake === undefined ? undefined : new Promise<"timeout">((resolveWoken) => {
+      if (wake.aborted) resolveWoken("timeout");
+      else wake.addEventListener("abort", () => resolveWoken("timeout"), { once: true });
+    });
+    for (;;) {
+      if (entry.exitState !== null) return end("exit", "exit");
+      if (wake?.aborted === true) return end("timeout", "woken");
+      if (entry.stopRequested || entry.hardTimeoutExpired === true) return end("timeout", "stopped");
+      if (performance.now() - options.startedAt >= this.busyWaitMaxMs) return end("timeout", "cap");
+      let report: Awaited<ReturnType<typeof checkSessionProcesses>>;
+      try {
+        report = await checkSessionProcesses(entry.stored.process.pid, baseline);
+      } catch {
+        report = undefined;
+      }
+      // An exit during the sample ends the wait as an exit; an abort during it
+      // ends the wait the way it ends a yield (the timer rejects at once).
+      if (entry.exitState !== null) return end("exit", "exit");
+      if (options.signal.aborted) await delay(0, undefined, { signal: options.signal });
+      if (report === undefined || report.memberCount === 0) {
+        // The command has exited and its exit event may be a moment behind.
+        // A command with its own launcher takes its root with it; in the
+        // persistent sandbox and the reusable command server the root is the
+        // long-lived executor, which stays, so no process of the command is
+        // left. Wait for the exit briefly so the result is the exit, not a
+        // session that no longer runs.
+        const exited = await Promise.race([
+          entry.exitPromise.then(() => true),
+          delay(1_000, false, { signal: options.signal }),
+        ]);
+        return exited ? end("exit", "exit") : end("timeout", report === undefined ? "root_gone" : "no_command");
+      }
+      const now = performance.now();
+      const seconds = Math.max(0.001, (now - baselineAt) / 1_000);
+      const share = (report.cpuDeltaSeconds ?? 0) / seconds;
+      trace.shares.push(Math.round(share * 100) / 100);
+      if (report.cpuDeltaSeconds === undefined || share < BUSY_WAIT_MIN_CPU_SHARE) return end("timeout", "idle");
+      baseline = report.check;
+      baselineAt = now;
+      const remaining = this.busyWaitMaxMs - (now - options.startedAt);
+      if (remaining <= 0) return end("timeout", "cap");
+      const outcome = await Promise.race([
+        delay(Math.min(this.busyWaitCheckMs, remaining), "timeout" as const, { signal: options.signal }),
+        entry.exitPromise.then(() => "exit" as const),
+        ...(options.timeLimit === undefined ? [] : [options.timeLimit]),
+        ...(woken === undefined ? [] : [woken]),
+      ]);
+      if (outcome === "exit") return end("exit", "exit");
+      if (outcome === "limit") return end("limit", "limit");
     }
   }
 

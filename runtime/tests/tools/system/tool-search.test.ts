@@ -124,15 +124,20 @@ describe("system.searchTools", () => {
       .some((entry: { name: string }) => entry.name === "WebSearch")).toBe(true);
   });
 
-  test("is side-effecting because selected tools update advertised session state", () => {
+  test("discovery is idempotent when replayed after interruption", async () => {
+    const loaded = new Set<string>();
     const tool = createToolSearchTool({
       allowedPaths: [process.cwd()],
       persistenceRootDir: process.cwd(),
       getToolCatalog: () => [deferredCatalogEntry()],
-      onDiscoverTools: () => {},
+      onDiscoverTools: names => { for (const name of names) loaded.add(name); },
     });
 
-    expect(tool.recoveryCategory).toBe("side-effecting");
+    expect(tool.recoveryCategory).toBe("idempotent");
+    const first = await tool.execute({ select: "system.deepTool" });
+    const replay = await tool.execute({ select: "system.deepTool" });
+    expect(replay.content).toBe(first.content);
+    expect([...loaded]).toEqual(["system.deepTool"]);
   });
 
   test("selecting a deferred tool calls onDiscoverTools and reports it loaded", async () => {

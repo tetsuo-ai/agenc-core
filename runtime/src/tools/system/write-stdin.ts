@@ -4,6 +4,7 @@ import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.
 import { shellWorkspaceMutationPermission } from "./shell-mutation-permission.js";
 import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
 import { foldDefaultSandboxPermission } from "./sandbox-permission-values.js";
+import { polledShellScope, trackOwnShellChanges } from "./own-shell-changes.js";
 import { UnifiedExecError, UnifiedExecUnavailableError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import {
@@ -19,8 +20,10 @@ import {
 } from "./exec-result-format.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import {
+  busyWaitWakeArg,
   confirmedNoEffectDisposition,
   execEscalationGrant,
+  LIGHT_DEFAULT_EXEC_YIELD_TIME_MS,
   runtimeSandboxForExec,
   SANDBOX_PERMISSION_INPUT_PROPERTIES,
 } from "./exec-command.js";
@@ -44,6 +47,12 @@ export interface WriteStdinToolConfig {
    * schema on the next request.
    */
   readonly onEscalationAdvised?: () => void;
+  /**
+   * Whether a Light empty poll keeps waiting past its yield while the
+   * session's command is still using CPU (`AGENC_EXEC_WAIT_WHILE_BUSY`,
+   * tools/system/exec-wait-mode.ts; process manager `waitWhileBusy`).
+   */
+  readonly waitWhileBusy?: () => boolean;
 }
 
 function asString(value: unknown): string | undefined {
@@ -106,6 +115,21 @@ function errorResult(error: unknown): ToolResult {
       ? preWriteFailure(error, message)
       : {}),
   };
+}
+
+/**
+ * Whether this poll may keep waiting while the command is busy (process
+ * manager `waitWhileBusy`): a Light empty poll with no yield or one of at
+ * least exec_command's default. A session started with `background: true`
+ * keeps the yield of every poll (the manager knows how it started).
+ */
+function pollWaitsWhileBusy(
+  config: WriteStdinToolConfig | undefined,
+  chars: string,
+  requestedYield: number | undefined,
+): boolean {
+  if (chars.length > 0 || config?.lightMode !== true || config.waitWhileBusy?.() !== true) return false;
+  return requestedYield === undefined || requestedYield >= LIGHT_DEFAULT_EXEC_YIELD_TIME_MS;
 }
 
 function argumentErrorResult(message: string): ToolResult {
@@ -244,7 +268,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         const ownerId = processOwnerIdFromToolArgs(
           args as Record<string, unknown>,
         );
-        const output = await manager.writeStdin({
+        const output = await trackOwnShellChanges(args, polledShellScope(args, sessionId, chars, config?.cwd ?? process.cwd(), runtimeSandbox), () => manager.writeStdin({
           ...(execOwnerBindingFromToolArgs(args as Record<string, unknown>) !== undefined
             ? { ownerBinding: execOwnerBindingFromToolArgs(args as Record<string, unknown>) } : {}),
           session_id: sessionId,
@@ -264,7 +288,14 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
             : {}),
           ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
           ...(ownerId !== undefined ? { ownerId } : {}),
-        });
+          // An empty poll is a wait: while the command is still busy it waits
+          // for the exit instead of returning for another poll. Input and a
+          // poll asking for a yield shorter than exec_command's default keep
+          // their yield, as exec_command does.
+          ...(pollWaitsWhileBusy(config, chars, asNumber(args.yield_time_ms))
+            ? { waitWhileBusy: true, ...busyWaitWakeArg(args) }
+            : {}),
+        }));
         // gaphunt3 #4: mirror exec-command.ts so a signal-killed process
         // (exitCode === null, no process_id) is reported as an error instead
         // of a silent success. `process_id !== undefined` discriminates a

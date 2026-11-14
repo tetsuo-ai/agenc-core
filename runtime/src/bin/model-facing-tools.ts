@@ -131,6 +131,7 @@ import {
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import { processOwnerIdFromToolArgs, execOwnerBindingFromToolArgs } from "../unified-exec/process-ownership.js";
 import { runtimeSandboxForExec } from "../tools/system/exec-command.js";
+import { trackOwnShellChanges } from "../tools/system/own-shell-changes.js";
 import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
@@ -6235,7 +6236,7 @@ function createPowerShellTool(opts: ModelFacingToolOptions): readonly Tool[] {
           args as Record<string, unknown>,
           opts.workspaceRoot,
         );
-        const output = await opts.unifiedExecManager!.execCommand({
+        const output = await trackOwnShellChanges(args as Record<string, unknown>, { command, cwd: opts.workspaceRoot, runtimeSandbox }, () => opts.unifiedExecManager!.execCommand({
           cmd: command,
           shell,
           workdir: opts.workspaceRoot,
@@ -6245,7 +6246,7 @@ function createPowerShellTool(opts: ModelFacingToolOptions): readonly Tool[] {
           ownerBinding: execOwnerBindingFromToolArgs(args as Record<string, unknown>),
           ...(ownerId !== undefined ? { ownerId } : {}),
           ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
-        });
+        }));
         return {
           content: formatUnifiedExecToolContent(output),
           isError:
