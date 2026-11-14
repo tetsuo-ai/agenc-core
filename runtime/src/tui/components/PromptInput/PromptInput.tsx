@@ -204,7 +204,10 @@ import {
 import PromptInputFooter from "./PromptInputFooter.js";
 import type { SuggestionItem } from "./PromptInputFooterSuggestions.js";
 import { PromptInputModeIndicator } from "./PromptInputModeIndicator.js";
-import { PromptInputQueuedCommands } from "./PromptInputQueuedCommands.js";
+import {
+  PromptBandQueuedInputs,
+  PromptInputQueuedCommands,
+} from "./PromptInputQueuedCommands.js";
 import { PromptInputStashNotice } from "./PromptInputStashNotice.js";
 import { useMaybeTruncateInput } from "./useMaybeTruncateInput.js";
 import { usePromptInputPlaceholder } from "./usePromptInputPlaceholder.js";
@@ -422,6 +425,8 @@ type Props = {
   onBashSubmit?: (command: string) => Promise<void>;
   /** Exact TUI mount that owns commands admitted while the composer is busy. */
   queueOwner?: QueuedCommandOwner;
+  /** List every queued input in the band (prompts wait for a tool outcome review). */
+  listAllQueuedInputs?: boolean;
   /** Frozen workspace root for Bash commands admitted while busy. */
   queueExecutionCwd?: string;
   /** Restores a failed async submission without replacing a newer draft. */
@@ -620,6 +625,7 @@ function PromptInput({
   getToolUseContext,
   onBashSubmit,
   queueOwner,
+  listAllQueuedInputs = false,
   queueExecutionCwd,
   restoreComposerDraft,
   draftRestoreRevision = 0,
@@ -3604,6 +3610,11 @@ function PromptInput({
               promptGlyphs.horizontal.repeat(columns)
             )}
           </Text>
+          <PromptBandQueuedInputs
+            queueOwner={queueOwner}
+            listAll={listAllQueuedInputs}
+            width={columns}
+          />
           <Box flexDirection="row" width="100%">
             <PromptInputModeIndicator
               mode={mode}
@@ -3623,25 +3634,36 @@ function PromptInput({
       ) : (
         // Borderless input: a filled band one row taller than the text, so
         // the prompt reads as its own surface without a frame around it.
+        // Inputs queued while a turn runs wait inside it, above the line
+        // the user types on; the band grows while any are queued.
         <Box
-          flexDirection="row"
-          alignItems="flex-start"
-          justifyContent="flex-start"
+          flexDirection="column"
           marginX={PROMPT_BAND_MARGIN_X}
           paddingX={PROMPT_BAND_PADDING_X}
           paddingY={1}
           backgroundColor="promptBackground"
           opaque
         >
-          <PromptInputModeIndicator
-            mode={mode}
-            permissionMode={displayedToolPermissionContext.mode}
-            isLoading={isLoading}
-            viewingAgentName={viewingAgentName}
-            viewingAgentColor={viewingAgentColor}
+          <PromptBandQueuedInputs
+            queueOwner={queueOwner}
+            listAll={listAllQueuedInputs}
+            width={columns - 2 * (PROMPT_BAND_MARGIN_X + PROMPT_BAND_PADDING_X)}
           />
-          <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
-            {textInputElement}
+          <Box
+            flexDirection="row"
+            alignItems="flex-start"
+            justifyContent="flex-start"
+          >
+            <PromptInputModeIndicator
+              mode={mode}
+              permissionMode={displayedToolPermissionContext.mode}
+              isLoading={isLoading}
+              viewingAgentName={viewingAgentName}
+              viewingAgentColor={viewingAgentColor}
+            />
+            <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
+              {textInputElement}
+            </Box>
           </Box>
         </Box>
       )}
