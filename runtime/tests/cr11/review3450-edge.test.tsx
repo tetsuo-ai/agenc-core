@@ -25,8 +25,10 @@ test('a header-only table still renders its headers at narrow widths', async () 
 
 test('a queued image-only content-block input retains a visible attachment indicator', async () => {
   fixture.commands = [{ mode: 'prompt', value: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } }] }];
-  const { PromptInputQueuedCommands } = await import('../../src/tui/components/PromptInput/PromptInputQueuedCommands.js');
-  const output = await renderToString(<PromptInputQueuedCommands />, 80);
+  // Queued inputs are listed inside the prompt band (PR 3562); the block above
+  // the band no longer lists them unless asked.
+  const { PromptBandQueuedInputs } = await import('../../src/tui/components/PromptInput/PromptInputQueuedCommands.js');
+  const output = await renderToString(<PromptBandQueuedInputs width={80} />, 80);
   expect(output).toMatch(/image/i);
   expect(output).toContain('1  [image]');
 });
@@ -39,7 +41,9 @@ test('a queued input with text and an image shows both', async () => {
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } },
     ],
   }];
-  const { PromptInputQueuedCommands } = await import('../../src/tui/components/PromptInput/PromptInputQueuedCommands.js');
-  const output = await renderToString(<PromptInputQueuedCommands />, 80);
+  // Queued inputs are listed inside the prompt band (PR 3562); the block above
+  // the band no longer lists them unless asked.
+  const { PromptBandQueuedInputs } = await import('../../src/tui/components/PromptInput/PromptInputQueuedCommands.js');
+  const output = await renderToString(<PromptBandQueuedInputs width={80} />, 80);
   expect(output).toContain('1  what is on this screen [image]');
 });
