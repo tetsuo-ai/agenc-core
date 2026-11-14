@@ -59,8 +59,8 @@ describe('SpinnerAnimationRow coverage', () => {
       120,
     )
 
-    // No activity glyph while tools run: no Braille matrix, no spinner frame.
-    // The verb itself shimmers instead.
+    // While tools run the three wave dots carry the motion: no Braille
+    // matrix, no star frame.
     expect(activeTools).not.toMatch(/[\u2800-\u28FF✶◐]/u)
     expect(activeTools).toContain('Working')
     expect(activeTools).toContain('indexing')
@@ -70,19 +70,20 @@ describe('SpinnerAnimationRow coverage', () => {
     expect(activeTools).not.toContain('deeply')
 
     // Under one second the timer is still hidden, so the row is the
-    // thinking-only compact form. 21 columns leave room for the bare
-    // "thinking" label (verb + 2-cell inset + 2-cell gap) but not the effort.
+    // thinking-only compact form. 25 columns leave room for the bare
+    // "thinking" label (2-cell inset, the wave dots and a space, the verb, a 2-cell gap)
+    // but not the effort.
     const compactThinking = await renderToString(
       <SpinnerAnimationRow
         {...props({
-          columns: 21,
+          columns: 25,
           effortSuffix: ' deeply',
           loadingStartTimeRef: { current: NOW - 500 },
           message: 'Ask',
           thinkingStatus: 'thinking',
         })}
       />,
-      21,
+      25,
     )
 
     expect(compactThinking).toContain('Ask')

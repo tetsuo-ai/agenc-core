@@ -100,7 +100,7 @@ const UNICODE_GLYPHS: AgenCTuiGlyphs = {
   separator: "·",
   statusError: "✗",
   statusSuccess: "✓",
-  spinnerFrames: ["·", "✢", "✳", "✶", "✻", "✽"],
+  spinnerFrames: ["·", "•", "●", "•"],
   spinnerReducedMotionDot: "●",
   statusDot: "●",
   thinkingEllipsis: "…",

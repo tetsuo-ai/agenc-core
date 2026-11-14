@@ -10,6 +10,7 @@ import { logError } from '../../utils/log.js';
 import { countCharInString } from '../../utils/stringUtils.js';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import { MessageActionsSelectedContext } from '../components/messageActions.js';
+import { useQueuedMessage } from '../context/QueuedMessageContext.js';
 import { HighlightedThinkingText } from './HighlightedThinkingText.js';
 import { Msg } from '../components/v2/primitives.js';
 type Props = {
@@ -87,6 +88,11 @@ export function UserPromptMessage({
     return truncateUserPromptDisplayText(text);
   }, [text]);
   const isSelected = useContext(MessageActionsSelectedContext);
+  // A sent message sits in a band one row taller than its text on each side,
+  // the same height as the prompt band it was typed in. Queued previews and
+  // the brief layout keep their compact rows.
+  const isQueued = useQueuedMessage()?.isQueued ?? false;
+  const bandPaddingY = useBriefLayout || isQueued ? 0 : 1;
   if (!text) {
     logError(new Error('No content found in user prompt message'));
     return null;
@@ -97,7 +103,7 @@ export function UserPromptMessage({
   // the bg reset spills onto the next line's column 0 and the highlight box gets
   // a ragged right edge. Pinning the width makes every wrapped row pad/clip to
   // the same right edge and the highlight forms a clean rectangle.
-  return <Box flexDirection="column" width="100%" marginTop={addMargin ? 1 : 0} backgroundColor={isSelected ? 'messageActionsBackground' : useBriefLayout ? undefined : 'userBand'} paddingLeft={useBriefLayout ? 0 : 1} paddingRight={useBriefLayout ? 0 : 1}>
+  return <Box flexDirection="column" width="100%" marginTop={addMargin ? 1 : 0} backgroundColor={isSelected ? 'messageActionsBackground' : useBriefLayout ? undefined : 'userBand'} paddingLeft={useBriefLayout ? 0 : 1} paddingRight={useBriefLayout ? 0 : 1} paddingTop={bandPaddingY} paddingBottom={bandPaddingY}>
       {useBriefLayout ? <HighlightedThinkingText text={displayText} useBriefLayout timestamp={timestamp} /> : <Msg role="user"><HighlightedThinkingText text={displayText} showPointer={false} /></Msg>}
     </Box>;
 }

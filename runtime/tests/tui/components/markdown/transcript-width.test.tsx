@@ -214,10 +214,10 @@ describe('transcript display width', () => {
     expect(indentOf(lines, 'return 0')).toBe(4)
     expect(indentOf(lines, 'return measure')).toBe(2)
     expect(lines.some(line => line.trimStart().startsWith('▎ A block quote'))).toBe(true)
-    // A wrapped row of a nested item stays at the level of its item.
+    // A wrapped row of a nested item hangs under its text, past the marker.
     const nested = lines.findIndex(line => line.includes('- Nested item'))
     if (!lines[nested]!.includes('96 MiB')) {
-      expect(lines[nested + 1]!.length - lines[nested + 1]!.trimStart().length - INSET).toBe(2)
+      expect(lines[nested + 1]!.length - lines[nested + 1]!.trimStart().length - INSET).toBe(4)
     }
   })
 

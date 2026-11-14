@@ -2,7 +2,7 @@ import React from 'react'
 import { describe, expect, test } from 'vitest'
 
 import { renderToString } from '../../utils/staticRender.js'
-import { toolStarFrames, toolStaticGlyph } from './ToolStateGlyph.js'
+import { toolStaticGlyph } from './ToolStateGlyph.js'
 import { ToolUseLoader } from './ToolUseLoader.js'
 
 function RerenderLoader() {
@@ -18,17 +18,15 @@ function RerenderLoader() {
 }
 
 describe('ToolUseLoader', () => {
-  // The lifecycle circles (`◐` running, `●` done) were replaced by a star
-  // whose points sweep while a tool is in flight; a static render lands on
-  // whichever frame the animation starts on, so assert against the frame set.
+  // A tool in flight shows a breathing dot (a solid dot that fades, or a dot
+  // that changes size where tones cannot blend); a static render lands on
+  // whichever step the breath starts on, so assert against those shapes.
   test('renders pending, failed, and successful glyphs', async () => {
     const running = await renderToString(
       <ToolUseLoader isError={false} isUnresolved shouldAnimate />,
       20,
     )
-    expect(toolStarFrames(false).some((frame) => running.includes(frame))).toBe(
-      true,
-    )
+    expect(['●', '•', '·'].some((glyph) => running.includes(glyph))).toBe(true)
 
     await expect(
       renderToString(

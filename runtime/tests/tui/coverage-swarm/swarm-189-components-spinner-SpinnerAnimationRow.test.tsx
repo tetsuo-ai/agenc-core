@@ -95,10 +95,10 @@ describe("SpinnerAnimationRow coverage swarm row 189", () => {
       verbose: true,
     });
 
-    // Tool input shows no activity glyph (no Braille matrix): the row is the
-    // inset verb, two spaces, then the byline.
+    // Tool input shows the inset, the three wave dots (no Braille matrix), a
+    // space, the verb, two spaces, then the byline.
     expect(withTokens).not.toMatch(/[\u2800-\u28FF]/u);
-    expect(withTokens).toMatch(/^ {2}Working {2}31s/mu);
+    expect(withTokens).toMatch(/^ {2}••• Working {2}31s/mu);
     expect(withTokens).toContain("300 tokens");
 
     const withoutTokens = await renderRow({

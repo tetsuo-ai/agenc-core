@@ -8,7 +8,8 @@ import { Box, Text } from '../../ink.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Byline } from '../design-system/Byline.js';
 import FullWidthRow from '../design-system/FullWidthRow.js';
-import { ShimmerVerb } from './ShimmerVerb.js';
+import ThemedText from '../design-system/ThemedText.js';
+import { WAVE_PREFIX_WIDTH, WaveDots } from './WaveDots.js';
 import type { SpinnerMode } from './types.js';
 import { computeSpinnerMessageMaxWidth, truncateSpinnerText } from './utils.js';
 
@@ -228,7 +229,7 @@ export function SpinnerAnimationRow({
   hasActiveTools,
   responseLengthRef,
   message,
-  messageColor,
+  overrideColor,
   loadingStartTimeRef,
   totalPausedMsRef,
   pauseStartTimeRef,
@@ -319,8 +320,9 @@ export function SpinnerAnimationRow({
         : null;
   let thinkingWidthValue = thinkingText ? stringWidth(thinkingText) : 0;
 
-  // Two cells of left inset before the shimmering verb, two after it.
-  const messageWidth = stringWidth(visibleMessage) + 4;
+  // Two cells of inset (the marker column of the rows above), the wave mark
+  // and its space before the verb, two cells after it.
+  const messageWidth = stringWidth(visibleMessage) + 2 + WAVE_PREFIX_WIDTH + 2;
   const wantsThinking = thinkingStatus !== null;
   // The stall note is itself a liveness signal, so surface the timer/tokens
   // alongside it even before the usual 30s threshold.
@@ -350,16 +352,16 @@ export function SpinnerAnimationRow({
   const thinkingOnly = showThinking && thinkingStatus === 'thinking' && !spinnerSuffix && !showTimer && !showTokens && !quietWarningText;
 
   const parts = [
-    ...(spinnerSuffix ? [<Text dimColor key="suffix">{spinnerSuffix}</Text>] : []),
-    ...(showTimer ? [<Text dimColor key="elapsedTime">{timerText}</Text>] : []),
+    ...(spinnerSuffix ? [<ThemedText color="text3" key="suffix">{spinnerSuffix}</ThemedText>] : []),
+    ...(showTimer ? [<ThemedText color="text3" key="elapsedTime">{timerText}</ThemedText>] : []),
     ...(showTokens ? [
-      <Text dimColor key="tokens">{tokensLabel}{showRate ? rateSuffix : ''}</Text>,
+      <ThemedText color="text3" key="tokens">{tokensLabel}{showRate ? rateSuffix : ''}</ThemedText>,
     ] : []),
     ...(fitStallNote && stallNoteText ? [
       <Text color="warning" key="stall">{stallNoteText}</Text>,
     ] : []),
     ...(showThinking && thinkingText ? [
-      <Text dimColor key="thinking">{thinkingOnly ? `(${thinkingText})` : thinkingText}</Text>,
+      <ThemedText color="text3" key="thinking">{thinkingOnly ? `(${thinkingText})` : thinkingText}</ThemedText>,
     ] : []),
   ];
   // Claude Code parity: the leader's byline ends with the interrupt
@@ -370,7 +372,7 @@ export function SpinnerAnimationRow({
     parts.length > 0 &&
     (quietWarningText !== null || availableSpace > usedAfterRate + ESC_HINT_WIDTH + SEP_WIDTH)
   ) {
-    parts.push(<Text dimColor key="esc">{ESC_HINT_TEXT}</Text>);
+    parts.push(<ThemedText color="text3" key="esc">{ESC_HINT_TEXT}</ThemedText>);
   }
 
   const status =
@@ -402,15 +404,12 @@ export function SpinnerAnimationRow({
 
   return (
     <FullWidthRow>
-      {/* No glyph: the verb itself carries the motion, a band of light
-          sweeping across it while the turn is in flight. */}
+      {/* Three dots, the first in the marker column of the rows above, light
+          up left to right while the turn is in flight; the verb holds still. */}
       <Box flexDirection="row" flexWrap="wrap" marginTop={1} paddingLeft={2}>
-        <ShimmerVerb
-          text={visibleMessage}
-          base={messageColor}
-          peak="text"
-          reducedMotion={reducedMotion}
-        />
+        <WaveDots reducedMotion={reducedMotion} />
+        <Text> </Text>
+        <ThemedText color={overrideColor ?? 'text2'}>{visibleMessage}</ThemedText>
         {status}
       </Box>
     </FullWidthRow>
