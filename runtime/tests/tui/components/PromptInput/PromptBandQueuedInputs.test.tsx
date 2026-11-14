@@ -145,8 +145,8 @@ describe('queued inputs inside the prompt band', () => {
   })
 
   it.each([
-    ['dark', { text2: '178;178;178', text3: '138;138;138', ink: '255;255;255', subtle: '82;82;82' }],
-    ['light', { text2: '86;86;86', text3: '118;118;118', ink: '0;0;0', subtle: '158;158;158' }],
+    ['dark', { text2: '178;178;178', text3: '138;138;138', ink: '255;255;255', subtle: '118;118;118' }],
+    ['light', { text2: '86;86;86', text3: '100;100;100', ink: '0;0;0', subtle: '118;118;118' }],
   ] as const)('the %s theme: gray header, gray numbers, ink text, a subtle hairline', async (theme, gray) => {
     queueFixture.commands = prompts('check the vbmeta flags too', 'then flash boot_b')
     const { PromptBandQueuedInputs } = await import(
@@ -171,6 +171,7 @@ describe('queued inputs inside the prompt band', () => {
     // The hairline in the subtle gray.
     expect(lines[3]).toContain(`38;2;${gray.subtle}m─`)
     // The block paints no background of its own: the band behind it does.
-    expect(ansi).not.toMatch(/\x1b\[(?:[0-9;]*;)?(?:4[0-8]|10[0-7])[;m]/)
+    // Truecolor foregrounds are removed first: a gray such as 100;100;100 is not SGR 100.
+    expect(ansi.replace(/38;2;\d+;\d+;\d+/g, '')).not.toMatch(/\x1b\[(?:[0-9;]*;)?(?:4[0-8]|10[0-7])[;m]/)
   })
 })
