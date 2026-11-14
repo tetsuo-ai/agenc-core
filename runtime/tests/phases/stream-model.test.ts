@@ -1,3 +1,4 @@
+import { readCompactionQueryPrefix } from "../../src/services/compact/query-prefix.js";
 import { describe, expect, test, vi } from "vitest";
 import { EventLog, type Event } from "../session/event-log.js";
 import { CostSidecar } from "../session/cost.js";
@@ -286,6 +287,31 @@ function mkRegistry(tools: Tool[]): ToolRegistry {
 }
 
 describe("streamModel — live assistant text sanitization", () => {
+  test("records a successful prefix before callbacks mutate source history and ignores failed requests", async () => {
+    const ctx = mkCtx();
+    const state = mkState(ctx);
+    let fail = false;
+    const provider = { ...mkProvider(async (messages, onChunk) => {
+      if (fail) throw new Error("offline failure");
+      state.messages[0]!.content = "changed after dispatch";
+      onChunk({ content: "done", done: true });
+      return { content: "done", toolCalls: [], usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
+        model: "test-model", finishReason: "stop" };
+    }), name: "deepseek" };
+    const { session } = mkSession(provider);
+    const messages: LLMMessage[] = [{ role: "user", content: "hello" }];
+    await streamModel(state, ctx, session, { ...mkRequest(messages), baseInstructions: "Stable policy" });
+    const prefix = readCompactionQueryPrefix(session)!;
+    expect(prefix.source[0]!.content).toBe("hello");
+    expect(prefix.messages).toEqual(messages);
+    expect(prefix.options.systemPrompt).toBe("Stable policy");
+    messages[0]!.content = "edited later";
+    expect(prefix.messages[0]!.content).toBe("hello");
+    fail = true;
+    await expect(streamModel(mkState(ctx), ctx, session, mkRequest(messages))).rejects.toThrow();
+    expect(readCompactionQueryPrefix(session)).toBe(prefix);
+  });
+
   test("captures the immutable prepared tool catalog before provider callbacks", async () => {
     const ctx = mkCtx();
     const state = mkState(ctx);

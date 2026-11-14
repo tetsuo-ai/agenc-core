@@ -121,10 +121,11 @@ interface Harness {
 }
 
 function isSummarizerRequest(messages: readonly LLMMessage[]): boolean {
-  const first = messages[0]?.content;
-  if (typeof first !== "string") return false;
+  // Prefix-preserving compaction appends its manifest after the cached history.
+  const manifest = messages.at(-1)?.content;
+  if (typeof manifest !== "string") return false;
   try {
-    const payload = JSON.parse(first) as { units?: unknown; summaries?: unknown; children?: unknown };
+    const payload = JSON.parse(manifest) as { units?: unknown; summaries?: unknown; children?: unknown };
     return Array.isArray(payload.units) || Array.isArray(payload.summaries) || Array.isArray(payload.children);
   } catch {
     return false;

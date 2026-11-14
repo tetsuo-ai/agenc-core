@@ -1,6 +1,7 @@
 import { readCompactionTransactionAdapter } from "./transaction-adapter.js";
 export { readCompactionTransactionAdapter } from "./transaction-adapter.js";
 import { resolveReasoningEffort } from "../../llm/reasoning-effort.js";
+import { chatCompletionsCapabilityHintsForProvider } from "../../llm/wire/capability-gating.js";
 import { supportsThinkingOffRecovery } from "../../session/reasoning-recovery-capability.js";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -48,6 +49,7 @@ import {
   compactionOutputTokenUpperBound,
   compactionWallTimeExceeded,
 } from "./transaction-limits.js";
+import { buildPrefixCompactionCall, readCompactionQueryPrefix, clearCompactionQueryPrefix, type PrefixCompactionCall } from "./query-prefix.js";
 import { getCompactionSystemPrompt } from "./prompt.js";
 import { estimateMessagesTokens } from "./_deps/runtime.js";
 import { createCompactionProgress, type CompactionProgressReporter } from "./progress.js";
@@ -206,14 +208,18 @@ export async function compactConversationTransactionally(
     calls: 0, inputTokens: 0, startedAt: performance.now(), responses: new Map(),
   };
   try {
-    return await compactConversationAttempt(context, options, recovery);
+    const result = await compactConversationAttempt(context, options, recovery);
+    if (context.admissionSession) clearCompactionQueryPrefix(context.admissionSession);
+    return result;
   } catch (error) {
     if (!(error instanceof CompactionSummaryRejectedError) || error.reason !== "output_schema_invalid" ||
       recovery.correction === undefined || context.abortController?.signal.aborted === true) throw error;
     // A second wire attempt needs its own admission reservation. End the
     // failed transaction before retrying, preserving the frozen DAG and the
     // unchanged source. Both attempts share parent admission and hard budgets.
-    return compactConversationAttempt(context, options, recovery);
+    const result = await compactConversationAttempt(context, options, recovery);
+    if (context.admissionSession) clearCompactionQueryPrefix(context.admissionSession);
+    return result;
   }
 }
 
@@ -305,7 +311,7 @@ function createCompactionAdmissionScope(
     throw error;
   }
   return {
-    context: { ...context, admissionSession: childSession },
+    context: { ...context, queryPrefix: context.queryPrefix ?? readCompactionQueryPrefix(session), admissionSession: childSession },
     unbind: () => {
       try {
         unbind();
@@ -470,7 +476,7 @@ async function compactConversationTransactionBody(
   const authoritativeKeep = prepared.messages.filter(
     (_, index) => !selectedIndexes.has(index),
   );
-  const plan = buildCompactionMapReducePlan(selected.messages, {
+  let plan = buildCompactionMapReducePlan(selected.messages, {
     context: {
       ...context,
       options: { ...context.options, maxOutputTokens: summaryOutputReserve },
@@ -483,6 +489,22 @@ async function compactConversationTransactionBody(
     messageSourceRefs: selected.sourceRefs,
     includeReasoningAllowance: options.summarizer === undefined,
   });
+  deadline.assertActive();
+  let prefixCall = options.summarizer === undefined ? buildPrefixCompactionCall({
+    prefix: context.queryPrefix ?? readCompactionQueryPrefix(session), provider: providerName, model,
+    completeSource: options.completeSourceMessages, selectedSource: selected.messages, plan,
+    policy: policyMaterial.final,
+  }) : undefined;
+  if (prefixCall) {
+    const accounting = await deadline.wait(countPrefixCompactionCall({
+      context, prefixCall, providerName, model, reasoningEffort,
+      contextWindowTokens: plan.context_window_tokens, outputReserveTokens: plan.output_reserve_tokens,
+    }));
+    if (accounting) {
+      plan = { ...plan, planned_input_tokens: accounting.inputTokens,
+        calls: [{ ...plan.calls[0]!, input_token_upper_bound: accounting.inputTokens }] };
+    } else prefixCall = undefined;
+  }
   deadline.assertActive();
   const rawBoundaryMarker = options.createBoundaryMarker();
   const attachments =
@@ -578,6 +600,7 @@ async function compactConversationTransactionBody(
       context,
       ...(options.summarizer !== undefined ? { summarizer: options.summarizer } : {}),
       plan,
+      prefixCall,
       attemptId,
       policyDigest,
       accountingRef,
@@ -726,6 +749,7 @@ async function compactConversationTransactionBody(
       configuration_digest: configurationDigest,
       committed,
     };
+    clearCompactionQueryPrefix(session);
     progress.send("complete", 100, { afterTokens: shrink.candidate.inputTokens });
     return {
       ...candidateResult,
@@ -1095,6 +1119,7 @@ async function runSummaryTree(params: {
   readonly context: CompactContext;
   readonly summarizer?: CompactionLocalSummarizer;
   readonly plan: CompactionMapReducePlan;
+  readonly prefixCall?: PrefixCompactionCall;
   readonly attemptId: string;
   readonly policyDigest: string;
   readonly accountingRef: string;
@@ -1224,6 +1249,7 @@ async function runSummaryTree(params: {
         outputReserveTokens: params.plan.output_reserve_tokens,
       });
       const invocation = await invokeCompactionProvider({
+        prefixCall: params.recovery.correction?.key === key ? undefined : params.prefixCall,
         context: params.context,
         messages,
         systemPrompt: params.policyMaterial[stage],
@@ -1564,9 +1590,79 @@ function assertExactToolPairs(
   }
 }
 
+type CompactionInvocationOptions = {
+  readonly context: CompactContext;
+  readonly prefixCall?: PrefixCompactionCall;
+  readonly systemPrompt: string;
+  readonly providerName: string;
+  readonly model: string;
+  readonly reasoningEffort: LLMChatOptions["reasoningEffort"];
+  readonly contextWindowTokens: number;
+  readonly outputReserveTokens: number;
+};
+
+function compactionProviderOptions(params: CompactionInvocationOptions): LLMChatOptions {
+  const signal = params.context.abortController?.signal;
+  const modelInfo = params.context.turn?.modelInfo ?? params.context.admissionSession!.modelInfo;
+  const providerOutputReserve = compactionProviderOutputReserve(
+    params.outputReserveTokens, params.providerName, params.model, params.contextWindowTokens,
+    modelInfo?.slug === params.model ? modelInfo : undefined,
+  );
+  const options: LLMChatOptions = {
+    model: params.model,
+    systemPrompt: params.systemPrompt,
+    ...params.prefixCall?.options,
+    maxOutputTokens: providerOutputReserve,
+    contextWindowTokens: params.contextWindowTokens,
+    reasoningEffort: params.reasoningEffort,
+    // A summary is a transcription task. Where the route can answer without
+    // thinking, it does: thinking shares the output limit with the answer, and
+    // a summary cut off by its own reasoning is a failed attempt.
+    ...(supportsThinkingOffRecovery(params.providerName, params.model)
+      ? { disableThinkingForRecovery: true as const }
+      : {}),
+    // Preserve an explicitly counted client catalog only for prefix reuse.
+    // The allowlist excludes constructor-injected tools; no tool executor
+    // exists in this path, and tool-call responses are rejected below.
+    tools: params.prefixCall?.options.tools ?? [],
+    toolRouting: { allowedToolNames: params.prefixCall?.options.tools?.map(tool => tool.function.name) ?? [] },
+    ...(params.prefixCall && chatCompletionsCapabilityHintsForProvider(params.providerName, params.model).toolChoicePolicy !== "auto_only"
+      ? { toolChoice: "none" as const } : {}),
+    ...(signal !== undefined ? { signal } : {}),
+  };
+  return options;
+}
+
+function compactionAccountingRequest(params: CompactionInvocationOptions, messages: readonly LLMMessage[], options: LLMChatOptions) {
+  return createTokenAccountingRequest({
+    provider: params.providerName, model: params.model, messages: [...messages], options,
+    contextWindowTokens: params.contextWindowTokens, reservedOutputTokens: options.maxOutputTokens,
+    ...(params.prefixCall ? { calibrationScope: params.context.admissionSession?.conversationId,
+      endpointIdentity: readProviderFactoryOptions(params.context.provider!).baseURL } : {}),
+  });
+}
+
+async function countPrefixCompactionCall(params: Omit<CompactionInvocationOptions, "systemPrompt"> & { readonly prefixCall: PrefixCompactionCall }): Promise<TokenAccountingResult | undefined> {
+  const invocation = { ...params, systemPrompt: "" };
+  const options = compactionProviderOptions(invocation);
+  try {
+    const accounting = await tokenAccountingService.count(compactionAccountingRequest(invocation, params.prefixCall.messages, options), {
+      capability: params.context.provider?.tokenCountCapability, signal: params.context.abortController?.signal,
+    });
+    if (!accounting.admissible || accounting.totalTokens > params.contextWindowTokens ||
+        accounting.inputTokens > MAX_COMPACTION_TOTAL_INPUT_TOKENS) return undefined;
+    return accounting;
+  } catch {
+    params.context.abortController?.signal.throwIfAborted();
+    // Reuse is optional; the original bounded plan still has its own checks.
+    return undefined;
+  }
+}
+
 async function invokeCompactionProvider(params: {
   readonly context: CompactContext;
   readonly messages: readonly LLMMessage[];
+  readonly prefixCall?: PrefixCompactionCall;
   readonly systemPrompt: string;
   readonly providerName: string;
   readonly model: string;
@@ -1581,40 +1677,9 @@ async function invokeCompactionProvider(params: {
   const provider = params.context.provider!;
   const session = params.context.admissionSession!;
   const signal = params.context.abortController?.signal;
-  const modelInfo = params.context.turn?.modelInfo ?? session.modelInfo;
-  const providerOutputReserve = compactionProviderOutputReserve(
-    params.outputReserveTokens, params.providerName, params.model, params.contextWindowTokens,
-    modelInfo?.slug === params.model ? modelInfo : undefined,
-  );
-  const options: LLMChatOptions = {
-    model: params.model,
-    systemPrompt: params.systemPrompt,
-    maxOutputTokens: providerOutputReserve,
-    contextWindowTokens: params.contextWindowTokens,
-    reasoningEffort: params.reasoningEffort,
-    // A summary is a transcription task. Where the route can answer without
-    // thinking, it does: thinking shares the output limit with the answer, and
-    // a summary cut off by its own reasoning is a failed attempt.
-    ...(supportsThinkingOffRecovery(params.providerName, params.model)
-      ? { disableThinkingForRecovery: true as const }
-      : {}),
-    // Compaction is a constrained summarization call, not an agent turn. Keep
-    // it explicitly tool-free so constructor-scoped client tools and
-    // provider-native server tools cannot be added after preflight token
-    // accounting. Besides being unnecessary here, an injected tool catalog
-    // can add thousands of unreserved prompt tokens at the provider wire.
-    tools: [],
-    toolRouting: { allowedToolNames: [] },
-    ...(signal !== undefined ? { signal } : {}),
-  };
-  const request = createTokenAccountingRequest({
-    provider: params.providerName,
-    model: params.model,
-    messages: [...params.messages],
-    options,
-    contextWindowTokens: params.contextWindowTokens,
-    reservedOutputTokens: providerOutputReserve,
-  });
+  const options = compactionProviderOptions(params);
+  const messages = params.prefixCall?.messages ?? params.messages;
+  const request = compactionAccountingRequest(params, messages, options);
   const exactAccounting = requireAdmissibleTokenAccounting(
     await tokenAccountingService.count(request, {
       capability: provider.tokenCountCapability,
@@ -1635,7 +1700,7 @@ async function invokeCompactionProvider(params: {
   const response = await runAdmittedModelCall({
     session,
     provider,
-    messages: [...params.messages],
+    messages: [...messages],
     options,
     stepId: `compact:${params.attemptId}:${params.callCount}`,
     sessionId: session.conversationId,
@@ -1644,13 +1709,16 @@ async function invokeCompactionProvider(params: {
     ...(signal !== undefined ? { signal } : {}),
     invoke: async (admittedOptions) => {
       let summaryBytes = 0;
-      const candidate = await provider.chatStream([...params.messages], (chunk) => {
+      const candidate = await provider.chatStream([...messages], (chunk) => {
         const bytes = Buffer.byteLength(chunk.content ?? "", "utf8");
         summaryBytes = chunk.resetBuffer === true ? bytes : summaryBytes + bytes;
         // Display-only conservative text-token estimate. The completed response
         // still passes the original native/output accounting and every bound.
         params.onSummaryTokens(Math.ceil(summaryBytes / 2));
       }, admittedOptions);
+      if (candidate.toolCalls.length > 0) throw new CompactionTransactionError(
+        "provider_non_stop", "compaction provider returned tool calls; none were executed",
+      );
       const outputAccounting = await countCompactionProviderOutput({
         context: params.context,
         providerName: params.providerName,
