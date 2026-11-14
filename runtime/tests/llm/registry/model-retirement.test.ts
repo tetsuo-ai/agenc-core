@@ -262,9 +262,10 @@ describe("findBundledModelCatalogEntry", () => {
   });
 });
 
-describe("the bundled snapshot of 2026-10-20", () => {
+describe("the bundled OpenRouter snapshot of 2026-10-20", () => {
   test("carries the nine dated rows issue #3447 lists", () => {
-    const dated = REGISTERED_MODEL_CATALOG.filter((entry) => entry.retiresOn !== undefined)
+    const dated = REGISTERED_MODEL_CATALOG.filter((entry) =>
+      entry.provider === "openrouter" && entry.retiresOn !== undefined)
       .map((entry) => [entry.provider, entry.model, entry.retiresOn]);
     expect(dated).toHaveLength(9);
     expect(dated).toEqual(expect.arrayContaining(
@@ -288,4 +289,18 @@ describe("the bundled snapshot of 2026-10-20", () => {
       retiredBundledModel(entry.provider, entry.model, at("2026-10-30")) !== undefined);
     expect(retired).toEqual([]);
   });
+});
+
+describe("the Token Plan preview retirement", () => {
+  test.each(["qwen4-max-preview", "qwen4.0-max-preview"])(
+    "retires %s independently of the OpenRouter snapshot",
+    (model) => {
+      expect(findBundledModelCatalogEntry({ provider: "qwen-token-plan", model }))
+        .toMatchObject({ provider: "qwen-token-plan", model, retiresOn: "2026-11-26" });
+      expect(retiredBundledModel("qwen-token-plan", model, at("2026-11-25", "23:59:59.999")))
+        .toBeUndefined();
+      expect(retiredBundledModel("qwen-token-plan", model, at("2026-11-26", "00:00:00.000")))
+        .toEqual({ model, retiredOn: "2026-11-26" });
+    },
+  );
 });

@@ -17,7 +17,8 @@ const tools: LLMTool[] = toolNames.map(name => ({ type: "function", function: {
 } }));
 
 async function capture(mode: "full" | "lean", appTools: boolean, web: "auto" | "on",
-  policy: { deny?: string; ask?: string; allow?: string; scoped?: boolean } = {}, extraction = false) {
+  policy: { deny?: string; ask?: string; allow?: string; scoped?: boolean } = {}, extraction = false,
+  editMode?: "tools" | "shell" | "check") {
   let bytes = "";
   const fileRead = createFileReadTool({ allowedPaths: ["/workspace"], deepseekExtraction: extraction });
   const wireTools: LLMTool[] = extraction ? tools.map(tool => tool.function.name === "FileRead"
@@ -33,6 +34,7 @@ async function capture(mode: "full" | "lean", appTools: boolean, web: "auto" | "
     runtimeOptions: { lightMode: true, nonInteractive: true } as never,
     configStore: createTestConfigStore({ base: {
       light_request: mode, web_search: web, providers: { deepseek: { app_tools: appTools } },
+      ...(editMode === undefined ? {} : { light_request_options: { edit_mode: editMode } }),
       ...(extraction ? { tools_config: { file_read_provider: "deepseek" as const } } : {}),
     } }), providerEnvironment: {},
   } });
@@ -66,6 +68,21 @@ test.each(["full", "lean"] as const)("%s session App tools wire snapshot", async
   expect(body.tools.slice(-2)).toEqual([{ type: "deepseek_web_search" }, { type: "deepseek_read_url" }]);
   expect(body.messages[0].content).toContain("Use deepseek_web_search");
   expect(bytes).toMatchSnapshot();
+});
+
+test("lean App tools use the shell edit default and honor explicit tools mode", async () => {
+  const { bytes } = await capture("lean", true, "on");
+  expect(bytes).toBe((await capture("lean", true, "on", {}, false, "shell")).bytes);
+  const shell = JSON.parse(bytes);
+  const toolsMode = JSON.parse((await capture("lean", true, "on", {}, false, "tools")).bytes);
+  const execDescription = (body: typeof shell) => body.tools.find(
+    (tool: { function?: { name: string } }) => tool.function?.name === "exec_command",
+  ).function;
+  const shellExec = execDescription(shell);
+  const toolsExec = execDescription(toolsMode);
+  expect(shellExec.description).toBe(`${toolsExec.description} Create and edit files with shell commands. One command may write files and run the check together.`);
+  shellExec.description = toolsExec.description;
+  expect(shell).toEqual(toolsMode);
 });
 
 test.each([
