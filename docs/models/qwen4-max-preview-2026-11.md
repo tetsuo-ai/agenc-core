@@ -4,6 +4,9 @@ Checked Alibaba Cloud's documentation with `curl` on 2026-11-13. This is a
 documentation review, not a live Models API or inference probe. No Token Plan
 key was read, created or copied.
 
+Rechecked the public model card, Chat API, thinking and structured-output guides
+on 2026-11-14 for the release follow-up. No inference calls were made.
+
 ## Model and access
 
 The [model card](https://www.alibabacloud.com/help/en/model-studio/qwen4-max-preview)
@@ -17,9 +20,10 @@ on bills. This is the same deployment, not a second model.
 The preview runs from 2026-11-11 10:00 through 2026-11-25 24:00 (UTC+8). Alibaba
 says it will make no changes during that period and retire the model afterward.
 The closing instant is 2026-11-26 00:00 UTC+8, or 2026-11-25 16:00 UTC. Core's
-date-only `retiresOn` metadata uses `2026-11-26`, the local retirement date, and
-the picker label is `Qwen4 Max Preview`. This metadata is informational; it does
-not automatically disable the model at the closing instant.
+retirement code accepts only UTC calendar dates. Its bundled entry therefore
+uses `retiresOn: 2026-11-25`: Core hides the preview from the picker and refuses
+new selections from **2026-11-25 00:00 UTC**, 16 hours before Alibaba closes it.
+Both IDs follow this rule. The picker label is `Qwen4 Max Preview`.
 
 | Property | Documented contract |
 | --- | --- |
@@ -27,7 +31,7 @@ not automatically disable the model at the closing instant.
 | Output | At most 393,216 tokens, including thinking and the final answer |
 | Input | Text, images and video; Core exposes its existing text/image chat input |
 | Tools | Function Calling, web search and built-in tools |
-| Structured output | JSON Object and JSON Schema |
+| Structured output | Model card lists JSON Object and JSON Schema; Core keeps schema requests disabled on Token Plan |
 | APIs | OpenAI Chat Completions, OpenAI Responses and Anthropic Messages |
 
 These properties are stated on the model card. The
@@ -40,6 +44,13 @@ parts use `image_url.url` (public URL or a base64 data URL), tool definitions us
 reference lists `tool_stream` for the model's text modality; Core does not enable
 that optional switch for this multimodal entry. Ordinary streamed tool calls
 use Core's existing Chat Completions parser.
+
+The structured-output guide still excludes Singapore models from JSON Schema,
+despite listing Qwen4 in its supported families. Core keeps structured output
+disabled for both preview IDs, as it does for other Token Plan models. Schema
+requests fail locally before transport. The memory reranker also refuses this
+model before admission, leaving recall on its lexical fallback. Its 1,024-token
+cap and five-second deadline are not a verified fit for default xhigh thinking.
 
 ## Endpoint qualification
 
@@ -79,11 +90,11 @@ establish the following:
 - The API also documents compatibility mappings: `minimal` to `low`, `high`
   and `max` to `xhigh`, and `none` to `enable_thinking=false`. The
   [thinking guide](https://www.alibabacloud.com/help/en/model-studio/deep-thinking)
-  classifies Qwen4 as hybrid, so thinking can be disabled. Core lists the three
-  canonical effort levels, translates the session's top-tier `max` to `xhigh`
-  through its existing resolver, and filters other direct effort values. A
-  session's unlisted `none` follows Core's existing omitted-effort behavior;
-  it is not an advertised off switch for this entry.
+  classifies Qwen4 as hybrid, so thinking can be disabled. Core accepts `none`,
+  `minimal`, `low`, `medium` and `xhigh` in saved and session choices. It sends
+  `none` to disable thinking and maps `minimal` to `low` before building either
+  buffered or streaming requests. The session's top-tier `max` still maps to
+  `xhigh` through the existing resolver; other direct effort values stay filtered.
 - `thinking_budget` is an alternative to `reasoning_effort`, not an additional
   field. Sending both is an error. The API maps budgets 0–4,096 to `low`,
   4,097–16,384 to `medium`, and 16,385–262,144 to `xhigh`. Core sends effort only
@@ -133,10 +144,12 @@ retains token usage and does not invent a Credits conversion or PAYG price.
 
 ## Verification boundary
 
-Offline tests cover catalog/picker metadata, alias isolation, output limits,
-effort filtering, image/tool/JSON Schema requests, reasoning replay and usage,
-token estimation, selector priors, plan cost and request snapshots. Existing
-Qwen, Token Plan and DeepSeek request tests remain unchanged.
+Offline tests pin the clock before retirement and cover the UTC date boundary,
+picker hiding and selection refusal for both IDs. They also cover local schema
+and memory-reranker rejection, configured and carried effort values, buffered
+and streaming request bodies, image/tool requests, reasoning replay and usage,
+output limits, token estimation, selector priors, plan cost and request snapshots.
+Existing Qwen, Token Plan and DeepSeek request contracts remain unchanged.
 
 A live check would require an active Token Plan subscription, its matching
 regional base URL and dedicated key, and an authorized interactive Core
