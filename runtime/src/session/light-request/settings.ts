@@ -34,9 +34,19 @@ export const DEFAULT_LEAN_OVERRIDES: Readonly<Partial<Required<LightRequestOptio
   tool_search: true,
 });
 
+/**
+ * Interactive sessions with the default lean profile edit through Write and apply_patch, so the user sees each
+ * change as a diff and approves it as an edit. Measured on 2026-11-14 in the real TUI (asks first, native Flash):
+ * shell edits showed only a flattened `cat > file <<EOF ...` command with no diff, and the model re-read and re-ran
+ * after its own write set off the file-change notice. Headless runs keep the measured shell edits.
+ */
+export const DEFAULT_LEAN_INTERACTIVE_OVERRIDES: Readonly<Partial<Required<LightRequestOptions>>> = Object.freeze({
+  edit_mode: "tools",
+});
+
 export interface LightRequestSession {
   readonly services?: {
-    readonly runtimeOptions?: { readonly lightMode?: boolean; readonly simpleMode?: boolean };
+    readonly runtimeOptions?: { readonly lightMode?: boolean; readonly simpleMode?: boolean; readonly nonInteractive?: boolean };
     readonly providerEnvironment?: Readonly<Record<string, string | undefined>>;
     readonly configStore?: {
       current(): AgenCConfig;
@@ -68,7 +78,10 @@ export function resolveLightRequest(
   const config = services.configStore?.current();
   const chosen = chosenLightRequest(session);
   const mode = chosen ?? DEFAULT_LIGHT_REQUEST;
-  const base = chosen === undefined ? { ...LEAN_REQUEST_DEFAULTS, ...DEFAULT_LEAN_OVERRIDES } : LEAN_REQUEST_DEFAULTS;
+  const interactive = services.runtimeOptions.nonInteractive !== true;
+  const base = chosen !== undefined ? LEAN_REQUEST_DEFAULTS : {
+    ...LEAN_REQUEST_DEFAULTS, ...DEFAULT_LEAN_OVERRIDES, ...(interactive ? DEFAULT_LEAN_INTERACTIVE_OVERRIDES : {}),
+  };
   const settings = mode === "lean" ? Object.freeze({ ...base, ...config?.light_request_options }) : null;
   sessionSettings.set(session, settings);
   return settings ?? undefined;

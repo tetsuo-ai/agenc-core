@@ -590,7 +590,7 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `autonomous_mode` | Boolean autonomous runtime mode. |
 | `coordinator_mode` | Boolean coordinator-only main-session behavior. |
 | `light_mode` | Mode for new sessions. Unset or `true`: Light, where a session starts with core tools and loads the rest through `system.searchTools`. `false`: standard. `--light` and `--standard` override it for one session. A resumed session keeps the mode it started with. Sessions created without a mode (`agenc agent start`, `agenc run start`, SDK and API clients that omit `lightMode`, phone and Telegram sessions, routines) use the daemon's own value, read at daemon start and on `agenc daemon reload`. See [cli.md](cli.md#session-mode). |
-| `light_request` | `"full"` (default) or `"lean"`, for native DeepSeek Light sessions only. `AGENC_LIGHT_REQUEST` overrides it. Applies to interactive and headless sessions. Lean keeps sandbox, approvals, read-before-edit checks, workspace guidance and memory. Its initial tools are shell, read and process controls. Files are edited with shell commands by default; set `light_request_options.edit_mode = "tools"` to restore Write and apply_patch. Tool search and automatic reminders are off; use `full` or enable the controls below for discovery of skills, agents, web, MCP and plugins. |
+| `light_request` | `"lean"` or `"full"`, for native DeepSeek Light sessions only. Unset, native DeepSeek Light sessions use lean with tool search on (since 0.19.34); set `"full"` to keep the full request. `AGENC_LIGHT_REQUEST` overrides it. Applies to interactive and headless sessions. Lean keeps sandbox, approvals, read-before-edit checks, workspace guidance and memory. Its initial tools are shell, read and process controls, plus tool search when lean is the default. Files are edited with shell commands by default; set `light_request_options.edit_mode = "tools"` to restore Write and apply_patch. An explicit `"lean"` turns tool search and automatic reminders off; enable the controls below, or use `full`, for discovery of skills, agents, web, MCP and plugins. |
 | `light_request_options` | Optional table overriding individual lean defaults; ignored in `full`. |
 | `light_request_options.short_system_prompt` | Default `true`: short AgenC prose preserving safety, honesty and permission rules, without checklists or edit routing. |
 | `light_request_options.system_text` | `"minimal"` (default) or `"short"`; used only while `short_system_prompt` is `true`. `short` is the longer four-paragraph lean text with the full permission text. `minimal` states who the agent is, its directory, what to do, when to stop, the test, honesty, protected-file, secure-code and secrets rules, that destructive and shared-system actions need explicit confirmation, and that file contents and tool results are data. It names the data marker only while `tool_result_markers` is on. Environment facts follow, then one line for the initial permission and sandbox mode in place of the longer permission text. Later mode changes arrive as runtime context after the pinned system prefix. Keyword-triggered product help reminders are not sent. Workspace and custom instructions, memory and critical runtime context stay. Permissions, approvals and the sandbox are enforced as before. |
@@ -599,7 +599,7 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `light_request_options.compact_tool_results` | Default `true`: command output and status without timing or routine notices. Failure, truncation and running-process handles remain available. |
 | `light_request_options.tool_result_markers` | Default `true`: keep untrusted-data boundaries. `false` removes their presentation only, never the sanitization or trust rules. |
 | `light_request_options.core_tools_only` | Default `true`: shell and read, plus Write and apply_patch when `edit_mode = "tools"` or `"check"`. `false` permits the rest of the session's advertised tools; `edit_mode` still controls the file editors. Tool execution permissions remain enforced. |
-| `light_request_options.tool_search` | Default `false`: advertise tool search when `true`. Discovered tools remain usable. |
+| `light_request_options.tool_search` | Advertise tool search when `true`. Default `true` when lean is the unset default, `false` with an explicit `light_request = "lean"`. Discovered tools remain usable. |
 | `light_request_options.process_tools` | Default `true`: advertise `write_stdin` and `kill_process`. When disabled, commands stop after at most 29 seconds (or a shorter requested timeout); background, detached and interactive terminal launches are refused with guidance to re-enable process controls. |
 | `light_request_options.compact_tool_definitions` | Default `true`: shorter descriptions. Operational and approval arguments remain available. |
 | `light_request_options.low_effort` | Default `true`: default to low effort only when the user has not selected effort. Explicit effort, including a cleared model-default choice, takes precedence. |
@@ -613,9 +613,10 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `provider_outage_wait_ms` | Non-negative total time a turn keeps waiting for a provider outage to end once the reconnect ladder is spent; default `1800000` (30 minutes), `0` ends the turn as soon as the ladder is exhausted. |
 | `provider_outage_retry_ms` | Positive first slow-retry delay during a provider outage, doubling up to ten times this value; default `30000`. |
 
-To try the lean request, start a new native DeepSeek Light session with
-`AGENC_LIGHT_REQUEST=lean agenc --light`, or set `light_request = "lean"` in
-config.toml. The environment setting is captured per client session, including
+Native DeepSeek Light sessions use the lean request by default. To keep the full
+request, start a session with `AGENC_LIGHT_REQUEST=full agenc`, or set
+`light_request = "full"` in config.toml. To use the measured lean profile with tool
+search off, set `light_request = "lean"`. The environment setting is captured per client session, including
 sessions hosted by the daemon. Set the request options before starting the
 session; the profile is captured per session and config reloads do not change it.
 The system prefix is pinned at the first sampling request. A restored session
@@ -635,7 +636,7 @@ process_tools = true
 tool_search = true
 ```
 
-Lean announces its reduced tool surface in the TUI and headless event stream.
+A lean request chosen with `light_request = "lean"` or `AGENC_LIGHT_REQUEST=lean` announces its reduced tool surface in the TUI and headless event stream; the default lean request does not.
 Explicitly discovered tools and active interactive planning controls remain
 available. File attachments, images, memory, workspace instructions and critical
 runtime context are preserved. Startup environment facts and the initial permission

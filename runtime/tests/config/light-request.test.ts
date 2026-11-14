@@ -2,7 +2,8 @@ import { describe, expect, test } from "vitest";
 import { applyEnvOverrides } from "../../src/config/env.js";
 import { validateAgenCConfigBlocks, type AgenCConfig } from "../../src/config/schema.js";
 import { snapshotProviderEnvironment } from "../../src/llm/provider-environment.js";
-import { chosenLightRequest, DEFAULT_LEAN_OVERRIDES, DEFAULT_LIGHT_REQUEST, LEAN_REQUEST_DEFAULTS, resolveLightRequest }
+import { chosenLightRequest, DEFAULT_LEAN_INTERACTIVE_OVERRIDES, DEFAULT_LEAN_OVERRIDES, DEFAULT_LIGHT_REQUEST,
+  LEAN_REQUEST_DEFAULTS, resolveLightRequest }
   from "../../src/session/light-request/settings.js";
 import { collectDaemonClientEnvOverrides, mergeDaemonClientEnvironment, captureRecoverableSessionEnvironment,
   readRecoverableSessionEnvironment } from "../../src/app-server/client-env-snapshot.js";
@@ -10,12 +11,24 @@ import { collectDaemonClientEnvOverrides, mergeDaemonClientEnvironment, captureR
 const session = (config: AgenCConfig = {}, env = {}, lightMode = true) => ({ services: {
   configStore: { current: () => config }, providerEnvironment: env, runtimeOptions: { lightMode },
 } });
+const headless = (config: AgenCConfig = {}, env = {}) => ({ services: {
+  configStore: { current: () => config }, providerEnvironment: env, runtimeOptions: { lightMode: true, nonInteractive: true },
+} });
 
 describe("Light request configuration", () => {
   test("defaults native DeepSeek Light to lean with tool search on; an explicit choice wins", () => {
     expect(DEFAULT_LIGHT_REQUEST).toBe("lean");
-    expect(resolveLightRequest(session(), "deepseek")).toEqual({ ...LEAN_REQUEST_DEFAULTS, ...DEFAULT_LEAN_OVERRIDES });
+    // Interactive: lean with tool search, editing through Write and apply_patch so changes show as diffs.
+    expect(resolveLightRequest(session(), "deepseek"))
+      .toEqual({ ...LEAN_REQUEST_DEFAULTS, ...DEFAULT_LEAN_OVERRIDES, ...DEFAULT_LEAN_INTERACTIVE_OVERRIDES });
     expect(resolveLightRequest(session(), "deepseek")?.tool_search).toBe(true);
+    expect(resolveLightRequest(session(), "deepseek")?.edit_mode).toBe("tools");
+    // Headless: the measured shell edits.
+    expect(resolveLightRequest(headless(), "deepseek")).toEqual({ ...LEAN_REQUEST_DEFAULTS, ...DEFAULT_LEAN_OVERRIDES });
+    expect(resolveLightRequest(headless(), "deepseek")?.edit_mode).toBe("shell");
+    // An explicit lean keeps the measured profile in both.
+    expect(resolveLightRequest(session({ light_request: "lean" }), "deepseek")?.edit_mode).toBe("shell");
+    expect(resolveLightRequest(headless({ light_request: "lean" }), "deepseek")).toEqual(LEAN_REQUEST_DEFAULTS);
     expect(resolveLightRequest(session({ light_request: "lean" }), "deepseek")).toEqual(LEAN_REQUEST_DEFAULTS);
     expect(resolveLightRequest(session({ light_request: "full" }), "deepseek")).toBeUndefined();
     expect(resolveLightRequest(session({}, { AGENC_LIGHT_REQUEST: "full" }), "deepseek")).toBeUndefined();
@@ -32,7 +45,9 @@ describe("Light request configuration", () => {
 
   test("options apply on top of the default profile too", () => {
     expect(resolveLightRequest(session({ light_request_options: { tool_search: false, edit_mode: "tools" } }), "deepseek"))
-      .toEqual({ ...LEAN_REQUEST_DEFAULTS, ...DEFAULT_LEAN_OVERRIDES, tool_search: false, edit_mode: "tools" });
+      .toEqual({ ...LEAN_REQUEST_DEFAULTS, ...DEFAULT_LEAN_OVERRIDES, ...DEFAULT_LEAN_INTERACTIVE_OVERRIDES,
+        tool_search: false, edit_mode: "tools" });
+    expect(resolveLightRequest(headless({ light_request_options: { edit_mode: "check" } }), "deepseek")?.edit_mode).toBe("check");
   });
 
   test("captures the client override and validates it at config ingress", () => {
