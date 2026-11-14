@@ -14,6 +14,7 @@
  */
 
 import { readBodyBounded, type BoundedBody } from "../shared/bounded-body.js";
+import { waitForDeepSeekToolSlot } from "./tool-rate-limit.js";
 import {
   clip,
   deepSeekHttpFailureReason,
@@ -134,7 +135,12 @@ export type DeepSeekSearchOutcome =
       readonly billed: true;
     }
   | { readonly kind: "empty"; readonly billed: false }
-  | { readonly kind: "failed"; readonly reason: string; readonly billed: false };
+  | {
+      readonly kind: "failed";
+      readonly reason: string;
+      /** Null after an unreadable HTTP 200. */
+      readonly billed: false | null;
+    };
 
 /** Summaries are page extracts in Markdown; heading marks only cost tokens. */
 function summaryText(value: unknown): string | undefined {
@@ -197,6 +203,8 @@ export interface DeepSeekSearchRequest {
   readonly timeoutMs?: number;
   /** Proxy/TLS options for the session environment (`getProxyFetchOptions`). */
   readonly fetchOptions?: Readonly<Record<string, unknown>>;
+  /** Standalone tools share a process-wide account rate budget. */
+  readonly rateLimit?: boolean;
 }
 
 /**
@@ -212,14 +220,15 @@ export async function runDeepSeekSearch(
   const signal = request.signal
     ? AbortSignal.any([request.signal, timeout])
     : timeout;
-  const failed = (reason: string): DeepSeekSearchOutcome => ({
+  const failed = (reason: string, billed: false | null = false): DeepSeekSearchOutcome => ({
     kind: "failed",
     reason,
-    billed: false,
+    billed,
   });
-  let status: number;
+  let status: number | undefined;
   let body: BoundedBody;
   try {
+    if (request.rateLimit) await waitForDeepSeekToolSlot("search", signal);
     const response = await fetch(request.endpoint, {
       ...(request.fetchOptions ?? {}),
       method: "POST",
@@ -241,18 +250,20 @@ export async function runDeepSeekSearch(
     body = await readBodyBounded(response, DEEPSEEK_SEARCH_MAX_RESPONSE_BYTES, signal);
   } catch (error) {
     request.signal?.throwIfAborted();
-    if (timeout.aborted) return failed(deepSeekTimeoutReason(timeoutMs));
-    return failed(deepSeekRequestFailureReason(error, request.apiKey));
+    const billed = status === 200 ? null : false;
+    if (timeout.aborted) return failed(deepSeekTimeoutReason(timeoutMs), billed);
+    return failed(deepSeekRequestFailureReason(error, request.apiKey), billed);
   }
   if (status !== 200) return failed(deepSeekHttpFailureReason(status, body.text, request.apiKey));
-  if (body.overflow) return failed("response too large");
+  // A successful response may already be billed even if its body is unusable locally.
+  if (body.overflow) return failed("response too large", null);
   let parsed: ReturnType<typeof parseDeepSeekSearchResults>;
   try {
     parsed = parseDeepSeekSearchResults(JSON.parse(body.text));
   } catch {
     parsed = undefined;
   }
-  if (parsed === undefined) return failed("malformed response");
+  if (parsed === undefined) return failed("malformed response", null);
   if (parsed.resultCount === 0) return { kind: "empty", billed: false };
   return { kind: "results", hits: parsed.hits, billed: true };
 }

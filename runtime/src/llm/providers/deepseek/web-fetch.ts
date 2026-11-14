@@ -20,6 +20,7 @@
 
 import { sleep } from "../../../utils/sleep.js";
 import { readBodyBounded, type BoundedBody } from "../shared/bounded-body.js";
+import { waitForDeepSeekToolSlot } from "./tool-rate-limit.js";
 import { providerFetchSkipReason } from "../shared/provider-fetch-url.js";
 import {
   clip,
@@ -39,8 +40,8 @@ export const DEEPSEEK_WEB_FETCH_ENV = "AGENC_DEEPSEEK_WEB_FETCH";
 /**
  * Price of one successful fetch: $0.75 per 1,000. DeepSeek bills a request
  * that returns HTTP 200 with page content; failures, empty pages and
- * timeouts are free. AgenC counts a fetch only once it holds non-empty page
- * content.
+ * upstream timeouts are free. A successful response that cannot be read or
+ * parsed locally leaves billing unknown.
  */
 export const DEEPSEEK_FETCH_USD_PER_REQUEST = 0.00075;
 
@@ -134,12 +135,14 @@ export type DeepSeekFetchOutcome =
   | {
       readonly kind: "failed";
       readonly reason: string;
-      /** Never billed: AgenC holds no page content. */
-      readonly billed: false;
+      /** Null when HTTP 200 arrived but its billable content could not be verified. */
+      readonly billed: false | null;
       readonly attempts: number;
     };
 
 export interface DeepSeekFetchRequest {
+  /** Standalone tools share a process-wide account rate budget. */
+  readonly rateLimit?: boolean;
   /** From {@link deepSeekFetchEndpoint}. */
   readonly endpoint: string;
   /** The session's own DeepSeek key, sent only to the session's DeepSeek host. */
@@ -201,10 +204,10 @@ export async function runDeepSeekFetch(
   const signal = request.signal
     ? AbortSignal.any([request.signal, timeout])
     : timeout;
-  const failed = (reason: string, attempts: number): DeepSeekFetchOutcome => ({
+  const failed = (reason: string, attempts: number, billed: false | null = false): DeepSeekFetchOutcome => ({
     kind: "failed",
     reason,
-    billed: false,
+    billed,
     attempts,
   });
   const transportReason = (error: unknown): string => {
@@ -216,6 +219,7 @@ export async function runDeepSeekFetch(
   for (let attempt = 1; ; attempt += 1) {
     let response: Response;
     try {
+      if (request.rateLimit) await waitForDeepSeekToolSlot("fetch", signal);
       response = await fetch(request.endpoint, {
         ...(request.fetchOptions ?? {}),
         method: "POST",
@@ -254,15 +258,15 @@ export async function runDeepSeekFetch(
       continue;
     }
 
-    // HTTP 200. Only a page AgenC holds and can use counts as billed: a body
-    // that stalls, breaks off, is too large or carries no content does not.
+    // HTTP 200 can be billed even when the local response limit or transport
+    // prevents us from reading it. Only a verified empty body is known free.
     let raw: BoundedBody;
     try {
       raw = await readBodyBounded(response, DEEPSEEK_FETCH_MAX_RESPONSE_BYTES, signal);
     } catch (error) {
-      return failed(transportReason(error), attempt);
+      return failed(transportReason(error), attempt, null);
     }
-    if (raw.overflow) return failed("response too large", attempt);
+    if (raw.overflow) return failed("response too large", attempt, null);
     let page: Record<string, unknown> | undefined;
     try {
       page = record(JSON.parse(raw.text));
@@ -270,7 +274,7 @@ export async function runDeepSeekFetch(
       page = undefined;
     }
     if (page === undefined || typeof page.content !== "string") {
-      return failed("malformed response", attempt);
+      return failed("malformed response", attempt, null);
     }
     if (page.content.trim().length === 0) return { kind: "empty", billed: false, attempts: attempt };
     const fullTitle = typeof page.title === "string" ? page.title.replace(/\s+/gu, " ").trim() : "";

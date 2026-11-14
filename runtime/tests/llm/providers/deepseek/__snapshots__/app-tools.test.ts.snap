@@ -1,0 +1,57 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`DeepSeek App tools > declares server tools beside local functions and removes ignored controls 1`] = `
+{
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "content": "Read https://example.com",
+      "role": "user",
+    },
+  ],
+  "model": "deepseek-flash",
+  "stream": false,
+  "thinking": {
+    "type": "enabled",
+  },
+  "tool_choice": "auto",
+  "tools": [
+    {
+      "function": {
+        "description": "exec_command",
+        "name": "exec_command",
+        "parameters": {
+          "properties": {
+            "path": {
+              "type": "string",
+            },
+          },
+          "type": "object",
+        },
+      },
+      "type": "function",
+    },
+    {
+      "function": {
+        "description": "FileRead",
+        "name": "FileRead",
+        "parameters": {
+          "properties": {
+            "path": {
+              "type": "string",
+            },
+          },
+          "type": "object",
+        },
+      },
+      "type": "function",
+    },
+    {
+      "type": "deepseek_web_search",
+    },
+    {
+      "type": "deepseek_read_url",
+    },
+  ],
+}
+`;

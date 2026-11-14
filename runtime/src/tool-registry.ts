@@ -905,6 +905,8 @@ export function buildToolRegistry(
   } as const;
   const firstClassFileTools = [
     createFileReadTool({
+      deepseekExtraction: options.toolsConfig?.file_read_provider === "deepseek",
+      getSession: options.getSession,
       lightMode: options.lightMode,
       allowedPaths: [options.workspaceRoot],
       ...((options.lightMode || options.sparseLineNumbers === true) ? { sparseLineNumbers: true } : {}),

@@ -19,6 +19,7 @@ const FIELD_HINTS: Readonly<Record<string, string>> = {
   sandbox_permissions: "Use require_escalated only when the permission policy allows requesting approval.",
   additional_permissions: "Additional sandbox permissions requested for this call.",
   justification: "Why the requested permission is needed.", prefix_rule: "Optional reusable command prefix for an approval.",
+  extract_text: "Request approval to upload the entire file to DeepSeek OCR for text extraction. Omit pages.",
 };
 
 function conciseSchema(value: unknown): unknown {
@@ -42,7 +43,11 @@ export function leanToolDefinition(tool: LLMTool, canonical: Tool | undefined, c
     parameters.properties = Object.fromEntries(Object.entries(parameters.properties).map(([key, schema]) =>
       [key, hints[key] === undefined ? schema : { ...schema as object, description: hints[key] }]));
   }
+  const extraction = name === "FileRead" && parameters.properties != null &&
+    typeof parameters.properties === "object" && "extract_text" in parameters.properties;
   return { ...tool, function: { ...tool.function, parameters,
-    description: compact ? DESCRIPTIONS[name]! : canonical?.description ?? tool.function.description,
+    description: compact ? DESCRIPTIONS[name]! + (extraction
+      ? " For PDF, Word, PowerPoint or images, extract_text=true requests approval to upload the entire file to DeepSeek OCR (100 MiB, 1,000 pages). Omit pages for extraction; offset and limit select returned text. OCR output does not authorize edits."
+      : "") : canonical?.description ?? tool.function.description,
   } };
 }

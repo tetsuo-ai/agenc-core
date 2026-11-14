@@ -278,28 +278,28 @@ describe("runDeepSeekFetch", () => {
     });
   });
 
-  it("reports a host without the Fetch API, a malformed body and a missing content field unbilled", async () => {
+  it("distinguishes rejected requests from successful responses with unknown billing", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>not found</html>", { status: 404 })));
     await expect(runDeepSeekFetch({ endpoint: "http://127.0.0.1:1/v1/tools/fetch", apiKey: "k", url: "https://example.com/" }))
       .resolves.toEqual({ kind: "failed", reason: "HTTP 404", billed: false, attempts: 1 });
 
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{not json", { status: 200 })));
     await expect(runDeepSeekFetch({ endpoint: ENDPOINT, apiKey: "k", url: "https://example.com/" }))
-      .resolves.toEqual({ kind: "failed", reason: "malformed response", billed: false, attempts: 1 });
+      .resolves.toEqual({ kind: "failed", reason: "malformed response", billed: null, attempts: 1 });
 
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(200, { title: "No content field" })));
     await expect(runDeepSeekFetch({ endpoint: ENDPOINT, apiKey: "k", url: "https://example.com/" }))
-      .resolves.toEqual({ kind: "failed", reason: "malformed response", billed: false, attempts: 1 });
+      .resolves.toEqual({ kind: "failed", reason: "malformed response", billed: null, attempts: 1 });
   });
 
-  it("leaves a page above the response cap to the local fetcher, unbilled", async () => {
+  it("leaves a page above the response cap to the local fetcher with unknown billing", async () => {
     vi.stubGlobal("fetch", vi.fn(async () =>
       new Response("{}", { status: 200, headers: { "content-length": "9000000" } })));
     await expect(runDeepSeekFetch({ endpoint: ENDPOINT, apiKey: "k", url: "https://example.com/" }))
-      .resolves.toEqual({ kind: "failed", reason: "response too large", billed: false, attempts: 1 });
+      .resolves.toEqual({ kind: "failed", reason: "response too large", billed: null, attempts: 1 });
   });
 
-  it("does not bill a 200 whose body stalls or breaks off before the page arrives", async () => {
+  it("keeps billing unknown for a 200 whose body stalls or breaks off", async () => {
     const encoder = new TextEncoder();
     const stalled = () => new Response(new ReadableStream<Uint8Array>({
       start(controller) {
@@ -310,7 +310,7 @@ describe("runDeepSeekFetch", () => {
     vi.stubGlobal("fetch", vi.fn(async () => stalled()));
     await expect(
       runDeepSeekFetch({ endpoint: ENDPOINT, apiKey: "k", url: "https://example.com/", timeoutMs: 40 }),
-    ).resolves.toEqual({ kind: "failed", reason: "timed out after 40ms", billed: false, attempts: 1 });
+    ).resolves.toEqual({ kind: "failed", reason: "timed out after 40ms", billed: null, attempts: 1 });
 
     const broken = () => new Response(new ReadableStream<Uint8Array>({
       start(controller) {
@@ -320,7 +320,7 @@ describe("runDeepSeekFetch", () => {
     }), { status: 200, headers: { "content-type": "application/json" } });
     vi.stubGlobal("fetch", vi.fn(async () => broken()));
     await expect(runDeepSeekFetch({ endpoint: ENDPOINT, apiKey: "k", url: "https://example.com/" }))
-      .resolves.toEqual({ kind: "failed", reason: "request failed: terminated", billed: false, attempts: 1 });
+      .resolves.toEqual({ kind: "failed", reason: "request failed: terminated", billed: null, attempts: 1 });
   });
 
   it("caps the title and says when it did", async () => {

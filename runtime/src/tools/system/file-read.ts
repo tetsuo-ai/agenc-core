@@ -1,3 +1,6 @@
+import { deepSeekDocumentMaxCost, DEEPSEEK_DOCUMENT_EXTENSIONS, readFileThroughDeepSeek } from "./file-read-deepseek.js";
+import { observeFileTarget } from "../bound-targets.js";
+import type { ToolCallSession } from "./session-provider-authority.js";
 import { sideEffectFreeTool } from "../side-effect-free.js";
 /**
  * `FileRead` — first-class file reading tool for AgenC.
@@ -307,6 +310,9 @@ const fileReadDescription = (sparse: boolean): string => `Read a file: text, ima
 
 /** Tool factory configuration. */
 export interface FileReadToolConfig {
+  /** Explicit opt-in; only extract_text calls may upload. */
+  readonly deepseekExtraction?: boolean;
+  readonly getSession?: () => ToolCallSession | null;
   readonly lightMode?: boolean;
   /**
    * Allowed path prefixes (required — no default). Same shape as the
@@ -1612,6 +1618,7 @@ interface FileReadInput extends ToolExecutionInjectedArgs {
   readonly limit?: unknown;
   readonly pages?: unknown;
   readonly dense_line_numbers?: unknown;
+  readonly extract_text?: unknown;
   readonly cwd?: unknown;
   readonly __agencSessionId?: unknown;
 }
@@ -1625,9 +1632,12 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
     config.maxNotebookBytes ?? DEFAULT_MAX_NOTEBOOK_BYTES;
   const sparseLineNumbers = config.lightMode === true || config.sparseLineNumbers === true;
 
-  return sideEffectFreeTool({
+  const extractionEnabled = config.deepseekExtraction === true;
+  const tool: Tool = {
     name: FILE_READ_TOOL_NAME,
-    description: fileReadDescription(sparseLineNumbers),
+    description: fileReadDescription(sparseLineNumbers) + (extractionEnabled
+      ? "\nFor Word, PowerPoint, scanned PDFs, or images needed as text, set extract_text=true to request an approved upload of the entire file to DeepSeek OCR (100 MiB, 1,000 pages). Excel needs local reading or conversion to PDF."
+      : ""),
     metadata: {
       family: "filesystem",
       source: "builtin",
@@ -1638,11 +1648,18 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       deferred: false,
     },
     isReadOnly: true,
-    recoveryCategory: "idempotent",
+    recoveryCategory: extractionEnabled ? "side-effecting" : "idempotent",
     requiresApproval: false,
+    ...(extractionEnabled ? {
+      admissionEstimate: (args: Readonly<Record<string, unknown>>) => ({ maxInputTokens: 0, maxOutputTokens: 0,
+        maxCostUsd: args.extract_text === true ? deepSeekDocumentMaxCost() : 0 }),
+      observeTargets: (args: Readonly<Record<string, unknown>>) => args.extract_text === true && typeof args.file_path === "string"
+        ? [observeFileTarget(resolve(typeof args.cwd === "string" ? args.cwd : config.allowedPaths[0] ?? process.cwd(), args.file_path))] : [],
+    } : {}),
     inputSchema: {
       type: "object",
       properties: {
+        ...(extractionEnabled ? { extract_text: { type: "boolean", description: "Request approval to upload the entire file to DeepSeek OCR for text extraction. No page-range upload is supported." } } : {}),
         file_path: {
           type: "string",
           description: FILE_TOOL_PATH_SCHEMA,
@@ -1681,6 +1698,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
           message: "file_path must be a non-empty string",
         };
       }
+      if (args.extract_text === true && !extractionEnabled) return { behavior: "deny", message: "DeepSeek file extraction is disabled.", decisionReason: { type: "other", reason: "file extraction disabled" } };
       const cwd =
         typeof args.cwd === "string" && args.cwd.length > 0
           ? args.cwd
@@ -1703,7 +1721,14 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         // its memory prompt names.
         durableMemory: sessionDurableMemoryDirectoriesOf(context.session, cwd),
       });
-      if (decision.behavior !== "allow") return decision;
+      if (decision.behavior !== "allow") {
+        if (args.extract_text === true && decision.behavior === "ask") return {
+          ...decision,
+          message: `${decision.message} This also uploads the entire file to DeepSeek OCR ($0.000225 per page, at most 100 MiB and 1,000 pages).`,
+          decisionReason: { type: "safetyCheck", reason: "local file upload to DeepSeek", classifierApprovable: false },
+        };
+        return decision;
+      }
 
       const currentInput =
         decision.updatedInput &&
@@ -1714,6 +1739,13 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       const absolutePath = isAbsolute(filePath)
         ? filePath
         : resolve(cwd, filePath);
+      if (args.extract_text === true) return {
+        behavior: "ask",
+        message: `Upload the entire file ${filePath} to DeepSeek OCR for text extraction? Limit: 100 MiB and 1,000 pages. $0.000225 per page; recognition can finish and be billed after cancellation.`,
+        updatedInput: withSignedAllowedRoots(currentInput, [dirname(absolutePath)]),
+        // A blanket FileRead read grant must not silently become an upload grant.
+        decisionReason: { type: "safetyCheck", reason: "local file upload to DeepSeek", classifierApprovable: false },
+      };
       return {
         ...decision,
         updatedInput: withSignedAllowedRoots(currentInput, [
@@ -1723,6 +1755,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as FileReadInput;
+      if (args.extract_text === true && !extractionEnabled) return errorResult("DeepSeek file extraction is disabled. No file was uploaded.");
       const filePath = typeof args.file_path === "string" ? args.file_path : "";
       if (filePath.trim().length === 0) {
         return errorResult("file_path must be a non-empty string");
@@ -1742,9 +1775,9 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       // Pre-flight: any other binary extension is rejected *before* we
       // even resolve the path, so the model gets an actionable error
       // identical to AgenC's `errorCode: 4` branch.
-      if (!isImage && !isPdf && hasBinaryExtension(filePath)) {
+      if (args.extract_text !== true && !isImage && !isPdf && hasBinaryExtension(filePath)) {
         return errorResult(
-          `This tool cannot read binary files. The file appears to be a binary ${ext} file. Use a different tool for binary file analysis.`,
+          `This tool cannot read binary files. The file appears to be a binary ${ext} file. Use a different tool for binary file analysis.${extractionEnabled && DEEPSEEK_DOCUMENT_EXTENSIONS.has(ext) ? " Or request extract_text=true for an approved DeepSeek OCR upload." : ""}`,
         );
       }
 
@@ -1775,6 +1808,14 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
 
       try {
         readGuard();
+        if (args.extract_text === true) {
+          if (guardedRead) return errorResult("External file extraction is unavailable under delegated read authority.");
+          if (isPdf && (await getPDFPageCount(resolved.canonical, rawArgs) ?? 0) > 1000) {
+            return errorResult("DeepSeek OCR accepts at most 1,000 pages. No file was uploaded.");
+          }
+          return await readFileThroughDeepSeek({ absolute: resolved.absolute, canonical: resolved.canonical, args: rawArgs,
+            getSession: config.getSession ?? (() => null), maxTextBytes, maxTokens, offset, limit, readGuard });
+        }
         if (guardedRead && isPdf) {
           return errorResult(
             "PDF extraction is unavailable under delegated read authority because the external PDF helper cannot use a held file descriptor portably.",
@@ -1868,7 +1909,8 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         await boundRead?.dispose();
       }
     },
-  });
+  };
+  return extractionEnabled ? tool : sideEffectFreeTool(tool);
 }
 
 /**

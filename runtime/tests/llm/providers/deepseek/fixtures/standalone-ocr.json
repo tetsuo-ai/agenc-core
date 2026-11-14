@@ -1,0 +1,19 @@
+{
+  "created": 1794604381,
+  "id": "ocr-b4e3f682-72fe-4de2-8502-3ffd4ec3793f",
+  "object": "ocr.result",
+  "page_count": 1,
+  "pages": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "text": "[synthetic document text redacted]"
+    }
+  ],
+  "purpose": "text_recognition",
+  "usage": {
+    "input_tokens": 401,
+    "output_tokens": 7,
+    "total_tokens": 408
+  }
+}
