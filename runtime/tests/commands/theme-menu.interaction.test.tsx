@@ -163,7 +163,7 @@ describe("/theme picker", () => {
     // Only the highlighted row carries the marker.
     expect(rows.filter((row) => row.includes("›"))).toHaveLength(1);
     // A sample conversation under the list, drawn with the message and diff components.
-    for (const row of ["preview", "❯Fixtheloginredirect", '12-returnredirect("/")', "12+returnredirect(next)"]) {
+    for (const row of ["preview", "Fixtheloginredirect", '12-returnredirect("/")', "12+returnredirect(next)"]) {
       expect(rows).toContain(row);
     }
     // The default is auto; with no measured background it shows olive.

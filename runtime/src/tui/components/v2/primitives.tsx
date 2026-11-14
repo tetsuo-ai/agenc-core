@@ -1093,12 +1093,19 @@ export function Msg({
   const glyphColor: ThemeColor =
     role === 'user' || role === 'agenc' ? 'accent' : colors[role]
   const showLabel = label !== undefined && role !== 'agenc'
+  // A sent prompt sits on the same band as the input box it came from, so it
+  // shows only its text: no ❯, and the empty glyph slot keeps the text in the
+  // input's column. A queued preview and a labeled user item (command, skill,
+  // image) keep the ❯.
+  const showGlyph = !(role === 'user' && label === undefined && !isQueued)
   return (
     <Box flexDirection="row" flexGrow={1}>
       <Box width={2} flexShrink={0}>
-        <ThemedText color={glyphColor} bold={role === 'user'}>
-          {glyph}
-        </ThemedText>
+        {showGlyph ? (
+          <ThemedText color={glyphColor} bold={role === 'user'}>
+            {glyph}
+          </ThemedText>
+        ) : null}
       </Box>
       <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
         {showLabel || time !== undefined || isQueued ? (

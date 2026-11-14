@@ -87,8 +87,8 @@ export default async function (session) {
   picture = rows.join("\n");
   assert.ok(!rows.some((row) => row.includes(HINT)), `the queue is still shown after it was sent:\n${picture}`);
   assert.ok(!rows.some((row) => row.startsWith(`${INSET}next`)), `the band still holds the queue header:\n${picture}`);
-  const sentFirst = rows.findIndex((row) => row.includes(`❯ ${FIRST}`));
+  const sentFirst = rows.findIndex((row) => row.trimStart().startsWith(FIRST));
   assert.ok(sentFirst >= 0, `the first queued input was not sent from its first character:\n${picture}`);
-  const sentSecond = rows.findIndex((row) => row.includes("❯ check now ✅"));
+  const sentSecond = rows.findIndex((row) => row.trimStart().startsWith("check now ✅"));
   assert.ok(sentSecond > sentFirst, `the second queued input was not sent after the first:\n${picture}`);
 }
