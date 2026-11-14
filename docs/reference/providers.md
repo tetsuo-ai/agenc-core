@@ -411,6 +411,15 @@ require `finish_reason: "tool_calls"` before dispatch. This follows Meta's
 Per-token prices for every registered Muse model come from Meta's
 [pricing page](https://dev.meta.ai/docs/pricing-rate-limits).
 
+Registered Meta reasoning models can think silently for more than five
+minutes before sending headers or more body bytes. Their Chat Completions
+and Responses calls, streaming and non-streaming, use 20 minute header and
+body silence limits instead of Node fetch's five-minute limits. A request
+with a longer limit, or no limit, keeps it. The wrapper delegates to the same
+pool, preserving proxy, TLS and DNS policy. Provider and per-call timeouts,
+the stream watchdog, user cancellation and run deadlines still apply.
+Unregistered models and other providers keep their existing transport.
+
 Muse Wonder (`muse-wonder-1.0`) uses Meta's Responses API. It is the only Meta
 surface that carries the model's reasoning from one turn to the next; Chat
 Completions redacts reasoning for external keys
