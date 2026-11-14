@@ -296,11 +296,11 @@ describe("the Token Plan preview retirement", () => {
     "retires %s independently of the OpenRouter snapshot",
     (model) => {
       expect(findBundledModelCatalogEntry({ provider: "qwen-token-plan", model }))
-        .toMatchObject({ provider: "qwen-token-plan", model, retiresOn: "2026-11-26" });
-      expect(retiredBundledModel("qwen-token-plan", model, at("2026-11-25", "23:59:59.999")))
+        .toMatchObject({ provider: "qwen-token-plan", model, retiresOn: "2026-11-25" });
+      expect(retiredBundledModel("qwen-token-plan", model, at("2026-11-24", "23:59:59.999")))
         .toBeUndefined();
-      expect(retiredBundledModel("qwen-token-plan", model, at("2026-11-26", "00:00:00.000")))
-        .toEqual({ model, retiredOn: "2026-11-26" });
+      expect(retiredBundledModel("qwen-token-plan", model, at("2026-11-25", "00:00:00.000")))
+        .toEqual({ model, retiredOn: "2026-11-25" });
     },
   );
 });

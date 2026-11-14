@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAdmittedMemorySelector } from "../../src/memory/admitted-selector.js";
 import { assertProviderStructuredOutputCompatibility } from "../../src/llm/provider-capabilities.js";
+import { QwenTokenPlanProvider } from "../../src/llm/providers/qwen/index.js";
 import type { Session } from "../../src/session/session.js";
 import type { MemorySelectorRequest } from "../../src/memory/recall-contract.js";
 
@@ -10,6 +11,27 @@ const request: MemorySelectorRequest = {
 };
 
 describe("memory selector capability selection", () => {
+  it.each(["qwen4-max-preview", "qwen4.0-max-preview"])("refuses %s before admission or fetch", async model => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new QwenTokenPlanProvider({ model, apiKey: "fixture", fetchImpl });
+    const validateRequest = vi.spyOn(provider, "validateRequest");
+    const chat = vi.spyOn(provider, "chat");
+    const emit = vi.fn(), acquire = vi.fn();
+    const session = { conversationId: "session", modelInfo: { slug: model },
+      services: { provider, executionAdmission: { acquire } },
+      emit, nextInternalSubId: () => "selector",
+    } as unknown as Session;
+    for (let round = 0; round < 2; round++) {
+      await expect(createAdmittedMemorySelector(session).select(request, new AbortController().signal))
+        .resolves.toEqual({ kind: "unavailable", diagnostic: "local_provider_capability_rejection" });
+    }
+    expect(validateRequest).toHaveBeenCalledOnce();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(chat).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledOnce();
+  });
+
   it("remembers DeepSeek incompatibility for the session before creating admitted work", async () => {
     const emit = vi.fn(), acquire = vi.fn(), chat = vi.fn();
     const validateRequest = vi.fn(() => assertProviderStructuredOutputCompatibility({

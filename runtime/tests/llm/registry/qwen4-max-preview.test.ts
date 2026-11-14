@@ -1,24 +1,39 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { childModelProfile } from "../../../src/agents/provider-selector-profiles.js";
 import { modelCapabilityTags } from "../../../src/commands/model-capability-tags.js";
+import { readModelMenuSnapshot } from "../../../src/commands/model-menu-snapshot.js";
+import { readProvidersHubModels } from "../../../src/commands/providers-hub-snapshot.js";
+import type { SlashCommandContext } from "../../../src/commands/types.js";
+import { resolveHomeContext } from "../../../src/config/home.js";
 import { buildProviderModelCatalog, resolveProviderModelInput } from "../../../src/config/provider-model-authority.js";
 import { resolveProviderModelCapabilities } from "../../../src/llm/capabilities.js";
 import { ModelMetadataResolver } from "../../../src/llm/model-metadata.js";
+import { assertModelCatalogSelection } from "../../../src/llm/model-catalog-selection.js";
+import { LLMCapabilityError } from "../../../src/llm/errors.js";
 import { QwenProvider, QwenTokenPlanProvider } from "../../../src/llm/providers/qwen/index.js";
 import { resolveReasoningEffort } from "../../../src/llm/reasoning-effort.js";
 import { resolveRegisteredModelCatalogEntry } from "../../../src/llm/registry/model-catalog.js";
-import { getTokenizerConfigForProvider, roughTokenCountEstimationForProvider } from "../../../src/llm/token-estimation.js";
+import { resolveProviderStructuredOutputMode } from "../../../src/llm/structured-output.js";
+import { roughTokenCountEstimationForProvider } from "../../../src/llm/token-estimation.js";
 import type { LLMChatOptions, LLMMessage, LLMTool } from "../../../src/llm/types.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../../src/llm/wire/capability-gating.js";
 import { buildChatCompletionsRequest } from "../../../src/llm/wire/chat-completions.js";
 import { computeUsdCostWithResolution, DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../../../src/session/cost.js";
 import { resolveSessionReasoningEffort } from "../../../src/session/session-reasoning-effort.js";
+import { reasoningEffortForModel } from "../../../src/session/reasoning-effort-for-model.js";
+import { resolveProviderModelSelection } from "../../../src/session/provider-model-selection.js";
+import * as effortSettings from "../../../src/utils/effort.js";
 
 const provider = "qwen-token-plan";
 const canonical = "qwen4-max-preview";
 const alias = "qwen4.0-max-preview";
 const ids = [canonical, alias] as const;
-const efforts = ["low", "medium", "xhigh"] as const;
+const efforts = ["none", "minimal", "low", "medium", "xhigh"] as const;
+const lowEffortCases = ids.flatMap(model => (["none", "minimal"] as const).map(effort => ({ model, effort })));
+const homes: string[] = [];
 const tool: LLMTool = { type: "function", function: {
   name: "echo", description: "Echo", parameters: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
 } };
@@ -38,12 +53,19 @@ function fixture(model: string) {
 }
 
 describe("Qwen4 Max Preview, documentation checked 2026-11-13, no live calls", () => {
+  beforeEach(() => vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-14T00:00:00Z") }));
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    for (const path of homes.splice(0)) rmSync(path, { recursive: true, force: true });
+  });
+
   it.each(ids)("registers the exact Token Plan contract for %s", model => {
     expect(resolveRegisteredModelCatalogEntry({ provider, model })).toMatchObject({
       model, displayName: "Qwen4 Max Preview", contextWindow: 1_000_000, maxContextWindow: 1_000_000,
       maxOutputTokens: 393_216, inputModalities: ["text", "image"], supportsToolUse: true,
-      supportsParallelToolCalls: true, supportsStructuredOutput: true, supportsSearchTool: false,
-      supportedReasoningLevels: efforts, defaultReasoningLevel: "xhigh", retiresOn: "2026-11-26",
+      supportsParallelToolCalls: true, supportsStructuredOutput: false, supportsSearchTool: false,
+      supportedReasoningLevels: efforts, defaultReasoningLevel: "xhigh", retiresOn: "2026-11-25",
       visibility: model === canonical ? "list" : "none",
     });
     expect(resolveRegisteredModelCatalogEntry({ provider: "qwen", model })).toBeUndefined();
@@ -56,7 +78,48 @@ describe("Qwen4 Max Preview, documentation checked 2026-11-13, no live calls", (
     expect(catalog[provider]?.filter(id => ids.includes(id as typeof canonical))).toEqual([canonical]);
     expect(catalog.qwen).not.toContain(canonical);
     expect(catalog.qwen).not.toContain(alias);
-    expect(modelCapabilityTags(provider, canonical)).toBe("vision · thinking · retires 2026-11-26");
+    expect(modelCapabilityTags(provider, canonical)).toBe("vision · thinking · retires 2026-11-25");
+  });
+
+  it.each([
+    ["2026-11-24T23:59:59.999Z", false],
+    ["2026-11-25T00:00:00.000Z", true],
+    ["2026-11-25T16:00:00.000Z", true],
+    ["2026-11-26T00:00:00.000Z", true],
+    ["2027-01-01T00:00:00.000Z", true],
+  ] as const)("offers and admits the preview only before Core's UTC retirement date at %s", (now, retired) => {
+    vi.setSystemTime(new Date(now));
+    const path = mkdtempSync(join(tmpdir(), "qwen4-retirement-"));
+    homes.push(path);
+    const environment = { AGENC_HOME: path };
+    const context = { argsRaw: "", cwd: path, session: {
+      state: { unsafePeek: () => ({ sessionConfiguration: {
+        provider: { slug: provider }, collaborationMode: { model: "qwen3.8-max" },
+      }, history: [] }) },
+      activeTurn: { unsafePeek: () => null },
+      services: { providerEnvironment: environment, configStore: {
+        homeContext: resolveHomeContext(environment, { platformHome: path }), current: () => ({}),
+      } },
+    } } as unknown as SlashCommandContext;
+    const offered = readModelMenuSnapshot(context).rows
+      .filter(row => row.provider === provider && row.selectable).map(row => row.displayModel);
+    const hub = readProvidersHubModels(context, provider).map(row => row.model);
+    expect(offered.includes(canonical)).toBe(!retired);
+    expect(hub.includes(canonical)).toBe(!retired);
+    expect(offered).not.toContain(alias);
+    expect(hub).not.toContain(alias);
+    for (const model of ids) {
+      expect(modelCapabilityTags(provider, model)).toContain(`${retired ? "retired" : "retires"} 2026-11-25`);
+      const select = () => assertModelCatalogSelection({}, provider, model, {});
+      const switchModel = () => resolveProviderModelSelection({}, { provider, model: "qwen3.8-max" }, { model }, {});
+      if (retired) {
+        expect(select).toThrow(`retired '${model}' on 2026-11-25`);
+        expect(switchModel).toThrow(`retired '${model}' on 2026-11-25`);
+      } else {
+        expect(select).not.toThrow();
+        expect(switchModel()).toMatchObject({ provider, model });
+      }
+    }
   });
 
   it.each(ids)("resolves %s with the full combined output reservation", model => {
@@ -83,14 +146,40 @@ describe("Qwen4 Max Preview, documentation checked 2026-11-13, no live calls", (
     for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
       const body = buildChatCompletionsRequest({ model, messages: [], tools: [],
         options: { reasoningEffort: effort }, providerCapabilityHints: chatCompletionsCapabilityHintsForProvider(provider, model) });
-      expect(body.reasoning_effort).toBe(efforts.includes(effort as typeof efforts[number]) ? effort : undefined);
+      expect(body.reasoning_effort).toBe(effort === "minimal" ? "low"
+        : efforts.includes(effort as typeof efforts[number]) ? effort : undefined);
       expect(body).not.toHaveProperty("thinking_budget");
     }
     expect(resolveSessionReasoningEffort("max", efforts, { provider, model })).toBe("xhigh");
   });
 
+  it.each(lowEffortCases)("preserves configured and carried $effort in $model request bodies", async ({ model, effort }) => {
+    const { instance, body } = fixture(model);
+    const levels = resolveRegisteredModelCatalogEntry({ provider, model })?.supportedReasoningLevels;
+    expect(reasoningEffortForModel({ provider, model, reasoningEffort: effort })).toEqual({ reasoningEffort: effort });
+    vi.spyOn(effortSettings, "getInitialEffortSetting").mockReturnValue(effort);
+    for (const requested of [effort, undefined]) {
+      const resolved = resolveSessionReasoningEffort(requested, levels, { provider, model });
+      expect(resolved).toBe(effort);
+      await instance.chat([{ role: "user", content: "OK" }], { reasoningEffort: resolved });
+      expect(body()).toEqual({ model, stream: false, messages: [{ role: "user", content: "OK" }],
+        max_completion_tokens: 393_216, preserve_thinking: true, reasoning_effort: effort === "minimal" ? "low" : "none" });
+    }
+  });
+
+  it.each(lowEffortCases)("maps $effort on streamed $model request overrides", async ({ model, effort }) => {
+    const { instance, fetchImpl, body } = fixture("qwen3.8-max");
+    fetchImpl.mockImplementation(async () => new Response(
+      `data: ${JSON.stringify({ id: "preview", model, choices: [{ index: 0, delta: { content: "OK" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+      { headers: { "content-type": "text/event-stream" } },
+    ));
+    await instance.chatStream([{ role: "user", content: "OK" }], () => {}, { model, reasoningEffort: effort });
+    expect(body()).toMatchObject({ model, stream: true, reasoning_effort: effort === "minimal" ? "low" : "none" });
+    expect(body()).not.toHaveProperty("thinking_budget");
+    expect(body()).not.toHaveProperty("enable_thinking");
+  });
+
   it.each(ids)("uses the Qwen tokenizer estimate and strong routing prior for %s", model => {
-    expect(getTokenizerConfigForProvider({ provider, model })).toMatchObject({ modelFamily: "qwen", bytesPerToken: 3.8 });
     expect(roughTokenCountEstimationForProvider("x".repeat(380), { provider, model })).toBe(100);
     expect(childModelProfile(provider, model)).toBeDefined();
     expect(childModelProfile(provider, model)).toBe(childModelProfile(provider, "qwen3.8-max"));
@@ -160,16 +249,21 @@ describe("Qwen4 Max Preview, documentation checked 2026-11-13, no live calls", (
     }
   });
 
-  it("keeps images, tools and JSON Schema on the new request", async () => {
+  it("keeps images and tools on the new request", async () => {
     const { instance, body } = fixture(canonical);
     const options: LLMChatOptions = { tools: [tool], toolChoice: "auto", parallelToolCalls: true, reasoningEffort: "low" };
     await instance.chat([{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,YQ==" } }] }], options);
     expect(body()).toMatchObject({ tools: [tool], tool_choice: "auto", parallel_tool_calls: true, reasoning_effort: "low",
       messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,YQ==" } }] }] });
-    await instance.chat([{ role: "user", content: "Return JSON." }], {
+  });
+
+  it.each(ids)("refuses JSON Schema locally for %s before fetching", async model => {
+    const { instance, fetchImpl } = fixture(model);
+    expect(resolveProviderStructuredOutputMode({ provider, model, api: "chat_completions" })).toBe("unsupported");
+    await expect(instance.chat([{ role: "user", content: "Return JSON." }], {
       structuredOutput: { enabled: true, schema: { name: "result", schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false } } },
-    });
-    expect(body().response_format).toMatchObject({ type: "json_schema", json_schema: { name: "result" } });
+    })).rejects.toBeInstanceOf(LLMCapabilityError);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it.each(ids)("streams %s tool calls and replays their thinking in the tool-result round trip", async model => {

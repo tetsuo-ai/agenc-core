@@ -62,6 +62,20 @@ describe("token estimation", () => {
     ).toBe(10);
   });
 
+  test.each([
+    ["ollama", "qwen3:8b"],
+    ["lmstudio", "qwen/qwen3-8b"],
+    ["openrouter", "qwen/qwen3.8-max"],
+    ["qwen-token-plan", "qwen4-max-preview"],
+    ["qwen-token-plan", "qwen4.0-max-preview"],
+  ])("keeps the existing tokenizer row for %s %s", (provider, model) => {
+    // These ids used the shared Llama/Qwen estimate before the preview was added.
+    expect(getTokenizerConfigForProvider({ provider, model })).toBe(
+      getTokenizerConfigForProvider({ model: "llama" }),
+    );
+    expect(roughTokenCountEstimationForProvider("x".repeat(380), { provider, model })).toBe(100);
+  });
+
   test("classifies dense content before estimating bounds", () => {
     expect(detectContentType('{"ok":true}')).toBe("json");
     expect(detectContentType("name,value\nalpha,1\nbeta,2")).toBe("table");
