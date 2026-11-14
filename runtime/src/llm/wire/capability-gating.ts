@@ -55,6 +55,8 @@ export interface ChatCompletionsCapabilityHints {
    * accept flag alone would forward values the destination rejects.
    */
   readonly reasoningEffortAllowedValues?: ReadonlySet<string>;
+  /** Documented effort aliases, applied before the allowed-value check. */
+  readonly reasoningEffortAliases?: Readonly<Partial<Record<string, string>>>;
   /**
    * Effort sent when the session sets none. A DeepSeek model runs at high on
    * DeepSeek's own API by default; gateways default it differently (Ollama
@@ -700,6 +702,9 @@ export function chatCompletionsCapabilityHintsForProvider(
       : {}),
     ...(reasoningEffortAllowedValues !== undefined
       ? { reasoningEffortAllowedValues }
+      : {}),
+    ...(slug === "qwen-token-plan" && isQwen4MaxPreviewModel(model)
+      ? { reasoningEffortAliases: { minimal: "low" } }
       : {}),
     ...(slug === "meta" || isZai
       ? { toolChoicePolicy: "auto_only" as const }

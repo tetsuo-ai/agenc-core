@@ -29,11 +29,16 @@ export const QWEN4_MAX_PREVIEW_MODEL = Object.freeze({
   vision: true,
   thinking: "hybrid",
   totalOutputCap: true,
-  reasoningLevels: Object.freeze(["low", "medium", "xhigh"] as const),
+  // Keep the documented off switch and the minimal compatibility alias in
+  // saved/session choices. The chat wire sends minimal as low.
+  reasoningLevels: Object.freeze(["none", "minimal", "low", "medium", "xhigh"] as const),
   defaultReasoningLevel: "xhigh",
-  supportsStructuredOutput: true,
-  // November 25 at 24:00 UTC+8 is November 26 at 00:00 UTC+8.
-  retiresOn: "2026-11-26",
+  // Singapore JSON Schema support is unverified and the structured-output
+  // guide still excludes the region. Keep the Token Plan's local refusal.
+  supportsStructuredOutput: false,
+  // Alibaba closes at 2026-11-25 16:00 UTC. Core only supports UTC dates,
+  // so retire at the start of that day, 16 hours before the provider closes.
+  retiresOn: "2026-11-25",
 } satisfies QwenCurrentModel);
 
 export const QWEN_TOKEN_PLAN_PREVIEW_MODEL_IDS: readonly string[] = Object.freeze([

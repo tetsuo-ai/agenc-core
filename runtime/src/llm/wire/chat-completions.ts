@@ -862,10 +862,13 @@ export function buildChatCompletionsRequest(
   // adapter-populated; an undefined `acceptsX` flag preserves the
   // pre-hint behavior of "include if caller supplied a value", so
   // unmigrated callers don't regress.
-  const reasoningEffort = input.options?.reasoningEffort ??
+  const requestedReasoningEffort = input.options?.reasoningEffort ??
     (input.options?.disableThinkingForRecovery === true
       ? undefined
       : input.providerCapabilityHints?.defaultReasoningEffort);
+  const reasoningEffort = requestedReasoningEffort === undefined
+    ? undefined
+    : input.providerCapabilityHints?.reasoningEffortAliases?.[requestedReasoningEffort] ?? requestedReasoningEffort;
   if (
     reasoningEffort !== undefined &&
     !disablesThinkingForForcedToolChoice &&

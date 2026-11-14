@@ -22,7 +22,6 @@ import type {
 import { isRecord } from "../utils/record.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
 import { resolveModelCapabilityHints } from "./registry/model-catalog.js";
-import { isQwen4MaxPreviewModel } from "./registry/qwen-token-plan-models.js";
 import {
   isRegisteredMetaChatModel,
   metaModelUsesResponsesApi,
@@ -139,9 +138,6 @@ export function resolveProviderStructuredOutputMode(input: {
     return input.api === "chat_completions"
       ? "chat_response_format"
       : "native_text_format";
-  }
-  if (provider === "qwen-token-plan" && isQwen4MaxPreviewModel(input.model)) {
-    return input.api === "chat_completions" ? "chat_response_format" : "unsupported";
   }
   if (provider === "meta") {
     if (!isRegisteredMetaChatModel(input.model)) return "unsupported";
