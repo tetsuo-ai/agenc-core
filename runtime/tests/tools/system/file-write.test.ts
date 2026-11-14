@@ -24,6 +24,7 @@ import type { ToolResult } from "../types.js";
 import { signedSessionPlanFileArgs } from "../../../src/agents/_deps/filesystem-args.js";
 import { planFileAuthorityFromContext } from "../../../src/planning/session-plan-authority.js";
 import { createFileWriteTool } from "./file-write.js";
+import { validateToolCallDetailed } from "../../../src/llm/types.js";
 import {
   clearSessionReadState,
   getSessionReadSnapshot,
@@ -88,6 +89,23 @@ describe("Write tool", () => {
     const snap = getSessionReadSnapshot(sessionId, target);
     expect(snap?.rawContent).toBe("hello\nworld\n");
     expect(snap?.viewKind).toBe("full");
+  });
+
+  test("writes literal HTML entities after tool argument validation", async () => {
+    const tool = createFileWriteTool({ allowedPaths: [root] });
+    const target = join(root, "entities.html");
+    const content = "<p>&lt; &gt; &amp; &quot; &#39; &amp;lt;</p>\n";
+    const validated = validateToolCallDetailed({
+      id: "write-entities",
+      name: tool.name,
+      arguments: JSON.stringify({ file_path: target, content }),
+    });
+
+    expect(validated.failure).toBeUndefined();
+    const result = await tool.execute(JSON.parse(validated.toolCall!.arguments));
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(target, "utf8")).resolves.toBe(content);
   });
 
   test("creates the active session plan file outside the workspace root", async () => {
