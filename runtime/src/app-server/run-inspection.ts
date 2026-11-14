@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import Database from "better-sqlite3";
+import { openSqliteDatabase } from "../state/sqlite-engine.js";
 import type BetterSqlite3 from "better-sqlite3";
 
 import type {
@@ -1537,7 +1537,7 @@ function withReadonlyStateDatabase<T>(
   paths: StateDatabasePaths,
   fn: (db: BetterSqlite3.Database) => T,
 ): T {
-  const db = new Database(paths.stateDbPath, {
+  const db = openSqliteDatabase(paths.stateDbPath, {
     readonly: true,
     fileMustExist: true,
   });

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyMigrations, openStateDatabasePaths, type StateDatabasePaths } from "./sqlite-driver.js";
 import { STATE_DB_MIGRATIONS } from "./migrations/index.js";
 import { tryInitializeFreshStateSchema } from "./fresh-state-schema.js";
+import { openSqliteDatabase } from "./sqlite-engine.js";
 import { FRESH_STATE_SCHEMA_SQL } from "./fresh-state-schema.generated.js";
 
 let root: string;
@@ -208,4 +209,21 @@ describe("direct fresh state schema", () => {
       expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
     } finally { for (const child of children) if (child.exitCode === null) child.kill(); }
   }, 30_000);
+});
+
+describe("fresh state schema on the built-in engine", () => {
+  it("initializes the same schema as better-sqlite3, custom SQL functions included", () => {
+    vi.stubEnv("AGENC_SQLITE_BACKEND", "node");
+    try {
+      const viaNode = openSqliteDatabase(join(root, "node.sqlite"));
+      connections.push(viaNode);
+      viaNode.pragma("foreign_keys = ON");
+      initialize(viaNode);
+      const viaNative = database(join(root, "native.sqlite"));
+      initialize(viaNative);
+      expect(schema(viaNode)).toEqual(schema(viaNative));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
