@@ -47,6 +47,7 @@ async function lightTurn(providerName: string, model: string, commands: readonly
   };
   const { session } = mkSession({ provider, model, services: {
     runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true, nonInteractive: true }),
+    providerEnvironment: { AGENC_LIGHT_REQUEST: "full" },
     providerService: new SessionProviderService({
       initialProvider: provider, initialProviderName: providerName, initialModel: model,
       environment: {}, sessionId: `server-guidance-${Math.random()}`,
