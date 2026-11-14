@@ -280,7 +280,7 @@ function monochromeTheme(
   ink: string,
   tones: Partial<Theme>,
 ): Theme {
-  return Object.fromEntries(
+  const theme = Object.fromEntries(
     (Object.keys(chromaticDarkTheme) as Array<keyof Theme>).map((token) => [
       token,
       tones[token] ??
@@ -289,6 +289,10 @@ function monochromeTheme(
           : ink),
     ]),
   ) as Theme
+  // A sent message sits on the same band as the input box it came from: same
+  // height (UserPromptMessage pads it) and the same color, whatever userBand
+  // tone a theme lists.
+  return { ...theme, userBand: theme.promptBackground }
 }
 
 const darkTheme = monochromeTheme('rgb(0,0,0)', 'rgb(255,255,255)', {
