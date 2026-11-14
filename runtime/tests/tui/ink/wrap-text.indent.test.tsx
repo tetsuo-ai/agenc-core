@@ -12,7 +12,25 @@ describe('wrap-trim keeps the indent of a line', () => {
 
   test('an indented line keeps its indent on every row', () => {
     expect(wrapText('    foo bar baz', 9, 'wrap-trim')).toBe('    foo\n    bar\n    baz')
-    expect(wrapText('  - item one two', 12, 'wrap-trim')).toBe('  - item one\n  two')
+  })
+
+  test('a wrapped list item hangs under its text, past the marker', () => {
+    expect(wrapText('  - item one two', 12, 'wrap-trim')).toBe('  - item one\n    two')
+    expect(wrapText('1. alpha beta gamma', 12, 'wrap-trim')).toBe('1. alpha\n   beta\n   gamma')
+    expect(wrapText('12. alpha beta', 10, 'wrap-trim')).toBe('12. alpha\n    beta')
+    expect(wrapText('- [x] done item text', 14, 'wrap-trim')).toBe('- [x] done\n      item\n      text')
+    expect(wrapText('  ii. one two three', 12, 'wrap-trim')).toBe('  ii. one\n      two\n      three')
+  })
+
+  test('a list item that fits, or a line with no marker, is unchanged', () => {
+    expect(wrapText('1. short', 20, 'wrap-trim')).toBe('1. short')
+    expect(wrapText('2026 was long ago', 9, 'wrap-trim')).toBe('2026 was\nlong ago')
+  })
+
+  test('a styled list line hangs by its visible marker', () => {
+    const line = '\x1b[38;2;235;227;208m1. \x1b[1mone\x1b[22m two three\x1b[39m'
+    const rows = wrapText(line, 10, 'wrap-trim').split('\n').map(row => row.replace(/\x1b\[[0-9;]*m/g, ''))
+    expect(rows).toEqual(['1. one two', '   three'])
   })
 
   test('each source line keeps its own indent', () => {

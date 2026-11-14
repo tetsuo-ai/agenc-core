@@ -309,8 +309,41 @@ function hasRenderedCompactAssistantReply(rows) {
   return false;
 }
 
-export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
+/**
+ * Apply one SGR sequence's parameters to the current background color. Only
+ * the background is tracked: "" is the terminal's own, "rgb(r,g,b)" a true
+ * color, "p<n>" a palette entry.
+ */
+function nextSgrBackground(current, params) {
+  let background = current;
+  const list = params.length === 0 ? [0] : params;
+  for (let index = 0; index < list.length; index += 1) {
+    const code = list[index] ?? 0;
+    if (code === 0 || code === 49) background = "";
+    else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) background = `p${code}`;
+    else if (code === 48 && list[index + 1] === 2) {
+      background = `rgb(${list[index + 2] ?? 0},${list[index + 3] ?? 0},${list[index + 4] ?? 0})`;
+      index += 4;
+    } else if (code === 48 && list[index + 1] === 5) {
+      background = `p5;${list[index + 2] ?? 0}`;
+      index += 2;
+    } else if (code === 38 && list[index + 1] === 2) index += 4;
+    else if (code === 38 && list[index + 1] === 5) index += 2;
+  }
+  return background;
+}
+
+/**
+ * Lay the PTY output out on a `rows` by `cols` grid. With `background: true`
+ * the result also carries a non-enumerable `backgrounds` grid: the background
+ * color of every cell, so a check can see a filled band ("" where the
+ * terminal's own background shows).
+ */
+export function renderPtyRows(raw, { cols = 140, rows = 40, background: trackBackground = false } = {}) {
   const grid = emptyGrid(rows, cols);
+  const blankBackgrounds = () => Array.from({ length: cols }, () => "");
+  const backgrounds = Array.from({ length: rows }, blankBackgrounds);
+  let currentBackground = "";
   const autoWraps = [];
   let row = 0;
   let col = 0;
@@ -322,8 +355,10 @@ export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
     for (let idx = 0; idx < count; idx += 1) {
       for (let y = scrollTop; y < scrollBottom; y += 1) {
         grid[y] = grid[y + 1] ?? Array.from({ length: cols }, () => " ");
+        backgrounds[y] = backgrounds[y + 1] ?? blankBackgrounds();
       }
       grid[scrollBottom] = Array.from({ length: cols }, () => " ");
+      backgrounds[scrollBottom] = blankBackgrounds();
     }
   };
 
@@ -331,8 +366,10 @@ export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
     for (let idx = 0; idx < count; idx += 1) {
       for (let y = scrollBottom; y > scrollTop; y -= 1) {
         grid[y] = grid[y - 1] ?? Array.from({ length: cols }, () => " ");
+        backgrounds[y] = backgrounds[y - 1] ?? blankBackgrounds();
       }
       grid[scrollTop] = Array.from({ length: cols }, () => " ");
+      backgrounds[scrollTop] = blankBackgrounds();
     }
   };
 
@@ -346,12 +383,15 @@ export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
 
   const clearLine = (line, from, to) => {
     const target = grid[clamp(line, 0, rows - 1)];
+    const targetBackground = backgrounds[clamp(line, 0, rows - 1)];
     for (
       let idx = clamp(from, 0, cols - 1);
       idx <= clamp(to, 0, cols - 1);
       idx += 1
     ) {
       target[idx] = " ";
+      // Erasing paints the current background, as terminals with BCE do.
+      targetBackground[idx] = currentBackground;
     }
   };
 
@@ -364,6 +404,7 @@ export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
     }
     if (row < 0 || row >= rows || col < 0 || col >= cols) return;
     grid[row][col] = ch;
+    backgrounds[row][col] = currentBackground;
     if (col >= cols - 1) {
       wrapPending = true;
     } else {
@@ -432,6 +473,8 @@ export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
           if (mode === 0) clearLine(row, col, cols - 1);
           else if (mode === 1) clearLine(row, 0, col);
           else if (mode === 2) clearLine(row, 0, cols - 1);
+        } else if (final === "m") {
+          currentBackground = nextSgrBackground(currentBackground, parseCsiParams(sequence));
         } else if (final === "S") {
           scrollUp(first);
         } else if (final === "T") {
@@ -483,6 +526,12 @@ export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
     value: autoWraps,
     enumerable: false,
   });
+  if (trackBackground) {
+    Object.defineProperty(renderedRows, "backgrounds", {
+      value: backgrounds,
+      enumerable: false,
+    });
+  }
   return renderedRows;
 }
 

@@ -353,7 +353,7 @@ function CollabAgentSystemMessage({
       <Box minWidth={2}>
         {/*
           A collab row that is still running ("Waiting for agents", "Spawned
-          …") gets the same sweeping star as a running tool call, so every
+          …") gets the same breathing dot as a running tool call, so every
           in-flight thing in the transcript reads the same way. Settled rows
           keep the static mark.
         */}
