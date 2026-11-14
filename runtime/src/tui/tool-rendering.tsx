@@ -469,37 +469,103 @@ function lineHasOwnAnsi(line: string): boolean {
 }
 
 /**
- * Live `exec_command` trailer line, e.g.
- * `[exec exit_code=0 wall_time=0.0300s tokens=69]`. The daemon appends this to
- * the raw stdout (preceded by blank lines). We strip it from the displayed body
- * and read the exit code from it.
+ * The metadata footer the runtime appends to a live `exec_command` or
+ * `write_stdin` result for the MODEL, e.g.
+ * `[exec exit_code=0 wall_time=0.0300s tokens=69]` or
+ * `[exec yielded=true wall_time=1.0030s tokens=0 session_id=1]`. The user never
+ * sees it: the display reads the state from it and drops the line. Model-facing
+ * notes the runtime adds after the footer are kept for the ctrl+o view only.
  */
-const EXEC_TRAILER_LINE_RE = /^\[exec exit_code=(-?\d+)[^\]]*\]$/;
+const EXEC_FOOTER_LINE_RE = /^\[exec ([^\]]*)\]$/;
+
+/** What the footer says about the command, in display terms. */
+export interface ExecFooterState {
+  readonly exitCode: number | null;
+  /** Still running when the call returned (resumable session). */
+  readonly yielded: boolean;
+  /** A detached service left running in the background. */
+  readonly background: boolean;
+  /** Killed by the execution timeout. */
+  readonly timedOut: boolean;
+  /** Ended by an external signal. */
+  readonly signalTerminated: boolean;
+  /** `command_outcome` when the runtime did not run the command to the end. */
+  readonly outcome: string | null;
+  readonly wallSeconds: number | null;
+}
 
 /**
- * Split a PLAIN live `exec_command` result (raw stdout + blank lines + an
- * `[exec exit_code=... wall_time=... tokens=...]` trailer) into the stdout body
- * and the parsed exit code. The daemon's exec result has NO `<bash-stdout>`
- * envelope and folds everything (including stderr) into one stream, so there is
- * no separate stderr to color — the whole body is shown, capped.
+ * Split a PLAIN live exec result (raw stdout, blank lines, the `[exec …]`
+ * footer, then optional model-facing notes) into the stdout body, the notes and
+ * the footer state. The daemon's exec result has NO `<bash-stdout>` envelope and
+ * folds stderr into the one stream, so the whole body is shown, capped.
  */
-function parsePlainExecResult(content: string): {
+export function parsePlainExecResult(content: string): {
   readonly stdout: string;
+  readonly notes: string;
   readonly exitCode: number | null;
+  readonly state: ExecFooterState | null;
 } {
   const lines = content.split("\n");
-  let exitCode: number | null = null;
-  // The trailer is the last non-empty line. Walk back over trailing blanks.
-  let end = lines.length;
-  while (end > 0 && lines[end - 1]!.trim().length === 0) end--;
-  if (end > 0) {
-    const match = lines[end - 1]!.match(EXEC_TRAILER_LINE_RE);
-    if (match && match[1] !== undefined) {
-      exitCode = Number.parseInt(match[1], 10);
-      end--; // drop the trailer line from the body
+  let footerIndex = -1;
+  for (let index = lines.length - 1; index >= 0; index--) {
+    if (EXEC_FOOTER_LINE_RE.test(lines[index]!.trim())) {
+      footerIndex = index;
+      break;
     }
   }
-  return { stdout: lines.slice(0, end).join("\n"), exitCode };
+  if (footerIndex < 0) {
+    return { stdout: content.replace(/\s+$/u, ""), notes: "", exitCode: null, state: null };
+  }
+  const fields = new Map<string, string>();
+  for (const pair of lines[footerIndex]!.trim().match(EXEC_FOOTER_LINE_RE)![1]!.split(/\s+/u)) {
+    const eq = pair.indexOf("=");
+    if (eq > 0) fields.set(pair.slice(0, eq), pair.slice(eq + 1));
+  }
+  const exitText = fields.get("exit_code");
+  const exitCode = exitText !== undefined && /^-?\d+$/u.test(exitText) ? Number.parseInt(exitText, 10) : null;
+  const wallText = fields.get("wall_time");
+  const wall = wallText === undefined ? Number.NaN : Number.parseFloat(wallText);
+  const state: ExecFooterState = {
+    exitCode,
+    yielded: fields.get("yielded") === "true",
+    background: fields.get("running") === "true",
+    timedOut: exitCode === null && fields.get("timed_out") === "true",
+    signalTerminated: fields.get("signal_terminated") === "true",
+    outcome: fields.get("command_outcome") ?? null,
+    wallSeconds: Number.isFinite(wall) ? wall : null,
+  };
+  return {
+    stdout: lines.slice(0, footerIndex).join("\n").replace(/\s+$/u, ""),
+    notes: lines.slice(footerIndex + 1).join("\n").trim(),
+    exitCode,
+    state,
+  };
+}
+
+/** "1s", "2m05s": a wall time for the result line. */
+function formatExecSeconds(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  if (total < 60) return `${total}s`;
+  return `${Math.floor(total / 60)}m${String(total % 60).padStart(2, "0")}s`;
+}
+
+/**
+ * A short human line for a command that did not simply finish: still running,
+ * running in the background, timed out, stopped by a signal, or not run to the
+ * end. Undefined for a command that finished (its output or exit code speaks).
+ */
+export function execStateLine(state: ExecFooterState | null): { text: string; failed: boolean } | undefined {
+  if (state === null) return undefined;
+  const after = state.wallSeconds === null ? "" : ` · ${formatExecSeconds(state.wallSeconds)}`;
+  if (state.yielded) return { text: `still running${after}`, failed: false };
+  if (state.background) return { text: "running in the background", failed: false };
+  if (state.timedOut) {
+    return { text: state.wallSeconds === null ? "timed out" : `timed out after ${formatExecSeconds(state.wallSeconds)}`, failed: true };
+  }
+  if (state.signalTerminated) return { text: "stopped by a signal", failed: true };
+  if (state.outcome !== null) return { text: `command ${state.outcome}`, failed: state.outcome !== "aborted" };
+  return undefined;
 }
 
 /**
@@ -593,6 +659,15 @@ export function BashOutputView({
         </ResultLine>
       );
     }
+    const stateLine = execStateLine(plain?.state ?? null);
+    if (stateLine !== undefined) {
+      // A command that did not simply finish: say so in words, after its
+      // output summary when it printed something. Never the raw footer.
+      const text = stdoutTrimmed.length > 0
+        ? `${summarizeResultText(stdoutTrimmed)} · ${stateLine.text}`
+        : stateLine.text;
+      return stateLine.failed ? <ResultLine failed>{text}</ResultLine> : <ResultLine>{text}</ResultLine>;
+    }
     return <ResultLine>{summarizeResultText(stdoutTrimmed)}</ResultLine>;
   }
   const glyphs = selectAgenCTuiGlyphs();
@@ -609,7 +684,8 @@ export function BashOutputView({
         </Box>
         <Box flexDirection="column" flexGrow={1}>
           <Text dimColor>
-            {isFailure ? "(no output, non-zero exit)" : "(No output)"}
+            {execStateLine(plain?.state ?? null)?.text ??
+              (isFailure ? "(no output, non-zero exit)" : "(No output)")}
           </Text>
         </Box>
       </Box>
@@ -622,6 +698,7 @@ export function BashOutputView({
   const stderrLines =
     isFailure && stderrTrimmed.length > 0 ? stderrTrimmed.split("\n") : null;
   const showExitNote = isFailure && stderrLines === null;
+  const verboseStateLine = execStateLine(plain?.state ?? null);
   return (
     <Box flexDirection="row">
       <Box flexShrink={0}>
@@ -643,6 +720,16 @@ export function BashOutputView({
         {showExitNote ? (
           <Text color={"red" as TextColor}>{`(exit ${exitCode})`}</Text>
         ) : null}
+        {verboseStateLine !== undefined ? (
+          <Text dimColor>{verboseStateLine.text}</Text>
+        ) : null}
+        {plain !== null && plain.notes.length > 0
+          ? plain.notes.split("\n").map((line, idx) => (
+              <Text key={`n${idx}`} dimColor>
+                {line}
+              </Text>
+            ))
+          : null}
       </Box>
     </Box>
   );

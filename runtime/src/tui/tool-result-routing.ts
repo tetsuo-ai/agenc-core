@@ -37,6 +37,8 @@ const HISTORICAL_BASH_TOOL_NAME_FOR_RENDERING = "Bash";
  * same bash-output view.
  */
 export const EXEC_COMMAND_TOOL_NAME_FOR_DISPATCH = "exec_command";
+/** `write_stdin` results carry the same exec footer as `exec_command`. */
+export const WRITE_STDIN_TOOL_NAME_FOR_DISPATCH = "write_stdin";
 export const EDIT_TOOL_NAME_FOR_DISPATCH = "Edit";
 export const FILE_READ_TOOL_NAME_FOR_DISPATCH = "FileRead";
 export const FILE_WRITE_TOOL_NAME_FOR_DISPATCH = "Write";
@@ -62,12 +64,14 @@ export type ToolResultDispatchTarget =
   | "generic";
 
 /**
- * The live daemon's `exec_command` result is a PLAIN string (no
- * `<bash-stdout>` envelope): raw stdout, then a trailer line
- * `[exec exit_code=0 wall_time=0.0300s tokens=69]`. Match that trailer so the
- * raw exec result still routes to the capped bash-output view.
+ * The live daemon's `exec_command` and `write_stdin` results are PLAIN strings
+ * (no `<bash-stdout>` envelope): raw stdout, then a footer line for the model
+ * such as `[exec exit_code=0 wall_time=0.0300s tokens=69]` or
+ * `[exec yielded=true wall_time=1.0030s tokens=0 session_id=1]`. Match any such
+ * footer line so every exec result routes to the bash-output view, which turns
+ * the footer into words and never shows it raw.
  */
-const EXEC_TRAILER_RE = /\[exec exit_code=-?\d+/;
+const EXEC_TRAILER_RE = /(^|\n)\[exec [^\]\n]*\]/;
 
 /**
  * The live daemon's `FileRead` result is the file body with line-number
@@ -220,7 +224,8 @@ export function pickToolResultDispatch(
   if (
     toolName === BASH_TOOL_NAME_FOR_DISPATCH ||
     toolName === HISTORICAL_BASH_TOOL_NAME_FOR_RENDERING ||
-    toolName === EXEC_COMMAND_TOOL_NAME_FOR_DISPATCH
+    toolName === EXEC_COMMAND_TOOL_NAME_FOR_DISPATCH ||
+    toolName === WRITE_STDIN_TOOL_NAME_FOR_DISPATCH
   ) {
     if (EXEC_TRAILER_RE.test(joinedContent)) {
       return "bash-output-view";
