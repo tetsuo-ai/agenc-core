@@ -27,9 +27,11 @@ import math
 import tomllib
 from pathlib import Path
 
-# Room after the deadline for AgenC's own backstop (20 s + 10 s), the rollout
-# copy in the adapter's ``finally``, and process start-up.
-DEFAULT_DEADLINE_MARGIN_SEC = 120.0
+# Seconds between ``--deadline`` and the trial's agent timeout. The published
+# 84.5% run (Harbor Hub job 2bf2c84d) passed AgenC the instant of its own stop,
+# 2 s before the timeout, so that is the default. AgenC keeps its own reserve
+# inside the deadline for the wrap-up.
+DEFAULT_DEADLINE_MARGIN_SEC = 2.0
 # A deadline shorter than this leaves no useful work time; floor it instead.
 MIN_DEADLINE_SEC = 60
 

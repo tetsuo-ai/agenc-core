@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -81,15 +82,24 @@ class ResolveAgentBudgetTest(unittest.TestCase):
                            "ref": "sha256:" + digest,
                            "source": "terminal-bench/terminal-bench-2-1"}}
         (self.fixture.trial / "config.json").write_text(json.dumps(config))
-        saved = os.environ.get("HOME")
-        os.environ["HOME"] = str(home)
-        try:
-            self.assertEqual(resolve_agent_budget_sec(self.fixture.trial), 900.0)
-        finally:
-            if saved is None:
-                del os.environ["HOME"]
-            else:
-                os.environ["HOME"] = saved
+        # Harbor caches its package directory at import time. Import it under
+        # the fixture HOME even when earlier adapter tests already loaded it.
+        result = subprocess.run(
+            [
+                sys.executable, "-B", "-c",
+                "from pathlib import Path; import sys; "
+                "from agenc_deadline import resolve_agent_budget_sec; "
+                "print(resolve_agent_budget_sec(Path(sys.argv[1])))",
+                str(self.fixture.trial),
+            ],
+            cwd=Path(__file__).resolve().parent,
+            env={**os.environ, "HOME": str(home)},
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(result.stdout.strip(), "900.0")
 
     def test_no_timeout_or_unreadable_inputs_mean_no_budget(self) -> None:
         self.assertIsNone(resolve_agent_budget_sec(self.fixture.write({}, task_timeout=None)))
@@ -105,8 +115,16 @@ class DeadlineFlagTest(unittest.TestCase):
         self.assertEqual(deadline_flag(28800.0), f"--deadline +{28800 - int(DEFAULT_DEADLINE_MARGIN_SEC)}")
         self.assertEqual(deadline_flag(3600.0, margin_sec=300), "--deadline +3300")
 
+    def test_default_matches_the_published_run(self) -> None:
+        # Hub job 2bf2c84d passed --deadline at the stop instant: 2 s before the agent timeout.
+        self.assertEqual(DEFAULT_DEADLINE_MARGIN_SEC, 2.0)
+        self.assertEqual(deadline_flag(900.0), "--deadline +898")
+        source = (Path(__file__).parent / "agenc_agent.py").read_text()
+        self.assertRegex(source, r"cli_deadline: bool = Field\(\s+default=True,")
+        self.assertRegex(source, r"GUARD_MARGIN_SEC = 2\b")
+
     def test_floors_a_short_budget_and_skips_a_missing_one(self) -> None:
-        self.assertEqual(deadline_flag(90.0), f"--deadline +{MIN_DEADLINE_SEC}")
+        self.assertEqual(deadline_flag(90.0, margin_sec=120), f"--deadline +{MIN_DEADLINE_SEC}")
         self.assertEqual(deadline_flag(None), "")
         self.assertEqual(deadline_flag(0), "")
         self.assertEqual(deadline_flag(float("inf")), "")
@@ -189,10 +207,10 @@ class AdapterCommandTest(unittest.TestCase):
         command, environment, guard = self._run()
         self.assertIn(
             "/root/.local/bin/agenc -p --budget max --dangerously-bypass-approvals-and-sandbox "
-            "--output-format stream-json <",
+            "--output-format stream-json --deadline +3598 <",
             command,
         )
-        self.assertNotIn("--deadline", command)
+        self.assertIn("--deadline +3598", command)
         self.assertNotIn("--add-dir", command)
         self.assertTrue(any(c.endswith("agenc daemon stop") for c in environment.commands))
         self.assertEqual(guard["budget_sec"], 3600.0)
@@ -201,7 +219,15 @@ class AdapterCommandTest(unittest.TestCase):
 
     def test_cli_deadline_puts_the_flag_on_the_agenc_command(self) -> None:
         command, _environment, _guard = self._run(cli_deadline=True, add_dirs="/")
-        self.assertIn("--add-dir / --deadline +3480 <", command)
+        self.assertIn("--add-dir / --deadline +3598 <", command)
+
+    def test_cli_deadline_can_be_disabled_without_disabling_the_daemon_stop(self) -> None:
+        command, environment, guard = self._run(cli_deadline=False)
+        self.assertNotIn("--deadline", command)
+        self.assertTrue(any(c.endswith("agenc daemon stop") for c in environment.commands))
+        self.assertEqual(guard["budget_sec"], 3600.0)
+        self.assertFalse(guard["timed_out"])
+        self.assertEqual(guard["stop_exit_code"], 0)
 
 
 if __name__ == "__main__":
