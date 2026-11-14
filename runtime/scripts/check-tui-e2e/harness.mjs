@@ -902,6 +902,14 @@ export class TuiSession {
   send(bytes) {
     this.throwIfAborted();
     this.term.write(bytes);
+    // An Enter sent as raw bytes submits whatever was typed before it.
+    if (/[\r\n]/u.test(String(bytes))) this.noteSubmitted();
+  }
+
+  /** Record the text typed since the last submit as the submitted prompt. */
+  noteSubmitted() {
+    if (this.typedSinceSubmit) this.lastSubmittedText = this.typedSinceSubmit;
+    this.typedSinceSubmit = "";
   }
 
   /**
@@ -910,8 +918,7 @@ export class TuiSession {
   async submit(text = "") {
     this.throwIfAborted();
     if (text) await this.type(text);
-    this.lastSubmittedText = this.typedSinceSubmit ?? text;
-    this.typedSinceSubmit = "";
+    this.noteSubmitted();
     await sleep(80);
     this.mark();
     this.term.write("\r");
@@ -1240,6 +1247,7 @@ export class TuiSession {
     this.sendEscape();
     await new Promise((r) => setTimeout(r, 80));
     this.term.write("\r");
+    this.noteSubmitted();
   }
 
   /**
