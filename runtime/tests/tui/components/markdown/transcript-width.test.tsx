@@ -35,7 +35,9 @@ const INSET = 2
 /** Words up to this width must never be split (MarkdownTable.tsx). */
 const MAX_UNBROKEN_WORD_WIDTH = 24
 const VERTICAL_BORDERS = '│'
-const JOINTS = '┌┬┐├┼┤└┴┘'
+const JOINTS = '╭┬╮├┼┤╰┴╯┌┐└┘'
+/** A boxed table starts with a rounded (or square) top-left corner. */
+const isBoxTop = (line: string): boolean => /[╭┌]/u.test(line)
 
 async function renderFrame(markdown: string, width: number): Promise<string[]> {
   const output = await renderToString(
@@ -88,21 +90,34 @@ function checkBoxTable(lines: string[], expected: TableText): void {
   // Vertical borders stand in the columns of the joints of the top rule.
   const borderColumns = cellColumnsOf(tableLines[0]!, JOINTS)
   expect(borderColumns.length).toBe(expected.headers.length + 1)
+  // Rows: the header ends at the only inner rule. Body rows have no rules
+  // between them; when any body row wraps, an empty framed line separates
+  // the rows, and otherwise every body line is a row of its own.
+  const isSpacer = (line: string): boolean =>
+    line.includes(VERTICAL_BORDERS) && line.replace(/[│\s]/gu, '').length === 0
+  const ruleCount = tableLines.filter(line => JOINTS.includes(line.trim()[0]!)).length
+  expect(ruleCount).toBe(3)
+  const bodyStart = tableLines.findIndex((line, index) => index > 0 && JOINTS.includes(line.trim()[0]!))
+  const spaced = tableLines.slice(bodyStart + 1, -1).some(isSpacer)
   const rowGroups: string[][][] = []
   let group: string[][] | null = null
-  for (const line of tableLines) {
+  tableLines.forEach((line, index) => {
     if (JOINTS.includes(line.trim()[0]!)) {
       expect([line, cellColumnsOf(line, JOINTS)]).toEqual([line, borderColumns])
       group = null
-      continue
+      return
     }
     expect([line, cellColumnsOf(line, VERTICAL_BORDERS)]).toEqual([line, borderColumns])
-    if (group === null) {
+    if (isSpacer(line)) {
+      group = null
+      return
+    }
+    if (group === null || (index > bodyStart && !spaced)) {
       group = []
       rowGroups.push(group)
     }
     group.push(line.trim().slice(1, -1).split(VERTICAL_BORDERS))
-  }
+  })
   // Every cell holds exactly its text: nothing lost, nothing doubled, and no
   // short word cut in two.
   const expectedRows = [expected.headers, ...expected.rows]
@@ -132,7 +147,7 @@ function checkKeyValueTable(lines: string[], expected: TableText, width: number)
 function checkTable(fixture: TranscriptFixture, lines: string[], width: number): void {
   const expected = tableText(fixture.markdown)
   expectLinesFit(lines, width)
-  if (lines.some(line => line.includes('┌'))) {
+  if (lines.some(isBoxTop)) {
     checkBoxTable(lines, expected)
   } else {
     checkKeyValueTable(lines, expected, width)
@@ -168,7 +183,7 @@ describe('transcript display width', () => {
   test("the owner's table keeps its box at 80 columns and wider", async () => {
     for (const width of [80, 100, 120, 160, 200]) {
       const lines = await renderFrame(OWNER_TABLE, width)
-      expect(lines.some(line => line.includes('┌'))).toBe(true)
+      expect(lines.some(isBoxTop)).toBe(true)
       const emojiRows = lines.filter(line => line.includes('✅'))
       const hourglassRows = lines.filter(line => line.includes('⏳'))
       expect(emojiRows.length).toBe(3)
@@ -183,7 +198,7 @@ describe('transcript display width', () => {
   test('a table whose columns cannot hold their words is shown as key and value lines', async () => {
     const fixture = TRANSCRIPT_FIXTURES.find(candidate => candidate.name === 'many-column-table')!
     const lines = await renderFrame(fixture.markdown, 80)
-    expect(lines.some(line => line.includes('┌'))).toBe(false)
+    expect(lines.some(isBoxTop)).toBe(false)
     expect(lines.some(line => line.includes('Speed: 142.7 tok/s'))).toBe(true)
     expect(lines.some(line => line.includes('Tokens in: 1,204,331'))).toBe(true)
   })
