@@ -32,6 +32,17 @@ pwsh -NoLogo -NoProfile -Command \
   "\$null = [scriptblock]::Create((Get-Content -Raw scripts/install/install.ps1))"
 ```
 
+## Older launcher next to the AgenC Node
+
+The generated wrapper puts the directory of its Node first on `PATH`. On macOS
+that directory is `AGENC_HOME/bin` (the stable Node), so an older `agenc` left
+there runs before the wrapper inside AgenC sessions. After activation,
+`install.sh` checks that one file. It renames it to `agenc.retired-<UTC time>`
+only when it is an exact AgenC installer wrapper for the same `AGENC_HOME`, and
+prints both paths. Any other file is left in place with a note. On Linux and
+Windows the wrapper's Node directory is inside the runtime, so nothing there
+can shadow it.
+
 ## Windows PATH
 
 `install.ps1` adds the shim folder (`%LOCALAPPDATA%\agenc\bin`, or

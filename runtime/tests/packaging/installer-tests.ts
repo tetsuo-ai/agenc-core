@@ -3336,8 +3336,10 @@ test("official standalone paths pin gh and bind Sigstore verification to the sou
   expect(shell).not.toContain("command -v gh");
   // Single-link is required of every artifact the installer downloads into its
   // own private tree: it creates those files, so a second link is a genuine
-  // TOCTOU signal and must keep failing closed.
-  expect(shell.match(/nlink !== 1n/gu)).toHaveLength(4);
+  // TOCTOU signal and must keep failing closed. The fifth check is on an older
+  // wrapper the installer may retire: it renames a file only when it can prove
+  // that one regular, unaliased file is an AgenC installer wrapper.
+  expect(shell.match(/nlink !== 1n/gu)).toHaveLength(5);
   // It is deliberately NOT required of stock system tools. macOS and Linux both
   // ship /usr/bin/unzip and /usr/bin/zipinfo as two names for one inode, so a
   // legitimate system unzip reports nlink 2 and no user can change it under

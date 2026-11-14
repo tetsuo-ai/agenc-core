@@ -34,7 +34,10 @@ import {
   execFileNoThrow,
   execFileNoThrowWithCwd,
 } from './execFileNoThrow.js'
-import { findExecutableOnCapturedPath } from './findExecutable.js'
+import {
+  findAllExecutablesOnCapturedPath,
+  findExecutableOnCapturedPath,
+} from './findExecutable.js'
 import { getFsImplementation } from './fsOperations.js'
 import {
   GENERATED_WRAPPER_MAX_BYTES,
@@ -70,7 +73,6 @@ import {
   findValidAgenCAlias,
   getShellConfigPaths,
 } from './shellConfig.js'
-import { which } from './which.js'
 
 function getCliBinaryName(): string {
   return MACRO.PACKAGE_URL === '@tetsuo-ai/runtime'
@@ -148,8 +150,14 @@ export type ActiveGeneratedWrapperOptions = {
 }
 
 /**
- * Prove that the `agenc` command on PATH is a canonical standalone-installer
+ * Prove that an `agenc` command on PATH is a canonical standalone-installer
  * wrapper for the exact runtime script executing Doctor.
+ *
+ * Every `agenc` on PATH is checked in order, not only the first one. The
+ * generated wrapper puts its private Node directory first on PATH, so inside
+ * AgenC an older `agenc` left in that directory (or any other unrelated
+ * executable with the same name) can come before the wrapper that launched
+ * this runtime. Each candidate must still pass every check on its own.
  */
 export async function findActiveGeneratedWrapper(
   options: ActiveGeneratedWrapperOptions = {},
@@ -157,22 +165,50 @@ export async function findActiveGeneratedWrapper(
   const invokedPath = options.invokedPath ?? process.argv[1] ?? ''
   if (invokedPath.length === 0) return null
 
-  let commandPath = options.commandPath
-  if (commandPath === undefined) {
+  let candidates: readonly string[]
+  if (options.commandPath === null) return null
+  if (options.commandPath !== undefined) {
+    if (options.commandPath.length === 0) return null
+    candidates = [options.commandPath]
+  } else {
     try {
-      commandPath = options.environment === undefined
-        ? await which(getCliBinaryName())
-        : await findExecutableOnCapturedPath(
-            getCliBinaryName(),
-            options.environment,
-            options.cwd ?? getCwd() ?? process.cwd(),
-          )
+      candidates = await findAllExecutablesOnCapturedPath(
+        getCliBinaryName(),
+        options.environment ?? process.env,
+        options.cwd ?? getCwd() ?? process.cwd(),
+      )
     } catch {
       return null
     }
   }
-  if (commandPath === null || commandPath.length === 0) return null
+  if (candidates.length === 0) return null
 
+  let activeRuntime: string
+  try {
+    activeRuntime = await realpath(resolve(invokedPath))
+  } catch {
+    return null
+  }
+  for (const candidate of candidates) {
+    const wrapper = await readGeneratedWrapperCandidate(candidate)
+    if (wrapper === null) continue
+    try {
+      if ((await realpath(wrapper.runtimeBin)) === activeRuntime) return wrapper
+    } catch {
+      // A wrapper whose runtime is gone cannot be the one that launched us.
+    }
+  }
+  return null
+}
+
+/**
+ * Read one PATH candidate as a canonical generated wrapper: a regular,
+ * unaliased file within the size cap that stays the same file while it is
+ * read, and whose full content is an exact installer template.
+ */
+async function readGeneratedWrapperCandidate(
+  commandPath: string,
+): Promise<GeneratedWrapper | null> {
   const wrapperPath = resolve(commandPath)
   const fs = getFsImplementation()
   try {
@@ -202,13 +238,7 @@ export async function findActiveGeneratedWrapper(
       return null
     }
     const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-    const wrapper = parseGeneratedWrapperContent(wrapperPath, content)
-    if (wrapper === null) return null
-    const [activeRuntime, declaredRuntime] = await Promise.all([
-      realpath(resolve(invokedPath)),
-      realpath(wrapper.runtimeBin),
-    ])
-    return activeRuntime === declaredRuntime ? wrapper : null
+    return parseGeneratedWrapperContent(wrapperPath, content)
   } catch {
     return null
   }
