@@ -1851,8 +1851,9 @@ export function formatStructuredToolResult(
 const GENERIC_RESULT_MAX_CHARS = 200;
 const GENERIC_RESULT_HEAD_LINES = 1;
 
-// The `[exec exit_code=…]` trailer a shell result ends with.
-const EXEC_TRAILER_AT_END_RE = /\n*(\[exec exit_code=-?\d+[^\]]*\])\s*$/u;
+// The `[exec …]` footer a shell result ends with (`exit_code=…`, or
+// `yielded=true` for a command still running when the call returned).
+const EXEC_TRAILER_AT_END_RE = /\n*(\[exec [^\]\n]*\])\s*$/u;
 
 export function clampGenericToolResult(text: string): string {
   if (text.length <= GENERIC_RESULT_MAX_CHARS) return text;
