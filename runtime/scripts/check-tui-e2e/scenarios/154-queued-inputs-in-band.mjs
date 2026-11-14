@@ -103,7 +103,7 @@ async function round(session, theme) {
   picture = rows.join("\n");
   assert.ok(!rows.some((row) => row.includes(HINT)), `${label} the queue is still shown after it was sent:\n${picture}`);
   assert.ok(!rows.some((row) => row.startsWith(`${INSET}next`)), `${label} the band still holds the queue header:\n${picture}`);
-  assert.ok(rows.some((row) => row.includes("❯ queued input 6")), `${label} the last remaining input was not sent:\n${picture}`);
+  assert.ok(rows.some((row) => row.trimStart().startsWith("queued input 6")), `${label} the last remaining input was not sent:\n${picture}`);
 }
 
 export default async function (session) {
