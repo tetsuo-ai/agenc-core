@@ -72,6 +72,7 @@ export function SpinnerWithVerb(props: Props): React.ReactNode {
   // prop isn't threaded here, so replicate the gate from the store —
   // teammate view needs the real spinner (which shows teammate status).
   const viewingAgentTaskId = useAppState((s_0: any) => s_0.viewingAgentTaskId);
+  const fullTurnStats = useSettings().tui?.turnStats === "full";
   // Hoisted to mount-time — this component re-renders at animation framerate.
   const briefEnvEnabled = feature('KAIROS') || feature('KAIROS_BRIEF') ?
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
@@ -83,7 +84,7 @@ export function SpinnerWithVerb(props: Props): React.ReactNode {
   if ((feature('KAIROS') || feature('KAIROS_BRIEF')) && (getKairosActive() || getUserMsgOptIn() && (briefEnvEnabled || false)) && isBriefOnly && !viewingAgentTaskId) {
     return <>
       <BriefSpinner mode={props.mode} overrideMessage={props.overrideMessage} />
-      {props.turnEfficiency && !props.leaderIsIdle && <LiveRunLine turn={props.turnEfficiency} />}
+      {props.turnEfficiency && !props.leaderIsIdle && <LiveRunLine turn={props.turnEfficiency} full={fullTurnStats} />}
     </>;
   }
   return <SpinnerWithVerbInner {...props} />;
@@ -294,7 +295,7 @@ function SpinnerWithVerbInner({
   }
   return <Box flexDirection="column" width="100%" alignItems="flex-start">
       <SpinnerAnimationRow mode={mode} reducedMotion={reducedMotion} hasActiveTools={hasActiveTools} responseLengthRef={responseLengthRef} message={message} messageColor={messageColor} shimmerColor={shimmerColor} overrideColor={overrideColor} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} spinnerSuffix={spinnerSuffix} verbose={verbose} columns={columns} hasRunningTeammates={hasRunningTeammates} teammateTokens={teammateTokens} foregroundedTeammate={foregroundedTeammate} leaderIsIdle={leaderIsIdle} thinkingStatus={thinkingStatus} effortSuffix="" streamQuietWarning={streamQuietWarning} showLeaderTokenStats={showLeaderTokenStats} />
-      {turnEfficiency && !leaderIsIdle && !foregroundedTeammate && <LiveRunLine turn={turnEfficiency} />}
+      {turnEfficiency && !leaderIsIdle && !foregroundedTeammate && <LiveRunLine turn={turnEfficiency} full={settings.tui?.turnStats === "full"} />}
       {hasRunningLocalAgents && <RunningLocalAgentsLine agents={runningLocalAgents} />}
       {showSpinnerTree && hasRunningTeammates ? <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderVerb={leaderIsIdle ? undefined : leaderVerb} leaderIdleText={leaderIsIdle ? 'Idle' : undefined} leaderTokenCount={leaderTokenCount} spinnerVerbs={spinnerVerbs} /> : (showExpandedTodos || hasOpenTodoTasks) && tasksV2 && tasksV2.length > 0 ? <Box width="100%" flexDirection="column">
           <MessageResponse>

@@ -27,7 +27,7 @@ const harness = vi.hoisted(() => ({
   settings: {
     prefersReducedMotion: false,
     spinnerTipsEnabled: true,
-  } as { prefersReducedMotion?: boolean; spinnerTipsEnabled?: boolean } | undefined,
+  } as { prefersReducedMotion?: boolean; spinnerTipsEnabled?: boolean; tui?: { turnStats?: string } } | undefined,
   tasksV2: undefined as undefined | Array<{
     activeForm?: string;
     blockedBy: string[];
@@ -264,7 +264,28 @@ describe("Spinner render paths", () => {
     harness.reset();
   });
 
-  test.each([false, true])("adds the live efficiency line with brief mode %s", async brief => {
+  test.each([false, true])("adds the live efficiency line with brief mode %s when tui.turnStats is full", async brief => {
+    if (brief) {
+      harness.features.add("KAIROS");
+      harness.getKairosActive = true;
+      harness.appState.isBriefOnly = true;
+    }
+    harness.settings = { ...harness.settings, tui: { turnStats: "full" } };
+    const rendered = await renderToText(<SpinnerWithVerb {...spinnerProps({
+      turnEfficiency: {
+        modelCalls: 3,
+        lastRequest: { inputTokens: 128_000, cachedInputTokens: 124_160, outputTokens: 2100 },
+        usage: { inputTokens: 256_000, cachedInputTokens: 248_320, outputTokens: 4200 },
+      },
+    })} />);
+    try {
+      expect(rendered.output()).toContain("3 calls · input 128K · cached 97%");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test.each([false, true])("omits the live efficiency line by default with brief mode %s", async brief => {
     if (brief) {
       harness.features.add("KAIROS");
       harness.getKairosActive = true;
@@ -278,7 +299,9 @@ describe("Spinner render paths", () => {
       },
     })} />);
     try {
-      expect(rendered.output()).toContain("3 calls · input 128K · cached 97%");
+      const output = rendered.output();
+      expect(output).not.toContain("input 128K");
+      expect(output).not.toContain("3 calls");
     } finally {
       await rendered.dispose();
     }

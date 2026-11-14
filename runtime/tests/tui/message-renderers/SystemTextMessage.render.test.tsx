@@ -17,9 +17,23 @@ vi.mock('bun:bundle', () => ({
   feature: () => false,
 }))
 
-vi.mock('../hooks/useSettings.js', () => ({
-  useSettings: () => ({ tui: { showTurnDuration: true } }),
+const settingsMock = vi.hoisted(() => ({
+  current: { tui: { showTurnDuration: true } } as { tui: Record<string, unknown> },
 }))
+
+vi.mock('../hooks/useSettings.js', () => ({
+  useSettings: () => settingsMock.current,
+}))
+
+/** Render with `tui.turnStats = "full"`, the 0.19.33 closing line. */
+async function withFullTurnStats<T>(run: () => Promise<T>): Promise<T> {
+  settingsMock.current = { tui: { showTurnDuration: true, turnStats: 'full' } }
+  try {
+    return await run()
+  } finally {
+    settingsMock.current = { tui: { showTurnDuration: true } }
+  }
+}
 
 vi.mock('../../utils/browser.js', () => browserMock)
 
@@ -304,20 +318,20 @@ describe('SystemTextMessage rendering', () => {
     expect(durationOutput).toContain('500 / 1.0k (50%)')
     expect(durationOutput).toContain('1 nudge')
 
-    // Single-call turns carry the same call count as multi-call turns.
+    // The default (brief) line is 0.19.32's: the model calls only when there
+    // were several, and no token numbers.
     const multiCallOutput = await renderSystemMessage({
       subtype: 'turn_duration',
       durationMs: 1500,
       modelCalls: 3,
     })
-    expect(multiCallOutput).toContain('done in 1s · 3 calls')
+    expect(multiCallOutput.trim()).toBe('done in 1s · 3 model calls')
     const singleCallOutput = await renderSystemMessage({
       subtype: 'turn_duration',
       durationMs: 1500,
       modelCalls: 1,
     })
-    expect(singleCallOutput).toContain('done in 1s')
-    expect(singleCallOutput).toContain('1 call')
+    expect(singleCallOutput.trim()).toBe('done in 1s')
 
     const memoryOutput = await renderSystemMessage({
       subtype: 'memory_saved',
@@ -330,11 +344,22 @@ describe('SystemTextMessage rendering', () => {
     expect(memoryOutput).toContain('agenc-memory-two.md')
   })
 
-  test('renders turn input, weighted cached share and output on one line', async () => {
+  test('brief turn stats keep token numbers out of the closing line', async () => {
     const output = await renderSystemMessage({
-      subtype: 'turn_duration', durationMs: 5500, modelCalls: 1,
+      subtype: 'turn_duration', durationMs: 5500, modelCalls: 3,
       turnUsage: { inputTokens: 128_000, cachedInputTokens: 124_160, outputTokens: 2100 },
     }, { columns: 80 })
+    expect(output.trim()).toBe('done in 5s · 3 model calls')
+    expect(output).not.toContain('input')
+    expect(output).not.toContain('cached')
+    expect(output).not.toContain('output')
+  })
+
+  test('renders turn input, weighted cached share and output on one line', async () => {
+    const output = await withFullTurnStats(() => renderSystemMessage({
+      subtype: 'turn_duration', durationMs: 5500, modelCalls: 1,
+      turnUsage: { inputTokens: 128_000, cachedInputTokens: 124_160, outputTokens: 2100 },
+    }, { columns: 80 }))
     expect(output).toContain('done in 5s · 1 call · input 128K · cached 97% · output 2.1K')
     expect(output.trim().split('\n')).toHaveLength(1)
   })
@@ -344,17 +369,19 @@ describe('SystemTextMessage rendering', () => {
       subtype: 'turn_duration', durationMs: 5500, modelCalls: 3,
       turnUsage: { inputTokens: 1_200_000, cachedInputTokens: 1_164_000, outputTokens: 2100 },
     }
-    const medium = await renderSystemMessage(message, { columns: 52 })
-    expect(medium).toContain('done in 5s · 3 calls · input 1.2M · cached 97%')
-    expect(medium).not.toContain('output')
-    const narrow = await renderSystemMessage(message, { columns: 40 })
-    expect(narrow).toContain('3 calls · input 1.2M · cached 97%')
-    expect(narrow).not.toContain('done in')
-    for (const columns of [80, 52, 40, 24, 8]) {
-      const output = (await renderSystemMessage(message, { columns })).trim()
-      expect(output.split('\n')).toHaveLength(1)
-      expect(output.length).toBeLessThanOrEqual(columns)
-    }
+    await withFullTurnStats(async () => {
+      const medium = await renderSystemMessage(message, { columns: 52 })
+      expect(medium).toContain('done in 5s · 3 calls · input 1.2M · cached 97%')
+      expect(medium).not.toContain('output')
+      const narrow = await renderSystemMessage(message, { columns: 40 })
+      expect(narrow).toContain('3 calls · input 1.2M · cached 97%')
+      expect(narrow).not.toContain('done in')
+      for (const columns of [80, 52, 40, 24, 8]) {
+        const output = (await renderSystemMessage(message, { columns })).trim()
+        expect(output.split('\n')).toHaveLength(1)
+        expect(output.length).toBeLessThanOrEqual(columns)
+      }
+    })
   })
 
   test('wires memory file hover and click handlers to the rendered path row', async () => {

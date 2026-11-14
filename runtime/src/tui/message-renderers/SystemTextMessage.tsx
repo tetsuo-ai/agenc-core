@@ -17,7 +17,7 @@ import { useContentWidth } from '../context/contentWidthContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import type { SystemMessage, SystemStopHookSummaryMessage, SystemBridgeStatusMessage, SystemTurnDurationMessage, SystemMemorySavedMessage } from '../../types/message.js';
 import { SystemAPIErrorMessage } from '../components/SystemAPIErrorMessage.js';
-import { formatNumber, formatSecondsShort } from '../../utils/format.js';
+import { formatDuration, formatNumber, formatSecondsShort } from '../../utils/format.js';
 import { HOOK_TIMING_DISPLAY_THRESHOLD_MS } from '../../tools/hooks.js';
 import Link from '../ink/components/Link.js';
 import ThemedText from '../components/design-system/ThemedText.js';
@@ -396,6 +396,11 @@ function TurnDurationMessage({
     return running.length > 0 ? getPillLabel(running) : null;
   });
   const showTurnDuration = settings.tui?.showTurnDuration ?? true;
+  // `tui.turnStats`: "brief" (default) is the 0.19.32 closing line, the
+  // duration plus the model calls when there were several. "full" adds the
+  // input, cached share and output of #3430. The footer already shows the
+  // session's cache share and cost, so the default does not repeat them.
+  const fullTurnStats = settings.tui?.turnStats === "full";
   const { columns } = useTerminalSize();
   const contentWidth = useContentWidth();
   const hasBudget = message.budgetLimit !== undefined;
@@ -413,10 +418,15 @@ function TurnDurationMessage({
     return null;
   }
   const backgroundSuffix = backgroundTaskSummary ? ` \u00B7 ${backgroundTaskSummary} still running` : "";
-  const footer = showTurnDuration
-    ? formatTurnEfficiency({ modelCalls: message.modelCalls, usage: message.turnUsage ?? null },
-        message.durationMs, contentWidth ?? columns, `${budgetSuffix}${backgroundSuffix}`)
-    : `${budgetSuffix}${backgroundSuffix}`;
+  const modelCalls = typeof message.modelCalls === "number" && message.modelCalls > 1
+    ? ` \u00B7 ${message.modelCalls} model calls`
+    : "";
+  const footer = !showTurnDuration
+    ? `${budgetSuffix}${backgroundSuffix}`
+    : fullTurnStats
+      ? formatTurnEfficiency({ modelCalls: message.modelCalls, usage: message.turnUsage ?? null },
+          message.durationMs, contentWidth ?? columns, `${budgetSuffix}${backgroundSuffix}`)
+      : `done in ${formatDuration(message.durationMs)}${modelCalls}${budgetSuffix}${backgroundSuffix}`;
 
   // A quiet closing line under each finished turn, aligned with the reply
   // glyphs: no glyph of its own and the faintest gray.
