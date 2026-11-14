@@ -66,6 +66,11 @@ export type Theme = {
    *  terminal selection. Previously SGR-7 inverse (swapped fg/bg per cell),
    *  which fragmented badly over syntax highlighting. */
   selectionBg: string
+  /** Text color over `selectionBg`. The selection must stand out from any
+   *  terminal background (3:1 against black, #1e1e1e and white), and no single
+   *  bg also keeps every theme gray readable, so selected cells take this one
+   *  fg (4.5:1 or more on `selectionBg`). */
+  selectionFg: string
   bashMessageBackgroundColor: string
   agencWash: string
   worker: string
@@ -204,6 +209,7 @@ const chromaticDarkTheme: Theme = {
   userMessageBackgroundHover: 'rgb(48, 29, 68)',
   messageActionsBackground: 'rgb(44, 27, 61)',
   selectionBg: 'rgb(96, 44, 150)', // violet selection against light text
+  selectionFg: 'rgb(255,255,255)',
   bashMessageBackgroundColor: 'rgb(24, 15, 32)',
   agencWash: 'rgb(36,25,49)',
   worker: 'rgb(255,106,47)',
@@ -295,13 +301,19 @@ const darkTheme = monochromeTheme('rgb(0,0,0)', 'rgb(255,255,255)', {
   text2: 'rgb(178,178,178)',
   text3: 'rgb(138,138,138)',
   codeText: 'rgb(218,218,218)',
-  inactive: 'rgb(112,112,112)',
-  inactiveShimmer: 'rgb(142,142,142)',
-  subtle: 'rgb(82,82,82)',
+  // Grays used for text reach 4.5:1 on the black surface: inactive 5.3,
+  // subtle 4.6 (they were 4.2 and 2.7).
+  inactive: 'rgb(128,128,128)',
+  inactiveShimmer: 'rgb(150,150,150)',
+  subtle: 'rgb(118,118,118)',
   muted3: 'rgb(68,68,68)',
   line: 'rgb(48,48,48)',
   lineSoft: 'rgb(34,34,34)',
   promptBackground: 'rgb(34,34,34)',
+  // Mouse selection: a muted purple, 3.8:1 on black and 3.0 on #1e1e1e,
+  // with white text at 5.5:1.
+  selectionBg: 'rgb(118,96,140)',
+  selectionFg: 'rgb(255,255,255)',
   // Color only where it carries meaning: the brand purple marks who speaks,
   // green and red mark how a step ended and what an edit changed.
   accent: 'rgb(206,92,255)',
@@ -331,11 +343,17 @@ const oliveTheme = monochromeTheme('rgb(25,27,17)', 'rgb(235,227,208)', {
   codeText: 'rgb(222,214,195)',
   inactive: 'rgb(143,141,114)',
   inactiveShimmer: 'rgb(170,166,138)',
-  subtle: 'rgb(102,101,80)',
+  // Used for text in many places: 4.8:1 on the olive surface and 4.6 on a
+  // #1e1e1e terminal (was 2.9 and 2.8).
+  subtle: 'rgb(137,135,108)',
   muted3: 'rgb(84,83,64)',
   line: 'rgb(42,45,28)',
   lineSoft: 'rgb(35,38,26)',
   promptBackground: 'rgb(35,38,26)',
+  // Mouse selection: a wine gray, 3.4:1 on the surface and 3.2 on #1e1e1e,
+  // with warm white text at 4.9:1.
+  selectionBg: 'rgb(128,104,100)',
+  selectionFg: 'rgb(255,250,240)',
   accent: 'rgb(208,106,112)',
   accentSoft: 'rgb(190,140,132)',
   stepOk: 'rgb(168,180,98)',
@@ -355,27 +373,34 @@ const oliveTheme = monochromeTheme('rgb(25,27,17)', 'rgb(235,227,208)', {
 // muted text reads the same weight on a white terminal.
 const lightTheme = monochromeTheme('rgb(255,255,255)', 'rgb(0,0,0)', {
   text2: 'rgb(86,86,86)',
-  text3: 'rgb(118,118,118)',
+  // Text grays keep 4.5:1 on white and, for text3, on the prompt band too:
+  // text3 5.9 (4.8 on the band), inactive 5.1, subtle 4.5. They were 4.5
+  // (3.7 on the band), 4.5 and 2.7.
+  text3: 'rgb(100,100,100)',
   codeText: 'rgb(50,50,50)',
-  inactive: 'rgb(118,118,118)',
-  inactiveShimmer: 'rgb(96,96,96)',
-  subtle: 'rgb(158,158,158)',
+  inactive: 'rgb(110,110,110)',
+  inactiveShimmer: 'rgb(90,90,90)',
+  subtle: 'rgb(118,118,118)',
   muted3: 'rgb(176,176,176)',
   line: 'rgb(204,204,204)',
   lineSoft: 'rgb(225,225,225)',
   promptBackground: 'rgb(232,232,232)',
+  // Mouse selection: a lavender, 3.4:1 on white, with black text at 6.2:1.
+  selectionBg: 'rgb(150,130,190)',
+  selectionFg: 'rgb(0,0,0)',
   accent: 'rgb(134,46,200)',
   accentSoft: 'rgb(110,70,190)',
-  stepOk: 'rgb(16,140,84)',
+  // Green text reaches 4.5:1 on white (4.9; was 4.3).
+  stepOk: 'rgb(12,130,78)',
   stepFail: 'rgb(204,32,72)',
   userBand: 'rgb(244,238,252)',
-  success: 'rgb(16,140,84)',
+  success: 'rgb(12,130,78)',
   error: 'rgb(204,32,72)',
   diffAdded: 'rgb(222,246,232)',
   diffRemoved: 'rgb(253,228,234)',
   diffAddedDimmed: 'rgb(236,250,242)',
   diffRemovedDimmed: 'rgb(254,240,243)',
-  diffAddedWord: 'rgb(16,140,84)',
+  diffAddedWord: 'rgb(12,130,78)',
   diffRemovedWord: 'rgb(204,32,72)',
 })
 
@@ -392,6 +417,9 @@ const darkAnsiTheme = monochromeTheme('ansi:black', 'ansi:whiteBright', {
   line: 'ansi:blackBright',
   lineSoft: 'ansi:blackBright',
   promptBackground: 'ansi:blackBright',
+  // The palette's gray under the brightest white, as most terminals select.
+  selectionBg: 'ansi:blackBright',
+  selectionFg: 'ansi:whiteBright',
   accent: 'ansi:magentaBright',
   accentSoft: 'ansi:magenta',
   stepOk: 'ansi:greenBright',
@@ -409,11 +437,14 @@ const lightAnsiTheme = monochromeTheme('ansi:whiteBright', 'ansi:black', {
   codeText: 'ansi:black',
   inactive: 'ansi:blackBright',
   inactiveShimmer: 'ansi:black',
-  subtle: 'ansi:white',
+  // subtle is a text color; the palette white vanished on a white terminal.
+  subtle: 'ansi:blackBright',
   muted3: 'ansi:white',
   line: 'ansi:white',
   lineSoft: 'ansi:white',
   promptBackground: 'ansi:white',
+  selectionBg: 'ansi:blackBright',
+  selectionFg: 'ansi:whiteBright',
   accent: 'ansi:magenta',
   accentSoft: 'ansi:magenta',
   stepOk: 'ansi:green',

@@ -42,6 +42,9 @@ export function useSelection(): {
    *  replaces the old SGR-7 inverse so syntax highlighting stays readable
    *  under selection). Call once on mount + whenever theme changes. */
   setSelectionBgColor: (color: string) => void
+  /** Set the selection foreground the theme pairs with its selection bg
+   *  (null keeps each cell's own fg). Call with setSelectionBgColor. */
+  setSelectionFgColor: (color: string | null) => void
 } {
   // Look up the Ink instance via stdout — same pattern as instances map.
   // StdinContext is available (it's always provided), and the Ink instance
@@ -65,6 +68,7 @@ export function useSelection(): {
         moveFocus: () => {},
         captureScrolledRows: () => {},
         setSelectionBgColor: () => {},
+        setSelectionFgColor: () => {},
       }
     }
     return {
@@ -82,6 +86,7 @@ export function useSelection(): {
       captureScrolledRows: (firstRow, lastRow, side) =>
         ink.captureScrolledRows(firstRow, lastRow, side),
       setSelectionBgColor: (color: string) => ink.setSelectionBgColor(color),
+      setSelectionFgColor: (color: string | null) => ink.setSelectionFgColor(color),
     }
   }, [ink])
 }

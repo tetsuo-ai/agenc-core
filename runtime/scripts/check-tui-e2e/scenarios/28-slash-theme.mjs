@@ -43,9 +43,7 @@ export default async function (session) {
   }
 
   await openPicker(session);
-  // The saved theme (olive) is last; down wraps to auto, then dark.
-  session.send("\x1b[B");
-  await sleep(200);
+  // The saved theme is the default, auto, the first row; down is dark.
   session.send("\x1b[B");
   await sleep(200);
   session.send("\r");

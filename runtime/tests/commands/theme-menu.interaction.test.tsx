@@ -147,9 +147,9 @@ describe("/theme picker", () => {
     const rows = stripAnsi(output).split(/\r?\n/u).map((row) => row.replace(/\s+/gu, ""));
     // No frame: a title row with the key hints, then one row per theme.
     expect(rows).toContain("THEME↑↓preview·↵save·esccancel");
-    expect(rows).toContain("›oliveolive,creamandwine,fordarkterminals(current)");
+    expect(rows).toContain("›autooliveondarkterminals,lightonlightones(current)");
     for (const row of [
-      "autooliveondarkterminals,lightonlightones",
+      "oliveolive,creamandwine,fordarkterminals",
       "darkblackandpurple,fordarkterminals",
       "lightforlightterminals",
       "light-daltonizedcolor-blindfriendly,light",
@@ -166,7 +166,8 @@ describe("/theme picker", () => {
     for (const row of ["preview", "❯Fixtheloginredirect", '12-returnredirect("/")', "12+returnredirect(next)"]) {
       expect(rows).toContain(row);
     }
-    expect(seen).toEqual({ theme: "olive", setting: "olive" });
+    // The default is auto; with no measured background it shows olive.
+    expect(seen).toEqual({ theme: "olive", setting: "auto" });
   });
 
   it("leaves the sample out on a short terminal and keeps every theme row", async () => {
@@ -174,8 +175,8 @@ describe("/theme picker", () => {
     await openPicker();
     const rows = stripAnsi(output).split(/\r?\n/u).map((row) => row.replace(/\s+/gu, ""));
     expect(rows).toContain("THEME↑↓preview·↵save·esccancel");
-    expect(rows).toContain("autooliveondarkterminals,lightonlightones");
-    expect(rows).toContain("›oliveolive,creamandwine,fordarkterminals(current)");
+    expect(rows).toContain("›autooliveondarkterminals,lightonlightones(current)");
+    expect(rows).toContain("oliveolive,creamandwine,fordarkterminals");
     expect(rows).not.toContain("preview");
   });
 
@@ -183,40 +184,39 @@ describe("/theme picker", () => {
     await mount();
     await openPicker();
 
-    await press(UP);
-    await vi.waitFor(() => expect(seen).toEqual({ theme: "dark-ansi", setting: "olive" }));
-    await press(UP);
-    await vi.waitFor(() => expect(seen).toEqual({ theme: "light-ansi", setting: "olive" }));
     await press(DOWN);
-    await vi.waitFor(() => expect(seen).toEqual({ theme: "dark-ansi", setting: "olive" }));
+    await vi.waitFor(() => expect(seen).toEqual({ theme: "dark", setting: "auto" }));
+    await press(DOWN);
+    await vi.waitFor(() => expect(seen).toEqual({ theme: "light", setting: "auto" }));
+    await press(UP);
+    await vi.waitFor(() => expect(seen).toEqual({ theme: "dark", setting: "auto" }));
 
     // A preview is not a save.
-    expect(store.current().tui?.theme).toBe("olive");
+    expect(store.current().tui?.theme).toBe("auto");
     await expect(readFile(join(home, "config.toml"), "utf8")).rejects.toThrow();
 
     await press(ESC);
-    await vi.waitFor(() => expect(seen).toEqual({ theme: "olive", setting: "olive" }));
+    await vi.waitFor(() => expect(seen).toEqual({ theme: "olive", setting: "auto" }));
     expect(stripAnsi(output.slice(-400))).not.toContain("esc cancel");
-    expect(store.current().tui?.theme).toBe("olive");
+    expect(store.current().tui?.theme).toBe("auto");
   });
 
   it("puts the saved theme back when something else closes the picker", async () => {
     await mount();
     await openPicker();
-    await press(UP);
-    await vi.waitFor(() => expect(seen.theme).toBe("dark-ansi"));
+    await press(DOWN);
+    await vi.waitFor(() => expect(seen.theme).toBe("dark"));
 
     // Ctrl+C and other commands clear the slot without telling the picker.
     setJsx?.(null);
-    await vi.waitFor(() => expect(seen).toEqual({ theme: "olive", setting: "olive" }));
+    await vi.waitFor(() => expect(seen).toEqual({ theme: "olive", setting: "auto" }));
   });
 
   it("saves the highlighted theme on Enter, and a restart keeps it", async () => {
     await mount();
     await openPicker();
-    await press(DOWN); // auto
     await press(DOWN); // dark
-    await vi.waitFor(() => expect(seen).toEqual({ theme: "dark", setting: "olive" }));
+    await vi.waitFor(() => expect(seen).toEqual({ theme: "dark", setting: "auto" }));
 
     await press(ENTER);
     await vi.waitFor(() => expect(store.current().tui?.theme).toBe("dark"));
@@ -238,7 +238,7 @@ describe("/theme picker", () => {
     await openPicker();
     await press(ENTER);
     await delay();
-    expect(seen).toEqual({ theme: "olive", setting: "olive" });
+    expect(seen).toEqual({ theme: "olive", setting: "auto" });
     await expect(readFile(join(home, "config.toml"), "utf8")).rejects.toThrow();
   });
 

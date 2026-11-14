@@ -108,7 +108,7 @@ describe("schema: defaultConfig", () => {
     expect(cfg.daemon?.autostart).toBe(true);
     expect(cfg.daemon?.autostart).toBe(true);
     expect(cfg.permissions?.defaultMode).toBeUndefined();
-    expect(cfg.tui?.theme).toBe("olive");
+    expect(cfg.tui?.theme).toBe("auto");
     expect(cfg.agent?.budget).toEqual({});
     expect(cfg.agent?.retention).toEqual({
       completed_days: 30,
