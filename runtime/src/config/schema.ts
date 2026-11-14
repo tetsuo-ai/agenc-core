@@ -163,6 +163,10 @@ export interface ShellEnvironmentPolicy {
 export interface ToolsConfig {
   /** Live WebSearch adapter selection; WEB_SEARCH_PROVIDER wins. Keys stay in env. */
   readonly web_search_provider?: string;
+  /** Explicit standalone fetch selection, independent of the reasoning provider. */
+  readonly web_fetch_provider?: "auto" | "local" | "deepseek";
+  /** Enables approval-gated FileRead extract_text requests. Default: local. */
+  readonly file_read_provider?: "local" | "deepseek";
   /**
    * Search backend URL after session-native search. With an explicitly named
    * provider, overrides its endpoint. `AGENC_WEB_SEARCH_ENDPOINT` env wins.
@@ -703,6 +707,8 @@ export interface ProviderConfig {
    * llm/providers/deepseek/web-fetch.ts). Rejected on every other table.
    */
   readonly web_fetch?: boolean;
+  /** DeepSeek Flash App server tools. Off by default; also requires session web mode on. */
+  readonly app_tools?: boolean;
   /** Grok-only native capabilities. Rejected on every other provider table. */
   readonly x_search?: boolean;
   readonly code_execution?: boolean;
@@ -1736,6 +1742,7 @@ const PROVIDER_KEYS: ReadonlySet<string> = new Set([
   "fallback",
   "web_search",
   "web_fetch",
+  "app_tools",
   "x_search",
   "code_execution",
   "enable_image_search",
@@ -2180,6 +2187,16 @@ function validateSingleProviderConfig(
       );
     }
     out.web_fetch = webFetch;
+  }
+  const appTools = optionalBoolean(
+    record.app_tools, fieldPath(providerId, "app_tools"),
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+  );
+  if (appTools !== undefined) {
+    if (providerId !== "deepseek") throw new InvalidProviderConfigError(
+      fieldPath(providerId, "app_tools"), "app_tools is allowed only under providers.deepseek",
+    );
+    out.app_tools = appTools;
   }
   const zeroDataRetention = optionalBoolean(
     record.zero_data_retention,

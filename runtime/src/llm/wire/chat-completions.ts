@@ -1,3 +1,8 @@
+import { supportsDeepSeekAppTools } from "../providers/deepseek/app-tools.js";
+import {
+  decodeDeepSeekWebReplay, encodeDeepSeekWebReplay, deepSeekWebUsage,
+  deepSeekWebEvidence, renderDeepSeekWebResponse,
+} from "./deepseek-web-tools.js";
 import { oneShotFastModeActive } from "../../one-shot-fast-mode.js";
 /**
  * Chat Completions wire shim.
@@ -414,6 +419,9 @@ function toChatCompletionsMessages(
     reasoning: string | undefined,
   ): Record<string, unknown> => {
     if (reasoning === undefined) return {};
+    const webReplay = reasoningContentProvenance?.provider === "deepseek"
+      ? decodeDeepSeekWebReplay(reasoning) : undefined;
+    if (webReplay !== undefined) return { ...webReplay };
     const details = replaysReasoningDetails ? decodeReasoningDetailsReplay(reasoning) : undefined;
     if (details !== undefined) return { reasoning_details: details };
     return usesThinkingContentBlocks ? {} : { [reasoningContentField]: reasoning };
@@ -902,6 +910,24 @@ export function buildChatCompletionsRequest(
       };
     }
   }
+  if (input.options?.deepSeekAppTools === true && supportsDeepSeekAppTools(
+    input.providerCapabilityHints?.reasoningContentProvenance?.provider, input.model,
+  )) {
+    if (body.response_format !== undefined) throw new TypeError("DeepSeek App tools require text output; disable structured output or App tools.");
+    if (tools.length > 0 && (body.thinking as { type?: string } | undefined)?.type === "disabled") {
+      throw new TypeError("DeepSeek App tools with local function tools require thinking mode.");
+    }
+    if (typeof requestedToolChoice === "object" &&
+        ["deepseek_web_search", "deepseek_read_url"].includes(requestedToolChoice.name)) {
+      throw new TypeError("DeepSeek server web tools cannot be forced by name.");
+    }
+    body.tools = [...tools, { type: "deepseek_web_search" }, { type: "deepseek_read_url" }];
+    if (requestedToolChoice !== undefined) body.tool_choice = requestedToolChoice === "required"
+      ? "auto" : parseOpenAIToolChoice(requestedToolChoice);
+    // The App service owns these controls. Do not imply they still apply.
+    for (const key of ["preserve_thinking", "parallel_tool_calls", "temperature", "top_p",
+      "frequency_penalty", "presence_penalty", "stop", "seed", "n"]) delete body[key];
+  }
   applyPromptCacheControl(body, input.providerCapabilityHints?.promptCacheControl);
   if (input.providerCapabilityHints?.imageInputContract === "cerebras_v2") {
     assertCerebrasRequestPayloadSize(body);
@@ -1126,7 +1152,11 @@ export function parseChatCompletionsResponse(
       "The model reported model_context_window_exceeded",
     );
   }
-  const finishReason = normalizeFinishReason(choice.finish_reason);
+  const appError = request.options?.deepSeekAppTools === true && supportsDeepSeekAppTools(
+    request.providerCapabilityHints?.reasoningContentProvenance?.provider, model,
+  ) && response.error !== null && typeof response.error === "object"
+    ? new Error("DeepSeek App tools failed to generate a complete response.") : undefined;
+  const finishReason = appError !== undefined ? "error" : normalizeFinishReason(choice.finish_reason);
   if (
     request.providerCapabilityHints?.requiresToolCallsFinishReason === true &&
     Array.isArray(message.tool_calls) &&
@@ -1254,7 +1284,14 @@ export function parseChatCompletionsResponse(
     request.providerCapabilityHints?.replaysReasoningDetails === true
       ? encodeReasoningDetailsReplay(message.reasoning_details)
       : undefined;
-  const replayedProviderReasoning = reasoningDetailsReplay ?? providerReasoningContent;
+  const nativeAppResponse = supportsDeepSeekAppTools(
+    request.providerCapabilityHints?.reasoningContentProvenance?.provider, model,
+  ) && (request.options?.deepSeekAppTools === true || Array.isArray(message.server_tool_calls));
+  const webReplay = nativeAppResponse ? encodeDeepSeekWebReplay({ ...message,
+    ...(providerReasoningContent !== undefined ? { reasoning_content: providerReasoningContent } : {}),
+    ...(finishReason === "content_filter" ? { content: "", reasoning_content: "", annotations: [] } : {}),
+  }) : undefined;
+  const replayedProviderReasoning = webReplay ?? reasoningDetailsReplay ?? providerReasoningContent;
   const rawContent =
     typeof message.content === "string"
       ? message.content
@@ -1316,9 +1353,17 @@ export function parseChatCompletionsResponse(
   // structured-output parsing when the generation completed normally.
   const generationCompleted = finishReason === "stop";
 
+  const webMessage = decodeDeepSeekWebReplay(webReplay);
+  const webUsage = nativeAppResponse ? deepSeekWebUsage(usageRecord) : undefined;
   return {
-    content,
-    ...((providerReasoningContent?.length ?? 0) > 0 || inlineThinking.length > 0
+    content: webMessage !== undefined
+      ? [renderDeepSeekWebResponse(webMessage), ...(finishReason === "content_filter"
+        ? ["The model declined to answer this request (stop reason: refusal)."] : [])].filter(Boolean).join("\n\n")
+      : content,
+    ...(appError !== undefined ? { error: appError } : {}),
+    ...(webMessage !== undefined ? { providerEvidence: deepSeekWebEvidence(webMessage, usageRecord) } : {}),
+    ...(!(nativeAppResponse && finishReason === "content_filter") &&
+      ((providerReasoningContent?.length ?? 0) > 0 || inlineThinking.length > 0)
       ? {
           thinking: Object.freeze([
             Object.freeze({
@@ -1353,6 +1398,7 @@ export function parseChatCompletionsResponse(
         promptDetails.cached_tokens ??
         (isKimiResponse ? usageRecord.cached_tokens : undefined),
       reasoningOutputTokens: completionDetails.reasoning_tokens,
+      ...(webUsage !== undefined ? { webSearchRequests: webUsage.count } : {}),
       // Moonshot reports writes separately inside total prompt tokens. Older
       // responses and other Chat endpoints may still omit this breakdown.
       ...cacheWrites,

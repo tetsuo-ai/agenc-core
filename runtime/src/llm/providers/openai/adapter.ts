@@ -81,6 +81,8 @@ import {
   serializeProviderToolArguments,
 } from "../../wire/shared.js";
 import { ThinkTagStreamFilter } from "../../wire/think-tags.js";
+import { DeepSeekWebStream } from "../../wire/deepseek-web-tools.js";
+import { supportsDeepSeekAppTools } from "../deepseek/app-tools.js";
 import { ReasoningDetailsAccumulator } from "../../wire/reasoning-details.js";
 import {
   advertisedResponsesToolNames,
@@ -1151,7 +1153,7 @@ export class OpenAIProvider implements LLMProvider {
     // The matrix also has local image, payload-size, and tool-count gates.
     // Reuse their exact wire projection only on those affected requests;
     // ordinary text calls do not need another prompt serialization.
-    if (!hints.imageInputContract && !exceedsToolLimit && !hasUnsupportedImage) return;
+    if (!hints.imageInputContract && !exceedsToolLimit && !hasUnsupportedImage && options.deepSeekAppTools !== true) return;
     try {
       buildChatCompletionsRequest({ model, messages, tools, options,
         maxTokens: this.resolveRequestMaxTokens(options),
@@ -1443,7 +1445,9 @@ export class OpenAIProvider implements LLMProvider {
       provider: this.name,
       model,
       usageReporting: "authoritative" as const,
-      supportsMaxOutputTokens: this.config.chatgptBackend !== true && !separateThinkingLimit,
+      // App tools cap each inference step, not the sum of an entire server round.
+      supportsMaxOutputTokens: this.config.chatgptBackend !== true && !separateThinkingLimit &&
+        !(options?.deepSeekAppTools === true && supportsDeepSeekAppTools(this.name, model)),
       // The ChatGPT backend rejects max_output_tokens, but the model still
       // cannot answer past its documented maximum, which bounds hard budgets.
       ...(this.config.chatgptBackend === true && !separateThinkingLimit
@@ -2391,6 +2395,9 @@ export class OpenAIProvider implements LLMProvider {
       const reasoningDetails = streamCapabilityHints.replaysReasoningDetails === true
         ? new ReasoningDetailsAccumulator()
         : undefined;
+      const deepSeekWeb = options?.deepSeekAppTools === true && supportsDeepSeekAppTools(this.name, requestModel)
+        ? new DeepSeekWebStream() : undefined;
+      let deepSeekWebError: Error | undefined;
       let topLevelCost: unknown;
       const toolCallAccumulator = new Map<
         number,
@@ -2430,6 +2437,17 @@ export class OpenAIProvider implements LLMProvider {
             errorBody: chunk.error,
             fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
           });
+          if (deepSeekWeb !== undefined && chunk.usage && typeof chunk.usage === "object") {
+            // The App service bills completed inference/tool steps even if the round fails.
+            // Return a partial response so admission and token_count settle before the error surfaces.
+            usage = chunk.usage as Record<string, unknown>;
+            sawTerminalUsage = true;
+            sawFinishReason = true;
+            rawFinishReasons.add("error");
+            finishReason = "error";
+            deepSeekWebError = streamError;
+            break;
+          }
           if (!isProviderFundsFailure(this.name, streamError) &&
             content.length === 0 && toolCallAccumulator.size === 0) {
             const fallbackDecision = this.evaluateConfiguredFallback(
@@ -2505,6 +2523,11 @@ export class OpenAIProvider implements LLMProvider {
             choice.delta && typeof choice.delta === "object"
               ? (choice.delta as Record<string, unknown>)
               : {};
+          const serverProgress = deepSeekWeb?.push(choice, delta);
+          if (serverProgress !== undefined) onChunk({ content: serverProgress, done: false });
+          else if (deepSeekWeb !== undefined && choice.server_tool_event !== undefined) {
+            onChunk({ content: "", done: false, bufferedContentProgress: true });
+          }
           const contentDelta = typeof delta.content === "string" ? delta.content
             : streamCapabilityHints.usesThinkingContentBlocks === true && Array.isArray(delta.content)
               ? assistantTextFromContentBlocks(delta.content) : "";
@@ -2800,6 +2823,9 @@ export class OpenAIProvider implements LLMProvider {
                         "reasoning_content"]: reasoningContent,
                       }
                     : {}),
+                  ...(deepSeekWeb?.messageFields() ?? {}),
+                  ...(deepSeekWeb !== undefined && finishReason === "content_filter"
+                    ? { content: "", reasoning_content: "", annotations: [] } : {}),
                   ...(reasoningDetails !== undefined && reasoningDetails.size > 0
                     ? { reasoning_details: reasoningDetails.items() }
                     : {}),
@@ -2852,13 +2878,14 @@ export class OpenAIProvider implements LLMProvider {
           : {}),
       });
       const finalFields = {
+        ...(deepSeekWebError !== undefined ? { error: deepSeekWebError } : {}),
         // Interim counters are useful observations, but a reset can lose the
         // final usage trailer. Never settle the reservation from those counts.
         ...(recoveredReadFailure && !sawTerminalUsage ? { usage: {
           ...parsed.usage, availability: "unknown" as const, provenance: "synthetic" as const,
         } } : {}),
         ...(toolCallRecovery === undefined ? {} : { toolCallRecovery }),
-        ...(reasoningContent.length > 0
+        ...(reasoningContent.length > 0 && !(deepSeekWeb !== undefined && finishReason === "content_filter")
           ? {
             thinking: Object.freeze([
               Object.freeze({

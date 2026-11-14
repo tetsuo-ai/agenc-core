@@ -337,6 +337,7 @@ export interface LLMUsage {
    * that leave it unset still have reasoning added on top of completion.
    */
   readonly reasoningIncludedInCompletion?: true;
+  /** Billable web units. Native DeepSeek combines text/image queries and fetched pages at their common rate. */
   webSearchRequests?: number;
   /**
    * The wire this usage came from cannot report prompt-cache writes: it has
@@ -727,6 +728,8 @@ export type LLMToolChoice =
  * Optional provider call options.
  */
 export interface LLMChatOptions {
+  /** Native DeepSeek Flash server web tools, explicitly enabled by the session. */
+  readonly deepSeekAppTools?: boolean;
   /**
    * @internal UUID of one immutable sampling request, preserved across
    * session reconnects. Only AgenC-managed adapters use it, as a transport

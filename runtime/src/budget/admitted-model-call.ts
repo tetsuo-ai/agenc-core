@@ -14,6 +14,7 @@ import {
   type ProviderFactoryOptions,
   type ProviderRuntimeExtra,
 } from "../llm/provider.js";
+import { supportsDeepSeekAppTools } from "../llm/providers/deepseek/app-tools.js";
 import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
 import { getProviderNativeToolDefinitions } from "../llm/provider-native-search.js";
 import {
@@ -143,6 +144,12 @@ export function providerNativeToolsForAccounting(
   extra: ProviderRuntimeExtra,
   options: LLMChatOptions,
 ): readonly Readonly<Record<string, unknown>>[] {
+  if (provider.name === "deepseek" && options.deepSeekAppTools === true &&
+      options.toolChoice !== "none" && supportsDeepSeekAppTools(providerName, model)) {
+    return ["deepseek_web_search", "deepseek_read_url"].map(name => ({
+      name, toolType: "web_search", payload: { type: name },
+    }));
+  }
   if (provider.name !== "grok" && providerName !== "grok") return [];
   const definitions = getProviderNativeToolDefinitions({
     provider: "grok",

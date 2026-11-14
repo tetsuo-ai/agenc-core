@@ -21,7 +21,8 @@ export function configuredSearchChain(
   if (mode === 'auto') {
     return { mode, providers: KEYED_SEARCH_PROVIDERS.filter(p => p.isConfigured(environment)) }
   }
-  if (mode === 'ddg' || mode === 'native') return { mode, providers: [] }
+  // DeepSeek resolves its normal saved credentials and metering at the tool boundary.
+  if (mode === 'ddg' || mode === 'native' || mode === 'deepseek') return { mode, providers: [] }
   const provider = mode === 'custom'
     ? customProvider
     : KEYED_SEARCH_PROVIDERS.find(p => p.name === mode)
