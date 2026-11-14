@@ -23,6 +23,7 @@ import { ABLITERATION_MODELS } from "../llm/registry/abliteration-models.js";
 
 import { MISTRAL_CHAT_MODELS } from "../llm/registry/mistral-models.js";
 import { QWEN_CURRENT_MODELS, QWEN_EXISTING_RATE_ROWS, type QwenCurrentRate } from "../llm/registry/qwen-current-models.js";
+import { QWEN_TOKEN_PLAN_PREVIEW_MODEL_IDS } from "../llm/registry/qwen-token-plan-models.js";
 import { join } from "node:path";
 import { promises as fsp } from "node:fs";
 import { monotonicMs } from "./_deps/utils.js";
@@ -1354,6 +1355,9 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     // https://www.alibabacloud.com/help/en/model-studio/token-plan-personal-overview
     // https://docs.z.ai/devpack/overview
     "qwen-token-plan": PLAN_INCLUDED,
+    // Credits still accrue, including thinking; $0 denotes no per-call USD
+    // overage, not free usage. Alibaba publishes no fixed Credits/token rate.
+    ...Object.fromEntries(QWEN_TOKEN_PLAN_PREVIEW_MODEL_IDS.map(model => [`qwen-token-plan:${model}`, PLAN_INCLUDED])),
     "zai-coding-plan": PLAN_INCLUDED,
     // Served only through the Grok Build CLI, billed to the user's Grok plan.
     "grok:grok-composer-2.5-fast": PLAN_INCLUDED,

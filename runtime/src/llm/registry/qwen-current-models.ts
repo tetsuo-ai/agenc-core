@@ -20,6 +20,8 @@ export interface QwenCurrentModel {
   readonly toolStream?: boolean;
   readonly reasoningLevels?: readonly ReasoningEffort[];
   readonly defaultReasoningLevel?: ReasoningEffort;
+  readonly retiresOn?: string;
+  readonly supportsStructuredOutput?: boolean;
   /** Singapore text/image rates per million; omit unsupported billing dimensions. */
   readonly rates?: readonly QwenCurrentRate[];
 }
@@ -123,12 +125,13 @@ export function qwenCurrentCatalogEntry(
     ...(entry.maxOutputTokensUpperLimit === undefined ? {} : {maxOutputTokensUpperLimit: entry.maxOutputTokensUpperLimit, maxOutputTokensCappedDefault: true}),
     inputModalities: entry.vision ? ["text", "image"] as const : ["text"] as const,
     supportsToolUse: true, supportsParallelToolCalls: true,
-    // JSON object support does not establish the JSON Schema contract Core uses.
-    supportsStructuredOutput: false, supportsSearchTool: false,
+    // Opt in only where the deployment documents JSON Schema, not just JSON Object.
+    supportsStructuredOutput: entry.supportsStructuredOutput ?? false, supportsSearchTool: false,
     supportsVerbosity: false, webSearchToolType: "none" as const,
     supportsReasoningSummaries: false, defaultReasoningSummary: "none" as const,
     supportedReasoningLevels: entry.reasoningLevels ?? [],
     ...(entry.defaultReasoningLevel ? {defaultReasoningLevel: entry.defaultReasoningLevel} : {}),
+    ...(entry.retiresOn ? {retiresOn: entry.retiresOn} : {}),
     additionalSpeedTiers: [], priority,
     visibility,
   });
