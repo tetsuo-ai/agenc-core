@@ -68,6 +68,8 @@ export type CompactionTurn = Pick<
 export type CompactContext = {
   /** Trusted turn-local identity; recovery prompts cannot replace this request. */
   readonly liveUserMessageId?: string;
+  /** Successful main-request snapshot, never a reconstruction from durable media. */
+  readonly queryPrefix?: import("./query-prefix.js").CompactionQueryPrefix;
   readonly abortController?: AbortController;
   /** Canonical workspace for lifecycle hook metadata. */
   readonly cwd?: string;

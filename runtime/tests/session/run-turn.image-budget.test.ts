@@ -126,8 +126,8 @@ describe("context image budget in the turn loop", () => {
 describe("context image budget for providers that cache an unchanged prefix", () => {
   test("the budget is full, then the next screenshot reaches the model, with one rewrite per batch", async () => {
     // Six 1022-byte screenshots fit a 6500-byte budget. The seventh still
-    // reaches the model: the oldest four leave in one batch, down to half the
-    // budget, and the eleventh starts the next batch.
+    // reaches the model: all six older images leave in one batch toward a
+    // tenth of the budget. The next five then fit without changing the prefix.
     vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "6500");
     const seen: LLMMessage[][] = [];
     const provider = mkProvider({ content: "seen" }, { onChatStream: (messages) => seen.push(messages) });
@@ -141,7 +141,7 @@ describe("context image budget for providers that cache an unchanged prefix", ()
     expect(seen).toHaveLength(12);
     const imagesSent = seen.map((messages) => messages.flatMap((message) =>
       Array.isArray(message.content) ? message.content.filter((part) => part.type === "image_url") : []).length);
-    expect(imagesSent).toEqual([1, 2, 3, 4, 5, 6, 3, 4, 5, 6, 3, 4]);
+    expect(imagesSent).toEqual([1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6]);
     // The screenshot of each turn is the one the model sees last.
     for (const [turn, messages] of seen.entries()) {
       const current = messages.findLast((message) => JSON.stringify(message.content).includes(`screen ${turn}`));
@@ -149,7 +149,7 @@ describe("context image budget for providers that cache an unchanged prefix", ()
     }
     const repeated = seen.slice(1).map((messages, index) =>
       JSON.stringify(messages.slice(0, seen[index]!.length)) === JSON.stringify(seen[index]));
-    expect(repeated).toEqual([true, true, true, true, true, false, true, true, true, false, true]);
+    expect(repeated).toEqual([true, true, true, true, true, false, true, true, true, true, true]);
     const warnings = events.filter((event) => event.msg.type === "warning"
       && (event.msg.payload as { cause?: string }).cause === "context_images_omitted");
     expect(warnings.length).toBeGreaterThan(0);
