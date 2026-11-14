@@ -1326,8 +1326,9 @@ function collabStatusState(status: unknown): CollabAgentMessageState {
       return "error";
     case "running":
     case "pending_init":
-    case "interrupted":
       return "running";
+    // An interrupted agent has stopped working; its row must not keep a
+    // running glyph (the task panel already treats it as stopped).
     default:
       return "info";
   }
@@ -1472,18 +1473,113 @@ function collabMailboxUpdateDetails(updates: unknown): readonly string[] {
   });
 }
 
-function collectSettledCollabSpawnCallIds(
+/** The end event of each collab call, keyed by the call's begin event type. */
+const COLLAB_END_EVENT_BY_BEGIN: Readonly<Record<string, string>> = {
+  collab_agent_spawn_begin: "collab_agent_spawn_end",
+  collab_agent_interaction_begin: "collab_agent_interaction_end",
+  collab_waiting_begin: "collab_waiting_end",
+  collab_close_begin: "collab_close_end",
+  collab_resume_begin: "collab_resume_end",
+};
+
+/**
+ * Collab calls whose end event is in the stream, as `<end type>:<callId>`.
+ * Their begin row ("Spawning agent", "Waiting for agents", "Closing …") is
+ * replaced by the end row, so a finished call leaves one settled row instead
+ * of a begin row that keeps its running glyph.
+ */
+function collectSettledCollabCalls(
   events: readonly SessionTranscriptEvent[],
 ): ReadonlySet<string> {
-  const callIds = new Set<string>();
+  const endTypes = new Set(Object.values(COLLAB_END_EVENT_BY_BEGIN));
+  const calls = new Set<string>();
   for (const raw of events) {
     const event = unwrap(raw);
-    if (event.type !== "collab_agent_spawn_end") continue;
-    const payload = payloadRecord(event.payload);
-    const callId = payload.callId;
-    if (typeof callId === "string") callIds.add(callId);
+    if (typeof event.type !== "string" || !endTypes.has(event.type)) continue;
+    const callId = payloadRecord(event.payload).callId;
+    if (typeof callId === "string") calls.add(`${event.type}:${callId}`);
   }
-  return callIds;
+  return calls;
+}
+
+function isSettledCollabCall(
+  settled: ReadonlySet<string>,
+  beginType: string,
+  callId: string,
+): boolean {
+  const endType = COLLAB_END_EVENT_BY_BEGIN[beginType];
+  return endType !== undefined && settled.has(`${endType}:${callId}`);
+}
+
+/** collab_agent_status carries the task status word, not the agent status object. */
+function collabStatusFromTaskStatus(status: unknown): unknown {
+  if (typeof status !== "string") return status;
+  switch (status) {
+    case "pending":
+    case "running":
+      return { status: "running" };
+    // A finished child reports "idle" (it stays reusable, so the task never
+    // turns terminal); the task panel already counts idle as completed.
+    case "idle":
+    case "completed":
+      return { status: "completed" };
+    case "failed":
+      return { status: "errored" };
+    case "killed":
+      return { status: "shutdown" };
+    default:
+      return { status };
+  }
+}
+
+/** The last status the collab events report for each agent thread. */
+function collectLatestCollabStatuses(
+  events: readonly SessionTranscriptEvent[],
+): ReadonlyMap<string, unknown> {
+  const latest = new Map<string, unknown>();
+  const note = (threadId: unknown, status: unknown): void => {
+    if (typeof threadId === "string" && status !== undefined && status !== null) {
+      latest.set(threadId, status);
+    }
+  };
+  for (const raw of events) {
+    const event = unwrap(raw);
+    const payload = payloadRecord(event.payload);
+    switch (event.type) {
+      case "collab_agent_spawn_end":
+        note(payload.newThreadId, payload.status);
+        break;
+      case "collab_agent_status":
+        note(payload.threadId, collabStatusFromTaskStatus(payload.status));
+        break;
+      case "collab_agent_interaction_end":
+      case "collab_resume_end":
+        note(payload.receiverThreadId, payload.status);
+        break;
+      case "collab_close_end":
+        note(payload.receiverThreadId, { status: "shutdown" });
+        break;
+      case "collab_waiting_end": {
+        if (Array.isArray(payload.agentStatuses)) {
+          for (const entry of payload.agentStatuses) {
+            if (entry && typeof entry === "object") {
+              const record = entry as Record<string, unknown>;
+              note(record.threadId, record.status);
+            }
+          }
+        }
+        if (payload.statuses && typeof payload.statuses === "object" && !Array.isArray(payload.statuses)) {
+          for (const [threadId, status] of Object.entries(payload.statuses as Record<string, unknown>)) {
+            note(threadId, status);
+          }
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return latest;
 }
 
 function formatElicitationSummary(type: string, payload: Record<string, unknown>): string {
@@ -1982,7 +2078,19 @@ export function adaptTranscriptEvents(
   efficiencyBeforeEvents: TurnEfficiencyState = EMPTY_TURN_EFFICIENCY,
 ): AdaptedTranscript {
   const orderedEvents = orderSequencedEvents(events);
-  const settledCollabSpawnCallIds = collectSettledCollabSpawnCallIds(orderedEvents);
+  const settledCollabCalls = collectSettledCollabCalls(orderedEvents);
+  const latestCollabStatuses = collectLatestCollabStatuses(orderedEvents);
+  // A row built from an agent's status at the time of its event ("Spawned",
+  // "Sent input", "Resumed") takes the latest status the stream reports for
+  // that agent, so a finished agent's row stops showing a running glyph.
+  const settleCollabState = (
+    state: CollabAgentMessageState,
+    threadId: unknown,
+  ): CollabAgentMessageState => {
+    if (state !== "running" || typeof threadId !== "string") return state;
+    const latest = latestCollabStatuses.get(threadId);
+    return latest === undefined ? state : collabStatusState(latest);
+  };
   const out: any[] = startupMessages.map((message, index) =>
     // Startup messages have no source event; key them by position so their
     // uuids are also stable across re-projections.
@@ -3082,7 +3190,7 @@ export function adaptTranscriptEvents(
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
         if (callId === null) break;
-        if (settledCollabSpawnCallIds.has(callId)) break;
+        if (isSettledCollabCall(settledCollabCalls, "collab_agent_spawn_begin", callId)) break;
         openTools.add(callId);
         const details = [
           promptDetail(payload.prompt),
@@ -3116,7 +3224,7 @@ export function adaptTranscriptEvents(
           makeCollabAgentMessage(
             label === "agent" ? "Agent spawn failed" : `Spawned ${label}`,
             details,
-            collabStatusState(status),
+            settleCollabState(collabStatusState(status), payload.newThreadId),
             nextUuid(),
           ),
         );
@@ -3126,6 +3234,7 @@ export function adaptTranscriptEvents(
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
         if (callId === null) break;
+        if (isSettledCollabCall(settledCollabCalls, "collab_agent_interaction_begin", callId)) break;
         openTools.add(callId);
         const label = collabAgentLabel(collabAgents, payload.receiverThreadId);
         const detail = promptDetail(payload.prompt);
@@ -3159,7 +3268,7 @@ export function adaptTranscriptEvents(
           makeCollabAgentMessage(
             `Sent input to ${label}`,
             details,
-            collabStatusState(status),
+            settleCollabState(collabStatusState(status), payload.receiverThreadId),
             nextUuid(),
           ),
         );
@@ -3169,12 +3278,13 @@ export function adaptTranscriptEvents(
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
         if (callId === null) break;
-        openTools.add(callId);
         if (Array.isArray(payload.receiverAgents)) {
           for (const agent of payload.receiverAgents) {
             updateCollabAgentFromRef(collabAgents, agent);
           }
         }
+        if (isSettledCollabCall(settledCollabCalls, "collab_waiting_begin", callId)) break;
+        openTools.add(callId);
         const ids = Array.isArray(payload.receiverThreadIds)
           ? payload.receiverThreadIds.filter((id) => typeof id === "string")
           : [];
@@ -3239,12 +3349,13 @@ export function adaptTranscriptEvents(
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
         if (callId === null) break;
-        openTools.add(callId);
         updateCollabAgentFromPayload(collabAgents, payload, "receiverThreadId", {
           nickname: "receiverAgentNickname",
           role: "receiverAgentRole",
           roleDisplayName: "receiverAgentRoleDisplayName",
         });
+        if (isSettledCollabCall(settledCollabCalls, "collab_close_begin", callId)) break;
+        openTools.add(callId);
         out.push(
           makeCollabAgentMessage(
             `Closing ${collabAgentLabel(collabAgents, payload.receiverThreadId)}`,
@@ -3279,12 +3390,13 @@ export function adaptTranscriptEvents(
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
         if (callId === null) break;
-        openTools.add(callId);
         updateCollabAgentFromPayload(collabAgents, payload, "receiverThreadId", {
           nickname: "receiverAgentNickname",
           role: "receiverAgentRole",
           roleDisplayName: "receiverAgentRoleDisplayName",
         });
+        if (isSettledCollabCall(settledCollabCalls, "collab_resume_begin", callId)) break;
+        openTools.add(callId);
         out.push(
           makeCollabAgentMessage(
             `Resuming ${collabAgentLabel(collabAgents, payload.receiverThreadId)}`,
@@ -3309,7 +3421,7 @@ export function adaptTranscriptEvents(
           makeCollabAgentMessage(
             `Resumed ${collabAgentLabel(collabAgents, payload.receiverThreadId)}`,
             [`status: ${collabStatusSummary(payload.status)}`],
-            collabStatusState(payload.status),
+            settleCollabState(collabStatusState(payload.status), payload.receiverThreadId),
             nextUuid(),
           ),
         );

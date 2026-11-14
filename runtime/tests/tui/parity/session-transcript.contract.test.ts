@@ -140,6 +140,131 @@ describe("tool-call correlation contract", () => {
     expect(transcript.inProgressToolUseIDs.size).toBe(0);
   });
 
+  test("collab-fanout-settles: finished agents leave no running glyph on Spawned or Waiting rows", () => {
+    const events = [
+      {
+        id: "spawn-end-a",
+        msg: {
+          type: "collab_agent_spawn_end",
+          payload: {
+            callId: "spawn-a", newThreadId: "thread-a", newAgentNickname: "YT",
+            newAgentPath: "/root/cars_a", prompt: "search cars", status: { status: "pending_init" },
+          },
+        },
+      },
+      {
+        id: "spawn-end-b",
+        msg: {
+          type: "collab_agent_spawn_end",
+          payload: {
+            callId: "spawn-b", newThreadId: "thread-b", newAgentNickname: "SignalJacker",
+            newAgentPath: "/root/cars_b", prompt: "search cars", status: { status: "pending_init" },
+          },
+        },
+      },
+      {
+        id: "spawn-end-c",
+        msg: {
+          type: "collab_agent_spawn_end",
+          payload: {
+            callId: "spawn-c", newThreadId: "thread-c", newAgentNickname: "Needlecast",
+            newAgentPath: "/root/cars_c", prompt: "search cars", status: { status: "pending_init" },
+          },
+        },
+      },
+      {
+        id: "wait-begin",
+        msg: {
+          type: "collab_waiting_begin",
+          payload: { callId: "wait-1", receiverThreadIds: ["thread-a", "thread-b", "thread-c"] },
+        },
+      },
+      {
+        id: "wait-end",
+        msg: {
+          type: "collab_waiting_end",
+          payload: {
+            callId: "wait-1",
+            agentStatuses: [
+              { threadId: "thread-a", status: { status: "completed", lastMessage: "hypercars" } },
+              { threadId: "thread-b", status: { status: "completed", lastMessage: "ev tech" } },
+            ],
+          },
+        },
+      },
+      {
+        id: "status-c",
+        msg: { type: "collab_agent_status", payload: { callId: "spawn-c", threadId: "thread-c", status: "completed" } },
+      },
+    ];
+    const transcript = adaptTranscriptEvents(events);
+
+    expect(transcript.inProgressToolUseIDs.size).toBe(0);
+    expect(transcript.messages.map((message) => [message.title, message.state])).toEqual([
+      ["Spawned YT", "success"],
+      ["Spawned SignalJacker", "success"],
+      ["Spawned Needlecast", "success"],
+      ["Finished waiting", "success"],
+    ]);
+    // While an agent still runs, its Spawned row keeps the running glyph.
+    const live = adaptTranscriptEvents(events.slice(0, 3));
+    expect(live.messages.map((message) => message.state)).toEqual(["running", "running", "running"]);
+  });
+
+  test("collab-fanout-settles-live-shape: idle children settle Spawned rows when waits carry only mailbox updates", () => {
+    // The shape the daemon really emits (real DeepSeek run, 2026-11-14): waits end
+    // with empty statuses and the notices in mailboxUpdates; each child reports
+    // collab_agent_status "running" while it works and "idle" once it finished.
+    const spawn = (id: string, name: string) => ({
+      id: `spawn-end-${id}`,
+      msg: {
+        type: "collab_agent_spawn_end",
+        payload: {
+          callId: `spawn-${id}`, newThreadId: `thread-${id}`, newAgentNickname: name,
+          newAgentPath: `/root/cars_${id}`, prompt: "search cars", status: { status: "pending_init" },
+        },
+      },
+    });
+    const status = (id: string, value: string, n: number) => ({
+      id: `status-${id}-${n}`,
+      msg: { type: "collab_agent_status", payload: { callId: `spawn-${id}`, threadId: `thread-${id}`, status: value } },
+    });
+    const waitEnd = (n: number, id: string) => ({
+      id: `wait-end-${n}`,
+      msg: {
+        type: "collab_waiting_end",
+        payload: {
+          callId: `wait-${n}`, statuses: {}, timedOut: false, agentStatuses: [],
+          mailboxUpdates: [{ role: "user", content: `Untrusted agent message from /root/cars_${id}: done` }],
+        },
+      },
+    });
+    const events = [
+      spawn("a", "GridRunner"), spawn("b", "Librarian"),
+      status("a", "running", 1), status("b", "running", 1),
+      { id: "wait-begin-1", msg: { type: "collab_waiting_begin", payload: { callId: "wait-1", receiverThreadIds: ["thread-a", "thread-b"] } } },
+      status("a", "idle", 2), waitEnd(1, "a"),
+    ];
+    const midTurn = adaptTranscriptEvents(events);
+    expect(midTurn.messages.map((message) => [message.title, message.state])).toEqual([
+      ["Spawned GridRunner", "success"],
+      ["Spawned Librarian", "running"],
+      ["Finished waiting", "success"],
+    ]);
+    const settled = adaptTranscriptEvents([
+      ...events,
+      { id: "wait-begin-2", msg: { type: "collab_waiting_begin", payload: { callId: "wait-2", receiverThreadIds: ["thread-b"] } } },
+      status("b", "idle", 2), waitEnd(2, "b"),
+    ]);
+    expect(settled.messages.map((message) => [message.title, message.state])).toEqual([
+      ["Spawned GridRunner", "success"],
+      ["Spawned Librarian", "success"],
+      ["Finished waiting", "success"],
+      ["Finished waiting", "success"],
+    ]);
+    expect(settled.inProgressToolUseIDs.size).toBe(0);
+  });
+
   test("collab-wait-begin/end renders visible waiting rows and clears spinner state", () => {
     const waiting = adaptTranscriptEvents([
       {
@@ -198,11 +323,13 @@ describe("tool-call correlation contract", () => {
     ]);
 
     expect(completed.inProgressToolUseIDs.size).toBe(0);
+    // The ended wait collapses into its settled row: no begin row is left
+    // with a running glyph after the agents finished.
     expect(completed.messages).toMatchObject([
-      { type: "system", subtype: "collab_agent", title: "Waiting for 2 agents", state: "running" },
       { type: "system", subtype: "collab_agent", title: "Finished waiting", state: "success" },
     ]);
-    expect(completed.messages[1]?.details).toEqual([
+    expect(completed.messages).toHaveLength(1);
+    expect(completed.messages[0]?.details).toEqual([
       "audit: Completed - done",
       "ui: Running",
     ]);

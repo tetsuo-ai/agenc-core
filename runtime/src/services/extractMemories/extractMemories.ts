@@ -57,6 +57,7 @@ import {
   permissionProfileForLiveSandboxPolicies,
 } from "../../tools/runtimes/sandboxing.js";
 import type { AgentPath } from "../../agents/registry.js";
+import { MEMORY_EXTRACTION_AGENT_NAME } from "../../agents/internal-agents.js";
 import {
   createMemoryExtractionTriggerState,
   DEFAULT_MIN_ELIGIBLE_TURNS,
@@ -99,12 +100,9 @@ export const MEMORY_EXTRACTION_TOOL_ALLOWLIST: readonly string[] = [
   ...READ_TOOL_NAMES,
   ...WRITE_TOOL_NAMES,
 ];
-/**
- * Delegate agent names must be lowercase letters, digits and underscores
- * (assertValidAgentName); the hyphenated name was rejected at spawn and the
- * extraction never ran.
- */
-export const MEMORY_EXTRACTION_AGENT_NAME = "memory_extraction";
+// The name lives with the other internal agent names so clients can tell the
+// extraction child from the user's agents.
+export { MEMORY_EXTRACTION_AGENT_NAME };
 
 const DEFAULT_MAX_TURNS = 5;
 /**
