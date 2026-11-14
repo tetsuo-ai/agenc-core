@@ -146,6 +146,15 @@ DeepSeek Search for DeepSeek sessions, including proxy routes. An explicit
 requests, On adds about 279 input tokens per request in Light and 263 in
 standard mode; other providers can tokenize the tools differently.
 
+`AGENC_DEEPSEEK_APP_TOOLS` overrides `[providers.deepseek] app_tools` for
+native DeepSeek Flash sessions. `on`, `true`, or `1` enables the opt-in;
+`off`, `false`, or `0` disables it. Unset or any other value uses the saved
+setting, which defaults off. App tools also require Web search On and both
+web tools to be available without explicit ask/deny or domain web rules.
+Full and lean requests then use DeepSeek's server-side search and URL reading
+while retaining local coding functions. See
+[Direct DeepSeek](../providers/deepseek-direct.md#app-server-web-tools).
+
 `AGENC_DEEPSEEK_WEB_SEARCH` (boolean-like) chooses whether the WebSearch tool
 of a `deepseek` session searches through DeepSeek's Search API. `1` turns it on
 for any DeepSeek base URL, ahead of a configured search endpoint; `0` turns it
