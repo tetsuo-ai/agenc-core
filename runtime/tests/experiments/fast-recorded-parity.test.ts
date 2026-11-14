@@ -74,6 +74,8 @@ for (const fixture of fixtures) test(`recorded ${fixture.source} with current al
       sandboxExecutionBroker: explicitDangerBroker,
       runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true, nonInteractive: true,
         dangerouslyBypassApprovalsAndSandbox: true, relaxedOneShot: true }),
+      // The fixtures were recorded with the full Light request.
+      providerEnvironment: { AGENC_LIGHT_REQUEST: "full" },
     } });
     Object.assign(session.config, { taskTokenBudget: 0 });
     Object.assign(session.services, { permissionModeRegistry: new PermissionModeRegistry({

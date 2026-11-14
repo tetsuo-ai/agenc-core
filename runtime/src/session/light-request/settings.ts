@@ -1,6 +1,8 @@
 import type { AgenCConfig, LightRequestOptions } from "../../config/schema.js";
 
-export const DEFAULT_LIGHT_REQUEST = "full" as const;
+// Native DeepSeek Light runs lean unless the user chose otherwise (0.19.34). Other providers and
+// standard sessions never reach the lean profile (resolveLightRequest returns early for them).
+export const DEFAULT_LIGHT_REQUEST = "lean" as const;
 
 /** All lean defaults live here so measurement results can change them together. */
 export const LEAN_REQUEST_DEFAULTS: Readonly<Required<LightRequestOptions>> = Object.freeze({
@@ -21,6 +23,16 @@ export const LEAN_REQUEST_DEFAULTS: Readonly<Required<LightRequestOptions>> = Ob
 });
 
 export type LeanEditMode = Required<LightRequestOptions>["edit_mode"];
+
+/**
+ * Applied only when nobody chose a request (no `light_request`, no AGENC_LIGHT_REQUEST): the default keeps
+ * tool search on, so sub-agents, web, MCP and skills stay reachable for everyone who did not opt into the
+ * measured lean profile. An explicit `light_request = "lean"` keeps LEAN_REQUEST_DEFAULTS as they are, and
+ * `light_request_options` override both.
+ */
+export const DEFAULT_LEAN_OVERRIDES: Readonly<Partial<Required<LightRequestOptions>>> = Object.freeze({
+  tool_search: true,
+});
 
 export interface LightRequestSession {
   readonly services?: {
@@ -54,11 +66,23 @@ export function resolveLightRequest(
   const captured = sessionSettings.get(session);
   if (captured !== undefined) return captured ?? undefined;
   const config = services.configStore?.current();
-  const override = services.providerEnvironment?.AGENC_LIGHT_REQUEST;
-  const mode = override === undefined ? config?.light_request ?? DEFAULT_LIGHT_REQUEST : parseLightRequest(override);
-  const settings = mode === "lean" ? Object.freeze({ ...LEAN_REQUEST_DEFAULTS, ...config?.light_request_options }) : null;
+  const chosen = chosenLightRequest(session);
+  const mode = chosen ?? DEFAULT_LIGHT_REQUEST;
+  const base = chosen === undefined ? { ...LEAN_REQUEST_DEFAULTS, ...DEFAULT_LEAN_OVERRIDES } : LEAN_REQUEST_DEFAULTS;
+  const settings = mode === "lean" ? Object.freeze({ ...base, ...config?.light_request_options }) : null;
   sessionSettings.set(session, settings);
   return settings ?? undefined;
+}
+
+/**
+ * The request the user chose for this session: AGENC_LIGHT_REQUEST from the captured client environment,
+ * else `light_request` from config, else undefined (the default applies). Throws on an invalid override,
+ * as resolveLightRequest always did.
+ */
+export function chosenLightRequest(session: LightRequestSession): "full" | "lean" | undefined {
+  const override = session.services?.providerEnvironment?.AGENC_LIGHT_REQUEST;
+  if (override !== undefined) return parseLightRequest(override);
+  return session.services?.configStore?.current()?.light_request;
 }
 
 /**

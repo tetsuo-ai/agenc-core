@@ -2,7 +2,8 @@ import { describe, expect, test } from "vitest";
 import { applyEnvOverrides } from "../../src/config/env.js";
 import { validateAgenCConfigBlocks, type AgenCConfig } from "../../src/config/schema.js";
 import { snapshotProviderEnvironment } from "../../src/llm/provider-environment.js";
-import { LEAN_REQUEST_DEFAULTS, resolveLightRequest } from "../../src/session/light-request/settings.js";
+import { chosenLightRequest, DEFAULT_LEAN_OVERRIDES, DEFAULT_LIGHT_REQUEST, LEAN_REQUEST_DEFAULTS, resolveLightRequest }
+  from "../../src/session/light-request/settings.js";
 import { collectDaemonClientEnvOverrides, mergeDaemonClientEnvironment, captureRecoverableSessionEnvironment,
   readRecoverableSessionEnvironment } from "../../src/app-server/client-env-snapshot.js";
 
@@ -11,13 +12,27 @@ const session = (config: AgenCConfig = {}, env = {}, lightMode = true) => ({ ser
 } });
 
 describe("Light request configuration", () => {
-  test("defaults to full and only opts native DeepSeek Light into lean", () => {
-    expect(resolveLightRequest(session(), "deepseek")).toBeUndefined();
+  test("defaults native DeepSeek Light to lean with tool search on; an explicit choice wins", () => {
+    expect(DEFAULT_LIGHT_REQUEST).toBe("lean");
+    expect(resolveLightRequest(session(), "deepseek")).toEqual({ ...LEAN_REQUEST_DEFAULTS, ...DEFAULT_LEAN_OVERRIDES });
+    expect(resolveLightRequest(session(), "deepseek")?.tool_search).toBe(true);
     expect(resolveLightRequest(session({ light_request: "lean" }), "deepseek")).toEqual(LEAN_REQUEST_DEFAULTS);
+    expect(resolveLightRequest(session({ light_request: "full" }), "deepseek")).toBeUndefined();
+    expect(resolveLightRequest(session({}, { AGENC_LIGHT_REQUEST: "full" }), "deepseek")).toBeUndefined();
+    expect(chosenLightRequest(session())).toBeUndefined();
+    expect(chosenLightRequest(session({ light_request: "full" }))).toBe("full");
+    expect(chosenLightRequest(session({ light_request: "full" }, { AGENC_LIGHT_REQUEST: "lean" }))).toBe("lean");
     for (const provider of ["agenc", "openrouter", "openai", undefined]) {
+      expect(resolveLightRequest(session(), provider)).toBeUndefined();
       expect(resolveLightRequest(session({ light_request: "lean" }), provider)).toBeUndefined();
     }
+    expect(resolveLightRequest(session({}, {}, false), "deepseek")).toBeUndefined();
     expect(resolveLightRequest(session({ light_request: "lean" }, {}, false), "deepseek")).toBeUndefined();
+  });
+
+  test("options apply on top of the default profile too", () => {
+    expect(resolveLightRequest(session({ light_request_options: { tool_search: false, edit_mode: "tools" } }), "deepseek"))
+      .toEqual({ ...LEAN_REQUEST_DEFAULTS, ...DEFAULT_LEAN_OVERRIDES, tool_search: false, edit_mode: "tools" });
   });
 
   test("captures the client override and validates it at config ingress", () => {
@@ -62,8 +77,8 @@ describe("Light request configuration", () => {
       expect(() => validateAgenCConfigBlocks({ light_request: "lean",
         light_request_options: { edit_mode } as never })).toThrow(/edit_mode/u);
     }
-    // Outside lean the option has no effect.
-    expect(resolveLightRequest(session({ light_request_options: { edit_mode: "shell" } }), "deepseek")).toBeUndefined();
+    // Outside lean (an explicit full) the option has no effect.
+    expect(resolveLightRequest(session({ light_request: "full", light_request_options: { edit_mode: "shell" } }), "deepseek")).toBeUndefined();
   });
 
   test("system_text selects the short or the minimal built-in text", () => {

@@ -21,7 +21,7 @@ async function head(
   const session = {
     services: {
       runtimeOptions: { lightMode: profile === "light", nonInteractive: options.nonInteractive === true },
-      providerEnvironment: options.env ?? {},
+      providerEnvironment: { AGENC_LIGHT_REQUEST: "full", ...options.env },
     },
   } as unknown as Session;
   return (await assembleSystemPromptSnapshot({
