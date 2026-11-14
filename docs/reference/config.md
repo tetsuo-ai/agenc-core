@@ -336,6 +336,7 @@ otherwise.
 | `tui.flickerFreeMode` | `true` |
 | `tui.prStatusFooterEnabled` | `true` |
 | `tui.gitStatusEnabled` | `true` |
+| `tui.turnStats` | `brief` |
 | `ideConnector.autoInstallExtension` | `true` |
 | `teammates.mode` | `auto` |
 | `teammates.preferTmuxOverIterm2` | `false` |
@@ -986,6 +987,7 @@ hint without uploading spreadsheets. See the [verified API facts](../models/deep
 | `tui.showTurnDuration`, `tui.terminalProgressBarEnabled`, `tui.copyOnSelect` | Turn-duration display, terminal progress, and selection-copy switches. |
 | `tui.flickerFreeMode`, `tui.prStatusFooterEnabled` | Flicker reduction and pull-request footer switches. |
 | `tui.gitStatusEnabled` | Show the git branch, changed file count, and upstream ahead/behind counts above the composer. Default `true`. Set to `false` to hide it. Hidden outside a git work tree. |
+| `tui.turnStats` | Numbers under each finished turn. `brief` (default) shows the duration and, when there were several, the model calls, as in 0.19.32. `full` also shows the input, cached share and output, and a live calls and input line while a turn runs. Headless output, rollouts and the results card keep every number either way. |
 | `tui.keybindings`, `tui.keybindings[]` | Ordered canonical keybinding override blocks. This is operator-only: user config may set it and the final managed layer may replace and lock the complete array; plugin/project/local layers are ignored with diagnostics. |
 | `tui.keybindings[].context` | Required registered TUI context such as `Chat` or `Global`. |
 | `tui.keybindings[].bindings` | Chord-to-action map. `command:<name>` is accepted only in `Chat`. |

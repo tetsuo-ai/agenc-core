@@ -604,7 +604,16 @@ export interface TuiConfig {
   readonly prStatusFooterEnabled?: boolean;
   readonly gitStatusEnabled?: boolean;
   readonly keybindings?: readonly TuiKeybindingConfig[];
+  /**
+   * Numbers under each finished turn. "brief" (default): the duration and,
+   * when there were several, the model calls. "full": also the input, cached
+   * share and output, plus a live calls and input line while a turn runs.
+   */
+  readonly turnStats?: TuiTurnStatsSetting;
 }
+
+export const TUI_TURN_STATS_SETTINGS = ["brief", "full"] as const;
+export type TuiTurnStatsSetting = (typeof TUI_TURN_STATS_SETTINGS)[number];
 
 export interface IdeConnectorConfig {
   readonly autoInstallExtension?: boolean;
@@ -1342,6 +1351,7 @@ export function defaultConfig(): AgenCConfig {
       flickerFreeMode: true,
       prStatusFooterEnabled: true,
       gitStatusEnabled: true,
+      turnStats: "brief",
     }) as TuiConfig,
     ideConnector: Object.freeze({
       autoInstallExtension: true,
@@ -4075,9 +4085,16 @@ export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
       "prStatusFooterEnabled",
       "gitStatusEnabled",
       "keybindings",
+      "turnStats",
     ]),
     (field, detail) => new InvalidTuiConfigError(field, detail),
   );
+  if (raw.turnStats !== undefined && !TUI_TURN_STATS_SETTINGS.includes(raw.turnStats as TuiTurnStatsSetting)) {
+    throw new InvalidTuiConfigError(
+      "turnStats",
+      `expected one of ${TUI_TURN_STATS_SETTINGS.join(", ")}`,
+    );
+  }
 
   const out: { -readonly [K in keyof TuiConfig]: TuiConfig[K] } = {};
   if (raw.theme !== undefined) {
@@ -4106,6 +4123,7 @@ export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
   }
   const keybindings = validateTuiKeybindings(raw.keybindings);
   if (keybindings !== undefined) out.keybindings = keybindings;
+  if (raw.turnStats !== undefined) out.turnStats = raw.turnStats as TuiTurnStatsSetting;
   return Object.freeze(out as TuiConfig);
 }
 
