@@ -364,7 +364,9 @@ describe("cost helpers", () => {
       };
 
       expect(resolveModelCostEntry(usage, DEFAULT_MODEL_COSTS)?.entry).toMatchObject(
-        model === "muse-wonder-1.0"
+        model === "muse-ember-1.0"
+          ? { inputUsdPer1K: 0.0001, outputUsdPer1K: 0.0005, cachedInputUsdPer1K: 0.000004 }
+          : model === "muse-wonder-1.0"
           ? { inputUsdPer1K: 0.004, outputUsdPer1K: 0.02, cachedInputUsdPer1K: 0.0002 }
           : {
             inputUsdPer1K: model.endsWith("-contributor") ? 0.0001 : 0.00125,

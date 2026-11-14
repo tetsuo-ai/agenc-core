@@ -194,6 +194,15 @@ describe("/effort Grok catalog levels", () => {
     expect(getAppState()).toMatchObject({ effortValue: effort });
   });
 
+  test("persists Ember max without aliasing and offers xhigh", async () => {
+    for (const effort of ["max", "xhigh"]) {
+      const { context, getAppState } = commandContext("muse-ember-1.0", effort, { provider: "meta" });
+      expect(await effortCommand.execute(context)).toMatchObject({ kind: "text" });
+      expect(settings.update).toHaveBeenCalledWith("userSettings", { reasoning_effort: effort });
+      expect(getAppState()).toMatchObject({ effortValue: effort });
+    }
+  });
+
   test.each(["muse-spark-1.2", "muse-spark-1.3-contributor", "muse-spark-1.3-unverified", "meta/muse-spark-1.3-unverified"])("does not offer literal max to %s", async (model) => {
     const { context } = commandContext(model, "max", { provider: "meta" });
     expect(await effortCommand.execute(context)).toMatchObject({ kind: "error" });

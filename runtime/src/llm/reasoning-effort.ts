@@ -157,7 +157,7 @@ export function resolveReasoningEffort(input: {
     acceptsReasoningEffort = isUpstreamReasoningModel(model);
   } else if (slug === "grok") {
     acceptsReasoningEffort = supportsXaiReasoningEffortParam(model);
-  } else if (slug === "meta" && /(?:^|[/:])muse-(?:spark|wonder)-/i.test(model ?? "")) {
+  } else if (slug === "meta" && /(?:^|[/:])muse-(?:spark|wonder|ember)-/i.test(model ?? "")) {
     const entry = resolveRegisteredModelCatalogEntry({ provider: slug, model });
     reasoningEffortAllowedValues = entry !== undefined
       ? new Set(entry.supportedReasoningLevels)

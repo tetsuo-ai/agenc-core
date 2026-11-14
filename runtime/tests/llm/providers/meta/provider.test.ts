@@ -88,6 +88,34 @@ describe("MetaProvider", () => {
     expect(body.max_tokens).toBeUndefined();
   });
 
+  test.each([SPARK_MODEL, "muse-spark-1.2", "muse-ember-1.0"])(
+    "routes a session's %s chat requests together with its prompt cache key",
+    async (model) => {
+      expect(chatCompletionsCapabilityHintsForProvider("meta", model))
+        .toMatchObject({ promptCacheKeyFields: ["prompt_cache_key"] });
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockImplementation(async () => successfulChat(model));
+      const provider = createProvider("meta", {
+        apiKey: "meta-test",
+        model,
+        extra: { fetchImpl },
+      });
+      const messages = [{ role: "user" as const, content: "hello" }];
+      await provider.chat(messages, { promptCacheKey: "conv-one" });
+      await provider.chat(messages, { promptCacheKey: "conv-one" });
+      await provider.chat(messages);
+      const bodies = fetchImpl.mock.calls.map(([, init]) =>
+        JSON.parse(String(init?.body)) as Record<string, unknown>);
+      // One key per session, so Meta lands its calls on the backend that
+      // already holds the prefix. No key is invented when the session has none.
+      expect(bodies[0]!.prompt_cache_key).toBe("conv-one");
+      expect(bodies[1]!.prompt_cache_key).toBe("conv-one");
+      expect("prompt_cache_key" in bodies[2]!).toBe(false);
+      expect("session_id" in bodies[0]!).toBe(false);
+    },
+  );
+
   test("requires an explicit resolved Meta credential", () => {
     expect(() => createProvider("meta", {})).toThrow(/meta.*apiKey/i);
   });
