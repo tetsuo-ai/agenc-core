@@ -20,7 +20,8 @@ environment, with nothing private:
   in ``AGENC_EFFORT_LEVEL``, and ``AGENC_DEEPSEEK_WEB_SEARCH=off`` so WebSearch
   uses its own fallback instead of DeepSeek's server-side search;
 - deadline: the canonical ``agenc daemon stop`` at the trial's agent deadline
-  minus 2 s. Task timeouts are never changed;
+  minus 2 s, and that same instant passed to AgenC as ``--deadline``, as in
+  the published 84.5% run. Task timeouts are never changed;
 - evidence: native rollouts in agent/native-rollouts, an ATIF
   agent/trajectory.json (what Harbor Hub publishes) and tokens plus Core's own
   cost estimate in the trial context.
@@ -45,9 +46,10 @@ Options (``--ak key=value``):
   base_url          provider base URL, exported as <PROVIDER>_BASE_URL
   env               extra KEY=VALUE pairs for the agent's processes, comma separated
   add_dirs          extra workspace roots passed as --add-dir (default: none)
-  cli_deadline      also pass the budget to AgenC as --deadline (default: false)
+  cli_deadline      also pass the budget to AgenC as --deadline (default: true)
   deadline_sec      agent budget in seconds (default: the trial's agent timeout; 0: none)
-  deadline_margin_sec  with cli_deadline: seconds between --deadline and the stop
+  deadline_margin_sec  with cli_deadline: seconds between --deadline and the
+                    trial's agent timeout (default: 2, the instant of the stop)
 """
 
 from __future__ import annotations
@@ -186,11 +188,13 @@ class AgencOptions(InstalledAgentOptions):
         ),
     )
     cli_deadline: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Also pass the budget to AgenC as --deadline minus "
             "deadline_margin_sec (#2503), so it can wrap up before the stop. "
-            "Off by default: the published runs did not pass it."
+            "On by default: the published 84.5% run (Hub job 2bf2c84d) passed "
+            "it. The earlier 76.2% run (71f39f3b) did not; set false to rerun "
+            "that one."
         ),
     )
     deadline_sec: float | None = Field(
@@ -203,7 +207,11 @@ class AgencOptions(InstalledAgentOptions):
     )
     deadline_margin_sec: float = Field(
         default=DEFAULT_DEADLINE_MARGIN_SEC,
-        description="With cli_deadline: seconds kept between --deadline and the stop.",
+        description=(
+            "With cli_deadline: seconds between --deadline and the trial's "
+            "agent timeout. The default 2 is the instant of the daemon stop, "
+            "as in the published 84.5% run."
+        ),
     )
 
 
