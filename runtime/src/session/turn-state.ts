@@ -317,6 +317,9 @@ export interface TurnState {
    * from a mutable registry/discovery set during tool execution. */
   samplingRequestToolNames?: readonly string[];
 
+  /** Output ceiling of the sampled request, including completion-gate caps. */
+  samplingRequestMaxOutputTokens?: number;
+
   /** Auto-compact tracking (turn counter since last compact, consecutive
    *  failure count for circuit breaker). AgenC query.ts:371, 531.
    *  Reset on every successful compact so `turnsSincePreviousCompact`

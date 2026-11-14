@@ -1,3 +1,4 @@
+import { projectRepeatedReads } from "../tools/read-result-projection.js";
 import { DegenerateTextDetector } from "../llm/degenerate-text.js";
 import { completeReasoningCapSample, type ReasoningCapSample } from "../session/reasoning-cap-policy.js";
 /**
@@ -108,7 +109,7 @@ export interface StreamModelRequestContract {
   readonly managedRequestId?: string;
   readonly input: ReadonlyArray<LLMMessage>;
   readonly tools: ReadonlyArray<LLMTool>;
-  readonly parallelToolCalls: boolean;
+  readonly parallelToolCalls?: boolean;
   readonly baseInstructions: string;
   readonly toolChoice?: LLMToolChoice;
   readonly contextWindowTokens?: number;
@@ -212,7 +213,7 @@ function toVisibleAssistantText(
 function buildProviderMessages(
   request: StreamModelRequestContract,
 ): LLMMessage[] {
-  return request.input.map(cloneLlmMessageSnapshot);
+  return [...projectRepeatedReads(request.input)].map(cloneLlmMessageSnapshot);
 }
 
 function cloneProviderTools(tools: ReadonlyArray<LLMTool>): LLMTool[] {

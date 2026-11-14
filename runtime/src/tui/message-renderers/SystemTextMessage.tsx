@@ -1,5 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { Box, Text } from '../ink.js';
+import { formatTurnEfficiency } from '../turn-efficiency.js';
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { useState } from 'react';
@@ -16,7 +17,7 @@ import { useContentWidth } from '../context/contentWidthContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import type { SystemMessage, SystemStopHookSummaryMessage, SystemBridgeStatusMessage, SystemTurnDurationMessage, SystemMemorySavedMessage } from '../../types/message.js';
 import { SystemAPIErrorMessage } from '../components/SystemAPIErrorMessage.js';
-import { formatDuration, formatNumber, formatSecondsShort } from '../../utils/format.js';
+import { formatNumber, formatSecondsShort } from '../../utils/format.js';
 import { HOOK_TIMING_DISPLAY_THRESHOLD_MS } from '../../tools/hooks.js';
 import Link from '../ink/components/Link.js';
 import ThemedText from '../components/design-system/ThemedText.js';
@@ -395,7 +396,8 @@ function TurnDurationMessage({
     return running.length > 0 ? getPillLabel(running) : null;
   });
   const showTurnDuration = settings.tui?.showTurnDuration ?? true;
-  const duration = formatDuration(message.durationMs);
+  const { columns } = useTerminalSize();
+  const contentWidth = useContentWidth();
   const hasBudget = message.budgetLimit !== undefined;
   let budgetSuffix = "";
   if (hasBudget) {
@@ -410,17 +412,17 @@ function TurnDurationMessage({
   if (!showTurnDuration && !hasBudget) {
     return null;
   }
-  const modelCalls = typeof message.modelCalls === "number" && message.modelCalls > 1
-    ? ` \u00B7 ${message.modelCalls} model calls`
-    : "";
-  const turnDuration = showTurnDuration && `done in ${duration}${modelCalls}`;
-  const backgroundSuffix = backgroundTaskSummary && ` \u00B7 ${backgroundTaskSummary} still running`;
+  const backgroundSuffix = backgroundTaskSummary ? ` \u00B7 ${backgroundTaskSummary} still running` : "";
+  const footer = showTurnDuration
+    ? formatTurnEfficiency({ modelCalls: message.modelCalls, usage: message.turnUsage ?? null },
+        message.durationMs, contentWidth ?? columns, `${budgetSuffix}${backgroundSuffix}`)
+    : `${budgetSuffix}${backgroundSuffix}`;
 
   // A quiet closing line under each finished turn, aligned with the reply
   // glyphs: no glyph of its own and the faintest gray.
   return (
     <Box flexDirection="row" marginTop={addMargin ? 1 : 0} backgroundColor={bg} width="100%">
-      <ThemedText color="subtle">{turnDuration}{budgetSuffix}{backgroundSuffix}</ThemedText>
+      <ThemedText color="subtle" wrap="truncate-end">{footer}</ThemedText>
     </Box>
   );
 }

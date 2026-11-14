@@ -47,53 +47,79 @@ export const relevantMemoriesProducer: AttachmentProducer = async (
     return [];
   }
 
-  const query = opts.userInput?.trim() ?? "";
-  const mode = selectRecallMode(query, opts.subagentDepth, trackingState);
+  const turn = opts.turnProvenance;
+  const root = turn?.rootHumanTurn;
+  // One selection per turn: the human turn that started the work, or the
+  // turn itself when no human prompt is bound to it (a routine, an internal
+  // turn). Those turns recalled on every request before; they still recall,
+  // once.
+  const recallKey = root != null ? root.turnId : turn?.turnId;
+  const cached = recallKey !== undefined && trackingState.relevantMemoryRecall?.turnId === recallKey
+    ? trackingState.relevantMemoryRecall
+    : undefined;
+  // A follow-up of an earlier human turn may reuse that turn's selection,
+  // but cannot start an auxiliary model call on its behalf.
+  if (turn !== undefined && root != null && root.turnId !== turn.turnId && cached === undefined) return [];
+  const query = (root != null ? root.text : opts.userInput)?.trim() ?? "";
+  const mode = cached === undefined
+    ? selectRecallMode(query, opts.subagentDepth, trackingState)
+    : query.length > 0 ? "query" : "session_start";
   if (mode === null) return [];
   // The retention ledger projects earlier attachments before producers run.
-  // Keep exact versions already in that context; changed versions and context
-  // removed by compaction must still be eligible for fresh recall.
+  // Keep exact versions already in that context. Lost anchors reuse the
+  // frozen bytes; changed files become eligible on the next human turn.
   const retained = new Set(opts.messages.flatMap((message) =>
     message.role === "user" && message.runtimeOnly?.mergeBoundary === "user_context"
       ? message.runtimeOnly.relevantMemoryFingerprints ?? []
       : [],
   ));
   trackingState.surfacedRelevantMemoryPaths.clear();
-  const memoryDirs = durableMemorySearchDirs(
-    opts.agencHome,
-    opts.sessionKey,
-    opts.cwd,
-  );
-  if (memoryDirs.length === 0) return [];
-
-  const selected = await findRelevantMemories({
-    query,
-    memoryDirs,
-    signal: opts.signal,
-    mode,
-    recentTools: collectRecentToolNames(opts.messages),
-    alreadySurfaced: trackingState.surfacedRelevantMemoryPaths,
-    ...(opts.admittedMemorySelector !== undefined
-      ? { admittedMemorySelector: opts.admittedMemorySelector }
-      : {}),
-    ...(opts.agencHome !== undefined && isAbsolute(opts.agencHome)
-      ? {
-          memoryIndexDatabasePath: resolveMemoryIndexDatabasePath(
-            opts.agencHome,
-          ),
-        }
-      : {}),
-  });
-  if (selected.length === 0) return [];
-
   const remainingBytes =
     MAX_SESSION_MEMORY_BYTES - trackingState.surfacedRelevantMemoryBytes;
-  const candidates = await readMemoriesForAttachment(
-    selected.slice(0, MAX_RELEVANT_MEMORIES),
-    opts.signal,
-    remainingBytes,
-  );
-  const memories = candidates.filter((memory) => !retained.has(relevantMemoryFingerprint(memory)));
+  let candidates = cached?.memories;
+  if (candidates === undefined) {
+    const memoryDirs = durableMemorySearchDirs(
+      opts.agencHome,
+      opts.sessionKey,
+      opts.cwd,
+    );
+    const selected = memoryDirs.length === 0 ? [] : await findRelevantMemories({
+      query,
+      memoryDirs,
+      signal: opts.signal,
+      mode,
+      recentTools: collectRecentToolNames(opts.messages),
+      alreadySurfaced: trackingState.surfacedRelevantMemoryPaths,
+      ...(opts.admittedMemorySelector !== undefined
+        ? { admittedMemorySelector: opts.admittedMemorySelector }
+        : {}),
+      ...(opts.agencHome !== undefined && isAbsolute(opts.agencHome)
+        ? {
+            memoryIndexDatabasePath: resolveMemoryIndexDatabasePath(
+              opts.agencHome,
+            ),
+          }
+        : {}),
+    });
+    candidates = await readMemoriesForAttachment(
+      selected.slice(0, MAX_RELEVANT_MEMORIES),
+      opts.signal,
+      remainingBytes,
+    );
+    // The runtime always supplies exact turn provenance. Legacy callers
+    // without it cannot distinguish two identical human prompts safely.
+    if (recallKey !== undefined) {
+      trackingState.relevantMemoryRecall = { turnId: recallKey, memories: candidates };
+    }
+  }
+  let availableBytes = remainingBytes;
+  const memories = candidates.filter((memory) => {
+    if (retained.has(relevantMemoryFingerprint(memory))) return false;
+    const bytes = Buffer.byteLength(memory.content, "utf8");
+    if (bytes > availableBytes) return false;
+    availableBytes -= bytes;
+    return true;
+  });
   for (const memory of memories) {
     trackingState.surfacedRelevantMemoryPaths.add(memory.path);
     trackingState.surfacedRelevantMemoryBytes += Buffer.byteLength(

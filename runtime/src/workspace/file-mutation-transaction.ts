@@ -194,6 +194,7 @@ export interface WorkspaceBoundTextWindow {
   readonly startLine: number;
   readonly endLine: number;
   readonly totalLines: number;
+  readonly totalLinesIsLowerBound?: true;
   readonly numLines: number;
   readonly isPartial: true;
   readonly stats: WorkspaceBoundReadFileStats;
@@ -279,6 +280,7 @@ export interface WorkspaceBoundFileReadCapability extends WorkspaceBoundReadCapa
     offset: number,
     limit: number,
     maxBytes: number,
+    completeLineCount?: boolean,
   ) => Promise<WorkspaceBoundTextWindow>;
 }
 
@@ -353,6 +355,7 @@ interface BoundHelperMessage {
   readonly startLine?: number;
   readonly endLine?: number;
   readonly totalLines?: number;
+  readonly totalLinesIsLowerBound?: true;
   readonly numLines?: number;
   readonly stdoutBase64?: string;
   readonly stderrBase64?: string;
@@ -1413,7 +1416,6 @@ const BOUND_READ_WORKER_SOURCE = String.raw`
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, open, stat } from "node:fs/promises";
-import { createInterface } from "node:readline";
 
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const identity = (value) => ({
@@ -1719,23 +1721,75 @@ try {
       const selected = [];
       let totalLines = 0;
       const input = opened.handle.createReadStream({
-        encoding: "utf8",
-        autoClose: false,
-        start: 0,
+        encoding: "utf8", highWaterMark: 64 * 1024, autoClose: false, start: 0,
       });
-      const reader = createInterface({ input, crlfDelay: Infinity });
-      try {
-        for await (const line of reader) {
-          totalLines += 1;
-          if (totalLines >= offset && selected.length < limit) {
-            selected.push(line);
+      let countedBytes = 0;
+      let totalLinesIsLowerBound;
+      let selectedBytes = 0;
+      let windowFull = false;
+      let line = "";
+      let lineBytes = 0;
+      let hasLineContent = false;
+      let skipLF = false;
+      // Readline buffers an entire line even outside the requested window. Scan
+      // fixed-size chunks instead, retaining only complete lines that fit the cap.
+      // Keep this scanner in sync with sliceTextFileByLineStream in file-read.ts.
+      const append = (part) => {
+        hasLineContent ||= part.length > 0;
+        if (totalLines + 1 < offset || selected.length >= limit || windowFull) return;
+        const bytes = Buffer.byteLength(part, "utf8");
+        if (selectedBytes + lineBytes + bytes + (selected.length > 0 ? 1 : 0) > maxBytes) {
+          if (!command.completeLineCount || selected.length === 0) {
+            throw Object.assign(new Error(
+              "bound text window exceeds the requested byte limit",
+            ), { code: "FILE_TOO_LARGE" });
           }
-          if (selected.length >= limit) break;
+          windowFull = true;
+          line = "";
+          lineBytes = 0;
+          return;
         }
+        line += part;
+        lineBytes += bytes;
+      };
+      const finishLine = () => {
+        totalLines += 1;
+        if (totalLines >= offset && selected.length < limit && !windowFull) {
+          selectedBytes += lineBytes + (selected.length > 0 ? 1 : 0);
+          selected.push(line);
+        }
+        line = "";
+        lineBytes = 0;
+        hasLineContent = false;
+      };
+      try {
+        chunks: for await (const chunk of input) {
+          // Match the ordinary reader: exact window, bounded optional count.
+          if (command.completeLineCount && countedBytes >= 1024 * 1024 &&
+              (selected.length >= limit || windowFull)) {
+            totalLinesIsLowerBound = true;
+            break;
+          }
+          countedBytes += Buffer.byteLength(chunk, "utf8");
+          let start = skipLF && chunk.startsWith("\n") ? 1 : 0;
+          skipLF = false;
+          const breaks = /\r\n|\r|\n/g;
+          breaks.lastIndex = start;
+          let match;
+          while ((match = breaks.exec(chunk)) !== null) {
+            append(chunk.slice(start, match.index));
+            finishLine();
+            start = match.index + match[0].length;
+            skipLF = start === chunk.length && match[0] === "\r";
+            if (!command.completeLineCount && selected.length >= limit) break chunks;
+          }
+          append(chunk.slice(start));
+        }
+        if (hasLineContent) finishLine();
       } finally {
-        reader.close();
         input.destroy();
       }
+
       const content = selected.join("\n");
       if (Buffer.byteLength(content, "utf8") > maxBytes) {
         send({
@@ -1761,6 +1815,7 @@ try {
           startLine: offset,
           endLine,
           totalLines,
+          totalLinesIsLowerBound,
           numLines: selected.length,
         });
       }
@@ -3551,6 +3606,7 @@ class BoundDirectoryHelper {
     readonly offset: number;
     readonly limit: number;
     readonly maxBytes: number;
+    readonly completeLineCount?: boolean;
   }): Promise<WorkspaceBoundTextWindow> {
     const relativeSegments = this.#relativeSegments(input.relativePath);
     const expectedPath = resolve(this.#readRootPath, ...relativeSegments);
@@ -3558,6 +3614,7 @@ class BoundDirectoryHelper {
       {
         type: "mutate",
         operation: "read_text_window",
+        completeLineCount: input.completeLineCount,
         name: relativeSegments.at(-1),
         parentSegments: [],
         expectedKind: "file",
@@ -3587,6 +3644,7 @@ class BoundDirectoryHelper {
       startLine: message.startLine,
       endLine: message.endLine,
       totalLines: message.totalLines,
+      ...(message.totalLinesIsLowerBound ? { totalLinesIsLowerBound: true as const } : {}),
       numLines: message.numLines,
       isPartial: true,
       stats: message.stats,
@@ -4406,8 +4464,9 @@ export async function bindWorkspaceFileReadCapability(
           expectedIdentity: exactFile.identity,
           maxBytes,
         }),
-      readTextWindow: (offset, limit, maxBytes) =>
+      readTextWindow: (offset, limit, maxBytes, completeLineCount) =>
         lease.use().readTextWindow({
+          completeLineCount,
           relativePath,
           expectedIdentity: exactFile.identity,
           offset,

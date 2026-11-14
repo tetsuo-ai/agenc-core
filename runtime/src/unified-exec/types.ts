@@ -126,6 +126,24 @@ export interface UnifiedExecManagerOptions {
    * reports its processes' state (default 60 s). Injectable for tests.
    */
   readonly quietProcessStateAfterMs?: number;
+  /**
+   * A wait that continues while the command is busy (`waitWhileBusy`) checks
+   * its processes this often (default 5 s) and ends this long after the call
+   * started (default 240 s). Injectable for tests.
+   */
+  readonly busyWaitCheckMs?: number;
+  readonly busyWaitMaxMs?: number;
+}
+
+/**
+ * Ends one busy wait early, with the command still running: `signal` aborts
+ * (its reason says why) when the turn has input for the model or must wrap
+ * up. Started when a wait goes past its yield; `dispose` is called when the
+ * wait ends, however it ends.
+ */
+export interface BusyWaitWake {
+  readonly signal: AbortSignal;
+  dispose(): void;
 }
 
 export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
@@ -162,6 +180,17 @@ export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
    * owner already holds `maxBackgroundSessions` live background sessions.
    */
   readonly startInBackground?: boolean;
+  /**
+   * When the yield passes while the command's processes are still using
+   * CPU, keep waiting until it exits, stops using CPU, its time limit passes,
+   * or {@link UnifiedExecManagerOptions.busyWaitMaxMs} has passed since the
+   * call started; the result is then the exit instead of a session_id the
+   * model would poll with another model call. Ignored for tty and background
+   * starts. See `UnifiedExecProcessManager.waitWhileBusy`.
+   */
+  readonly waitWhileBusy?: boolean;
+  /** Starts what may end that busy wait early (queued input). */
+  readonly busyWaitWake?: () => BusyWaitWake;
   readonly observer?: UnifiedExecObserver;
   readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
   /** Conversation/agent owner id for multi-agent process isolation (TOOL-01). */
@@ -199,6 +228,15 @@ export interface WriteStdinRequest extends ToolExecutionInjectedArgs {
   readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
   /** Must match the owning session when the process was stamped with an owner. */
   readonly ownerId?: string;
+  /**
+   * An empty poll keeps waiting past its yield while the session's processes
+   * are still using CPU, as {@link ExecCommandRequest.waitWhileBusy} does.
+   * Ignored for input writes, tty sessions and sessions started in the
+   * background (`startInBackground`).
+   */
+  readonly waitWhileBusy?: boolean;
+  /** Starts what may end that busy wait early (queued input). */
+  readonly busyWaitWake?: () => BusyWaitWake;
 }
 
 export interface TerminateProcessRequest {

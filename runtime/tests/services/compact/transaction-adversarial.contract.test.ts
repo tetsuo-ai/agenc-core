@@ -190,11 +190,12 @@ describe("transactional compaction adversarial contracts", () => {
           runRealTransaction(store, source.messages, provider),
         ).rejects.toThrow();
 
-        expect(provider.chat).toHaveBeenCalledOnce();
-        expect(compactionLifecycle(store)).toMatchObject([
+        const attempts = testCase.reason === "output_schema_invalid" ? 2 : 1;
+        expect(provider.chat).toHaveBeenCalledTimes(attempts);
+        expect(compactionLifecycle(store)).toMatchObject(Array.from({ length: attempts }, () => [
           { type: "compaction_intent" },
           { type: "compaction_failed", payload: { reason: testCase.reason } },
-        ]);
+        ]).flat());
         expect(reduceAll(store.readAll()).state.history).toEqual(before);
       });
     });
@@ -616,7 +617,7 @@ function createProvider(responseFactory: ResponseFactory): ProviderSpy {
     messages: readonly LLMMessage[],
     _options?: LLMChatOptions,
   ): Promise<LLMResponse> => {
-    const payload = JSON.parse(String(messages[0]?.content)) as ProviderPayload;
+    const payload = JSON.parse(String(messages[0]?.content).split("\n")[0]!) as ProviderPayload;
     return {
       content: responseFactory(payload),
       toolCalls: [],

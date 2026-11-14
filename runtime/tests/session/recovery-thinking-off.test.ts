@@ -54,3 +54,43 @@ test("provider wire permits thinking-off only on the native supported route and 
     }
   }
 });
+
+
+test.each([false, true])("native equal-limit recovery keeps the paid sample (fast=%s)", async fast => {
+  const { runTurn } = await import("../../src/session/run-turn.js");
+  const { resolveAgentRuntimeOptions } = await import("../../src/session/runtime-options.js");
+  const { oneShotFastModeActive } = await import("../../src/one-shot-fast-mode.js");
+  const requests: { messages: unknown; maxOutputTokens?: number }[] = [];
+  const provider = { ...mkProvider(), name: "deepseek" };
+  let fastCalls = 0;
+  provider.chatStream = async (messages, _chunk, options) => {
+    if (oneShotFastModeActive()) fastCalls++;
+    requests.push({ messages: structuredClone(messages), maxOutputTokens: options?.maxOutputTokens });
+    return {
+      content: requests.length === 1 ? "Paid partial draft." : "Finished draft.",
+      toolCalls: [], finishReason: requests.length === 1 ? "length" : "stop",
+      model: "deepseek-flash", usage: { promptTokens: 10, completionTokens: 64_000, totalTokens: 64_010 },
+    };
+  };
+  const { session } = mkSession({ model: "deepseek-flash", provider, services: {
+    runtimeOptions: resolveAgentRuntimeOptions({}, {
+      nonInteractive: true, dangerouslyBypassApprovalsAndSandbox: true, relaxedOneShot: true,
+    }),
+  } });
+  await session.permissionModeRegistry.update({ ...session.permissionModeRegistry.current(),
+    mode: "bypassPermissions", isBypassPermissionsModeAvailable: true });
+  const base = mkCtx();
+  const ctx = mkCtx({ permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" },
+    modelProviderId: "deepseek", reasoningEffort: "max",
+    modelInfo: { ...base.modelInfo, slug: "deepseek-flash", contextWindow: 1_048_576, supportedReasoningLevels: ["low", "high", "max"],
+      maxOutputTokens: 64_000, maxOutputTokensUpperLimit: 393_216, maxOutputTokensCappedDefault: true },
+    config: { ...base.config, bypassFastMode: fast },
+  });
+  const phases = [];
+  for await (const phase of runTurn(session, ctx, "Finish the draft.", { exactOutput: true })) phases.push(phase);
+  expect(requests).toHaveLength(2);
+  expect(requests.map(request => request.maxOutputTokens)).toEqual([64_000, 64_000]);
+  expect(fastCalls).toBe(fast ? 1 : 0);
+  expect(JSON.stringify(requests[1]?.messages)).toContain("Paid partial draft.");
+  expect(phases.at(-1)).toMatchObject({ type: "turn_complete", content: "Finished draft." });
+});

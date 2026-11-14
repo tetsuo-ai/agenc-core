@@ -55,6 +55,7 @@ describe("Gemini standard rates", () => {
   it.each([
     // model, USD for 100K input and 10K output on 2026-10-28
     ["gemini-4-argon", 0.3],
+    ["gemini-4-carbon", 0.3],
     ["gemini-3.1-pro-preview", 0.32],
     ["gemini-3.8-flash", 0.1125],
     ["gemini-3.7-flash", 0.1125],
@@ -79,19 +80,21 @@ describe("Gemini standard rates", () => {
 });
 
 describe("Gemini implicit cache hits", () => {
-  it("bills the cached share of the prompt at the cached rate", () => {
-    // 3.8 Flash: 20K fresh at $0.75, 80K cached at $0.075, 1K out at $3.75.
-    expect(
-      priced(call("gemini-3.8-flash", 100_000, 1_000, { cachedInputTokens: 80_000 })).costUsd,
-    ).toBeCloseTo(0.02475, 9);
-    // 3.5 Flash bills as 3.6 Flash: the same rates as 3.8 Flash.
-    expect(
-      priced(call("gemini-3.5-flash", 100_000, 1_000, { cachedInputTokens: 80_000 })).costUsd,
-    ).toBeCloseTo(0.02475, 9);
-    // Gemini 4 Argon: 20K at $2, 80K cached at $0.10 (95% off), 1K at $10.
-    expect(
-      priced(call("gemini-4-argon", 100_000, 1_000, { cachedInputTokens: 80_000 })).costUsd,
-    ).toBeCloseTo(0.058, 9);
+  describe.each(["gemini-4-argon", "gemini-4-carbon"])("%s", (model) => {
+    it("bills the cached share of the prompt at the cached rate", () => {
+      // 3.8 Flash: 20K fresh at $0.75, 80K cached at $0.075, 1K out at $3.75.
+      expect(
+        priced(call("gemini-3.8-flash", 100_000, 1_000, { cachedInputTokens: 80_000 })).costUsd,
+      ).toBeCloseTo(0.02475, 9);
+      // 3.5 Flash bills as 3.6 Flash: the same rates as 3.8 Flash.
+      expect(
+        priced(call("gemini-3.5-flash", 100_000, 1_000, { cachedInputTokens: 80_000 })).costUsd,
+      ).toBeCloseTo(0.02475, 9);
+      // Gemini 4: 20K at $2, 80K cached at $0.10 (95% off), 1K at $10.
+      expect(
+        priced(call(model, 100_000, 1_000, { cachedInputTokens: 80_000 })).costUsd,
+      ).toBeCloseTo(0.058, 9);
+    });
   });
 });
 
@@ -116,10 +119,12 @@ describe("Gemini Pro long-context rates apply per request above 200K", () => {
     ).toBeCloseTo(0.72, 9);
   });
 
-  it("has no long-context tier on the Flash and Argon rows", () => {
-    expect(priced(call("gemini-3.8-flash", 300_000, 10_000)).costUsd).toBeCloseTo(0.2625, 9);
-    // 300K * 2 + 10K * 10: Argon has one rate at every prompt size.
-    expect(priced(call("gemini-4-argon", 300_000, 10_000)).costUsd).toBeCloseTo(0.7, 9);
+  describe.each(["gemini-4-argon", "gemini-4-carbon"])("%s", (model) => {
+    it("has no long-context tier on the Flash and Gemini 4 rows", () => {
+      expect(priced(call("gemini-3.8-flash", 300_000, 10_000)).costUsd).toBeCloseTo(0.2625, 9);
+      // 300K * 2 + 10K * 10: Gemini 4 has one rate at every prompt size.
+      expect(priced(call(model, 300_000, 10_000)).costUsd).toBeCloseTo(0.7, 9);
+    });
   });
 });
 
@@ -128,6 +133,7 @@ describe("Gemini prices that change on an announced date", () => {
     // model, last moment of the old price, first moment of the new one,
     // USD for 100K input and 10K output before and after
     ["gemini-4-argon", ARGON_CHANGE, 0.3, 0.6],
+    ["gemini-4-carbon", ARGON_CHANGE, 0.3, 0.6],
     ["gemini-3.8-flash", FLASH_CHANGE, 0.1125, 0.225],
     ["gemini-3.7-flash", FLASH_CHANGE, 0.1125, 0.225],
     ["gemini-3.6-flash", FLASH_CHANGE, 0.1125, 0.225],
@@ -144,22 +150,26 @@ describe("Gemini prices that change on an announced date", () => {
     });
   });
 
-  it("bills cached input at the new cached rate after the change", () => {
-    // Argon from 2026-12-01: 20K at $4, 80K cached at $0.20, 1K at $20.
-    expect(
-      priced(call("gemini-4-argon", 100_000, 1_000, {
-        cachedInputTokens: 80_000,
-        pricedAtMs: ARGON_CHANGE,
-      })).costUsd,
-    ).toBeCloseTo(0.116, 9);
+  describe.each(["gemini-4-argon", "gemini-4-carbon"])("%s", (model) => {
+    it("bills cached input at the new cached rate after the change", () => {
+      // Gemini 4 from 2026-12-01: 20K at $4, 80K cached at $0.20, 1K at $20.
+      expect(
+        priced(call(model, 100_000, 1_000, {
+          cachedInputTokens: 80_000,
+          pricedAtMs: ARGON_CHANGE,
+        })).costUsd,
+      ).toBeCloseTo(0.116, 9);
+    });
   });
 
-  it("prices at the current time when the usage names no moment", () => {
-    vi.useFakeTimers({ toFake: ["Date"], now: ARGON_CHANGE + 86_400_000 });
-    expect(priced(call("gemini-4-argon", 100_000, 10_000, { pricedAtMs: undefined })).costUsd)
-      .toBeCloseTo(0.6, 9);
-    expect(resolveModelCostEntry({ provider: "gemini", model: "gemini-4-argon" }, DEFAULT_MODEL_COSTS))
-      .toMatchObject({ key: "gemini:gemini-4-argon", dated: true, entry: { inputUsdPer1K: 0.004, outputUsdPer1K: 0.02 } });
+  describe.each(["gemini-4-argon", "gemini-4-carbon"])("%s", (model) => {
+    it("prices at the current time when the usage names no moment", () => {
+      vi.useFakeTimers({ toFake: ["Date"], now: ARGON_CHANGE + 86_400_000 });
+      expect(priced(call(model, 100_000, 10_000, { pricedAtMs: undefined })).costUsd)
+        .toBeCloseTo(0.6, 9);
+      expect(resolveModelCostEntry({ provider: "gemini", model }, DEFAULT_MODEL_COSTS))
+        .toMatchObject({ key: `gemini:${model}`, dated: true, entry: { inputUsdPer1K: 0.004, outputUsdPer1K: 0.02 } });
+    });
   });
 
   it("shows the rates in effect to price displays and admission", () => {
@@ -186,30 +196,32 @@ describe("Gemini prices that change on an announced date", () => {
       .toMatchObject({ inputUsdPer1K: 0.9, outputUsdPer1K: 0.9 });
   });
 
-  it("keeps each call of a session at the rate of the moment it billed", () => {
-    const sidecar = new CostSidecar({ defaultProvider: "gemini", defaultModel: "gemini-4-argon", exitSummary: false });
-    const tokenCount = (seq: number) => sidecar.onEvent({
-      id: String(seq),
-      seq,
-      msg: {
-        type: "token_count",
-        payload: { provider: "gemini", model: "gemini-4-argon", promptTokens: 100_000, completionTokens: 10_000, totalTokens: 110_000 },
-      },
+  describe.each(["gemini-4-argon", "gemini-4-carbon"])("%s", (model) => {
+    it("keeps each call of a session at the rate of the moment it billed", () => {
+      const sidecar = new CostSidecar({ defaultProvider: "gemini", defaultModel: model, exitSummary: false });
+      const tokenCount = (seq: number) => sidecar.onEvent({
+        id: String(seq),
+        seq,
+        msg: {
+          type: "token_count",
+          payload: { provider: "gemini", model, promptTokens: 100_000, completionTokens: 10_000, totalTokens: 110_000 },
+        },
+      });
+      vi.useFakeTimers({ toFake: ["Date"], now: ARGON_CHANGE - 60_000 });
+      tokenCount(1);
+      expect(sidecar.getTotalCostUsd()).toBeCloseTo(0.3, 9);
+      vi.setSystemTime(ARGON_CHANGE + 60_000);
+      // The first call is not repriced when the price changes.
+      expect(sidecar.getTotalCostUsd()).toBeCloseTo(0.3, 9);
+      tokenCount(2);
+      expect(sidecar.getTotalCostUsd()).toBeCloseTo(0.9, 9);
+      expect(sidecar.hasUnknownModelCost()).toBe(false);
     });
-    vi.useFakeTimers({ toFake: ["Date"], now: ARGON_CHANGE - 60_000 });
-    tokenCount(1);
-    expect(sidecar.getTotalCostUsd()).toBeCloseTo(0.3, 9);
-    vi.setSystemTime(ARGON_CHANGE + 60_000);
-    // The first call is not repriced when the price changes.
-    expect(sidecar.getTotalCostUsd()).toBeCloseTo(0.3, 9);
-    tokenCount(2);
-    expect(sidecar.getTotalCostUsd()).toBeCloseTo(0.9, 9);
-    expect(sidecar.hasUnknownModelCost()).toBe(false);
   });
 });
 
 describe("Gemini models without a price row", () => {
-  it.each(["gemini-4-xenon", "gemini-4-argon-preview", "gemini-3.9-flash"])(
+  it.each(["gemini-4-xenon", "gemini-4-argon-preview", "gemini-4-carbon-preview", "gemini-3.9-flash"])(
     "never borrows another model's price for %s",
     (model) => {
       expect(resolveModelCostEntry({ provider: "gemini", model }, DEFAULT_MODEL_COSTS)).toBeNull();

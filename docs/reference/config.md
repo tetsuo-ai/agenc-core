@@ -440,6 +440,11 @@ warning to stderr, and structured output includes the warning event.
 `mode = "never"` turns the gate off, `mode = "always"` applies it to
 interactive sessions too.
 
+Verification uses the model's normal output ceiling for reasoning models,
+so thinking does not exhaust a smaller bookkeeping allowance. Other models
+keep an 8,192-token verification cap, bounded by their configured output limit.
+The six-sample verification limit still applies.
+
 Turns whose caller requires the exact final answer (`agenc -p
 --output-format json` or `stream-json`, or `exactOutput` on a turn or
 session) skip the gate by default (`completion_gate.exact_output = "skip"`):

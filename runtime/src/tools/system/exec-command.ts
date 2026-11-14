@@ -18,6 +18,7 @@ import {
 import { preflightSelfTermination, preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
 import { foldDefaultSandboxPermission } from "./sandbox-permission-values.js";
 import { recordSessionRead, resolveSessionId } from "./filesystem.js";
+import { rememberShellSession, trackOwnShellChanges, type ShellCommandScope } from "./own-shell-changes.js";
 import { isCompletePrintedOutput, rememberPrintedOutput, stableWorkspaceText } from "./printed-read-proof.js";
 import type { BashToolConfig } from "./types.js";
 import { UnifiedExecError, UnifiedExecUnavailableError } from "../../unified-exec/types.js";
@@ -28,6 +29,7 @@ import {
 } from "./exec-unavailable.js";
 import { execCommandRunsConcurrently } from "../read-only-shell-concurrency.js";
 import type {
+  BusyWaitWake,
   ExecCommandToolOutput,
   UnifiedExecProcessManagerLike,
   UnifiedExecRuntimeSandbox,
@@ -65,7 +67,8 @@ import {
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import { nonEmptyString as asString } from "../../utils/stringUtils.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
-import { readToolRuntimeContext } from "../runtimes/context.js";
+import { readInvokingSession, readToolRuntimeContext } from "../runtimes/context.js";
+import { busyWaitWakeFor } from "./exec-wait-wake.js";
 import { localServerGuidance } from "./local-server-guidance.js";
 import { execProcessNamespaceNotice } from "./exec-process-namespace.js";
 import { execNetworkFailureNotice } from "./exec-network-failure.js";
@@ -119,6 +122,11 @@ export interface ExecCommandToolConfig extends BashToolConfig {
    * session.
    */
   readonly hardTimeout?: () => boolean;
+  /**
+   * Whether a Light command still using CPU at the end of its yield keeps
+   * the call waiting (`AGENC_EXEC_WAIT_WHILE_BUSY`, tools/system/exec-wait-mode.ts).
+   */
+  readonly waitWhileBusy?: () => boolean;
 }
 
 /**
@@ -150,6 +158,39 @@ const PLAIN_INTERACTIVE_SHELL_RE =
  * with another model call. Explicit yields, tty and detached processes keep their own windows.
  */
 export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
+
+/**
+ * What ends this call's busy wait early, with the command still running: a
+ * prompt queued for its session, which the turn delivers after the tool
+ * phase, or the start of its run's deadline reserve
+ * (tools/system/exec-wait-wake.ts). Nothing without an invoking session.
+ */
+export function busyWaitWakeArg(
+  args: Readonly<Record<string, unknown>>,
+): { readonly busyWaitWake?: () => BusyWaitWake } {
+  const wake = busyWaitWakeFor(readInvokingSession(args));
+  return wake === undefined ? {} : { busyWaitWake: wake };
+}
+
+/**
+ * Whether a Light command still using CPU when its yield passes keeps this
+ * call waiting until it exits or stops using CPU, bounded (process manager
+ * `waitWhileBusy`), instead of returning a session_id the model polls with
+ * another model call. Only a foreground, non-tty command whose yield is the
+ * default or longer: `background: true`, tty, detach and a shorter explicit
+ * yield ask for control back early. Off with `AGENC_EXEC_WAIT_WHILE_BUSY=0`
+ * and in Standard sessions.
+ */
+function waitsWhileBusy(
+  config: ExecCommandToolConfig | undefined,
+  args: Readonly<Record<string, unknown>>,
+  launch: { readonly background: boolean; readonly tty: boolean | undefined },
+): boolean {
+  if (config?.lightMode !== true || config.waitWhileBusy?.() !== true) return false;
+  if (launch.background || launch.tty === true || args.detach === true) return false;
+  const requestedYield = asNumber(args.yield_time_ms);
+  return requestedYield === undefined || requestedYield >= LIGHT_DEFAULT_EXEC_YIELD_TIME_MS;
+}
 
 /**
  * How long `background: true` waits before returning the session: long
@@ -1312,9 +1353,16 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             ? { observer: config.execObserver }
             : {}),
         };
-        const output = detach
-          ? await manager.startDetachedProcess!({ ...commonRequest, ...shellRequest })
-          : await manager.execCommand({
+        // A read-only inspection or read-only shell runs in a sandbox without write
+        // access, which the scope carries like any other sandbox.
+        const shellScope: ShellCommandScope = {
+          command: cmd,
+          cwd: effectiveWorkdir ?? config?.cwd ?? process.cwd(),
+          runtimeSandbox,
+        };
+        const output = await trackOwnShellChanges(args, shellScope, () => detach
+          ? manager.startDetachedProcess!({ ...commonRequest, ...shellRequest })
+          : manager.execCommand({
               ...commonRequest,
               ...(inspection !== undefined
                 ? { directInvocation: inspection, workdir: inspection.cwd }
@@ -1325,12 +1373,18 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
                 ? { timeoutMs, onTimeout: config?.hardTimeout?.() === true ? "kill" as const : "background" as const }
                 : {}),
               ...(background ? { startInBackground: true } : {}),
+              ...(waitsWhileBusy(config, args, { background, tty })
+                ? { waitWhileBusy: true, ...busyWaitWakeArg(args) }
+                : {}),
               ...(args.__onProgress !== undefined
                 ? { __onProgress: args.__onProgress }
                 : {}),
               ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
               ...(ownerId !== undefined ? { ownerId } : {}),
-            });
+            }));
+        if (output.exitCode === null) {
+          rememberShellSession(args, output.session_id ?? output.process_id, shellScope);
+        }
         // Commands were paused after an unproven cleanup and this call found
         // that cleanup proven: say so once, with the output.
         const admissionResumed = manager.takeAdmissionResumedNotice?.();

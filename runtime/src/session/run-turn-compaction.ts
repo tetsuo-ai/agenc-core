@@ -827,6 +827,11 @@ async function runAutoCompact(
         );
       }
     }
+    // Exhausted provider/model tiers leave canonical history unchanged.
+    // Missing ownership and terminal persistence failures cannot use this path.
+    if (ladderAppliesToDecline(result) && !isStructuralCompactionDecline(result)) {
+      options.onAdvisoryRefusal?.();
+    }
     return false;
   } catch (error) {
     // Never silently swallow compact failures. Emit a structured

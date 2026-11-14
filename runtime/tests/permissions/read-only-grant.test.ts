@@ -148,9 +148,9 @@ describe("unattended read-only grant", () => {
     }
   });
 
-  it("admits tool discovery, which declares itself side-effecting", () => {
-    // system.searchTools carries recoveryCategory "side-effecting" for
-    // recovery purposes and writes nothing (virtualNoFsWrites). Refusing it
+  it("admits replay-safe tool discovery", () => {
+    // system.searchTools is replay-safe and writes nothing (virtualNoFsWrites).
+    // Refusing it
     // left an unattended run unable to find the tools it is allowed to use.
     expect(verdict(tool("system.searchTools")).granted).toBe(true);
     // Loading a schema does not widen what may run: a non-builtin tool is

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { performance as nodePerformance } from "node:perf_hooks";
 
 import type { LLMChatOptions, LLMMessage } from "../../../src/llm/types.js";
 import { compactConversationTransactionally } from "../../../src/services/compact/transaction.js";
@@ -19,6 +20,7 @@ const SOURCE: readonly RuntimeMessage[] = Array.from({ length: 8 }, (_, index) =
 }));
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -33,6 +35,25 @@ describe("transactional compaction wall budget", () => {
       expect(await settled).toBe("committed");
       expect(harness.provider.chat).toHaveBeenCalledTimes(1);
       expect(lifecycle(harness).at(-1)?.type).toBe("compaction_committed");
+    } finally {
+      harness.close();
+    }
+  }, 60_000);
+
+  it("shares the wall deadline with a schema retry", async () => {
+    const harness = slowHarness(600_000, true);
+    vi.spyOn(nodePerformance, "now").mockImplementation(() => performance.now());
+    try {
+      const rejected = expect(compact(harness)).rejects.toThrow(/wall-clock deadline/);
+      await waitForProviderCall(harness);
+      await vi.advanceTimersByTimeAsync(600_000);
+      for (let turn = 0; turn < 10_000 && harness.provider.chat.mock.calls.length < 2; turn += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(harness.provider.chat).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(300_001);
+      await rejected;
+      expect(lifecycle(harness).at(-1)).toMatchObject({ type: "compaction_failed", payload: { reason: "wall_time_exceeded" } });
     } finally {
       harness.close();
     }
@@ -58,9 +79,10 @@ describe("transactional compaction wall budget", () => {
 });
 
 // The harness summariser, answering only after delayMs of fake time and rejecting when the transaction aborts it.
-function slowHarness(delayMs: number): CompactionTransactionHarness {
+function slowHarness(delayMs: number, rejectSchemaOnce = false): CompactionTransactionHarness {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
   const summariser = createProvider();
+  let calls = 0;
   return createCompactionTransactionHarness(SOURCE, {
     compactionMode: "automatic",
     chat: async (messages: LLMMessage[], options?: LLMChatOptions) => {
@@ -74,7 +96,11 @@ function slowHarness(delayMs: number): CompactionTransactionHarness {
           }, { once: true });
         }
       });
-      return summariser.chat(messages);
+      const response = await summariser.chat(messages);
+      calls += 1;
+      return rejectSchemaOnce && calls === 1
+        ? { ...response, content: '{"narrative":17,"facts":[],"open_actions":[]}' }
+        : response;
     },
   });
 }

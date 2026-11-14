@@ -598,7 +598,8 @@ function geminiDatedTier(
 // is on by default for Gemini 2.5 and newer, so a repeated prefix bills at the
 // cached rate. Text and image input rates only; audio input costs more on the
 // Flash-Lite and 2.5 Flash rows.
-// - Gemini 4 Argon: $2 / $10 / $0.10 through 2026-11-30, then $4 / $20 / $0.20.
+// - Gemini 4 Argon and Carbon: $2 / $10 / $0.10 through 2026-11-30,
+//   then $4 / $20 / $0.20. Carbon pricing verified 2026-11-11.
 //   Implicit caching only; no free tier; no long-context tier.
 // - 3.8 and 3.6 Flash: $0.75 / $3.75 / $0.075 through 2026-12-31, then
 //   $1.50 / $7.50 / $0.15.
@@ -1295,6 +1296,7 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "kimi:kimi-k2.6": COST_TIER_KIMI_K26,
     // Gemini rates and sources sit with the COST_TIER_GEMINI_* rows above.
     ...geminiCostAliases("gemini-4-argon", COST_TIER_GEMINI_4_ARGON),
+    ...geminiCostAliases("gemini-4-carbon", COST_TIER_GEMINI_4_ARGON),
     ...geminiCostAliases("gemini-3.1-pro-preview", COST_TIER_GEMINI_3_1_PRO),
     ...geminiCostAliases("gemini-3.1-pro-preview-customtools", COST_TIER_GEMINI_3_1_PRO),
     // Gemma is free-only on the Gemini API pricing page (2026-09-29).

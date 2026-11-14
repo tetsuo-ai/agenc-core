@@ -3100,6 +3100,32 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  test("passes turn usage to the activity row without another snapshot read", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const getDaemonSessionSnapshot = vi.fn(async () => ({
+      sessionId: "conversation-app-smoke",
+      contextBreakdown: {
+        model: "gpt-4o", windowTokens: 100_000, effectiveWindowTokens: 100_000,
+        compactionWindowTokens: 100_000, compactionInputTokens: 60_000, compactionThresholdTokens: 80_000,
+        messageTokens: 10, systemPromptTokens: 10, systemToolTokens: 0, mcpToolTokens: 0, memoryFileTokens: 0,
+      },
+    }));
+    const session = {
+      ...createSession(), getDaemonSessionSnapshot,
+      getInitialTranscriptEvents: () => [
+        { id: "start", type: "turn_started", payload: { turnId: "efficiency-turn" } },
+        { id: "dispatch", type: "execution_admission", payload: { event: "dispatched", kind: "model_turn" } },
+        { id: "usage", type: "token_count", payload: { provider: "openai", promptTokens: 128_000, completionTokens: 2_100, cachedInputTokens: 124_160 } },
+      ],
+    } as unknown as AgenCBridgeSession;
+    resetShellSurfaceProbe();
+    await renderApp(<AgenCTuiApp session={session} isInteractive={false} />);
+    expect(providerProbe.spinnerProps.at(-1)).toMatchObject({
+      turnEfficiency: { modelCalls: 1, lastRequest: { inputTokens: 128_000, cachedInputTokens: 124_160, outputTokens: 2_100 } },
+    });
+    expect(getDaemonSessionSnapshot).toHaveBeenCalledTimes(1);
+  });
+
   test("shows spinner while a tool runs after buffered assistant text", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const session = {

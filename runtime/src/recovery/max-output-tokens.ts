@@ -76,6 +76,8 @@ export interface RunMaxOutputTokensOpts {
   /** Whether this call should retry the same request at the escalated ceiling. */
   readonly escalateAllowed?: boolean;
   readonly escalatedMaxOutputTokens?: number;
+  /** Output ceiling on the paid sample, including request-level caps. */
+  readonly currentMaxOutputTokens?: number;
 }
 
 /**
@@ -456,14 +458,16 @@ export function runMaxOutputTokensRecovery(
     canReferenceMessage && state.truncatedToolCallNames!.every(name => name === "spawn_agent");
   const escalateAllowed = opts.escalateAllowed !== false && !referencedHandoffsOnly;
 
-  // Step 1: escalate path — first attempt, override unset.
-  if (overrideUnset && escalateAllowed) {
+  const escalatedLimit = opts.escalatedMaxOutputTokens ?? ESCALATED_MAX_OUTPUT_TOKENS;
+  // Keep the paid partial output when retrying cannot raise its ceiling.
+  const raisesLimit = opts.currentMaxOutputTokens === undefined ||
+    escalatedLimit > opts.currentMaxOutputTokens;
+  if (overrideUnset && escalateAllowed && raisesLimit) {
     qualifyReasoningCapRecovery(state, reasoningOnly && supportsThinkingOffRecovery(
       session.services?.provider?.name ?? "", session.config?.model ?? "",
     ));
     state.reasoningOnlyRecoveryPending = reasoningOnly ? true : undefined;
-    state.maxOutputTokensOverride =
-      opts.escalatedMaxOutputTokens ?? ESCALATED_MAX_OUTPUT_TOKENS;
+    state.maxOutputTokensOverride = escalatedLimit;
     state.transition = { reason: "max_output_tokens_escalate" };
     discardExecutorForMaxOutputTokens(session, state);
     removeTruncatedAssistantForRetry(state);

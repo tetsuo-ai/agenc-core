@@ -726,9 +726,9 @@ export const OPENAI_PERSONALITY_MESSAGES: ModelMessages = Object.freeze({
 // ai.google.dev/gemini-api/docs/models does. Without these a Flash model took
 // its window from a public catalog download when one answered in time and the
 // 128K / 32K fallback otherwise; 3.1 Pro only matched through the
-// OpenAI-compatible table's gemini-3.1-pro prefix. Gemini 4 Argon lists
-// outputTokenLimit 32,768 (2026-10-28): that is its non-streaming cap, and a
-// stream may return 65,536, so its row keeps 65,536 and the adapter lowers
+// OpenAI-compatible table's gemini-3.1-pro prefix. Gemini 4 Argon and Carbon
+// list outputTokenLimit 32,768: that is their non-streaming cap, and a
+// stream may return 65,536, so their rows keep 65,536 and the adapter lowers
 // non-streaming calls (gemini-thinking-models.ts).
 const GEMINI_CONTEXT_WINDOW = 1_048_576;
 const GEMINI_MAX_OUTPUT_TOKENS = 65_536;

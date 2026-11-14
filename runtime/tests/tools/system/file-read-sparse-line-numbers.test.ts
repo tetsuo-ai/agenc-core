@@ -77,7 +77,7 @@ describe("FileRead with sparse line numbers", () => {
     const dense = await tool.execute({ file_path: file, dense_line_numbers: true });
     expect(dense.content).toBe((await createFileReadTool({ allowedPaths: [root] }).execute({ file_path: file })).content);
     const offset = await tool.execute({ file_path: file, offset: 8, limit: 4 });
-    expect(offset.content).toBe("8→row 8\nrow 9\n10→row 10\n11→row 11");
+    expect(offset.content).toBe("8→row 8\nrow 9\n10→row 10\n11→row 11\n[lines 8-11 of 12; next offset 12]");
     expect(tool.inputSchema.properties).toHaveProperty("dense_line_numbers");
     expect(createFileReadTool({ allowedPaths: [root] }).inputSchema.properties).not.toHaveProperty("dense_line_numbers");
   });

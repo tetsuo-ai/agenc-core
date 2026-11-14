@@ -1,3 +1,4 @@
+import { editThenRunEnabled, withEditThenRun } from "./tools/edit-then-run.js";
 import { suggestToolForUnknownName } from "./tools/tool-name-suggestion.js";
 import { unknownToolResult } from "./tools/results.js";
 import { oneShotFastModeActive } from "./one-shot-fast-mode.js";
@@ -30,6 +31,7 @@ import { prepareModelToolArgs, validateToolPreflight } from "./tools/execution.j
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
 import { lightPresentation, standardPresentation, withHardTimeoutWording } from "./tools/light-presentation.js";
 import { execHardTimeoutEnabled } from "./tools/system/exec-timeout-mode.js";
+import { execWaitWhileBusyEnabled } from "./tools/system/exec-wait-mode.js";
 import { WEB_SEARCH_INITIAL_TOOLS } from "./tools/web-search-mode.js";
 import { COMPACT_CORE_SWITCH_DISCOVERIES, COMPACT_CORE_TOOL_NAMES, LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch, lightUsesBatchEdit, lightUsesDeepSeekWrite, lightUsesGlmTuning } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
@@ -850,6 +852,7 @@ export function buildToolRegistry(
           : {}),
       onEscalationAdvised,
       hardTimeout: () => execHardTimeout(),
+      waitWhileBusy: () => execWaitWhileBusy(),
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),
@@ -860,6 +863,7 @@ export function buildToolRegistry(
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
       onEscalationAdvised,
+      waitWhileBusy: () => execWaitWhileBusy(),
     }),
     createKillProcessTool({
       cwd: options.workspaceRoot,
@@ -1249,6 +1253,14 @@ export function buildToolRegistry(
     }
     return execHardTimeoutEnabled(services?.providerEnvironment ?? {}, configured);
   }
+  /**
+   * Whether a Light wait continues while its command is busy: on unless the
+   * session's AGENC_EXEC_WAIT_WHILE_BUSY turns it off
+   * (tools/system/exec-wait-mode.ts).
+   */
+  function execWaitWhileBusy(): boolean {
+    return execWaitWhileBusyEnabled(options.getSession?.()?.services?.providerEnvironment ?? {});
+  }
   // Direct shell RPCs select one daemon-owned builtin by name. Reserve both
   // names even when the canonical tool is disabled or unavailable so an
   // extension cannot become the physical execution target by collision.
@@ -1363,7 +1375,7 @@ export function buildToolRegistry(
       // The supplied TOML policy is live, including nested per-tool defaults.
       // Snapshot its value rather than its object identity or array references.
       [JSON.stringify(options.toolsConfig)],
-      [usesBatchEdit()],
+      [usesBatchEdit(), editThenRunEnabled(options.lightMode, options.getSession?.()?.services.providerEnvironment)],
     ];
   }
 
@@ -1412,9 +1424,11 @@ export function buildToolRegistry(
     );
     const withoutManagedMcpCollisions = (tools: readonly Tool[]): Tool[] =>
       preserveTrustedRuntimeOwnedTools(tools).filter(tool => !managedMcpNames.has(tool.name));
-    const baseSpecs = withoutManagedMcpCollisions(staticTools.map(tool =>
-      usesBatchEdit() && tool === legacyBuiltinEdit && batchBuiltinEdit !== undefined ? batchBuiltinEdit : tool,
-    )).map(specForTool);
+    const baseSpecs = withoutManagedMcpCollisions(staticTools.map(tool => {
+      const selected = usesBatchEdit() && tool === legacyBuiltinEdit && batchBuiltinEdit !== undefined ? batchBuiltinEdit : tool;
+      return editThenRunEnabled(options.lightMode, options.getSession?.()?.services.providerEnvironment)
+        ? withEditThenRun(selected) : selected;
+    })).map(specForTool);
     const directMcpTools = mcpTools.filter(
       (tool) => tool.metadata?.deferred !== true,
     );

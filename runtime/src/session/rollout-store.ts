@@ -832,10 +832,17 @@ export class RolloutStore {
    * or failed record it has not. Inside that window the rollout admits
    * nothing but the attempt's admission journal
    * (canonical-rollout-scanner.ts observeAdmission); any other line fails
-   * the commit. Session state and metadata lines wait here and follow the
-   * attempt's terminal record.
+   * the commit. Session state and metadata lines wait here and are written
+   * right after the attempt's terminal record, or when the attempt ends
+   * without one (its lease is released) or the store closes.
    */
   private compactionWindowAttemptId: string | undefined;
+  /**
+   * Attempts that ended without a terminal record and could not be closed when
+   * their lease was released (the state database or the rollout still failed).
+   * The next compaction tries again before it takes its source provenance.
+   */
+  private readonly unfinishedCompactionAttempts = new Set<string>();
   private readonly linesAfterCompactionWindow: {
     readonly item: RolloutItem;
     readonly opts: AppendOptions;
@@ -1051,7 +1058,7 @@ export class RolloutStore {
   }
 
   append(event: Event, opts: AppendOptions = {}): boolean {
-    this.appendLinesAfterCompactionWindow();
+    this.appendLinesAfterCompactionWindowBestEffort();
     return this.store.append(event, opts);
   }
 
@@ -1086,10 +1093,39 @@ export class RolloutStore {
         "compaction already in progress",
       ), signal);
     const bind = (lease: CompactionTransactionLease): CompactionTransactionLease => {
+      // An earlier attempt that could not be closed when it ended is closed
+      // now, under this lease, before this attempt takes source provenance.
+      for (const unfinished of [...this.unfinishedCompactionAttempts]) {
+        try {
+          this.closeUnfinishedCompactionAttempt(unfinished);
+          this.unfinishedCompactionAttempts.delete(unfinished);
+        } catch {
+          // Still failing: this attempt goes ahead and reports its own outcome.
+        }
+      }
       const ownership = { release: () => { lease.release(); }, committed: false };
       this.compactionOwnership.set(attemptId, ownership);
       return { release: () => {
         if (this.compactionOwnership.get(attemptId) !== ownership) return;
+        // The transaction has ended. An attempt that did not commit and left
+        // its pin preparing or bound (its intent could not be bound, or its
+        // failure could not be recorded) never will. Close it as
+        // reconciliation on open does, while this lease still excludes other
+        // compactions, so a later compaction does not take its pin as source
+        // provenance and fail until a restart.
+        if (!ownership.committed && !this.durablyCommittedCompactionsAwaitingReconstruction.has(attemptId)) {
+          try {
+            this.closeUnfinishedCompactionAttempt(attemptId);
+          } catch {
+            this.unfinishedCompactionAttempts.add(attemptId);
+          }
+        }
+        // Its window closes in any case, so the lines it held are written now,
+        // not only when the store closes.
+        if (this.compactionWindowAttemptId === attemptId) {
+          this.compactionWindowAttemptId = undefined;
+          this.appendLinesAfterCompactionWindowBestEffort();
+        }
         // The transaction returns before its caller publishes replacement
         // history and the forced checkpoint. Keep memory readers behind both.
         if (ownership.committed || this.durablyCommittedCompactionsAwaitingReconstruction.has(attemptId)) return;
@@ -1098,6 +1134,45 @@ export class RolloutStore {
       } };
     };
     return acquired instanceof Promise ? acquired.then(bind) : bind(acquired);
+  }
+
+  /**
+   * Close an attempt whose transaction ended without a committed or failed
+   * record, as reconciliation on open closes one it finds: a pin with its
+   * intent in the rollout is bound and gets a recovery_interrupted failure
+   * record and failure guard entry; a pin whose intent never reached the
+   * rollout is released. Either way it leaves the preparing state, which a
+   * later compaction would take as source provenance it cannot reference.
+   * Throws when the state database or the rollout still fails, or while the
+   * session store holds rows the file does not have yet.
+   */
+  private closeUnfinishedCompactionAttempt(attemptId: string): void {
+    const pin = this.compactionRetentionRepo.get(attemptId);
+    if (pin === undefined || (pin.state !== "preparing" && pin.state !== "intent_bound")) return;
+    // The scan below reads the file. A failure record the session store still
+    // holds (an ENOSPC write waiting in its degraded buffer) is not there yet:
+    // closing now would write a second terminal record, and the rollout could
+    // no longer be opened. The attempt stays unfinished until those rows land.
+    if (this.store.hasUnsettledRows) {
+      throw new CompactionTransactionError(
+        "pin_failed",
+        "rollout rows are still waiting for the disk; the unfinished compaction attempt is closed later",
+      );
+    }
+    this.store.syncCanonicalTail();
+    const scan = this.canonicalScanner.scan(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
+      expectedRunId: this.sessionId,
+      expectedEpoch: this.runEpoch,
+      maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
+      nowMilliseconds: this.nowMilliseconds,
+      compactionSourceDigestDomain: COMPACTION_SOURCE_DIGEST_DOMAIN,
+      additionalSourceLines: pin.activeHistoryRefs.map((ref) => ref.first_sequence),
+    });
+    const attempt = scan.attempts.get(attemptId);
+    // A commit on disk is the projection reconstruction's to finish, never this.
+    if (attempt?.records.some((record) => record.item.type === "compaction_committed") === true) return;
+    this.reconcileCompactionPin(pin, attempt, scan, { throwFailureAppend: true });
   }
 
   withCanonicalBackgroundWork<T>(work: () => T | Promise<T>): Promise<T> {
@@ -1605,6 +1680,14 @@ export class RolloutStore {
           item.payload.attempt_id === expected.payload.attempt_id,
       );
     if (terminalItems.length === 0) {
+      // Rows the session store still holds reach the file later: a commit
+      // write that met a full disk waits in the degraded buffer with its
+      // payload chunks. A failure record now would land before them.
+      if (this.store.hasUnsettledRows) {
+        this.poisonCompactionProjection(expected.payload.attempt_id, [
+          appendError,
+        ]);
+      }
       // The canonical tail was repaired and fsynced without this commit. The
       // transaction layer may now append the single failure terminal.
       return;
@@ -2880,6 +2963,12 @@ export class RolloutStore {
     listedPin: CompactionPinRecord,
     attemptScan: CanonicalCompactionAttemptScan | undefined,
     scan: CanonicalRolloutScan,
+    /**
+     * A live store closing an unfinished attempt: a failure record that cannot
+     * be written is thrown to the caller, which tries again later, instead of
+     * becoming a deferral for the next open.
+     */
+    options: { readonly throwFailureAppend?: boolean } = {},
   ): void {
     let pin = this.compactionRetentionRepo.require(listedPin.attemptId);
     const items = attemptScan?.records.map((record) => record.item) ?? [];
@@ -3088,6 +3177,7 @@ export class RolloutStore {
           automatic: pin.automatic,
         });
       } catch (error) {
+        if (options.throwFailureAppend === true) throw error;
         this.compactionRetentionRepo.createDeferral({
           sessionId: pin.sessionId,
           attemptId: pin.attemptId,
@@ -3487,7 +3577,7 @@ export class RolloutStore {
       this.linesAfterCompactionWindow.push({ item, opts });
       return;
     }
-    this.appendLinesAfterCompactionWindow();
+    this.appendLinesAfterCompactionWindowBestEffort();
     if (item.type === "response_item") {
       this.validateLiveResponseItem(item.payload);
     } else if (item.type === "compacted") {
@@ -3518,7 +3608,7 @@ export class RolloutStore {
     item: PersistedCompactionRolloutItem,
     opts: AppendOptions,
   ): void {
-    this.appendLinesAfterCompactionWindow();
+    this.appendLinesAfterCompactionWindowBestEffort();
     // Persisted manifest rows deliberately differ from the hydrated in-memory
     // RolloutItem view. The strict persisted readers above are the sole cast
     // boundary; SessionStore hydration restores the public runtime shape.
@@ -3526,7 +3616,10 @@ export class RolloutStore {
     this.observeCompactionWindow(item);
   }
 
-  /** Open the window at an attempt's intent and close it at its terminal record. */
+  /**
+   * Open the window at an attempt's intent and close it at its terminal
+   * record, then write the lines the window held right after that record.
+   */
   private observeCompactionWindow(
     item: RolloutItem | PersistedCompactionRolloutItem,
   ): void {
@@ -3538,6 +3631,7 @@ export class RolloutStore {
       item.payload.attempt_id === this.compactionWindowAttemptId
     ) {
       this.compactionWindowAttemptId = undefined;
+      this.appendLinesAfterCompactionWindowBestEffort();
     }
   }
 
@@ -3547,10 +3641,44 @@ export class RolloutStore {
       this.compactionWindowAttemptId === undefined &&
       this.linesAfterCompactionWindow.length > 0
     ) {
+      // A line leaves the queue once the session store has taken it, even when
+      // its write then fails: a durable write whose fsync fails has already
+      // appended its bytes, and one that meets a full disk waits in the
+      // degraded buffer, so writing the line again would leave it in the
+      // rollout twice. A line the store refused or dropped unwritten stays
+      // first in the queue.
       const { item, opts } = this.linesAfterCompactionWindow[0]!;
-      this.store.appendRollout(item, opts);
-      this.linesAfterCompactionWindow.shift();
+      const offer = this.store.offerRollout(item, opts);
+      if (offer.appended || offer.taken) this.linesAfterCompactionWindow.shift();
+      if (!offer.appended && !offer.taken) throw offer.error;
     }
+  }
+
+  /**
+   * The same, for a terminal record or an ended attempt: the compaction's
+   * outcome is already settled, so a failed write of a held line must not
+   * fail it. A line the session store did not take stays for the next write.
+   * Ordinary appends use this too, so held rows cannot consume their sequence.
+   */
+  private appendLinesAfterCompactionWindowBestEffort(): void {
+    try {
+      this.appendLinesAfterCompactionWindow();
+    } catch {
+      // The caller's own append still reaches the store. Durable flush and close report persisting failures.
+    }
+  }
+
+  /**
+   * Every rollout item with the session state and metadata lines a compaction
+   * window still holds after them, in the order they will be written. A writer
+   * that derives a new line from the latest one (the thread store's memory
+   * mode) must see a line it is still waiting to follow.
+   */
+  readAllIncludingHeldLines(): RolloutItem[] {
+    return [
+      ...this.readAll(),
+      ...this.linesAfterCompactionWindow.map(({ item }) => item),
+    ];
   }
 
   private appendCompactionPayloadBundles(
@@ -4078,7 +4206,7 @@ export class RolloutStore {
   /** Force an immediate flush (durable=true). */
   flushDurable(): void {
     this.appendLinesAfterCompactionWindow();
-    if (!this.store.flushBatch(true)) {
+    if (!this.store.flushBatch(true) || this.store.isDegraded) {
       throw new Error("rollout flush was not fsync-committed");
     }
   }

@@ -197,6 +197,27 @@ async function exhaustGate(maxRounds: number) {
 }
 
 describe("completion gate in the turn loop", () => {
+  test.each([
+    { provider: "deepseek", model: "deepseek-flash", levels: ["low", "high", "max"] as const },
+    { provider: "openai", model: "gpt-6-luna", levels: ["low", "high", "max"] as const },
+  ])("keeps the normal output ceiling for $provider reasoning verification and recovery", async ({ provider: providerName, model, levels }) => {
+    const { provider, requests, options } = scriptedProvider([
+      toolStep("work"), textStep("Done."),
+      { ...textStep("Verification partly complete"), finishReason: "length" },
+      ...Array.from({ length: 8 }, (_, i) => toolStep(`verify-${i}`)),
+    ]);
+    Object.defineProperty(provider, "name", { value: providerName });
+    const { session } = headlessSession(provider, true);
+    const ctx = mkCtx();
+    await collect(session, { ...ctx, modelProviderId: providerName, reasoningEffort: "max",
+      modelInfo: { ...ctx.modelInfo, slug: model, supportedReasoningLevels: levels,
+        maxOutputTokens: 64_000, maxOutputTokensUpperLimit: 393_216, maxOutputTokensCappedDefault: true } });
+    expect(options.slice(2).length).toBeGreaterThan(1);
+    expect(options.slice(2).every(option => option?.maxOutputTokens === 64_000)).toBe(true);
+    expect(requests[3]?.some(message => message.content === "Verification partly complete")).toBe(true);
+    expect(requests).toHaveLength(8);
+  });
+
   test("verification respects lower output limits and caps recovery requests", async () => {
     const {provider, requests, options} = scriptedProvider([
       toolStep("work"), textStep("Done."),
@@ -208,6 +229,23 @@ describe("completion gate in the turn loop", () => {
     expect(options[2]?.maxOutputTokens).toBe(1024);
     expect(requests.length).toBeLessThanOrEqual(8);
     expect(options.slice(2).every(option => (option?.maxOutputTokens ?? Infinity) <= 1024)).toBe(true);
+  });
+
+  test("a capped non-reasoning gate keeps paid partial output when escalation would hit the same ceiling", async () => {
+    const { provider, requests, options } = scriptedProvider([
+      toolStep("work"), textStep("Done."),
+      { ...textStep("Paid verification fragment"), finishReason: "length" },
+      ...Array.from({ length: 8 }, (_, i) => toolStep(`verify-${i}`)),
+    ]);
+    const { session } = headlessSession(provider, true);
+    const ctx = mkCtx();
+    await collect(session, { ...ctx, modelInfo: { ...ctx.modelInfo,
+      supportedReasoningLevels: [], supportsReasoning: false,
+      maxOutputTokens: 32_000, maxOutputTokensUpperLimit: 64_000, maxOutputTokensCappedDefault: true,
+    } });
+    expect(options[2]?.maxOutputTokens).toBe(8192);
+    expect(options[3]?.maxOutputTokens).toBe(8192);
+    expect(requests[3]?.some(message => message.content === "Paid verification fragment")).toBe(true);
   });
 
   test("bounds tool-only verification continuations and every gated output request", async () => {

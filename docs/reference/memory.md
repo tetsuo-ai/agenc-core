@@ -248,6 +248,12 @@ On a non-empty user query (`mode: "query"`):
    lexical top 5. Each surfaced file is then truncated to 200 lines / 4 KiB
    for the prompt.
 
+The turn loop selects and reads relevant memories once per human turn. Later
+requests reuse that selection and its exact rendered bytes, including after
+compaction. Changes to memory files become eligible on the next human turn.
+A synthetic follow-up that only continues tool work can reuse an existing
+selection, but does not start a new selector call.
+
 `mode: "session_start"` (first empty-query turn, not a subagent) always
 scans. It never opens the index.
 

@@ -167,6 +167,85 @@ function writeFillerMemories(dir: string, term: string, count = 5): void {
 }
 
 describe("relevantMemoriesProducer", () => {
+  test("selects once across ten tool rounds and freezes memory bytes until the next human turn", async () => {
+    installMemoryAuthority();
+    const dir = join(agencHome, "memory");
+    const path = writeMemory(dir, "browser.md", "browser automation", "Original browser instructions.");
+    writeFillerMemories(dir, "browser automation", 7);
+    selectMemory("browser.md");
+    const sessionKey = {};
+    const tracking = getAttachmentTrackingState(sessionKey);
+    const turnProvenance = { turnId: "human-1", rootHumanTurn: { turnId: "human-1", text: "browser automation" } };
+    const opts = makeOpts({ sessionKey, turnProvenance });
+    const first = await relevantMemoriesProducer(opts, tracking);
+    const firstMessages = attachmentsToMessages(first);
+    writeMemory(dir, "browser.md", "browser automation", "Changed browser instructions.");
+    for (let index = 0; index < 10; index++) {
+      expect(await relevantMemoriesProducer({ ...opts, userInput: "synthetic recovery request", messages: [
+        ...firstMessages, { role: "tool", toolCallId: `read-${index}`, toolName: "Read", content: "ok" },
+      ] }, tracking)).toEqual([]);
+    }
+    expect(selectorCall).toHaveBeenCalledTimes(1);
+    // A lost attachment anchor or compaction reuses the exact selected bytes.
+    resetRelevantMemoryBudget(sessionKey);
+    expect(attachmentsToMessages(await relevantMemoriesProducer(opts, tracking))).toEqual(firstMessages);
+    expect(selectorCall).toHaveBeenCalledTimes(1);
+    const next = await relevantMemoriesProducer({ ...opts, messages: firstMessages,
+      turnProvenance: { turnId: "human-2", rootHumanTurn: { turnId: "human-2", text: "browser automation" } },
+    }, tracking);
+    expect(selectorCall).toHaveBeenCalledTimes(2);
+    expect(next).toMatchObject([{ memories: [{ path, content: expect.stringContaining("Changed browser instructions.") }] }]);
+  });
+
+  test("keeps an empty selector decision for the rest of the human turn", async () => {
+    installMemoryAuthority();
+    writeFillerMemories(join(agencHome, "memory"), "browser automation", 8);
+    const opts = makeOpts({ turnProvenance: {
+      turnId: "empty-selection", rootHumanTurn: { turnId: "empty-selection", text: "browser automation" },
+    } });
+    const tracking = getAttachmentTrackingState(opts.sessionKey);
+    for (let index = 0; index < 10; index++) {
+      expect(await relevantMemoriesProducer(opts, tracking)).toEqual([]);
+    }
+    expect(selectorCall).toHaveBeenCalledTimes(1);
+  });
+
+  test("replays empty-query human-turn recall after compaction without reading changed files", async () => {
+    installMemoryAuthority();
+    const path = writeMemory(projectMemoryDir, "build.md", "Build notes", "Original build fact.");
+    const opts = makeOpts({ userInput: null, turnProvenance: {
+      turnId: "image-turn", rootHumanTurn: { turnId: "image-turn", text: "" },
+    } });
+    const tracking = getAttachmentTrackingState(opts.sessionKey);
+    const first = attachmentsToMessages(await relevantMemoriesProducer(opts, tracking));
+    expect(first).toHaveLength(1);
+    writeMemory(projectMemoryDir, "build.md", "Build notes", "Changed build fact.");
+    resetRelevantMemoryBudget(opts.sessionKey);
+    expect(attachmentsToMessages(await relevantMemoriesProducer(opts, tracking))).toEqual(first);
+    expect(tracking.surfacedRelevantMemoryPaths.has(path)).toBe(true);
+    expect(selectorCall).not.toHaveBeenCalled();
+  });
+
+  test("does not rerank a follow-up of an earlier human turn", async () => {
+    installMemoryAuthority();
+    writeMemory(join(agencHome, "memory"), "browser.md", "browser automation", "Browser instructions.");
+    writeFillerMemories(join(agencHome, "memory"), "browser automation", 7);
+    const opts = makeOpts({ turnProvenance: { turnId: "tool-continuation", rootHumanTurn: { turnId: "old-human", text: "browser automation" } },
+      messages: [{ role: "tool", toolCallId: "read", toolName: "Read", content: "ok" }] });
+    expect(await relevantMemoriesProducer(opts, getAttachmentTrackingState(opts.sessionKey))).toEqual([]);
+    expect(selectorCall).not.toHaveBeenCalled();
+  });
+
+  test("a turn with no human prompt bound to it still recalls, once for all its requests", async () => {
+    installMemoryAuthority();
+    writeMemory(join(agencHome, "memory"), "browser.md", "browser automation", "Browser instructions.");
+    writeFillerMemories(join(agencHome, "memory"), "browser automation", 7);
+    const opts = makeOpts({ turnProvenance: { turnId: "routine-turn", rootHumanTurn: null } });
+    const tracking = getAttachmentTrackingState(opts.sessionKey);
+    for (let index = 0; index < 6; index++) await relevantMemoriesProducer(opts, tracking);
+    expect(selectorCall).toHaveBeenCalledTimes(1);
+  });
+
   test.each([null, "zebra deployment"])('recalls only the live owner memory across daemon projects (query=%s)', async (userInput) => {
     const daemon = join(root, "daemon");
     mkdirSync(daemon);

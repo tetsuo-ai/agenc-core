@@ -759,7 +759,7 @@ describe("GeminiProvider", () => {
     { label: "Developer API", endpointPlan: developerEndpointPlan, store: false },
     { label: "custom GEMINI_BASE_URL", endpointPlan: customEndpointPlan, store: false },
     { label: "Vertex", endpointPlan: vertexEndpointPlan, store: undefined },
-  ])("asks the $label not to log generate, stream and count requests", async ({ endpointPlan, store }) => {
+  ].flatMap(entry => ["gemini-4-argon", "gemini-4-carbon"].map(model => ({ ...entry, selectedModel: model }))))("asks the $label for $selectedModel not to log generate, stream and count requests", async ({ endpointPlan, store, selectedModel }) => {
     const payload = { candidates: [{ content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }] };
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url) =>
       String(url).includes(":countTokens") ? jsonResponse({ totalTokens: 3 })
@@ -771,14 +771,14 @@ describe("GeminiProvider", () => {
         ? { kind: "access-token" as const, credential: "vertex-token", source: "GEMINI_ACCESS_TOKEN" as const }
         : apiKeyCredentialPlan(),
       endpointPlan,
-      model: "gemini-4-argon",
+      model: selectedModel,
       fetchImpl,
     });
     const messages = [{ role: "user" as const, content: "hello" }];
     await provider.chat(messages);
     await provider.chatStream(messages, () => {});
     await provider.tokenCountCapability.countTokens(
-      createTokenAccountingRequest({ provider: "gemini", model: "gemini-4-argon", messages, options: {}, reservedOutputTokens: 0 }),
+      createTokenAccountingRequest({ provider: "gemini", model: selectedModel, messages, options: {}, reservedOutputTokens: 0 }),
       new AbortController().signal,
     );
     const bodies = fetchImpl.mock.calls.map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -792,7 +792,7 @@ describe("GeminiProvider", () => {
     }
   });
 
-  test.each(["chat", "stream"] as const)("reports a Gemini 4 CONTINUATION stop as a length stop (%s)", async (operation) => {
+  test.each((["chat", "stream"] as const).flatMap(operation => ["gemini-4-argon", "gemini-4-carbon"].map(model => [operation, model] as const)))("reports a Gemini 4 CONTINUATION stop as a length stop (%s, %s)", async (operation, selectedModel) => {
     const payload = {
       candidates: [{ content: { role: "model", parts: [{ text: "partial" }] }, finishReason: "CONTINUATION" }],
     };
@@ -802,7 +802,7 @@ describe("GeminiProvider", () => {
     const provider = new GeminiProvider({
       credentialPlan: apiKeyCredentialPlan(),
       endpointPlan: developerEndpointPlan,
-      model: "gemini-4-argon",
+      model: selectedModel,
       fetchImpl,
     });
     const messages = [{ role: "user" as const, content: "hello" }];
@@ -2944,14 +2944,14 @@ describe("GeminiProvider", () => {
     expect(earlier.contents[1]).toEqual({ role: "model", parts: [part] });
   });
 
-  test("sends the placeholder on the first call of every unsigned step and nowhere else", async () => {
+  test.each(["gemini-4-argon", "gemini-4-carbon"])("sends the placeholder on the first call of every unsigned step and nowhere else (%s)", async (selectedModel) => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
       candidates: [{ content: { parts: [{ text: "done" }] }, finishReason: "STOP" }],
     }));
     const provider = new GeminiProvider({
       credentialPlan: apiKeyCredentialPlan(),
       endpointPlan: developerEndpointPlan,
-      model: "gemini-4-argon",
+      model: selectedModel,
       fetchImpl,
     });
     const signedByArgon = JSON.stringify([
@@ -2976,7 +2976,7 @@ describe("GeminiProvider", () => {
         role: "assistant", content: "",
         toolCalls: [{ id: "call_9", name: "system.echo", arguments: '{"text":"c"}' }],
         providerReasoningContent: signedByArgon,
-        providerReasoningProvenance: { provider: "gemini", model: "gemini-4-argon" },
+        providerReasoningProvenance: { provider: "gemini", model: selectedModel },
       },
       { role: "tool", toolCallId: "call_9", content: "c" },
     ], { tools: [echoTool] });
@@ -3032,9 +3032,9 @@ describe("GeminiProvider", () => {
     }
   });
 
-  test.each([false, true])(
-    "keeps each call's own signature when the durable record redacted the turn (stream=%s)",
-    async (stream) => {
+  test.each([false, true].flatMap(stream => ["gemini-4-argon", "gemini-4-carbon"].map(model => [stream, model] as const)))(
+    "keeps each call's own signature when the durable record redacted the turn (stream=%s, model=%s)",
+    async (stream, selectedModel) => {
       // A secret-shaped argument makes durable persistence redact the call.
       // The record keeps the signatures without the text and arguments, so
       // the resumed turn sends each call the signature Google gave it.
@@ -3056,7 +3056,7 @@ describe("GeminiProvider", () => {
       const provider = new GeminiProvider({
         credentialPlan: apiKeyCredentialPlan(),
         endpointPlan: developerEndpointPlan,
-        model: "gemini-4-argon",
+        model: selectedModel,
         fetchImpl,
       });
       const messages: LLMMessage[] = [{ role: "user", content: "write the config" }];
@@ -3129,14 +3129,14 @@ describe("GeminiProvider", () => {
     });
   });
 
-  test("keeps every part in place when only a call's arguments changed", async () => {
+  test.each(["gemini-4-argon", "gemini-4-carbon"])("keeps every part in place when only a call's arguments changed (%s)", async (selectedModel) => {
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => jsonResponse({
       candidates: [{ content: { parts: [{ text: "done" }] }, finishReason: "STOP" }],
     }));
     const provider = new GeminiProvider({
       credentialPlan: apiKeyCredentialPlan(),
       endpointPlan: developerEndpointPlan,
-      model: "gemini-4-argon",
+      model: selectedModel,
       fetchImpl,
     });
     const stored = [
@@ -3155,7 +3155,7 @@ describe("GeminiProvider", () => {
           { id: "call_9", name: "system.echo", arguments: '{"text":"second"}' },
         ],
         providerReasoningContent: JSON.stringify(stored),
-        providerReasoningProvenance: { provider: "gemini", model: "gemini-4-argon" },
+        providerReasoningProvenance: { provider: "gemini", model: selectedModel },
       },
       { role: "tool", toolCallId: "call_9", content: "second" },
       { role: "tool", toolCallId: "call_8", content: "first" },
@@ -3181,9 +3181,9 @@ describe("GeminiProvider", () => {
     ]);
   });
 
-  test.each([false, true])(
-    "keeps a parallel call next to its signed sibling when the model's call name had stray whitespace (stream=%s)",
-    async (stream) => {
+  test.each([false, true].flatMap(stream => ["gemini-4-argon", "gemini-4-carbon"].map(model => [stream, model] as const)))(
+    "keeps a parallel call next to its signed sibling when the model's call name had stray whitespace (stream=%s, model=%s)",
+    async (stream, selectedModel) => {
       // Live on Gemini 4 Argon (2026-10-28): the stream named the second call
       // " Write". Core trims it, Google refuses the untrimmed name, and a call
       // placed after the trailing empty text part needed its own signature.
@@ -3203,7 +3203,7 @@ describe("GeminiProvider", () => {
       const provider = new GeminiProvider({
         credentialPlan: apiKeyCredentialPlan(),
         endpointPlan: developerEndpointPlan,
-        model: "gemini-4-argon",
+        model: selectedModel,
         fetchImpl,
       });
       const messages: LLMMessage[] = [{ role: "user", content: "edit and write" }];
@@ -3273,7 +3273,7 @@ describe("GeminiProvider", () => {
     });
   });
 
-  test("a retried request sends the same signatures, call ids and grouped results", async () => {
+  test.each(["gemini-4-argon", "gemini-4-carbon"])("a retried request sends the same signatures, call ids and grouped results (%s)", async (selectedModel) => {
     let calls = 0;
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {
       calls += 1;
@@ -3286,7 +3286,7 @@ describe("GeminiProvider", () => {
     const provider = new GeminiProvider({
       credentialPlan: apiKeyCredentialPlan(),
       endpointPlan: developerEndpointPlan,
-      model: "gemini-4-argon",
+      model: selectedModel,
       fetchImpl,
     });
     const parts = [
@@ -3302,7 +3302,7 @@ describe("GeminiProvider", () => {
           { id: "call_2", name: "system.echo", arguments: '{"text":"b"}' },
         ],
         providerReasoningContent: JSON.stringify(parts),
-        providerReasoningProvenance: { provider: "gemini", model: "gemini-4-argon" },
+        providerReasoningProvenance: { provider: "gemini", model: selectedModel },
       },
       { role: "tool", toolCallId: "call_1", content: "a" },
       { role: "tool", toolCallId: "call_2", content: "b" },

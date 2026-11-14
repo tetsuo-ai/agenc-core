@@ -1342,3 +1342,26 @@ describe("StreamingToolExecutor AgenC behavior (T6)", () => {
     expect(results[0]!.content).toContain("user interrupted");
   });
 });
+
+
+test("a bounded follow-up finishes before the next exclusive call and owns its drain deadline", async () => {
+  const order: string[] = [];
+  const tool: Tool = { name: "Write", description: "write", inputSchema: { type: "object" }, execute: async () => ({ content: "ok" }) };
+  const guarded = mockGuardedDispatch(async call => { order.push(call.id); return { content: "edit" }; }, [tool]);
+  const executor = new StreamingToolExecutor({ ...guarded, maxToolDrainMs: 20,
+    afterToolCall: async (call, result) => {
+      if (call.id !== "first") return result;
+      await delay(60);
+      order.push("check");
+      return { content: `${result.content} and check` };
+    },
+  });
+  executor.addTool(makeBlock("first", "Write"), makeCall("first", "Write"));
+  executor.addTool(makeBlock("second", "Write"), makeCall("second", "Write"));
+  executor.close();
+  const results = [];
+  for await (const result of executor.getRemainingResults()) results.push(result);
+  expect(order).toEqual(["first", "check", "second"]);
+  expect(results[0]!.result.content).toBe("edit and check");
+  expect(results[0]!.status).toBe("completed");
+});

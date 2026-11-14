@@ -173,7 +173,7 @@ export async function autoCompactIfNeeded(
         (error instanceof CompactionTransactionError &&
           (["intent_failed", "commit_failed", "recovery_interrupted"].includes(error.reason) ||
             (error.reason === "pin_failed" && readCompactionTransactionAdapter(context) !== undefined))) ||
-        isAbortError(context, error)
+        isAbortError(context)
       ) {
         throw error;
       }
@@ -212,12 +212,6 @@ export async function autoCompactIfNeeded(
   }
 }
 
-function isAbortError(context: CompactContext, error: unknown): boolean {
-  if (context.abortController?.signal.aborted === true) return true;
-  if (error instanceof Error) {
-    if (error.name === "AbortError") return true;
-    const message = error.message.toLowerCase();
-    if (message.includes("abort")) return true;
-  }
-  return false;
+function isAbortError(context: CompactContext): boolean {
+  return context.abortController?.signal.aborted === true;
 }
