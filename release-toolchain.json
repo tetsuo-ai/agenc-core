@@ -268,6 +268,16 @@
       "runnerArch": "ARM64",
       "imageProfiles": [
         {
+          "imageVersion": "20261112.0539.3",
+          "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/b29df567a4747100d4791a58d01d5dd8deb00b99/images/macos/macos-15-arm64-Readme.md",
+          "inventorySha256": "a64207d4fbc1685a7b6d1fa9110195deee86ffcf8fba9270a451c52ee368158c",
+          "inventoryBytes": 26999,
+          "xcodeVersion": "16.4",
+          "xcodeBuild": "16F6",
+          "macosSdkVersion": "15.5",
+          "clangVersion": "Apple clang version 17.0.0 (clang-1700.0.13.5)"
+        },
+        {
           "imageVersion": "20261104.0514.1",
           "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/4a3efbb98bd2d06646222d4cbab17be441c0863b/images/macos/macos-15-arm64-Readme.md",
           "inventorySha256": "34addfe980d298740817d7330fa82d9798c9e5a4e0f3320df8e74ab523eb8590",
