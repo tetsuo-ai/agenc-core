@@ -453,6 +453,24 @@ describe("conservative complete-request fallback", () => {
     ).rejects.toMatchObject({ code: "request_too_large" });
   });
 
+  test("admits 24 MiB of native DeepSeek images while retaining bounded text and image inputs", async () => {
+    const url = `data:image/png;base64,${"A".repeat(1024 * 1024 - 22)}`;
+    const images: LLMContentPart[] = Array.from({ length: 24 }, () => ({ type: "image_url", image_url: { url } }));
+    const request = accountingRequest(images, { provider: "deepseek", model: "deepseek-flash", contextWindowTokens: 1_048_576 });
+    const service = new TokenAccountingService();
+    expect(estimateTokenAccountingRequest(request).inputTokens).toBeGreaterThan(0);
+    await expect(service.count(request)).resolves.toMatchObject({ admissible: true });
+    expect(() => service.estimate({ ...request, messages: [{ role: "user", content: [...images, images[0]!] }] }))
+      .toThrow(expect.objectContaining({ code: "request_too_large" }));
+    expect(() => service.estimate({ ...request, messages: [{ role: "user", content: "x".repeat(MAX_TOKEN_ACCOUNTING_REQUEST_BYTES) }] }))
+      .toThrow(expect.objectContaining({ code: "request_too_large" }));
+    for (const provider of ["openai", "openai-compatible", "openrouter", "anthropic", "gemini", "grok"]) {
+      expect(() => service.estimate({ ...request, provider })).toThrow(expect.objectContaining({ code: "request_too_large" }));
+    }
+    await expect(new TokenAccountingService({ maxRequestBytes: 10_000 }).count(request))
+      .rejects.toMatchObject({ code: "request_too_large" });
+  });
+
   test("does not share cache entries between different inline image bytes", async () => {
     const service = new TokenAccountingService();
     const counter = vi.fn(async () => completeCount(77));

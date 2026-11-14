@@ -23,7 +23,7 @@
  *
  * `boundContextImageBytes` applies exactly that and keeps a contiguous suffix
  * of the newest images. Providers whose cached prompt depends on unchanged
- * earlier content use `admitContextImageBytes`: the same batches, and the
+ * earlier content use `admitContextImageBytes`: batches down to a tenth of the budget, and the
  * current turn's own images (those sent with the request that started the
  * turn, and those of the latest tool results) are never left out while they
  * fit the budget together; older images go first.
@@ -34,6 +34,8 @@
 import { createHash } from "node:crypto";
 
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
+import { DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES, DEEPSEEK_CONTEXT_IMAGE_BUDGET_BYTES } from "../llm/inline-image-limits.js";
+export { DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES, DEEPSEEK_CONTEXT_IMAGE_BUDGET_BYTES } from "../llm/inline-image-limits.js";
 import { preservesQueryPrefix } from "./query-prefix-providers.js";
 import { withheldImagePlaceholder } from "./query-image-withheld.js";
 
@@ -250,7 +252,6 @@ export function unseenImageSourcesRemovedByCompaction(
   return sources;
 }
 
-export const DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES = 6 * 1024 * 1024;
 export const CONTEXT_IMAGE_BUDGET_ENV = "AGENC_CONTEXT_IMAGE_BUDGET_BYTES";
 export const OMITTED_IMAGE_TEXT =
   "[image omitted: an earlier screenshot is no longer in context; capture or read it again if it is still needed]";
@@ -271,17 +272,21 @@ export function unfitImageText(source: string): string {
     "Do not claim visual verification. Read or capture it again on its own, or use a smaller crop.]";
 }
 
-/** `0` disables the budget; an unset or malformed value uses the default. */
+/** `0` disables the budget; an unset or malformed value uses the provider default. */
 export function resolveContextImageBudgetBytes(
   env: NodeJS.ProcessEnv,
+  provider?: string,
 ): number {
+  const defaultBytes = provider?.trim().toLowerCase() === "deepseek"
+    ? DEEPSEEK_CONTEXT_IMAGE_BUDGET_BYTES
+    : DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES;
   const raw = env[CONTEXT_IMAGE_BUDGET_ENV];
   if (raw === undefined || raw.trim().length === 0) {
-    return DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES;
+    return defaultBytes;
   }
   const parsed = Number(raw.trim());
   if (!Number.isFinite(parsed) || parsed < 0) {
-    return DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES;
+    return defaultBytes;
   }
   return Math.floor(parsed);
 }
@@ -393,7 +398,10 @@ function replayAdmission(
   messages: readonly LLMMessage[],
   budgetBytes: number,
 ): { readonly verdicts: readonly AdmissionVerdict[]; readonly retainedBytes: number } {
-  const target = Math.floor(budgetBytes / 2);
+  // Long screenshot runs repeatedly invalidate hundreds of thousands of cached
+  // tokens. Leave 90% free after a batch; keep current-turn images even when
+  // they exceed this target. The non-prefix projection retains its half budget.
+  const target = Math.floor(budgetBytes / 10);
   const verdicts: AdmissionVerdict[] = [];
   const admitted: AdmittedImage[] = [];
   let retainedBytes = 0;
@@ -425,7 +433,7 @@ function replayAdmission(
         continue;
       }
       if (retainedBytes + bytes > budgetBytes) {
-        // One batch: the oldest images outside the current turn, down to half.
+        // One batch: the oldest images outside the current turn, down to a tenth.
         for (let position = 0; position < admitted.length && retainedBytes + bytes > target;) {
           if (ownedByTurn(admitted[position]!)) position += 1;
           else leaveOut(position);

@@ -99,6 +99,8 @@ import type {
   ToolUseBlock,
   TurnState,
 } from "../session/turn-state.js";
+import { preservesQueryPrefix } from "../session/query-prefix-providers.js";
+import { snapshotCompactionQueryPrefix, rememberCompactionQueryPrefix } from "../services/compact/query-prefix.js";
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 
 export interface StreamModelRequestContract {
@@ -1420,6 +1422,7 @@ export async function streamModel(
     const model =
       recoveryFallback?.toModel ?? skillInvocationRequestModel(session, ctx) ??
         session.config?.model ?? ctx.config.model;
+    let successfulPrefix: ReturnType<typeof snapshotCompactionQueryPrefix> | undefined;
     const response = await runAdmittedModelCall({
       session,
       provider: session.services.provider,
@@ -1454,12 +1457,21 @@ export async function streamModel(
         // The active request owns this label. UI settings may belong to a
         // different session or may change while this stream is still quiet.
         activeReasoningEffort = admittedOptions.reasoningEffort;
+        if (preservesQueryPrefix(providerName)) successfulPrefix = snapshotCompactionQueryPrefix({
+          provider: providerName, model: admittedOptions.model ?? model ?? ctx.modelInfo.slug,
+          messages, source: state.messages,
+          options: { systemPrompt: admittedOptions.systemPrompt,
+            systemPromptLayout: admittedOptions.systemPromptLayout,
+            tools: admittedOptions.tools, promptCacheKey: admittedOptions.promptCacheKey,
+            ...(admittedOptions.deepSeekAppTools === true ? { deepSeekAppTools: true } : {}) },
+        });
         return withStreamTransportActivity(
           () => watchdog.kick("bytes"),
           () => provider.chatStream(messages, onChunk, admittedOptions),
         );
       },
     });
+    if (successfulPrefix && response.finishReason !== "error") rememberCompactionQueryPrefix(session, successfulPrefix);
     // Some providers return an empty/nonstreamed result without any chunks.
     flushStartupLogIndex();
     // Legacy admission-disabled providers can resolve after an abort. Never

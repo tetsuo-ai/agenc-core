@@ -3,18 +3,19 @@ import { describe, expect, test } from "vitest";
 import {
   TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_HEADROOM,
   TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_MIN_FACTOR,
-  TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_SAMPLES,
   TOKEN_ACCOUNTING_CALIBRATION_HEADROOM,
   TokenAccountingService,
   conservativeBytesPerToken,
   createTokenAccountingRequest,
   estimateTokenAccountingRequest,
+  tokenAccountingService,
   reportedPromptTokensFromContextOverflow,
   reportsCompletePromptTokens,
   type CreateTokenAccountingRequestOptions,
   type TokenAccountingResult,
 } from "../../src/llm/token-accounting.js";
 import type { LLMMessage, LLMTool } from "../../src/llm/types.js";
+import { estimateMessagesTokens } from "../../src/services/compact/_deps/runtime.js";
 
 const HEADROOM = TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_HEADROOM;
 // DeepSeek's prompt tokens per conservative-fallback token in recorded requests (the fallback was 2.45x).
@@ -93,6 +94,60 @@ async function reportAt(
 }
 
 describe("two-way calibration from DeepSeek reported prompt tokens", () => {
+  test.each([undefined, "6291456"])("compaction estimates the images admitted with the session budget %s", budget => {
+    tokenAccountingService.clear();
+    try {
+      const images = Array.from({ length: 7 }, (_, index) => ({
+        type: "image_url" as const,
+        image_url: { url: `data:image/png;base64,${String(index).padEnd(1024 * 1024 - 22, "A")}` },
+      }));
+      const history: LLMMessage[] = [{ role: "user", content: images }];
+      const context = {
+        provider: { name: "deepseek" },
+        admissionSession: { conversationId: "conv-a", services: {
+          userShell: { childEnvironment: { AGENC_CONTEXT_IMAGE_BUDGET_BYTES: budget } },
+        } },
+        options: { mainLoopModel: "deepseek-flash", systemPrompt: SYSTEM_PROMPT,
+          tools: TOOLS, maxOutputTokens: 8_192, contextWindowTokens: 1_048_576 },
+      } as unknown as Parameters<typeof estimateMessagesTokens>[1];
+      const projected: LLMMessage[] = [{ role: "user", content: budget === undefined ? images : [
+        { type: "text", text: '[image not inspected: this newly attached image does not fit in the inline image budget together with the newer images of this request. Do not claim visual verification. Read or capture it again on its own, or use a smaller crop.]' },
+        ...images.slice(1),
+      ] }];
+      const expected = tokenAccountingService.estimate(request(projected, { endpointIdentity: undefined })).inputTokens;
+      expect(estimateMessagesTokens(history, context, { inputOnly: true })).toBe(expected);
+    } finally { tokenAccountingService.clear(); }
+  });
+
+  test("compaction checks inherit the session's last prompt report", async () => {
+    tokenAccountingService.clear();
+    try {
+      const anchor = await reportAt(tokenAccountingService, HISTORY, DEEPSEEK_RATIO);
+      const context = {
+        provider: { name: "deepseek" },
+        admissionSession: { conversationId: "conv-a" },
+        options: { mainLoopModel: "deepseek-flash", systemPrompt: SYSTEM_PROMPT,
+          tools: TOOLS, maxOutputTokens: 8_192, contextWindowTokens: 1_048_576 },
+      } as Parameters<typeof estimateMessagesTokens>[1];
+      // Endpoint identity must match the report, as it does at real dispatch.
+      const local = request(HISTORY, { endpointIdentity: undefined });
+      const counted = await tokenAccountingService.count(local);
+      tokenAccountingService.recordProviderUsage(counted, anchor.reported);
+      expect(estimateMessagesTokens(HISTORY, context, { inputOnly: true }))
+        .toBe(Math.ceil(anchor.reported * HEADROOM));
+    } finally { tokenAccountingService.clear(); }
+  });
+
+  test("uses the last reported prompt plus conservative growth when older reports were denser", async () => {
+    const service = new TokenAccountingService();
+    await reportAt(service, HISTORY, 0.9);
+    const last = await reportAt(service, HISTORY, 0.5);
+    const nextHistory = [...HISTORY, ...readTurn("fresh", denseJson(100))];
+    const growth = fallbackOf(nextHistory) - last.basis;
+    const next = await service.count(request(nextHistory));
+    expect(next.inputTokens).toBe(Math.ceil(last.reported * HEADROOM + growth));
+  });
+
   test("a report lowers the next estimate of the conversation to the measured size plus headroom", async () => {
     const service = new TokenAccountingService();
     const anchor = await reportAt(service, HISTORY, DEEPSEEK_RATIO);
@@ -194,20 +249,12 @@ describe("two-way calibration from DeepSeek reported prompt tokens", () => {
     ));
   });
 
-  test("the ratio is the largest of the newest reports, so an old dense request ages out", async () => {
+  test("a newer complete report replaces a denser earlier report immediately", async () => {
     const service = new TokenAccountingService();
-    const basis = fallbackOf(HISTORY);
     await reportAt(service, HISTORY, 0.6);
-    for (let index = 1; index < TOKEN_ACCOUNTING_ANCHORED_CALIBRATION_SAMPLES; index += 1) {
-      await reportAt(service, HISTORY, 0.4);
-    }
+    const last = await reportAt(service, HISTORY, 0.4);
     expect((await service.count(request(HISTORY))).inputTokens)
-      .toBe(Math.ceil(basis * ((Math.round(basis * 0.6) / basis) * HEADROOM)));
-
-    await reportAt(service, HISTORY, 0.4);
-
-    expect((await service.count(request(HISTORY))).inputTokens)
-      .toBe(Math.ceil(basis * ((Math.round(basis * 0.4) / basis) * HEADROOM)));
+      .toBe(Math.ceil(last.reported * HEADROOM));
   });
 
   test("an implausibly low report keeps the minimum share of the fallback", async () => {
@@ -235,18 +282,18 @@ describe("two-way calibration from DeepSeek reported prompt tokens", () => {
     );
   });
 
-  test("a report another request shape raised above the fallback still bounds the main request", async () => {
+  test("a tool-free report cannot inflate the measured main request", async () => {
     const service = new TokenAccountingService();
     const main = await reportAt(service, HISTORY, DEEPSEEK_RATIO);
     // A side call of the same conversation with its own system prompt that the fallback undercounted.
-    const side = await reportAt(service, [{ role: "user", content: prose(40) }], 1.5, {
+    await reportAt(service, [{ role: "user", content: prose(40) }], 1.5, {
       options: { systemPrompt: "You classify requests.", maxOutputTokens: 8_192 },
     });
 
     const next = await service.count(request(HISTORY));
 
     expect(next.inputTokens).toBe(
-      Math.ceil(main.basis * (side.reported / side.basis) * TOKEN_ACCOUNTING_CALIBRATION_HEADROOM),
+      Math.ceil(main.reported * HEADROOM),
     );
   });
 

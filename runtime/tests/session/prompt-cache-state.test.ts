@@ -66,13 +66,17 @@ test("legacy rollouts and explicit cache clears retain fresh defaults", () => {
   expect(isPromptCacheState({ ...cache, version: 9 })).toBe(false);
 });
 
+function imageUrl(id: string): string {
+  return `data:image/png;base64,${id.padEnd(978, "B")}`;
+}
+
 /** A FileRead call and its image result. */
 function readImage(id: string): LLMMessage[] {
   return [
     { role: "assistant", content: "", toolCalls: [{ id, name: "FileRead", arguments: JSON.stringify({ file_path: `/work/${id}.png` }) }] },
     { role: "tool", toolCallId: id, toolName: "FileRead", content: [
       { type: "text", text: `Read image /work/${id}.png` },
-      { type: "image_url", image_url: { url: `data:image/png;base64,${id.padEnd(978, "B")}` } },
+      { type: "image_url", image_url: { url: imageUrl(id) } },
     ] },
   ];
 }
@@ -80,7 +84,7 @@ function readImage(id: string): LLMMessage[] {
 /** The request as a text-only model receives it: the named screen is withheld. */
 function withheld(messages: readonly LLMMessage[], id: string): LLMMessage[] {
   return messages.map(message => !Array.isArray(message.content) ? message : { ...message, content: message.content.map(part =>
-    part.type === "image_url" && part.image_url.url.includes(id) ? { type: "text" as const, text: "[image withheld]" } : part) });
+    part.type === "image_url" && part.image_url.url === imageUrl(id) ? { type: "text" as const, text: "[image withheld]" } : part) });
 }
 
 function imageNotes(messages: readonly LLMMessage[]): string[] {
@@ -88,22 +92,27 @@ function imageNotes(messages: readonly LLMMessage[]): string[] {
     part.type === "text" && part.text.startsWith("[image omitted") ? [part.text] : []));
 }
 
-test("a resumed or restarted session gives an evicted image the note it had before", () => {
+test.each([
+  { count: 8, evicted: 6 },
+  { count: 14, evicted: 12 },
+])("a resumed or restarted session preserves evicted image notes after $count screenshots", ({ count, evicted }) => {
   // fx30 review R1: the shown record lived only in the process, so after a resume every evicted note turned
   // neutral once and the first resumed request missed the cache from the first evicted image on.
   const live = {};
   const history: LLMMessage[] = [{ role: "user", content: "Inspect each screen." }];
-  for (let index = 0; index < 8; index++) {
+  for (let index = 0; index < count; index++) {
     history.push(...readImage(`shot-${index}`));
     const request = boundContextImagesForProvider(history, 6000, "deepseek", contextImageShownBefore(live)).messages;
     // No request carries shot-1: each one withholds it, as for an image the model cannot view.
     rememberSentContextImages(live, withheld(request, "shot-1"), history);
   }
   const before = boundContextImagesForProvider(history, 6000, "deepseek", contextImageShownBefore(live)).messages;
-  expect(imageNotes(before)).toEqual([EVICTED_IMAGE_TEXT, OMITTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT, EVICTED_IMAGE_TEXT]);
+  // Prefix-preserving providers evict a larger batch, including on the second overflow.
+  expect(imageNotes(before)).toEqual(Array.from({ length: evicted }, (_, index) =>
+    index === 1 ? OMITTED_IMAGE_TEXT : EVICTED_IMAGE_TEXT));
 
   const cache = capturePromptCacheState(live, provider());
-  expect(cache.shownImageDigests).toHaveLength(7);
+  expect(cache.shownImageDigests).toHaveLength(count - 1);
   // Digests only: the saved state carries no image bytes.
   expect(JSON.stringify(cache)).not.toContain("BBBB");
   const item = parseRolloutLine(serializeRolloutItem({ type: "session_state", payload: { promptCache: cache } }).trim());

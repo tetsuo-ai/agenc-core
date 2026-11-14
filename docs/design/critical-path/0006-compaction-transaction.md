@@ -91,9 +91,14 @@ context, save at least 1,024 tokens, and reduce tokens by at least 20 percent.
 The shrink measurement compares the request the model would actually be sent
 before and after: both histories pass through the same inline-image budget the
 sampling path applies (`AGENC_CONTEXT_IMAGE_BUDGET_BYTES`), never the raw
-history, which is capped at 16 MiB by token accounting and overflowed on a
-30-screenshot Terminal-Bench session. The summarizer itself never receives
-image bytes; media parts are placeholders in its projection.
+history, which overflowed the 16 MiB accounting cap on a 30-screenshot
+Terminal-Bench session. Native DeepSeek uses a 24 MiB image budget and a
+separate accounting allowance for those images; its text, tools and metadata
+still have a 16 MiB limit. Other providers default to 6 MiB of images and
+retain the aggregate 16 MiB accounting limit. A compatible single-pass
+summary can reuse the last successful request prefix, including images it
+already showed. New or unmatched media use placeholders in the summary
+manifest. Other summary paths use the bounded redacted projection.
 
 Payload bundles (`source_history`, `active_history_refs`, `final_summary`,
 `summary_dag`, `replacement_history`) are written as a chain of chunks, each

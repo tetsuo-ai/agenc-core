@@ -288,7 +288,7 @@ test("a text-only model gets no unseen-image notice for an image it could never 
 
 test("compaction after an eviction names only the image no request showed", async () => {
   // Six 1022-byte screens fit a 6500-byte budget. The seventh request
-  // evicts the four oldest, which the model had already seen. A natural
+  // evicts the six oldest, which the model had already seen. A natural
   // compaction at the next request must not call them unseen; it must name
   // the eighth screen, which it removes before any request showed it.
   vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "6500");
@@ -309,7 +309,7 @@ test("compaction after an eviction names only the image no request showed", asyn
   try {
     for (let index = 1; index <= 7; index++) await drain(runTurn(session, ctx, screen(index)));
     expect(requests).toHaveLength(7);
-    expect(JSON.stringify(requests[6]).split(EVICTED_IMAGE_TEXT)).toHaveLength(5);
+    expect(JSON.stringify(requests[6]).split(EVICTED_IMAGE_TEXT)).toHaveLength(7);
     Object.assign(ctx.modelInfo, { autoCompactTokenLimit: 1_000 });
     installPreparedCompactionPressure(provider, request => JSON.stringify(request.messages).includes("Natural pressure") ? 18_130 : 100);
     await drain(runTurn(session, ctx, [{ type: "text", text: "Natural pressure. ".repeat(400) }, ...screen(8)]));
