@@ -63,7 +63,7 @@ function inferCatalogProvider(
   if (
     normalizedModel.startsWith('gemini-') || resolveGeminiThinkingModel(model)
   ) return 'gemini'
-  if (/^muse-(?:spark|wonder)-/.test(normalizedModel)) return 'meta'
+  if (/^muse-(?:spark|wonder|ember)-/.test(normalizedModel)) return 'meta'
   if (/^deepseek-v4-(?:flash|pro)$/.test(normalizedModel)) return 'deepseek'
   if (isVerifiedOpenAiReasoningModel(normalizedModel)) return 'openai'
   return undefined

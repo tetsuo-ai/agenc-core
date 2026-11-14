@@ -10,8 +10,9 @@
 export const META_MUSE_WONDER_MODEL = "muse-wonder-1.0";
 
 const REGISTERED_META_CHAT_MODEL =
-  /(?:^|[/:])(?:muse-spark-(?:1\.3(?:-contributor)?|1\.2(?:-contributor)?|1\.1)|muse-wonder-1\.0)$/i;
+  /(?:^|[/:])(?:muse-spark-(?:1\.3(?:-contributor)?|1\.2(?:-contributor)?|1\.1)|muse-wonder-1\.0|muse-ember-1\.0)$/i;
 
+// Ember follows Spark on Chat Completions. Only Wonder uses Responses.
 // Any Wonder identity, including a later version that is not registered yet.
 const META_MUSE_WONDER_FAMILY = /(?:^|[/:])muse-wonder-[^/:]+$/i;
 

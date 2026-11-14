@@ -1175,6 +1175,31 @@ const NON_OPENROUTER_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "list",
     },
     {
+      // Efficient execution model. Same Chat Completions contract as Spark.
+      // https://dev.meta.ai/docs/muse-ember (reviewed 2026-11-11).
+      provider: "meta",
+      model: "muse-ember-1.0",
+      displayName: "Muse Ember",
+      contextWindow: 1_048_576,
+      maxContextWindow: 1_048_576,
+      maxOutputTokens: 524_288,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: true,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: META_WONDER_REASONING_LEVELS,
+      // Meta defaults to max when no effort is sent. Sessions still honor config.
+      defaultReasoningLevel: "max",
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 1,
+      visibility: "list",
+    },
+    {
       // Meta provider default (BUILT_IN_PROVIDER_DEFAULT_MODELS.meta), so it
       // leads the Meta list. Model API pay-as-you-go id; Muse Wonder Full is
       // Muse Code only.
