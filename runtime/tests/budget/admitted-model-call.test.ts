@@ -1514,10 +1514,22 @@ describe("runAdmittedModelCall two-way calibration on DeepSeek", () => {
 
     const next = await admittedCall(state, (input) => input);
 
-    expect(next).toBe(Math.ceil(fallback * (ratio * 1.1)));
+    expect(next).toBe(Math.ceil(fallback * (ratio * 1.02)));
     expect(next).toBeLessThan(fallback * 0.5);
     const control = deepseekHarness("two-way-deepseek-control");
     expect(await admittedCall(control, (input) => input)).toBe(fallback);
+  });
+
+  test("the newest complete prompt report replaces an older denser admission estimate", async () => {
+    const state = deepseekHarness("two-way-deepseek-latest-report");
+    const fallback = await admittedCall(state, (input) => Math.round(input * 0.9));
+    const reported = Math.round(fallback * 0.4);
+    await admittedCall(state, () => reported);
+
+    const next = await admittedCall(state, (input) => input);
+
+    expect(next).toBe(Math.ceil(fallback * ((reported / fallback) * 1.02)));
+    expect(next).toBeLessThan(fallback * 0.5);
   });
 
   test("a context-length refusal re-anchors the conversation on the prompt size the provider reports", async () => {
@@ -1531,7 +1543,7 @@ describe("runAdmittedModelCall two-way calibration on DeepSeek", () => {
         `(${refused} in the messages, 4096 in the completion).`,
     ))).rejects.toBeInstanceOf(LLMContextWindowExceededError);
 
-    expect(await admittedCall(state, (input) => input)).toBe(Math.ceil(fallback * ((refused / fallback) * 1.1)));
+    expect(await admittedCall(state, (input) => input)).toBe(Math.ceil(fallback * ((refused / fallback) * 1.02)));
   });
 });
 
