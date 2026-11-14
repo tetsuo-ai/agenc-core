@@ -4065,12 +4065,12 @@ describe("tool_call_started recovery category for the in-flight tool index", () 
 
 
 describe("Light edit then run", () => {
-  function setup(options: { failEdit?: boolean; denied?: boolean; approved?: boolean; failCheck?: boolean; stop?: boolean; light?: boolean; policyDenied?: boolean } = {}) {
+  function setup(options: { failEdit?: boolean; denied?: boolean; approved?: boolean; failCheck?: boolean; stop?: boolean; light?: boolean; policyDenied?: boolean; editMode?: "tools" | "shell" | "check" } = {}) {
     const order: string[] = [];
     const edit = withEditThenRun({ name: "Write", description: "edit",
       inputSchema: { type: "object", properties: { content: { type: "string" } }, required: ["content"], additionalProperties: false },
       execute: async () => { order.push("edit"); return { content: "edit result", isError: options.failEdit }; },
-    });
+    }, options.editMode === "check");
     const command: Tool = { name: "exec_command", description: "command",
       inputSchema: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] },
       requiresApproval: options.denied || options.approved,
@@ -4086,7 +4086,11 @@ describe("Light edit then run", () => {
       approvalResolver: { request: async () => { order.push("approval"); return { kind: options.denied ? "denied" : "approved" }; } },
     });
     Object.assign(session.services, { runtimeOptions: { ...TEST_RUNTIME_OPTIONS, lightMode: options.light !== false },
-      providerEnvironment: { AGENC_EDIT_THEN_RUN: "1" },
+      // The lean edit_mode replaces the experiment variable; the session captures it from config.
+      ...(options.editMode !== undefined ? {
+        providerEnvironment: {}, provider: { name: "deepseek" },
+        configStore: { current: () => ({ light_request: "lean", light_request_options: { edit_mode: options.editMode } }) },
+      } : { providerEnvironment: { AGENC_EDIT_THEN_RUN: "1" } }),
       ...(options.policyDenied ? { permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({
         mode: "acceptEdits", alwaysDenyRules: { session: ["exec_command"] },
       })) } : {}),
@@ -4177,6 +4181,44 @@ describe("Light edit then run", () => {
   test("standard sessions do not run a check", async () => {
     const f = setup({ light: false }); await f.run();
     expect(f.state.completedToolResults.map(result => result.toolName)).toEqual(["Write"]);
+  });
+
+  test("edit_mode check runs the check through the same hooks and returns one result", async () => {
+    const f = setup({ editMode: "check", failCheck: true }); await f.run();
+    expect(f.order).toEqual(["pre:Write", "edit", "post:Write", "pre:exec_command", "exec:npm test", "post:exec_command"]);
+    expect(f.state.completedToolResults.map(result => [result.toolName, result.isError])).toEqual([["Write", false], ["exec_command", true]]);
+    const messages = f.state.messages.filter(message => message.role === "tool");
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.content).toContain("edit result");
+    expect(messages[0]!.content).toContain("[exit 1");
+  });
+
+  test.each([false, true])("edit_mode check asks for the check's own approval after the edit, denied=%s", async denied => {
+    const f = setup({ editMode: "check", denied, approved: !denied }); await f.run();
+    expect(f.order.indexOf("approval")).toBeGreaterThan(f.order.indexOf("edit"));
+    expect(f.order.includes("exec:npm test")).toBe(!denied);
+    expect(f.state.completedToolResults.map(result => result.toolName)).toEqual(["Write", "exec_command"]);
+    const message = f.state.messages.find(message => message.role === "tool")!;
+    expect(message.content).toContain("edit result");
+    if (denied) {
+      expect(message.content).toContain("denied");
+      expect(f.state.completedToolResults[1]!.isError).toBe(true);
+      expect(message.runtimeOnly?.toolResultIsError).toBe(true);
+    }
+  });
+
+  test("edit_mode check still applies an explicit command deny", async () => {
+    const f = setup({ editMode: "check", policyDenied: true }); await f.run();
+    expect(f.order).toContain("edit");
+    expect(f.order).not.toContain("exec:npm test");
+    expect(f.state.completedToolResults[1]!.isError).toBe(true);
+  });
+
+  test.each(["tools", "shell"] as const)("edit_mode %s runs no check", async editMode => {
+    const f = setup({ editMode }); await f.run();
+    expect(f.order).not.toContain("exec:npm test");
+    expect(f.state.completedToolResults.map(result => result.toolName)).toEqual(["Write"]);
+    expect(f.state.messages[0]!.content).toBe("edit result");
   });
 });
 

@@ -1,3 +1,4 @@
+import { LEAN_REQUEST_DEFAULTS } from "../session/light-request/settings.js";
 import type {
   AgenCConfig,
   ToolsConfig,
@@ -697,6 +698,17 @@ const ROOT_FIELD_VALIDATORS = {
   compaction: validateCompaction,
   stream_degenerate_guard: fieldValidator("stream_degenerate_guard", optionalBoolean),
   light_mode: fieldValidator("light_mode", optionalBoolean),
+  light_request: enumValidator("light_request", ["full", "lean"]),
+  light_request_options: (value) => {
+    if (value === undefined) return;
+    const record = requirePlainObject(value, "light_request_options");
+    rejectUnknownFields(record, new Set(Object.keys(LEAN_REQUEST_DEFAULTS)), "light_request_options");
+    for (const [key, item] of Object.entries(record)) {
+      if (key === "system_text") optionalEnum(item, "light_request_options.system_text", ["short", "minimal"]);
+      else if (key === "edit_mode") optionalEnum(item, "light_request_options.edit_mode", ["tools", "shell", "check"]);
+      else optionalBoolean(item, `light_request_options.${key}`);
+    }
+  },
   defer_rare_tools: fieldValidator("defer_rare_tools", optionalBoolean),
   web_search: enumValidator("web_search", ["auto", "on"]),
   lean_system_prompt: fieldValidator("lean_system_prompt", optionalBoolean),

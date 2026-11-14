@@ -1,3 +1,4 @@
+import { leanEditMode, resolveLightRequest } from "./session/light-request/settings.js";
 import { editThenRunEnabled, withEditThenRun } from "./tools/edit-then-run.js";
 import { suggestToolForUnknownName } from "./tools/tool-name-suggestion.js";
 import { unknownToolResult } from "./tools/results.js";
@@ -852,6 +853,10 @@ export function buildToolRegistry(
           : {}),
       onEscalationAdvised,
       hardTimeout: () => execHardTimeout(),
+      foregroundOnly: () => {
+        const session = options.getSession?.();
+        return session != null && resolveLightRequest(session, session.services.provider?.name)?.process_tools === false;
+      },
       waitWhileBusy: () => execWaitWhileBusy(),
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
@@ -1363,6 +1368,19 @@ export function buildToolRegistry(
     | { readonly inputs: readonly (readonly unknown[])[]; readonly router: ToolRouter }
     | undefined;
 
+  /** The session's captured lean edit_mode, once it has a provider. */
+  function editMode(): string | undefined {
+    const session = options.getSession?.();
+    return leanEditMode(session, session?.services?.provider?.name);
+  }
+
+  /** The lean edit_mode "check" turns edit-then-run on with a required check. */
+  function editThenRun(): { readonly enabled: boolean; readonly required: boolean } {
+    const mode = editMode();
+    return { enabled: editThenRunEnabled(options.lightMode, options.getSession?.()?.services.providerEnvironment, mode),
+      required: mode === "check" };
+  }
+
   function routerInputs(): readonly (readonly unknown[])[] {
     const parallel = options.parallelMcpServerNames;
     return [
@@ -1375,7 +1393,7 @@ export function buildToolRegistry(
       // The supplied TOML policy is live, including nested per-tool defaults.
       // Snapshot its value rather than its object identity or array references.
       [JSON.stringify(options.toolsConfig)],
-      [usesBatchEdit(), editThenRunEnabled(options.lightMode, options.getSession?.()?.services.providerEnvironment)],
+      [usesBatchEdit(), editThenRun().enabled, editThenRun().required],
     ];
   }
 
@@ -1424,10 +1442,10 @@ export function buildToolRegistry(
     );
     const withoutManagedMcpCollisions = (tools: readonly Tool[]): Tool[] =>
       preserveTrustedRuntimeOwnedTools(tools).filter(tool => !managedMcpNames.has(tool.name));
+    const edits = editThenRun();
     const baseSpecs = withoutManagedMcpCollisions(staticTools.map(tool => {
       const selected = usesBatchEdit() && tool === legacyBuiltinEdit && batchBuiltinEdit !== undefined ? batchBuiltinEdit : tool;
-      return editThenRunEnabled(options.lightMode, options.getSession?.()?.services.providerEnvironment)
-        ? withEditThenRun(selected) : selected;
+      return edits.enabled ? withEditThenRun(selected, edits.required) : selected;
     })).map(specForTool);
     const directMcpTools = mcpTools.filter(
       (tool) => tool.metadata?.deferred !== true,

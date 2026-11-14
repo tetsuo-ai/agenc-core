@@ -1,3 +1,4 @@
+import { parseLightRequest } from "../session/light-request/settings.js";
 // T10 Group D — environment variable resolution.
 //
 // Precedence order (env wins over TOML):
@@ -58,6 +59,7 @@ export interface EnvSnapshot {
   readonly AGENC_PROVIDER?: string;
   readonly AGENC_MODEL?: string;
   readonly AGENC_EFFORT_LEVEL?: string;
+  readonly AGENC_LIGHT_REQUEST?: string;
   readonly AGENC_AGENT_MAX_DEPTH?: string;
   readonly AGENC_MAX_TURNS?: string;
   readonly AGENC_COORDINATOR_MODE?: string;
@@ -306,6 +308,7 @@ export function applyEnvOverrides(
       );
     }
   }
+  if (e.AGENC_LIGHT_REQUEST !== undefined) override.light_request = parseLightRequest(e.AGENC_LIGHT_REQUEST);
   const provider = normalizeProviderIdentity(e.AGENC_PROVIDER, "AGENC_PROVIDER");
   if (provider) {
     override.model_provider = provider;
