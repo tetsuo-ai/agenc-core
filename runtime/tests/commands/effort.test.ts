@@ -1,13 +1,14 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../tui/remoteAuthSessionContext.fixture.js";
 
 const settings = vi.hoisted(() => ({
   update: vi.fn(async () => ({ error: null })),
+  saved: {} as Record<string, unknown>,
 }));
 
 vi.mock("../../src/utils/settings/settings.js", () => ({
   getExecutionAuthoritySettings: () => ({}),
-  getSettingsForSource: () => ({}),
+  getSettingsForSource: () => settings.saved,
   updateSettingsForSource: settings.update,
 }));
 
@@ -357,6 +358,42 @@ describe("/effort off where the live list offers it (Ollama Cloud)", () => {
       open.mockRestore();
     }
     expect(rows.map(row => row.label)).toEqual(["Default", "Off", "High"]);
+  });
+});
+
+describe("a saved /effort off after a restart", () => {
+  // A restart seeds no level in app state for a saved none, while the
+  // session still sends none on the models that offer Off.
+  beforeEach(() => {
+    settings.update.mockClear();
+    settings.saved = { reasoning_effort: "none" };
+  });
+  afterEach(() => {
+    settings.saved = {};
+  });
+
+  async function openPicker(model: string, provider: string) {
+    const { context } = commandContext(model, "", { provider });
+    const setToolJSX = vi.fn();
+    (context as { appState: Record<string, unknown> }).appState.setToolJSX = setToolJSX;
+    await effortCommand.execute(context);
+    const { snapshot } = setToolJSX.mock.calls[0]![0].jsx.props;
+    return snapshot.rows[snapshot.activeIndex].choice;
+  }
+
+  test.each([
+    ["ollama-cloud", "kimi-k2.6"],
+    ["ollama-cloud", "deepseek-v4.1-flash"],
+    ["qwen-token-plan", "qwen3.8-max"],
+  ])("%s %s: the picker marks Off", async (provider, model) => {
+    expect(await openPicker(model, provider)).toBe("none");
+  });
+
+  test("a model that cannot turn thinking off still marks its default", async () => {
+    const withSavedNone = await openPicker("gpt-oss:120b", "ollama-cloud");
+    settings.saved = {};
+    expect(withSavedNone).not.toBe("none");
+    expect(withSavedNone).toBe(await openPicker("gpt-oss:120b", "ollama-cloud"));
   });
 });
 

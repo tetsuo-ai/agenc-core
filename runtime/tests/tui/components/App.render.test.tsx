@@ -152,6 +152,7 @@ const providerProbe = {
   inkExit: typeof vi.fn === "function" ? vi.fn() : () => {},
   fileHistoryRewind: typeof vi.fn === "function" ? vi.fn() : () => {},
   historyEntries: [] as unknown[],
+  initialSettings: {} as Record<string, unknown>,
 };
 
 vi.mock("bun:bundle", () => ({
@@ -360,7 +361,7 @@ vi.mock("../../permissions/settings.js", async (importOriginal) => ({
 }));
 
 vi.mock("../../utils/settings/settings.js", () => ({
-  getInitialSettings: () => ({}),
+  getInitialSettings: () => providerProbe.initialSettings,
   getSettingsForSource: () => null,
 }));
 
@@ -670,6 +671,7 @@ vi.mock("./dialogs/CostThresholdDialog.js", async () => {
 vi.mock("./PromptInput/PromptInput.js", async () => {
   const React = await import("react");
   const { parseLocalControlCommand } = await import("../../../src/commands/local-control.js");
+  const { useStatusEffort } = await import("../context/statusEffortContext.js");
   return {
     default: ({
       input,
@@ -766,6 +768,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         onboardingInput,
         onBashSubmit,
         draftRestoreRevision,
+        statusEffort: useStatusEffort(),
       });
       return React.createElement("ink-text", null, `prompt:${input}`);
     },
@@ -2067,6 +2070,40 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     } finally {
       apiKeyVerificationProbe.status = previousStatus;
       apiKeyVerificationProbe.reverify.mockClear();
+    }
+  });
+
+  test("reads a saved /effort off back into the status line after a restart", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const fetchSpy = mockOfflineOnboardingFetch();
+    providerProbe.promptProps.length = 0;
+    const statusEffortFor = async (provider: string, model: string) => {
+      await renderApp(
+        <AgenCTuiApp
+          session={{
+            ...createSession(),
+            sessionConfiguration: {
+              cwd: process.cwd(),
+              provider: { slug: provider },
+              collaborationMode: { model },
+            },
+          }}
+          isInteractive={false}
+        />,
+      );
+      return providerProbe.promptProps.at(-1)?.statusEffort;
+    };
+    try {
+      providerProbe.initialSettings = { reasoning_effort: "none" };
+      // The session sends none to a model that offers Off.
+      expect(await statusEffortFor("ollama-cloud", "kimi-k2.6")).toBe("effort off");
+      // gpt-oss cannot turn thinking off: it still runs, and reads, its default.
+      const withoutOff = await statusEffortFor("ollama-cloud", "gpt-oss:120b");
+      providerProbe.initialSettings = {};
+      expect(withoutOff).toBe(await statusEffortFor("ollama-cloud", "gpt-oss:120b"));
+    } finally {
+      providerProbe.initialSettings = {};
+      fetchSpy.mockRestore();
     }
   });
 

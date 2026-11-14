@@ -105,6 +105,7 @@ import { readVeniceMenuModels } from "../../commands/venice-menu-models.js";
 import { readSessionSelection } from "../../session/provider-model-selection.js";
 import { offPeakScheduleFor } from "../../session/off-peak-pricing.js";
 import {
+  getSavedEffortOffForContext,
   getSessionEffortLabelForContext,
   getUnsupportedEffortNoticeForContext,
   modelSupportsEffortForContext,
@@ -2951,6 +2952,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // "high effort" in the status line: the level the session runs at, or the
   // model's default when none is chosen. Follows /effort and model switches.
   const statusEffortValue = useAppState((state) => state.effortValue);
+  const savedEffort = useAppState((state) => state.settings.reasoning_effort);
   const notifiedUnsupportedEfforts = useRef(new Set<string>());
   useEffect(() => {
     const selection = readSessionSelection(props.session, { includePending: true });
@@ -3451,13 +3453,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     const context = Object.freeze({ ...remoteAuthSessionContext, provider: selection.provider });
     if (!modelSupportsEffortForContext(selection.model, context)) return null;
     // The chosen level, else the default the daemon runs ("effort off" for a
-    // native none); nothing when no truthful default is known.
+    // native none); nothing when no truthful default is known. A saved
+    // /effort off seeds no level after a restart, yet the session runs it.
     return getSessionEffortLabelForContext(
       selection.model,
-      statusEffortValue as never,
+      (statusEffortValue ?? getSavedEffortOffForContext(selection.model, savedEffort, context)) as never,
       context,
     );
-  }, [props.session, remoteAuthSessionContext, statusEffortValue, resolvedMainLoopModel, effortCatalogRevision]);
+  }, [props.session, remoteAuthSessionContext, statusEffortValue, savedEffort, resolvedMainLoopModel, effortCatalogRevision]);
   // "off-peak" in the status line follows the route a call made now would use.
   const statusOffPeakSchedule = offPeakScheduleFor(effortSelection.provider, effortSelection.model);
   // So does the ZDR badge. It re-reads when the provider's live lists arrive
