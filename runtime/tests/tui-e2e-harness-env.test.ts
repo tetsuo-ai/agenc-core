@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   TuiSession,
   hasRenderedAssistantReply,
+  isBackgroundPollOnly,
   isolatedHomeEnv,
   resolveHarnessAgencHome,
   tempDaemonEnv,
@@ -17,6 +18,44 @@ import {
   teardownTuiGateState,
   tuiGateEnvironment,
 } from "../scripts/tui-gate-state.mjs";
+
+describe("TUI E2E harness idle wait and the terminal background poll", () => {
+  const POLL = "\x1b]11;?\x07";
+  const DA1 = "\x1b[c";
+
+  it("recognizes chunks that hold only the background poll", () => {
+    expect(isBackgroundPollOnly(POLL)).toBe(true);
+    expect(isBackgroundPollOnly(`${POLL}${DA1}`)).toBe(true);
+    expect(isBackgroundPollOnly("\x1b]11;?\x1b\\")).toBe(true);
+    expect(isBackgroundPollOnly("")).toBe(false);
+    expect(isBackgroundPollOnly(`${POLL}x`)).toBe(false);
+    expect(isBackgroundPollOnly("\x1b]0;title\x07")).toBe(false);
+  });
+
+  it("becomes idle while the default auto theme keeps polling the background", async () => {
+    const session = new TuiSession();
+    session.recordOutput("frame");
+    const poll = setInterval(() => session.recordOutput(`${POLL}${DA1}`), 100);
+    try {
+      await session.waitForIdle({ idleWindow: 500, timeout: 3_000 });
+    } finally {
+      clearInterval(poll);
+    }
+    expect(session.backgroundPollBytes).toBeGreaterThan(0);
+  });
+
+  it("still counts drawn output as activity", async () => {
+    const session = new TuiSession();
+    const draw = setInterval(() => session.recordOutput(`${POLL}x`), 100);
+    try {
+      await expect(
+        session.waitForIdle({ idleWindow: 500, timeout: 1_500 }),
+      ).rejects.toThrow(/waitForIdle: timeout/u);
+    } finally {
+      clearInterval(draw);
+    }
+  });
+});
 
 describe("TUI E2E harness state isolation", () => {
   it("recognizes the current full-height assistant message gutter", () => {
