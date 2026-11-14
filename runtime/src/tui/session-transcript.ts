@@ -1518,6 +1518,9 @@ function collabStatusFromTaskStatus(status: unknown): unknown {
     case "pending":
     case "running":
       return { status: "running" };
+    // A finished child reports "idle" (it stays reusable, so the task never
+    // turns terminal); the task panel already counts idle as completed.
+    case "idle":
     case "completed":
       return { status: "completed" };
     case "failed":

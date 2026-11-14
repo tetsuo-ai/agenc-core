@@ -73,6 +73,31 @@ describe('areMessagePropsEqual', () => {
     ).toBe(false)
   })
 
+  it('re-renders a static collab agent row when its agent settles under the same uuid', () => {
+    const row = (state: string) => ({
+      type: 'system',
+      subtype: 'collab_agent',
+      uuid: 'collab-spawned-1',
+      title: 'Spawned GridRunner',
+      details: [],
+      state,
+    })
+    // Owner report 2026-11-14: a finished agent's "Spawned" row kept its
+    // running glyph because static rows skipped the re-render.
+    expect(
+      areMessagePropsEqual(
+        props({ message: row('running') as never, isStatic: true }),
+        props({ message: row('info') as never, isStatic: true }),
+      ),
+    ).toBe(false)
+    expect(
+      areMessagePropsEqual(
+        props({ message: row('info') as never, isStatic: true }),
+        props({ message: row('info') as never, isStatic: true }),
+      ),
+    ).toBe(true)
+  })
+
   it('ignores thinking-block cursor churn for messages without thinking content', () => {
     expect(
       areMessagePropsEqual(

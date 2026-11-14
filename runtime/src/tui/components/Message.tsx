@@ -540,7 +540,17 @@ export function areMessagePropsEqual(prev: Props, next: Props): boolean {
   // containerWidth is an absolute number in the no-metadata path (wrapper
   // Box is skipped). Static messages must re-render on terminal resize.
   if (prev.containerWidth !== next.containerWidth) return false;
+  // A collab agent row ("Spawned <name>") settles in place: the transcript keeps
+  // its uuid and only its state moves from running to done once the agent
+  // reports idle or completed. A static row must still re-render then, or its
+  // running glyph keeps animating after the agent has finished.
+  if (messageState(prev.message) !== messageState(next.message)) return false;
   if (prev.isStatic && next.isStatic) return true;
   return false;
+}
+
+/** The settle state some system rows carry (collab agent rows); undefined otherwise. */
+function messageState(message: Props['message']): unknown {
+  return (message as { readonly state?: unknown }).state;
 }
 export const Message = React.memo(MessageImpl, areMessagePropsEqual);
