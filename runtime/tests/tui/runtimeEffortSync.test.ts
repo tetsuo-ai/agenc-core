@@ -25,3 +25,16 @@ it("ignores unrelated or malformed effort events", () => {
   for (const event of [{ type: "warning", payload: { reasoningEffort: "high" } }, { type: "run_runtime_settings_changed", payload: {} }, { type: "run_runtime_settings_changed", payload: { reasoningEffort: "deep" } }]) syncRuntimeEffortEventToAppState(event, set);
   expect(set).not.toHaveBeenCalled();
 });
+
+it("marks an effort that arrives with the session's initial settings, so the prompt does not flash it", () => {
+  let state = {} as AppState;
+  const set = (update: (value: AppState) => AppState) => { state = update(state); };
+  // The lean Light request defaults native DeepSeek to low; the initial settings carry it.
+  syncRuntimeEffortEventToAppState({ type: "run_runtime_settings_changed", payload: { reason: "initial", reasoningEffort: "low" } }, set);
+  expect(state.effortValue).toBe("low");
+  expect(state.effortFromInitialSettings).toBe(true);
+  // A later change (a model switch or a config reload) is a real change again.
+  syncRuntimeEffortEventToAppState({ type: "run_runtime_settings_changed", payload: { reason: "model_provider_changed", reasoningEffort: "high" } }, set);
+  expect(state.effortValue).toBe("high");
+  expect(state.effortFromInitialSettings).toBe(false);
+});
