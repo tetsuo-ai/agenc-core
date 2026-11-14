@@ -23,6 +23,8 @@ describe("Light request configuration", () => {
       .toEqual({ ...LEAN_REQUEST_DEFAULTS, ...DEFAULT_LEAN_OVERRIDES, ...DEFAULT_LEAN_INTERACTIVE_OVERRIDES });
     expect(resolveLightRequest(session(), "deepseek")?.tool_search).toBe(true);
     expect(resolveLightRequest(session(), "deepseek")?.edit_mode).toBe("tools");
+    expect(resolveLightRequest(session(), "deepseek")?.system_text).toBe("short");
+    expect(resolveLightRequest(headless(), "deepseek")?.system_text).toBe("minimal");
     // Headless: the measured shell edits.
     expect(resolveLightRequest(headless(), "deepseek")).toEqual({ ...LEAN_REQUEST_DEFAULTS, ...DEFAULT_LEAN_OVERRIDES });
     expect(resolveLightRequest(headless(), "deepseek")?.edit_mode).toBe("shell");

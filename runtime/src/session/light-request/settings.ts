@@ -35,13 +35,19 @@ export const DEFAULT_LEAN_OVERRIDES: Readonly<Partial<Required<LightRequestOptio
 });
 
 /**
- * Interactive sessions with the default lean profile edit through Write and apply_patch, so the user sees each
- * change as a diff and approves it as an edit. Measured on 2026-11-14 in the real TUI (asks first, native Flash):
- * shell edits showed only a flattened `cat > file <<EOF ...` command with no diff, and the model re-read and re-ran
- * after its own write set off the file-change notice. Headless runs keep the measured shell edits.
+ * Interactive sessions with the default lean profile, measured on 2026-11-14 in the real TUI (asks first, native
+ * Flash), keep two things the measured headless profile drops:
+ * - edit_mode "tools": Write and apply_patch, so each change shows as a change and is approved as an edit. Shell
+ *   edits showed only a flattened `cat > file <<EOF ...` command, and the model re-read and re-ran after its own
+ *   write set off the file-change notice.
+ * - system_text "short": the full permission text. The minimal text sends one permission sentence
+ *   (run-turn-sampling-request.ts leanPermissionSentence), so a command the sandbox kept off the network
+ *   ended with "Could not resolve host" instead of an escalation request (real-TUI scenario K7).
+ * Headless runs keep the measured profile.
  */
 export const DEFAULT_LEAN_INTERACTIVE_OVERRIDES: Readonly<Partial<Required<LightRequestOptions>>> = Object.freeze({
   edit_mode: "tools",
+  system_text: "short",
 });
 
 export interface LightRequestSession {
