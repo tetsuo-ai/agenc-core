@@ -1,0 +1,127 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`deepseek stream=false keeps the exact original fetch and request init 1`] = `
+{
+  "body": "{"model":"deepseek-v4-pro","stream":false,"messages":[{"role":"user","content":"hello"}],"max_tokens":100,"thinking":{"type":"enabled"}}",
+  "headers": [
+    [
+      "authorization",
+      "Bearer local-test-only",
+    ],
+    [
+      "content-type",
+      "application/json",
+    ],
+  ],
+  "method": "POST",
+  "redirect": "manual",
+  "signal": "AbortSignal",
+}
+`;
+
+exports[`deepseek stream=true keeps the exact original fetch and request init 1`] = `
+{
+  "body": "{"model":"deepseek-v4-pro","stream":true,"messages":[{"role":"user","content":"hello"}],"max_tokens":100,"thinking":{"type":"enabled"},"stream_options":{"include_usage":true}}",
+  "headers": [
+    [
+      "accept",
+      "text/event-stream",
+    ],
+    [
+      "authorization",
+      "Bearer local-test-only",
+    ],
+    [
+      "content-type",
+      "application/json",
+    ],
+  ],
+  "method": "POST",
+  "redirect": "manual",
+  "signal": "AbortSignal",
+}
+`;
+
+exports[`openai-chat stream=false keeps the exact original fetch and request init 1`] = `
+{
+  "body": "{"model":"gpt-4.1","stream":false,"messages":[{"role":"user","content":"hello"}],"max_completion_tokens":100}",
+  "headers": [
+    [
+      "authorization",
+      "Bearer local-test-only",
+    ],
+    [
+      "content-type",
+      "application/json",
+    ],
+  ],
+  "method": "POST",
+  "redirect": "manual",
+  "signal": "AbortSignal",
+}
+`;
+
+exports[`openai-chat stream=true keeps the exact original fetch and request init 1`] = `
+{
+  "body": "{"model":"gpt-4.1","stream":true,"messages":[{"role":"user","content":"hello"}],"max_completion_tokens":100,"stream_options":{"include_usage":true}}",
+  "headers": [
+    [
+      "accept",
+      "text/event-stream",
+    ],
+    [
+      "authorization",
+      "Bearer local-test-only",
+    ],
+    [
+      "content-type",
+      "application/json",
+    ],
+  ],
+  "method": "POST",
+  "redirect": "manual",
+  "signal": "AbortSignal",
+}
+`;
+
+exports[`openai-responses stream=false keeps the exact original fetch and request init 1`] = `
+{
+  "body": "{"model":"gpt-4.1","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":false,"store":false,"max_output_tokens":100}",
+  "headers": [
+    [
+      "authorization",
+      "Bearer local-test-only",
+    ],
+    [
+      "content-type",
+      "application/json",
+    ],
+  ],
+  "method": "POST",
+  "redirect": "manual",
+  "signal": "AbortSignal",
+}
+`;
+
+exports[`openai-responses stream=true keeps the exact original fetch and request init 1`] = `
+{
+  "body": "{"model":"gpt-4.1","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":true,"store":false,"max_output_tokens":100}",
+  "headers": [
+    [
+      "accept",
+      "text/event-stream",
+    ],
+    [
+      "authorization",
+      "Bearer local-test-only",
+    ],
+    [
+      "content-type",
+      "application/json",
+    ],
+  ],
+  "method": "POST",
+  "redirect": "manual",
+  "signal": "AbortSignal",
+}
+`;
