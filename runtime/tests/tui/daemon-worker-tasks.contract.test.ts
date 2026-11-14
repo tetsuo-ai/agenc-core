@@ -39,6 +39,22 @@ afterEach(() => { vi.useRealTimers(); });
 
 describe("daemon native worker inventory projection", () => {
 
+  it("does not count the runtime's memory extraction child as the user's agent", async () => {
+    const extraction: SessionNativeWorkerSnapshot = {
+      agentId: "memory-child", agentPath: "/root/memory_extraction", nickname: "memory_extraction",
+      role: "default", status: "running", prompt: "update memories", toolUseCount: 1, tokenCount: 50,
+    };
+    const f = fixture([worker, extraction]);
+    try {
+      await drainMicrotasks(20);
+      expect(f.task()).toMatchObject({ status: "completed", description: "backend" });
+      expect(f.state().tasks[extraction.agentId]).toBeUndefined();
+      const running = Object.values(f.state().tasks).filter(task =>
+        task.type === "local_agent" && (task.status === "running" || task.status === "pending"));
+      expect(running).toEqual([]);
+    } finally { f.close(); }
+  });
+
   it("skips unchanged projections, deduplicates offline errors, and coalesces event refreshes", async () => {
     const f = fixture();
     try {
