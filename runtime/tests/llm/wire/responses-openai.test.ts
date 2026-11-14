@@ -25,7 +25,7 @@ const TEST_TOOLS: LLMTool[] = [
 ];
 
 describe("buildOpenAIResponsesRequest", () => {
-  test("uses native verbosity only for verified direct models and keeps subscription instructions fixed", () => {
+  test("uses native verbosity on direct and subscription routes and keeps the request prefix fixed", () => {
     const build = (modelVerbosity?: "low" | "high", chatgptBackend = false) => buildOpenAIResponsesRequest({
       model: "gpt-5", messages: [{ role: "user", content: "hello" }], tools: TEST_TOOLS,
       chatgptBackend,
@@ -45,23 +45,20 @@ describe("buildOpenAIResponsesRequest", () => {
       expect(candidate.max_output_tokens).toBe(4096);
     }
     const subscriptionBase = build(undefined, true);
+    expect(subscriptionBase).not.toHaveProperty("text");
     for (const level of ["low", "high"] as const) {
       const subscription = build(level, true);
-      expect(subscription).not.toHaveProperty("text");
+      // Native field on the ChatGPT backend too: no trailing input item, and
+      // instructions and input stay byte for byte the same as without detail.
+      expect(subscription.text).toEqual({ verbosity: level });
+      const { text: _detail, ...rest } = subscription;
+      expect(rest).toEqual(subscriptionBase);
       expect(subscription).not.toHaveProperty("max_output_tokens");
-      expect(subscription.instructions).toBe(subscriptionBase.instructions);
-      expect((subscription.input as unknown[]).slice(0, -1)).toEqual(subscriptionBase.input);
-      expect((subscription.input as Array<Record<string, unknown>>).at(-1)).toMatchObject({
-        type: "message", role: "user",
-        content: [{ type: "input_text", text: expect.stringContaining("# Response Detail") }],
-      });
-      expect(JSON.stringify(subscription)).toContain("If you ran checks or tests, still report their results. Always report errors, blockers, and approval requests.");
+      expect(JSON.stringify(subscription)).not.toContain("# Response Detail");
     }
-    expect(subscriptionBase.instructions).not.toContain("# Response Detail");
-    expect(JSON.stringify(subscriptionBase.input)).not.toContain("# Response Detail");
   });
 
-  test("falls back for an unsupported or unknown direct OpenAI model and inherits configured subscription detail", () => {
+  test("falls back to a prompt section for an unsupported or unknown model, never a trailing input item", () => {
     const build = (model: string, chatgptBackend = false) => buildOpenAIResponsesRequest({
       model, chatgptBackend, messages: [{ role: "user", content: "hello" }], tools: [],
       options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
@@ -76,13 +73,39 @@ describe("buildOpenAIResponsesRequest", () => {
       });
       expect(request.max_output_tokens).toBe(4096);
     }
-    const configured = build("gpt-5", true);
-    expect(configured).not.toHaveProperty("text.verbosity");
-    expect(configured.instructions).toBe("STATIC_HEAD\n\nDYNAMIC_TAIL");
-    expect((configured.input as Array<Record<string, unknown>>).at(-1)).toMatchObject({
-      role: "user", content: [{ text: expect.stringContaining("Detailed: give thorough user-facing answers.") }],
+    // ChatGPT backend with a model that has no native verbosity: the section
+    // rides in the volatile tail of instructions, which is fixed for the
+    // session, and the last input item is still the user's message.
+    const subscription = build("unlisted-openai-model", true);
+    expect(subscription).not.toHaveProperty("text.verbosity");
+    expect(subscription.instructions).toContain("STATIC_HEAD");
+    expect(subscription.instructions).toContain("Detailed: give thorough user-facing answers.");
+    expect((subscription.input as Array<Record<string, unknown>>).at(-1)).toMatchObject({
+      role: "user", content: [{ type: "input_text", text: "hello" }],
     });
-    expect(configured).not.toHaveProperty("max_output_tokens");
+    expect(JSON.stringify(subscription.input)).not.toContain("# Response Detail");
+    expect(subscription).not.toHaveProperty("max_output_tokens");
+  });
+
+  test("keeps the cached prefix when a GPT-6 subscription session asks for low verbosity", () => {
+    const build = (messages: Array<{ role: "user" | "assistant"; content: string }>) =>
+      buildOpenAIResponsesRequest({
+        model: "gpt-6.1-sol", chatgptBackend: true, messages, tools: TEST_TOOLS,
+        options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+          modelVerbosity: "low", reasoningEffort: "medium" },
+      });
+    const first = build([{ role: "user", content: "first" }]);
+    const second = build([
+      { role: "user", content: "first" },
+      { role: "assistant", content: "answer" },
+      { role: "user", content: "second" },
+    ]);
+    expect(first.text).toEqual({ verbosity: "low" });
+    expect(second.text).toEqual({ verbosity: "low" });
+    expect(second.instructions).toBe(first.instructions);
+    const firstInput = first.input as unknown[];
+    expect((second.input as unknown[]).slice(0, firstInput.length)).toEqual(firstInput);
+    expect(JSON.stringify(second)).not.toContain("# Response Detail");
   });
 
   test("keeps the unset direct and subscription request bytes from the pre-detail builder", () => {

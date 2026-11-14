@@ -881,14 +881,18 @@ describe("configured response detail reaches provider requests", () => {
     }
   });
 
-  test("OpenAI non-native and subscription routes use the fallback exactly once", async () => {
-    for (const route of [{ model: "gpt-4o" }, { model: "gpt-5", chatgptBackend: true }]) {
+  test("OpenAI non-native routes use the fallback exactly once and subscription routes go native", async () => {
+    for (const route of [{ model: "gpt-4o" }, { model: "unlisted-openai-model", chatgptBackend: true }]) {
       const result = await requestFor({ provider: "openai", configured: "low", ...route });
       expect(result.prompt.text).not.toContain("# Response Detail");
       expect(result.wire).not.toHaveProperty("text.verbosity");
       expect(JSON.stringify(result.wire).match(/# Response Detail/gu)).toHaveLength(1);
       expect(JSON.stringify(result.wire)).toContain("Concise: keep every user-facing message short.");
     }
+    // A subscription model with native verbosity gets the field, not the text.
+    const subscription = await requestFor({ provider: "openai", configured: "low", model: "gpt-5", chatgptBackend: true });
+    expect(subscription.wire).toHaveProperty("text.verbosity", "low");
+    expect(JSON.stringify(subscription.wire)).not.toContain("# Response Detail");
   });
 });
 

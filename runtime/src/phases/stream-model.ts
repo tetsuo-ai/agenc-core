@@ -1,5 +1,6 @@
 import { projectRepeatedReads } from "../tools/read-result-projection.js";
 import { resolveLightRequest } from "../session/light-request/settings.js";
+import { defaultLightModelVerbosity } from "../llm/openai-light-verbosity.js";
 import { DegenerateTextDetector } from "../llm/degenerate-text.js";
 import { completeReasoningCapSample, type ReasoningCapSample } from "../session/reasoning-cap-policy.js";
 /**
@@ -361,7 +362,10 @@ export function buildProviderOptions(
     ) ? { disableThinkingForRecovery: true as const } : {}),
     reasoningSummary: ctx.reasoningSummary,
     ...(ctx.reasoningSummaryIsDefault === true ? { reasoningSummaryIsDefault: true as const } : {}),
-    modelVerbosity: ctx.modelVerbosity,
+    // Light on the GPT-6 family asks for short answers through the native
+    // field unless the user chose a level (see openai-light-verbosity.ts).
+    modelVerbosity: ctx.modelVerbosity ??
+      defaultLightModelVerbosity(session, session.services.provider.name, model),
     // Lean carries this live preference in runtime context, outside the
     // pinned system prefix. Do not let the wire fallback append it again.
     responseDetailOverride: resolveLightRequest(session, session.services.provider.name) === undefined

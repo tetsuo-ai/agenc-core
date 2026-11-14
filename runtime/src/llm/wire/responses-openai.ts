@@ -35,7 +35,7 @@ import {
 } from "./shared.js";
 import { planOpenAIContext } from "./responses-openai-context.js";
 import { toOpenAIResponsesTools } from "./tools.js";
-import { getResponseDetailSection, withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
+import { withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
 import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
@@ -527,7 +527,10 @@ export function buildOpenAIResponsesRequest(
 ): Record<string, unknown> {
   const messages = prepareMessagesForWire(input.messages);
   const catalogEntry = resolveRegisteredModelCatalogEntry({ provider: "openai", model: input.model });
-  const nativeVerbosity = input.chatgptBackend !== true &&
+  // Native `text.verbosity` on the platform API and the ChatGPT backend alike,
+  // for models whose catalog entry supports it. It sits outside `instructions`
+  // and `input`, so a level never changes the cached prefix.
+  const nativeVerbosity =
     catalogEntry?.model.toLowerCase() === input.model.trim().toLowerCase() &&
     catalogEntry.supportsVerbosity;
   const fallbackVerbosity = !nativeVerbosity ? input.options?.modelVerbosity : undefined;
@@ -541,7 +544,7 @@ export function buildOpenAIResponsesRequest(
     sessionSuffix: sessionSystemPrompt,
     dynamicSuffix: dynamicSystemPrompt,
   } = splitSystemPromptOnDynamicBoundary(
-    input.chatgptBackend !== true && fallbackVerbosity !== undefined
+    fallbackVerbosity !== undefined
       ? withResponseDetailSystemPrompt(input.options?.systemPrompt, fallbackVerbosity)
       : input.options?.systemPrompt,
   );
@@ -555,9 +558,10 @@ export function buildOpenAIResponsesRequest(
       )
       .map((message) => messageTextContent(message.content))
       .map((text) => text.trim()),
-    // The ChatGPT subscription backend rejects system-role input items.
-    // Its existing volatile prompt tail stays in instructions; response
-    // detail is appended separately as an accepted user input item below.
+    // The ChatGPT subscription backend rejects system-role input items, so
+    // its volatile prompt tail stays in instructions. A fallback response
+    // detail rides in that tail: fixed for the session, unlike a trailing
+    // input item, which broke the cached prefix on every request.
     ...(input.chatgptBackend === true && dynamicSystemPrompt !== undefined
       ? [dynamicSystemPrompt]
       : []),
@@ -654,13 +658,6 @@ export function buildOpenAIResponsesRequest(
       type: "message",
       role: "system",
       content: [{ type: "input_text", text: dynamicSystemPrompt }],
-    });
-  }
-  if (input.chatgptBackend === true && fallbackVerbosity !== undefined) {
-    responseInput.push({
-      type: "message",
-      role: "user",
-      content: [{ type: "input_text", text: getResponseDetailSection(fallbackVerbosity) }],
     });
   }
 
