@@ -1193,48 +1193,37 @@ export interface LLMProviderConfig {
 }
 
 /**
- * Decode HTML entities that some LLMs (e.g. Grok) emit in tool call arguments.
+ * Repair HTML-escaped JSON syntax emitted by some LLMs (e.g. Grok).
+ * Only use after JSON parsing fails, and decode one layer so escaped literal
+ * entities survive the repair.
  */
 function decodeHtmlEntities(s: string): string {
-  return s
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-}
-
-function decodeHtmlEntitiesDeep(value: unknown): unknown {
-  if (typeof value === "string") {
-    return decodeHtmlEntities(value);
-  }
-  if (Array.isArray(value)) {
-    return value.map((entry) => decodeHtmlEntitiesDeep(entry));
-  }
-  if (!value || typeof value !== "object") {
-    return value;
-  }
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
-      key,
-      decodeHtmlEntitiesDeep(entry),
-    ]),
-  );
+  const entities: Record<string, string> = {
+    "&amp;": "&",
+    "&lt;": "<",
+    "&gt;": ">",
+    "&quot;": '"',
+    "&#39;": "'",
+  };
+  return s.replace(/&(?:amp|lt|gt|quot|#39);/g, (entity) => entities[entity]!);
 }
 
 function normalizeToolArguments(
   toolName: string,
   argumentsRaw: string,
-): { value: unknown } | null {
+): { value: unknown; arguments?: string } | null {
   // Handoffs carry exact task text and literal reference delimiters. Never
   // repair a partial JSON string into an empty object or decode its contents.
   if (toolName === "spawn_agent") {
-    try { return { value: JSON.parse(argumentsRaw) as unknown }; }
+    try { return { value: JSON.parse(argumentsRaw) as unknown, arguments: argumentsRaw }; }
     catch { return null; }
   }
-  const finalizeParsed = (value: unknown): { value: unknown } => {
+  const finalizeParsed = (
+    value: unknown,
+    original?: string,
+  ): { value: unknown; arguments?: string } => {
     if (isRecord(value)) {
-      return { value };
+      return { value, arguments: original };
     }
     if (typeof value === "string" && !isBlankString(value)) {
       return {
@@ -1244,21 +1233,20 @@ function normalizeToolArguments(
     return { value };
   };
   try {
-    return finalizeParsed(JSON.parse(argumentsRaw) as unknown);
+    return finalizeParsed(JSON.parse(argumentsRaw) as unknown, argumentsRaw);
   } catch {
+    const decoded = decodeHtmlEntities(argumentsRaw);
     try {
-      return finalizeParsed(
-        JSON.parse(decodeHtmlEntities(argumentsRaw)) as unknown,
-      );
+      return finalizeParsed(JSON.parse(decoded) as unknown);
     } catch {
-      const decoded = decodeHtmlEntities(argumentsRaw);
       if (
         isBlankString(decoded) ||
         shouldTreatMalformedArgumentsAsStructuredLiteral(toolName, decoded)
       ) {
         return { value: {} };
       }
-      const wrapped = wrapPlainStringToolArguments(toolName, decoded);
+      // Plain command/path text is not escaped JSON. Preserve its contents.
+      const wrapped = wrapPlainStringToolArguments(toolName, argumentsRaw);
       if (wrapped) {
         return { value: wrapped };
       }
@@ -1271,9 +1259,9 @@ function normalizeToolArguments(
  * Validate/sanitize a raw tool call payload.
  *
  * Ensures `id` and `name` are non-empty strings, and `arguments` is a JSON string.
- * Preserves valid JSON structure first, then decodes HTML entities inside
- * parsed string values. Falls back to decoding the raw JSON text only when the
- * original argument string is not valid JSON.
+ * Preserves valid JSON objects byte-for-byte, including literal HTML entities
+ * in string values. Only repairs HTML-escaped JSON when the original does not
+ * parse. Repaired arguments are shared by execution and history replay.
  */
 export function validateToolCallDetailed(
   raw: unknown,
@@ -1343,15 +1331,11 @@ export function validateToolCallDetailed(
     };
   }
 
-  const normalizedArguments = JSON.stringify(
-    (name === "spawn_agent" ? parsed : decodeHtmlEntitiesDeep(parsed)) as Record<string, unknown>,
-  );
-
   return {
     toolCall: {
       id,
       name,
-      arguments: normalizedArguments,
+      arguments: parsedResult.arguments ?? JSON.stringify(parsed),
     },
   };
 }
