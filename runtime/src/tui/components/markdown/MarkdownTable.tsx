@@ -23,6 +23,14 @@ const SAFETY_MARGIN = 4;
 const MIN_COLUMN_WIDTH = 3;
 
 /**
+ * A word up to this many cells wide is never split across lines: a table
+ * that cannot give every column room for its words uses the vertical format.
+ * Only longer runs without a space (addresses, long paths, hashes) may
+ * break inside a cell, and they break without losing a character.
+ */
+const MAX_UNBROKEN_WORD_WIDTH = 24;
+
+/**
  * Maximum number of lines per row before switching to vertical format.
  * When wrapping would make rows taller than this, vertical (key-value)
  * format provides better readability.
@@ -69,22 +77,21 @@ type Props = {
 
 /**
  * Wrap text to fit within a given width, returning array of lines.
- * ANSI-aware: preserves styling across line breaks.
- *
- * @param hard - If true, break words that exceed width (needed when columns
- *               are narrower than the longest word). Default false.
+ * ANSI-aware: preserves styling across line breaks. Breaks at spaces; a word
+ * wider than the whole width continues on the next line, so no line is ever
+ * wider than `width` and no character is lost.
  */
-function wrapText(text: string, width: number, options?: {
-  hard?: boolean;
-}): string[] {
+function wrapText(text: string, width: number): string[] {
   if (width <= 0) return [text];
   // Strip trailing whitespace/newlines before wrapping.
   // formatToken() adds EOL to paragraphs and other token types,
   // which would otherwise create extra blank lines in table cells.
   const trimmedText = text.trimEnd();
+  // trim drops the space left over at a wrap point, so a continuation line
+  // starts in the same column as the first line of its cell.
   const wrapped = wrapAnsi(trimmedText, width, {
-    hard: options?.hard ?? false,
-    trim: false,
+    hard: true,
+    trim: true,
     wordWrap: true
   });
   // Filter out empty lines that result from trailing newlines or
@@ -134,12 +141,12 @@ export function MarkdownTable({
     return stripAnsi(formatCell(tokens_0));
   }
 
-  // Get the longest word width in a cell (minimum width to avoid breaking words)
+  // Get the width a cell needs so that none of its words is split. Words
+  // wider than MAX_UNBROKEN_WORD_WIDTH do not count: they may break.
   function getMinWidth(tokens_1: Token[] | undefined): number {
     const text = getPlainText(tokens_1);
-    const words = text.split(/\s+/).filter(w => w.length > 0);
-    if (words.length === 0) return MIN_COLUMN_WIDTH;
-    return maxOf(words.map(w_0 => stringWidth(w_0)), MIN_COLUMN_WIDTH);
+    const wordWidths = text.split(/\s+/).map(w => stringWidth(w)).filter(w_0 => w_0 > 0 && w_0 <= MAX_UNBROKEN_WORD_WIDTH);
+    return maxOf(wordWidths, MIN_COLUMN_WIDTH);
   }
 
   // Get ideal width (full content without wrapping)
@@ -175,13 +182,14 @@ export function MarkdownTable({
   const totalMin = minWidths.reduce((sum, w_1) => sum + w_1, 0);
   const totalIdeal = idealWidths.reduce((sum_0, w_2) => sum_0 + w_2, 0);
 
-  // Track whether columns are narrower than longest words (needs hard wrap)
-  let needsHardWrap = false;
+  // The columns cannot all hold their words: splitting short words and
+  // numbers would deform them, so the vertical format takes over.
+  const columnsTooNarrow = totalMin > availableWidth;
   let columnWidths: number[];
   if (totalIdeal <= availableWidth) {
     // Everything fits - use ideal widths
     columnWidths = idealWidths;
-  } else if (totalMin <= availableWidth) {
+  } else if (!columnsTooNarrow) {
     // Need to shrink - give each column its min, distribute remaining space
     const extraSpace = availableWidth - totalMin;
     const overflows = idealWidths.map((ideal, i) => ideal - minWidths[i]!);
@@ -192,11 +200,8 @@ export function MarkdownTable({
       return min + extra;
     });
   } else {
-    // Table wider than terminal at minimum widths
-    // Shrink columns proportionally to fit, allowing word breaks
-    needsHardWrap = true;
-    const scaleFactor = availableWidth / totalMin;
-    columnWidths = minWidths.map(w_3 => Math.max(Math.floor(w_3 * scaleFactor), MIN_COLUMN_WIDTH));
+    // Not rendered as a table (see columnsTooNarrow); keep the widths valid.
+    columnWidths = minWidths;
   }
 
   // Step 4: Calculate max row lines to determine if vertical format is needed
@@ -205,18 +210,14 @@ export function MarkdownTable({
     // Check header
     for (let i_1 = 0; i_1 < token.header.length; i_1++) {
       const content = formatCell(token.header[i_1]!.tokens);
-      const wrapped = wrapText(content, columnWidths[i_1]!, {
-        hard: needsHardWrap
-      });
+      const wrapped = wrapText(content, columnWidths[i_1]!);
       maxLines = Math.max(maxLines, wrapped.length);
     }
     // Check rows
     for (const row_1 of token.rows) {
       for (let i_2 = 0; i_2 < row_1.length; i_2++) {
         const content_0 = formatCell(row_1[i_2]?.tokens);
-        const wrapped_0 = wrapText(content_0, columnWidths[i_2]!, {
-          hard: needsHardWrap
-        });
+        const wrapped_0 = wrapText(content_0, columnWidths[i_2]!);
         maxLines = Math.max(maxLines, wrapped_0.length);
       }
     }
@@ -224,8 +225,7 @@ export function MarkdownTable({
   }
 
   // Use vertical format if wrapping would make rows too tall
-  const maxRowLines = calculateMaxRowLines();
-  const useVerticalFormat = maxRowLines > MAX_ROW_LINES;
+  const useVerticalFormat = columnsTooNarrow || calculateMaxRowLines() > MAX_ROW_LINES;
 
   // Render a single row with potential multi-line cells
   // Returns an array of strings, one per line of the row
@@ -237,9 +237,7 @@ export function MarkdownTable({
       const formattedText = formatCell(cell.tokens);
       const themedText = !isHeader && colIndex_1 === 0 ? color('agenc', theme)(formattedText) : formattedText;
       const width = columnWidths[colIndex_1]!;
-      return wrapText(themedText, width, {
-        hard: needsHardWrap
-      });
+      return wrapText(themedText, width);
     });
 
     // Find max number of lines in this row
@@ -286,6 +284,15 @@ export function MarkdownTable({
     const separator = tableGlyphs.horizontal.repeat(separatorWidth);
     // Small indent for wrapped lines (just 2 spaces)
     const wrapIndent = '  ';
+    // A table with no data rows (also a streamed table whose first row has
+    // not arrived yet) still shows its headers, one per line.
+    if (token.rows.length === 0) {
+      for (const header_1 of headers) {
+        for (const line_3 of wrapText(header_1, Math.max(terminalWidth - 1, 10))) {
+          lines_2.push(`${ANSI_BOLD_START}${line_3}${ANSI_BOLD_END}`);
+        }
+      }
+    }
     token.rows.forEach((row_2, rowIndex) => {
       if (rowIndex > 0) {
         lines_2.push(separator);
@@ -296,30 +303,27 @@ export function MarkdownTable({
         const rawValue = (colIndex_4 === 0 ? color('agenc', theme)(formatCell(cell_0.tokens)) : formatCell(cell_0.tokens)).trimEnd();
         const value = rawValue.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
 
-        // Wrap value to fit terminal, accounting for label on first line
-        const firstLineWidth = terminalWidth - stringWidth(label) - 3;
-        const subsequentLineWidth = terminalWidth - wrapIndent.length - 1;
-
-        // Two-pass wrap: first line is narrower (label takes space),
-        // continuation lines get the full width minus indent.
-        const firstPassLines = wrapText(value, Math.max(firstLineWidth, 10));
-        const firstLine = firstPassLines[0] || '';
-        let wrappedValue: string[];
-        if (firstPassLines.length <= 1 || subsequentLineWidth <= firstLineWidth) {
-          wrappedValue = firstPassLines;
+        // Wrap label and value as one text, so the first line is shorter by
+        // the label and no second pass has to join broken lines again. A
+        // stand-in takes the place of the label and colon while wrapping. It
+        // is shorter than them by the indent, because the first line has no
+        // indent: every line then ends at most one cell before the edge.
+        const wrapWidth = Math.max(terminalWidth - wrapIndent.length - 1, 10);
+        const labelStandIn = 'x'.repeat(Math.max(1, stringWidth(label) + 1 - wrapIndent.length));
+        const labelLine = `${ANSI_BOLD_START}${label}:${ANSI_BOLD_END}`;
+        let valueLines: string[];
+        if (labelStandIn.length + 1 >= wrapWidth) {
+          // The label alone fills the line: the value starts below it.
+          lines_2.push(labelLine);
+          valueLines = wrapText(value, wrapWidth);
         } else {
-          // Re-join remaining text and re-wrap to the wider continuation width
-          const remainingText = firstPassLines.slice(1).map(l => l.trim()).join(' ');
-          const rewrapped = wrapText(remainingText, subsequentLineWidth);
-          wrappedValue = [firstLine, ...rewrapped];
+          const [firstLine = '', ...rest] = wrapText(`${labelStandIn} ${value}`, wrapWidth);
+          lines_2.push(labelLine + firstLine.slice(labelStandIn.length));
+          valueLines = rest;
         }
 
-        // First line: bold label + value
-        lines_2.push(`${ANSI_BOLD_START}${label}:${ANSI_BOLD_END} ${wrappedValue[0] || ''}`);
-
         // Subsequent lines with small indent (skip empty lines)
-        for (let i_3 = 1; i_3 < wrappedValue.length; i_3++) {
-          const line_1 = wrappedValue[i_3]!;
+        for (const line_1 of valueLines) {
           if (!line_1.trim()) continue;
           lines_2.push(`${wrapIndent}${line_1}`);
         }

@@ -4,6 +4,8 @@ import stripAnsi from 'strip-ansi'
 import { getGraphemeSegmenter } from '../../utils/intl.js'
 
 const EMOJI_REGEX = emojiRegex()
+// Nonspacing and enclosing marks: they are drawn in the cell before them.
+const COMBINING_MARK = /^[\p{Mn}\p{Me}]$/u
 
 /**
  * Fallback JavaScript implementation of stringWidth when Bun.stringWidth is not available.
@@ -67,9 +69,11 @@ function stringWidthJavaScript(str: string): number {
   let width = 0
 
   for (const { segment: grapheme } of getGraphemeSegmenter().segment(str)) {
-    // Check for emoji first (most emoji sequences are width 2)
+    // Check for emoji first (most emoji sequences are width 2). The emoji
+    // must open the cluster: a cluster that only ends in one (a prepended
+    // mark before it) is summed per code point below.
     EMOJI_REGEX.lastIndex = 0
-    if (EMOJI_REGEX.test(grapheme)) {
+    if (EMOJI_REGEX.exec(grapheme)?.index === 0) {
       width += getEmojiWidth(grapheme)
       continue
     }
@@ -129,12 +133,29 @@ function getEmojiWidth(grapheme: string): number {
   return 2
 }
 
+/**
+ * A symbol that can be an emoji but is drawn as text, in one cell: its code
+ * point is narrow (East Asian Width is not Wide) and nothing in the cluster
+ * asks for the emoji form (no U+FE0F, joiner, keycap or skin tone).
+ * Examples: U+26A0 warning sign, U+2714 check mark, U+00A9, U+2122, U+2194.
+ *
+ * Symbols that are Wide on their own, such as U+2705 and U+274C, are not text
+ * symbols: terminals draw them in two cells with or without U+FE0F.
+ *
+ * The answer depends on the cluster alone, so a string and its parts always
+ * add up to the same width.
+ */
 function isTextPresentationSymbol(grapheme: string): boolean {
   const first = grapheme.codePointAt(0)!
-  if (first < 0x2600 || first > 0x27bf) return false
+  if (eastAsianWidth(first, { ambiguousAsWide: false }) === 2) return false
   for (const char of grapheme) {
     const codePoint = char.codePointAt(0)!
-    if (codePoint === 0xfe0f || codePoint === 0x200d || codePoint === 0x20e3) {
+    if (
+      codePoint === 0xfe0f ||
+      codePoint === 0x200d ||
+      codePoint === 0x20e3 ||
+      (codePoint >= 0x1f3fb && codePoint <= 0x1f3ff)
+    ) {
       return false
     }
   }
@@ -151,9 +172,23 @@ function isZeroWidth(codePoint: number): boolean {
 
   // Zero-width and invisible characters
   if (
-    (codePoint >= 0x200b && codePoint <= 0x200d) || // ZW space/joiner
+    (codePoint >= 0x200b && codePoint <= 0x200f) || // ZW space/joiner, direction marks
+    (codePoint >= 0x2028 && codePoint <= 0x202e) || // Separators, direction embedding
     codePoint === 0xfeff || // BOM
-    (codePoint >= 0x2060 && codePoint <= 0x2064) // Word joiner etc.
+    (codePoint >= 0x2060 && codePoint <= 0x206f) // Word joiner, direction isolates
+  ) {
+    return true
+  }
+
+  // Parts of a decomposed syllable that join the cell of the character
+  // before them: Hangul vowels and finals, kana voicing marks. File names
+  // from macOS arrive in this decomposed form.
+  if (
+    (codePoint >= 0x1160 && codePoint <= 0x11ff) ||
+    (codePoint >= 0xd7b0 && codePoint <= 0xd7ff) ||
+    (codePoint >= 0x302a && codePoint <= 0x302f) ||
+    codePoint === 0x3099 ||
+    codePoint === 0x309a
   ) {
     return true
   }
@@ -214,7 +249,19 @@ function isZeroWidth(codePoint: number): boolean {
   if (codePoint >= 0xd800 && codePoint <= 0xdfff) return true
   if (codePoint >= 0xe0000 && codePoint <= 0xe007f) return true
 
-  return false
+  // Every other nonspacing or enclosing mark (Hebrew points, Arabic vowel
+  // signs, Cyrillic marks and so on). The large blocks that hold no further
+  // mark skip the lookup: symbols and box drawing, CJK, Hangul syllables,
+  // emoji.
+  if (
+    (codePoint >= 0x2100 && codePoint <= 0x2bff) ||
+    (codePoint >= 0x3000 && codePoint <= 0x9fff) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0x1f000 && codePoint <= 0x1faff)
+  ) {
+    return false
+  }
+  return COMBINING_MARK.test(String.fromCodePoint(codePoint))
 }
 
 // Note: complex-script graphemes like Devanagari क्ष (ka+virama+ZWJ+ssa) render
@@ -239,16 +286,11 @@ const bunStringWidth =
 
 const BUN_STRING_WIDTH_OPTS = { ambiguousIsNarrow: true } as const
 
+// Emoji clusters go through the JavaScript rules above on every runtime, so
+// the width of a string never depends on which runtime measured it.
 export const stringWidth: (str: string) => number = bunStringWidth
   ? str =>
-      typeof str === 'string' && containsTextPresentationSymbol(str)
+      typeof str === 'string' && needsSegmentation(str)
         ? stringWidthJavaScript(str)
         : bunStringWidth(str, BUN_STRING_WIDTH_OPTS)
   : stringWidthJavaScript
-
-function containsTextPresentationSymbol(str: string): boolean {
-  for (const { segment } of getGraphemeSegmenter().segment(str)) {
-    if (isTextPresentationSymbol(segment)) return true
-  }
-  return false
-}

@@ -78,7 +78,7 @@ describe('MarkdownTable coverage swarm row 122', () => {
     expect(lines.every(line => line.length <= 34)).toBe(true)
   })
 
-  test('hard-wraps long words in horizontal layout when minimum widths exceed the terminal', async () => {
+  test('shows key and value lines instead of splitting words when the columns are too narrow', async () => {
     const output = await renderTable(
       [
         '| Key | Value |',
@@ -89,13 +89,30 @@ describe('MarkdownTable coverage swarm row 122', () => {
     )
     const lines = nonEmptyLines(output)
 
+    // Two columns of six cells do not fit in 17: the words stay whole.
+    expect(output).not.toContain('┌')
+    expect(lines).toEqual(['Key: abcdef', 'Value: uvwxyz'])
+  })
+
+  test('breaks only a run that is longer than a short word inside its cell', async () => {
+    const output = await renderTable(
+      [
+        '| Key | Value |',
+        '| :--- | :--- |',
+        '| name | https://example.com/a/very/long/address/that/has/no/space |',
+      ].join('\n'),
+      40,
+    )
+    const lines = nonEmptyLines(output)
+
     expect(output).toContain('┌')
-    expect(output).toContain('abc')
-    expect(output).toContain('def')
-    expect(output).toContain('uvw')
-    expect(output).toContain('xyz')
-    expect(lines.every(line => line.length <= 17)).toBe(true)
-    expect(output).not.toContain('Key:')
+    expect(output).toMatch(/│ name\s+│/)
+    expect(lines.every(line => line.length <= 40)).toBe(true)
+    const address = lines
+      .filter(line => line.startsWith('│'))
+      .map(line => line.split('│')[2]!.trim())
+      .join('')
+    expect(address).toBe('Valuehttps://example.com/a/very/long/address/that/has/no/space')
   })
 
   test('uses ascii borders when ascii glyph mode is requested', async () => {

@@ -1,7 +1,7 @@
 import { feature } from "bun:bundle";
 import * as React from "react";
 import { useMemo } from "react";
-import { Box, Text } from "../../ink.js";
+import { Box } from "../../ink.js";
 import { useAppState } from "../../state/AppState.js";
 import type { AppState } from "../../state/AppState.js";
 import {
@@ -29,8 +29,94 @@ import {
 } from "../../../utils/messages.js";
 import { jsonParse } from "../../../utils/slowOperations.js";
 import { escapeXml } from "../../../utils/xml.js";
+import { truncateToWidth } from "../../../utils/truncate.js";
+import { useContentWidth } from "../../context/contentWidthContext.js";
+import { useTerminalSize } from "../../hooks/useTerminalSize.js";
+import { wrapAnsi } from "../../ink/wrapAnsi.js";
+import ThemedText from "../design-system/ThemedText.js";
 import { Message } from "../Message.js";
 const EMPTY_SET = new Set<string>();
+
+/** Rows one queued input may take in the list. A longer one ends with an ellipsis. */
+const MAX_QUEUED_INPUT_ROWS = 2;
+/** Queued inputs listed by number. With more, one line says how many more wait. */
+const MAX_LISTED_QUEUED_INPUTS = 5;
+/** The list is inset by two cells, like the transcript. */
+const QUEUED_INPUTS_INSET = 2;
+
+/** A queued input the user typed: a prompt or a shell line that can still be dropped. */
+function isQueuedUserInput(cmd: QueuedCommand): boolean {
+  return (
+    isQueuedCommandEditable(cmd) &&
+    (cmd.mode === "prompt" || cmd.mode === "bash")
+  );
+}
+
+/**
+ * A queued input as one line of text: line breaks and runs of spaces become
+ * one space. A content block that is not text (an image, a document) is
+ * named in brackets, so the user sees that an attachment waits with the
+ * input before dropping or sending it.
+ */
+export function queuedInputText(cmd: Pick<QueuedCommand, "value" | "mode">): string {
+  const value =
+    typeof cmd.value === "string"
+      ? cmd.value
+      : (cmd.value as ReadonlyArray<{ type?: string; text?: string }>)
+          .map((block) =>
+            block.type === "text"
+              ? (block.text ?? "")
+              : `[${block.type ?? "attachment"}]`,
+          )
+          .join(" ");
+  const text = value.normalize("NFC").replace(/\s+/gu, " ").trim();
+  return cmd.mode === "bash" ? `! ${text}` : text;
+}
+
+/**
+ * The rows of the queued inputs list, without the header line.
+ *
+ *   1  first words of the first input, wrapped at a word boundary
+ *      under its own first character…
+ *   2  check now
+ *
+ * An input is always shown from its first character. It takes at most
+ * MAX_QUEUED_INPUT_ROWS rows; a longer one is cut at the end of its last
+ * row with an ellipsis, never at the start.
+ */
+export function formatQueuedInputRows(
+  inputs: readonly string[],
+  width: number,
+  maxListed: number = MAX_LISTED_QUEUED_INPUTS,
+): string[] {
+  const listed = inputs.slice(0, maxListed);
+  const numberWidth = String(listed.length).length;
+  const hang = " ".repeat(numberWidth + 2);
+  const textWidth = Math.max(8, Math.floor(width) - hang.length);
+  const rows: string[] = [];
+  listed.forEach((input, index) => {
+    const lines = wrapAnsi(input, textWidth, { hard: true, trim: true }).split("\n");
+    const shown = lines.slice(0, MAX_QUEUED_INPUT_ROWS);
+    if (lines.length > MAX_QUEUED_INPUT_ROWS) {
+      // Everything after the rows before the last one, cut to one row.
+      let rest = input;
+      for (const line of shown.slice(0, -1)) {
+        rest = rest.slice(line.length).trimStart();
+      }
+      shown[shown.length - 1] = truncateToWidth(rest, textWidth);
+    }
+    shown.forEach((line, lineIndex) => {
+      rows.push(
+        lineIndex === 0
+          ? `${String(index + 1).padStart(numberWidth)}  ${line}`
+          : `${hang}${line}`,
+      );
+    });
+  });
+  const more = inputs.length - listed.length;
+  if (more > 0) rows.push(`${hang}${more} more queued`);
+  return rows;
+}
 
 /**
  * Check if a command value is an idle notification that should be hidden.
@@ -101,8 +187,15 @@ function processQueuedCommands(
 }
 function PromptInputQueuedCommandsImpl({
   queueOwner,
+  listAll = false,
 }: {
   readonly queueOwner?: QueuedCommandOwner;
+  /**
+   * List every queued input, however many. Set while the prompts cannot be
+   * sent (a tool outcome waits for review): the user then needs to see all
+   * that wait, not the first five and a count.
+   */
+  readonly listAll?: boolean;
 }): React.ReactNode {
   const allQueuedCommands = useCommandQueue();
   const queuedCommands = useMemo(
@@ -130,25 +223,34 @@ function PromptInputQueuedCommandsImpl({
         useAppState((s_0: AppState) => s_0.isBriefOnly)
       : false;
 
-  // createUserMessage mints a fresh UUID per call; without memoization, streaming
-  // re-renders defeat Message's areMessagePropsEqual (compares uuid) → flicker.
-  const queuedInputCount = useMemo(
+  const { columns } = useTerminalSize();
+  const contentWidth = useContentWidth() ?? columns;
+  // The inputs the user typed are listed by number. Everything else that is
+  // visible in the queue (task notifications, channel messages) keeps its
+  // own message rendering below.
+  const queuedInputRows = useMemo(
     () =>
-      queuedCommands.filter(
-        (cmd) =>
-          isQueuedCommandEditable(cmd) &&
-          (cmd.mode === "prompt" || cmd.mode === "bash"),
-      ).length,
-    [queuedCommands],
+      formatQueuedInputRows(
+        queuedCommands
+          .filter((cmd) => isQueuedCommandVisible(cmd) && isQueuedUserInput(cmd))
+          .map(queuedInputText),
+        contentWidth - QUEUED_INPUTS_INSET - 1,
+        listAll ? Number.POSITIVE_INFINITY : MAX_LISTED_QUEUED_INPUTS,
+      ),
+    [queuedCommands, contentWidth, listAll],
   );
 
+  // createUserMessage mints a fresh UUID per call; without memoization, streaming
+  // re-renders defeat Message's areMessagePropsEqual (compares uuid) → flicker.
   const messages = useMemo(() => {
     if (queuedCommands.length === 0) return null;
     // task-notification is shown via useInboxNotification; most isMeta commands
     // (scheduled tasks, proactive ticks) are system-generated and hidden.
     // Channel messages are the exception — isMeta but shown so the keyboard
     // user sees what arrived.
-    const visibleCommands = queuedCommands.filter(isQueuedCommandVisible);
+    const visibleCommands = queuedCommands.filter(
+      (cmd) => isQueuedCommandVisible(cmd) && !isQueuedUserInput(cmd),
+    );
     if (visibleCommands.length === 0) return null;
     const processedCommands = processQueuedCommands(visibleCommands);
     return normalizeMessages(
@@ -176,36 +278,32 @@ function PromptInputQueuedCommandsImpl({
   }, [queuedCommands]);
 
   // Don't show leader's queued commands when viewing any agent's transcript
-  if (viewingAgent || messages === null) {
+  if (viewingAgent || (messages === null && queuedInputRows.length === 0)) {
     return null;
   }
   return (
     <Box marginTop={1} flexDirection="column">
-      {queuedInputCount > 0 && (
-        <Box marginLeft={2} marginBottom={1}>
-          <Text dimColor>
-            {queuedInputCount === 1
-              ? "1 input queued for next turn"
-              : `${queuedInputCount} inputs queued for next turn`}
-            {/* The "esc to interrupt" affordance is NOT repeated here: a queue
-                can only exist while a turn is loading (inputs are enqueued only
-                when isLoading — see applyBusyInputSubmissionPolicy), and the
-                footer spinner hint always renders the canonical
-                "esc → interrupt" while loading (getSpinnerHintParts). Painting
-                it again on this banner doubled the same hint on screen. */}
-            {/* Lowercase the rendered keycap so this inline hint reads in the
-                same lowercase style as the footer's chat:cancel hint (which
-                .toLowerCase()s its shortcut too). getShortcutDisplay
-                capitalizes named keys ("Backspace"), which would otherwise mix
-                casing within this one line. */}
-            {` · ${getShortcutDisplay("chat:dropQueuedInput", "Chat", "ctrl+x backspace").toLowerCase()} to drop last`}
-          </Text>
+      {queuedInputRows.length > 0 && (
+        // One header line, then one numbered entry per input. No band, no
+        // fill and no label per entry: the header says once what the list is
+        // and how to drop the last input. The "esc to interrupt" hint is not
+        // repeated here; the footer shows it while a turn runs. The keycap is
+        // lowercased so the line reads like the footer's hints.
+        <Box marginLeft={QUEUED_INPUTS_INSET} flexDirection="column">
+          <ThemedText color="text3" wrap="truncate-end">
+            {`queued for next turn · ${getShortcutDisplay("chat:dropQueuedInput", "Chat", "ctrl+x backspace").toLowerCase()} drops the last`}
+          </ThemedText>
+          {queuedInputRows.map((row, i) => (
+            <ThemedText key={i} color="text3" wrap="truncate-end">
+              {row}
+            </ThemedText>
+          ))}
         </Box>
       )}
-      {messages.map((message, i) => (
+      {(messages ?? []).map((message, i) => (
         <QueuedMessageProvider
           key={i}
-          isFirst={i === 0}
+          isFirst={i === 0 && queuedInputRows.length === 0}
           useBriefLayout={useBriefLayout}
         >
           {/* One blank line between consecutive queued items (none before the
@@ -214,7 +312,7 @@ function PromptInputQueuedCommandsImpl({
           <Message
             message={message}
             lookups={EMPTY_LOOKUPS}
-            addMargin={i !== 0}
+            addMargin={i !== 0 || queuedInputRows.length > 0}
             tools={[]}
             commands={[]}
             verbose={false}

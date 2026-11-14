@@ -122,7 +122,67 @@ function calledToolNames(messages) {
   );
 }
 
+/**
+ * Markdown replies for render gates. A prompt that says "reply with the
+ * markdown fixture <name>" gets the text below, so a gate can put a known
+ * table into the transcript.
+ *
+ * `owner-table` is the table of the owner's report of 2026-11-11: rows with
+ * a check mark emoji had their borders out of place.
+ */
+export const MARKDOWN_REPLY_FIXTURES = Object.freeze({
+  "owner-table": [
+    "Estado del plan:",
+    "",
+    "| Fase | Estado | Evidencia |",
+    "|---|---|---|",
+    "| P1 Backup | ✅ | `edl/boot_stock.img` (96 MiB partición completa, doble lectura sha256 idéntico) |",
+    "| P2 Verificación | ✅ | magic ANDROID!, header v2, kernel gzip 15 MB, ramdisk 1123 KB, DTB 294 KB, cmdline legible |",
+    "| P3 Parche Magisk | ✅ | `magisk_patched.img` (17.1 MB, unpack válido, ramdisk con Magisk, DTB sin tocar) |",
+    "| P4 Flash boot_b | ⏳ | listo para ejecutar: `fastboot flash boot_b magisk_patched.img` |",
+    "| P5 Arranque desde b | ⏳ | mitigación preparada: `vbmeta_b` desverificado si AVB rechaza |",
+    "| P6 Root | ⏳ | `su -c id` |",
+  ].join("\n"),
+  // A message like the one of the owner's second report (2026-11-11): list
+  // items that start with an emoji and are long enough to wrap. Item 5 adds
+  // the other kinds of cluster whose width terminals do not agree on.
+  "owner-session": [
+    "**Estado: muy bien, root a un paso, todo seguro.** La M8 sigue en modo EDL (conexión QUSB visible), esperando el flash de boot_b.",
+    "",
+    "**Lo conseguido hasta ahora:**",
+    "1. ✅ **Backup completo en el Mac** (esto era lo crítico que no tenías): boot_a stock completo leído dos veces por EDL con sha256 idéntico + vbmeta_a/b + copia de boot_b stock. Si algo saliera mal, restauramos byte a byte.",
+    "2. ✅ **Imagen Magisk generada y validada** (magisk_patched.img, 17.1 MB): mismo kernel, ramdisk con Magisk inyectado, DTB intacto, verificación de ida y vuelta correcta.",
+    "3. ⚠\ufe0f **fastboot rechazó el flash** de boot_b (\"unknown command\" al escribir, el bootloader Telpo locked no soporta flash). Sin daño: solo envió, no escribió.",
+    "4. 🔄 **La vía alternativa ya está en marcha**: EDL (firehose), que ya demostró acceso total de lectura a 25 MB/s. El edl.py w boot_b estaba corriendo cuando lo interrumpiste, **no completó la escritura** (salió tras conectar sahara).",
+    "5. ✔ **Otras clases de ancho** en una sola línea: ⚠ sin selector, ↔ flecha, © marca, 👨\u200d👩\u200d👧 familia, 🇪🇸 bandera, 👍🏽 tono de piel, 1\ufe0f\u20e3 tecla, 日本語 texto ancho; la línea es larga y también se parte en dos filas.",
+    "",
+    "**Lo que queda:** re-ejecutar el write EDL de boot_b con la imagen Magisk (~1-2 min), reiniciar desde slot b y verificar root (su). Si arranca mal, el bootloader A/B vuelve solo al slot a (stock, intacto); y de último recurso está la restauración EDL completa con los backups.",
+    "",
+    "¿Continúo con el flash EDL de boot_b?",
+  ].join("\n"),
+});
+
+/** Size and pause of the pieces of a streamed fixture reply. */
+const STREAM_PIECE_CHARS = 9;
+const STREAM_PIECE_PAUSE_MS = 15;
+
+/** The fixture a prompt asks to have streamed in pieces, or undefined. */
+function streamedFixtureForPrompt(prompt) {
+  const name = /\breply with the streamed markdown fixture\s+([a-z0-9-]+)/i.exec(
+    prompt,
+  )?.[1];
+  return name && Object.hasOwn(MARKDOWN_REPLY_FIXTURES, name)
+    ? MARKDOWN_REPLY_FIXTURES[name]
+    : undefined;
+}
+
 function completionForPrompt(prompt) {
+  const fixture = /\breply with the markdown fixture\s+([a-z0-9-]+)/i.exec(
+    prompt,
+  )?.[1];
+  if (fixture && Object.hasOwn(MARKDOWN_REPLY_FIXTURES, fixture)) {
+    return MARKDOWN_REPLY_FIXTURES[fixture];
+  }
   const singleWord =
     /\b(?:reply with|say only)\s+(?:the\s+)?(?:single\s+)?word\s+([A-Za-z0-9_-]+)/i.exec(
       prompt,
@@ -409,6 +469,31 @@ function respondWithText(response, body, text) {
   ]);
 }
 
+/**
+ * Stream a text in small pieces with a pause between them, as a model does.
+ * The transcript then grows a few characters at a time and repaints often.
+ */
+async function respondWithStreamedText(response, body, text) {
+  response.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  const send = (chunk) => response.write(`data: ${JSON.stringify(chunk)}\n\n`);
+  send(makeChunk(body, { index: 0, delta: { role: "assistant" }, finish_reason: null }));
+  const characters = Array.from(text);
+  for (let start = 0; start < characters.length; start += STREAM_PIECE_CHARS) {
+    const piece = characters.slice(start, start + STREAM_PIECE_CHARS).join("");
+    send(makeChunk(body, { index: 0, delta: { content: piece }, finish_reason: null }));
+    await new Promise((resolve) => setTimeout(resolve, STREAM_PIECE_PAUSE_MS));
+  }
+  send({
+    ...makeChunk(body, { index: 0, delta: {}, finish_reason: "stop" }),
+    usage: usage(64, Math.max(1, text.split(/\s+/).length)),
+  });
+  response.end("data: [DONE]\n\n");
+}
+
 function respondWithToolCall(response, body, call) {
   const selected = call.tool;
   const name = toolName(selected) || "exec_command";
@@ -452,6 +537,11 @@ async function handleChatCompletions(request, response) {
   const call = nextToolCall(body, messages, prompt, completedTools);
   if (call) {
     respondWithToolCall(response, body, call);
+    return;
+  }
+  const streamed = completedTools > 0 ? undefined : streamedFixtureForPrompt(prompt);
+  if (streamed !== undefined) {
+    await respondWithStreamedText(response, body, streamed);
     return;
   }
   respondWithText(
