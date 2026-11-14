@@ -246,13 +246,51 @@ export function formatToken(
         )
         .join('')
     }
-    case 'list_item':
-      return (token.tokens ?? [])
-        .map(
-          _ =>
-            `${'  '.repeat(listDepth)}${formatToken(_, theme, listDepth + 1, orderedListNumber, token, highlight)}`,
-        )
-        .join('')
+    case 'list_item': {
+      // One marker per item, then the item's blocks under it. The first text
+      // of the item sits on the marker line. It is a `text` token in a tight
+      // list and a `paragraph` token when blank lines separate the items.
+      const indent = '  '.repeat(listDepth)
+      const marker =
+        orderedListNumber === null
+          ? '-'
+          : `${getListNumber(listDepth + 1, orderedListNumber)}.`
+      const hang = indent + ' '.repeat(marker.length + 1)
+      let lead = `${indent}${marker} `
+      let output = ''
+      for (const child of token.tokens ?? []) {
+        if (child.type === 'checkbox') {
+          // Task list box.
+          lead += child.checked ? '[x] ' : '[ ] '
+          continue
+        }
+        if (lead && (child.type === 'text' || child.type === 'paragraph')) {
+          const inline = child.tokens
+            ? child.tokens
+                .map(_ => formatToken(_, theme, 0, null, child, highlight))
+                .join('')
+            : linkifyIssueReferences(normalizeSoftLineBreaks(child.text))
+          output += lead + inline + EOL
+          lead = ''
+          continue
+        }
+        if (lead) {
+          output += lead.trimEnd() + EOL
+          lead = ''
+        }
+        if (child.type === 'list') {
+          // A nested list indents its own items.
+          output += formatToken(child, theme, listDepth + 1, null, token, highlight)
+          continue
+        }
+        // Later paragraphs and code blocks line up under the item's text.
+        output += formatToken(child, theme, 0, null, null, highlight)
+          .split(EOL)
+          .map(line => (line ? hang + line : line))
+          .join(EOL)
+      }
+      return lead ? lead.trimEnd() + EOL : output
+    }
     case 'paragraph':
       return (
         (token.tokens ?? [])
@@ -270,9 +308,6 @@ export function formatToken(
         // sequence, and terminals honor the innermost one, overriding the
         // link's actual href.
         return normalizeSoftLineBreaks(token.text)
-      }
-      if (parent?.type === 'list_item') {
-        return `${orderedListNumber === null ? '-' : getListNumber(listDepth, orderedListNumber) + '.'} ${token.tokens ? token.tokens.map(_ => formatToken(_, theme, listDepth, orderedListNumber, token, highlight)).join('') : linkifyIssueReferences(normalizeSoftLineBreaks(token.text))}${EOL}`
       }
       return linkifyIssueReferences(normalizeSoftLineBreaks(token.text))
     case 'table': {

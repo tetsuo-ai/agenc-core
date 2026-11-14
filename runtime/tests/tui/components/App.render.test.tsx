@@ -2339,8 +2339,12 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       for (const prompt of ["OPEN IT IN CHROME", "run", "runeun", "so"]) {
         await (providerProbe.promptProps.at(-1)!.onSubmit as (value: string, helpers: typeof helpers) => Promise<void>)(prompt, helpers);
       }
-      await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain('"text":"so"'));
-      expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("OPENITINCHROME");
+      // The queued prompts are listed by number, every one of them, in order.
+      await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("4so"));
+      // The output is the stream of repaints, so each entry is checked on its own.
+      for (const entry of ["OPENITINCHROME", "2run", "3runeun", "4so", "dropsthelast"]) {
+        expect(stripAnsi(output()).replace(/\s/gu, "")).toContain(entry);
+      }
       expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("reviewneeded·promptswaitfortooloutcomereview");
       expect(session.submit).not.toHaveBeenCalled();
       publish({ type: "effect_review_resolved", payload: { callId: "call-browser", resolution: { workflowStatus: "pending", disposition: "remains_unknown" } } });
@@ -2378,7 +2382,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
     try { await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async ({ output }) => {
       await (providerProbe.promptProps.at(-1)!.onSubmit as (value: string, helpers: typeof helpers) => Promise<void>)("keep this prompt", helpers);
-      await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain('"text":"keepthisprompt"'));
+      await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("1keepthisprompt"));
       expect(session.submit).toHaveBeenCalledTimes(1);
       publish(eventDelivered
         ? { type: "effect_review_resolved", payload: { callId: "call-race", resolution: { workflowStatus: "resolved" } } }
