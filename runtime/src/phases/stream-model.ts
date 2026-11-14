@@ -1462,7 +1462,8 @@ export async function streamModel(
           messages, source: state.messages,
           options: { systemPrompt: admittedOptions.systemPrompt,
             systemPromptLayout: admittedOptions.systemPromptLayout,
-            tools: admittedOptions.tools, promptCacheKey: admittedOptions.promptCacheKey },
+            tools: admittedOptions.tools, promptCacheKey: admittedOptions.promptCacheKey,
+            ...(admittedOptions.deepSeekAppTools === true ? { deepSeekAppTools: true } : {}) },
         });
         return withStreamTransportActivity(
           () => watchdog.kick("bytes"),

@@ -46,7 +46,8 @@ export function estimateMessagesTokens(
   // actual image projection fits. Count that projection before calibrating.
   const projectedMessages = calibrationScope && reportsCompletePromptTokens(provider, model)
     ? boundContextImagesForProvider(accountingMessages,
-        resolveContextImageBudgetBytes(getSelectedProviderEnvironment()), provider,
+        resolveContextImageBudgetBytes(
+          context?.admissionSession?.services?.userShell?.childEnvironment ?? getSelectedProviderEnvironment(), provider), provider,
         context?.admissionSession ? contextImageShownBefore(context.admissionSession) : () => false).messages
     : accountingMessages;
   const factoryOptions = context?.provider

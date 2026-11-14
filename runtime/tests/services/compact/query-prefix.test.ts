@@ -23,7 +23,7 @@ const mainOptions = { model, systemPrompt: "Keep implementing the user's task.",
 
 afterEach(() => tokenAccountingService.clear());
 
-test.each(["plain", "tool_pair", "compatible", "shown_image", "unseen_image", "stale_history", "foreign_provider", "over_window"])(
+test.each(["plain", "tool_pair", "compatible", "shown_image", "unseen_image", "stale_history", "foreign_provider", "over_window", "app_tools"])(
   "compaction reuses only its successful main prefix: %s", async mode => {
   const sent = structuredClone(source);
   if (mode === "tool_pair") {
@@ -41,10 +41,11 @@ test.each(["plain", "tool_pair", "compatible", "shown_image", "unseen_image", "s
   ] });
   if (mode === "stale_history") complete[0]!.content = "Replaced source. " + complete[0]!.content;
   const durableBefore = structuredClone(complete);
-  const reuse = !["stale_history", "foreign_provider", "over_window"].includes(mode);
+  const reuse = !["stale_history", "foreign_provider", "over_window", "app_tools"].includes(mode);
   const sentOptions = mode === "over_window"
     // The earlier request fit a larger window than the current summary call.
-    ? { ...mainOptions, contextWindowTokens: 4_194_304, systemPrompt: "Earlier lengthy policy. ".repeat(100_000) } : mainOptions;
+    ? { ...mainOptions, contextWindowTokens: 4_194_304, systemPrompt: "Earlier lengthy policy. ".repeat(100_000) }
+    : { ...mainOptions, ...(mode === "app_tools" ? { deepSeekAppTools: true } : {}) };
   const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => sseResponse([
     `data: ${JSON.stringify({ model, choices: [{ index: 0, delta: { role: "assistant",
       content: JSON.stringify({ narrative: "Task state.", facts: [], open_actions: [] }) }, finish_reason: null }] })}\n\n`,
@@ -56,6 +57,7 @@ test.each(["plain", "tool_pair", "compatible", "shown_image", "unseen_image", "s
     : new DeepSeekProvider({ apiKey: "offline-fixture", model, fetchImpl });
   await provider.chatStream(sent, () => {}, sentOptions);
   const main = bodyAt(fetchImpl);
+  if (mode === "app_tools") expect(main.tools).toContainEqual({ type: "deepseek_web_search" });
   const harness = createCompactionTransactionHarness([], { sessionId, contextWindowTokens: 1_048_576, maxOutputTokens: 8_192 });
   try {
     for (const message of complete) harness.store.appendRollout({ type: "response_item", payload: llmMessageToDurableResponseItem(message) }, { durable: true });

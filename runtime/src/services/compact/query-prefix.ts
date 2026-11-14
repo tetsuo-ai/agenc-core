@@ -12,7 +12,7 @@ export interface CompactionQueryPrefix {
   readonly model: string;
   readonly messages: readonly LLMMessage[];
   readonly source: readonly LLMMessage[];
-  readonly options: Pick<LLMChatOptions, "systemPrompt" | "systemPromptLayout" | "tools" | "promptCacheKey">;
+  readonly options: Pick<LLMChatOptions, "systemPrompt" | "systemPromptLayout" | "tools" | "promptCacheKey" | "deepSeekAppTools">;
 }
 
 export interface PrefixCompactionCall {
@@ -75,7 +75,9 @@ export function buildPrefixCompactionCall(params: {
   readonly policy: string;
 }): PrefixCompactionCall | undefined {
   const { prefix, plan } = params;
-  if (!prefix || !preservesQueryPrefix(params.provider) || prefix.provider !== params.provider ||
+  // App tools add server-side web tools and require thinking with local tools.
+  // A summary must not execute those tools, so use the existing summary path.
+  if (!prefix || prefix.options.deepSeekAppTools === true || !preservesQueryPrefix(params.provider) || prefix.provider !== params.provider ||
       prefix.model !== params.model || plan.chunks.length !== 1 || plan.calls.length !== 1 ||
       prefix.source.length === 0 || prefix.source.length > params.completeSource.length ||
       prefix.source.some((message, i) => comparable(message) !== comparable(params.completeSource[i]!))) return undefined;

@@ -866,10 +866,11 @@ function projectSamplingImages(
   // Bound the fully assembled query, including fresh image mentions from
   // attachment producers. Durable history and retained attachments keep
   // every image; only this request projection changes.
+  const imageProvider = ctx.modelProviderId ?? session.services.provider.name;
   const imageBudgetBytes = resolveContextImageBudgetBytes(
     session.services.userShell?.childEnvironment ?? process.env,
+    imageProvider,
   );
-  const imageProvider = ctx.modelProviderId ?? session.services.provider.name;
   const offeredImages = state.messagesForQuery;
   const boundedImages = boundContextImagesForProvider(
     offeredImages,
@@ -2608,9 +2609,11 @@ async function assertSeedUserPromptFits(
   const imagePolicy = modelImagePolicy(session, ctx, state,
     session.services.configStore?.current() ?? ctx.config as AgenCConfig);
   const visible = withholdImagesForModel(seedMessages, imagePolicy, rejectedImagesFor(session, imagePolicy.route));
+  const imageProvider = ctx.modelProviderId ?? session.services.provider.name;
   const bounded = boundContextImagesForProvider(visible.messages, resolveContextImageBudgetBytes(
     session.services.userShell?.childEnvironment ?? process.env,
-  ), ctx.modelProviderId ?? session.services.provider.name, contextImageShownBefore(session));
+    imageProvider,
+  ), imageProvider, contextImageShownBefore(session));
   state.messagesForQuery = withholdUndecodableToolImages(bounded.messages).messages;
   const request = buildSamplingRequestContract(state, session, ctx);
   const model = skillInvocationRequestModel(session, ctx) ??

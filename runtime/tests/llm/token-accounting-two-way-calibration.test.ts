@@ -94,6 +94,31 @@ async function reportAt(
 }
 
 describe("two-way calibration from DeepSeek reported prompt tokens", () => {
+  test.each([undefined, "6291456"])("compaction estimates the images admitted with the session budget %s", budget => {
+    tokenAccountingService.clear();
+    try {
+      const images = Array.from({ length: 7 }, (_, index) => ({
+        type: "image_url" as const,
+        image_url: { url: `data:image/png;base64,${String(index).padEnd(1024 * 1024 - 22, "A")}` },
+      }));
+      const history: LLMMessage[] = [{ role: "user", content: images }];
+      const context = {
+        provider: { name: "deepseek" },
+        admissionSession: { conversationId: "conv-a", services: {
+          userShell: { childEnvironment: { AGENC_CONTEXT_IMAGE_BUDGET_BYTES: budget } },
+        } },
+        options: { mainLoopModel: "deepseek-flash", systemPrompt: SYSTEM_PROMPT,
+          tools: TOOLS, maxOutputTokens: 8_192, contextWindowTokens: 1_048_576 },
+      } as unknown as Parameters<typeof estimateMessagesTokens>[1];
+      const projected: LLMMessage[] = [{ role: "user", content: budget === undefined ? images : [
+        { type: "text", text: '[image not inspected: this newly attached image does not fit in the inline image budget together with the newer images of this request. Do not claim visual verification. Read or capture it again on its own, or use a smaller crop.]' },
+        ...images.slice(1),
+      ] }];
+      const expected = tokenAccountingService.estimate(request(projected, { endpointIdentity: undefined })).inputTokens;
+      expect(estimateMessagesTokens(history, context, { inputOnly: true })).toBe(expected);
+    } finally { tokenAccountingService.clear(); }
+  });
+
   test("compaction checks inherit the session's last prompt report", async () => {
     tokenAccountingService.clear();
     try {

@@ -15,6 +15,7 @@ import {
   type PlainDataSnapshot,
 } from "../utils/plain-data-snapshot.js";
 import { deepSeekReasoningOnlyReplayProvenance } from "./deepseek-reasoning-only-replay.js";
+import { DEEPSEEK_CONTEXT_IMAGE_BUDGET_BYTES } from "./inline-image-limits.js";
 
 import { LLMContextWindowExceededError } from "./errors.js";
 import { getTokenizerConfigForProvider } from "./token-estimation.js";
@@ -1235,6 +1236,12 @@ function prepareAccountingRequest(
   capability: ProviderTokenCountCapability | undefined,
   maxRequestBytes: number,
 ): PreparedAccountingRequest {
+  // Native DeepSeek's image budget exceeds the ordinary 16 MiB aggregate
+  // bound. Bound its images separately so a full 24 MiB history can dispatch;
+  // projected text, tools and metadata still have the existing byte limit.
+  // Custom accounting limits retain their aggregate bound.
+  const separateImageBudget = request.provider === "deepseek" && maxRequestBytes === MAX_TOKEN_ACCOUNTING_REQUEST_BYTES
+    ? DEEPSEEK_CONTEXT_IMAGE_BUDGET_BYTES : undefined;
   let snapshot: TokenAccountingRequest;
   let promptIdentity: Readonly<Record<string, unknown>>;
   let cacheIdentity: Readonly<Record<string, unknown>>;
@@ -1260,7 +1267,7 @@ function prepareAccountingRequest(
         normalizedMessages,
         toolResultImagePolicy,
       ),
-      maxRequestBytes,
+      separateImageBudget ?? maxRequestBytes,
     );
     promptIdentity = promptIdentityForRequest(
       snapshot,
@@ -1293,12 +1300,11 @@ function prepareAccountingRequest(
       `token accounting request is not canonicalizable: ${errorMessage(error)}`,
     );
   }
-  // Preserve the original aggregate request bound even though inline Base64
-  // is replaced by a compact binary-media identity for token estimation and
-  // cache keys. Count every inline source occurrence, then add the projected
-  // request bytes. The small metadata overlap intentionally errs conservative.
+  // Base64 is replaced by a compact binary-media identity for estimation and
+  // cache keys. Every source occurrence is bounded above. Other providers and
+  // custom limits retain the original aggregate bound, including those bytes.
   const requestBytes =
-    canonicalJsonUtf8Length(cacheIdentityParts) + messageProjection.inlineSourceBytes;
+    canonicalJsonUtf8Length(cacheIdentityParts) + (separateImageBudget === undefined ? messageProjection.inlineSourceBytes : 0);
   if (requestBytes > maxRequestBytes) {
     throw new TokenAccountingError(
       "request_too_large",

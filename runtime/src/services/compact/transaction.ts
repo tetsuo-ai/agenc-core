@@ -19,6 +19,7 @@ import {
 } from "../../llm/token-accounting.js";
 import {
   DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES,
+  DEEPSEEK_CONTEXT_IMAGE_BUDGET_BYTES,
   boundContextImagesForProvider,
   resolveContextImageBudgetBytes,
 } from "../../session/query-image-budget.js";
@@ -556,7 +557,7 @@ async function compactConversationTransactionBody(
       }),
       providerName,
       model,
-      imageBudgetBytes: shrinkAccountingImageBudgetBytes(session),
+      imageBudgetBytes: shrinkAccountingImageBudgetBytes(session, providerName),
     }));
     deadline.assertActive();
   }
@@ -664,7 +665,7 @@ async function compactConversationTransactionBody(
       model,
       accountingRef,
       automatic: options.automatic,
-      imageBudgetBytes: shrinkAccountingImageBudgetBytes(session),
+      imageBudgetBytes: shrinkAccountingImageBudgetBytes(session, providerName),
     }));
     deadline.assertActive();
     const replacementHistory = replacementRuntime.map(toProjectionMessage);
@@ -1840,16 +1841,21 @@ async function countCompactionProviderOutput(params: {
  * compact at all (Terminal-Bench `layout-config-recreation__Hrx5oPp`:
  * "inline image sources exceed the 65447-byte remaining request budget" on
  * every ladder tier). The operator's budget is the measurement budget; a
- * disabled (`0`) or cap-sized value measures with the default so the
- * measurement itself can never exceed the accounting cap.
+ * disabled (`0`) or over-cap value measures with 6 MiB. Native DeepSeek has
+ * a separate 24 MiB image allowance; other providers reserve half the
+ * aggregate accounting cap for the rest of the request.
  */
 export function shrinkAccountingImageBudgetBytes(
   session: NonNullable<CompactContext["admissionSession"]>,
+  provider = session.services.provider?.name,
 ): number {
   const configured = resolveContextImageBudgetBytes(
     session.services.userShell?.childEnvironment ?? process.env,
+    provider,
   );
-  if (configured <= 0 || configured > MAX_TOKEN_ACCOUNTING_REQUEST_BYTES / 2) {
+  const maximum = provider?.trim().toLowerCase() === "deepseek"
+    ? DEEPSEEK_CONTEXT_IMAGE_BUDGET_BYTES : MAX_TOKEN_ACCOUNTING_REQUEST_BYTES / 2;
+  if (configured <= 0 || configured > maximum) {
     return DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES;
   }
   return configured;

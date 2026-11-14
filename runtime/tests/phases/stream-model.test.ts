@@ -287,7 +287,7 @@ function mkRegistry(tools: Tool[]): ToolRegistry {
 }
 
 describe("streamModel — live assistant text sanitization", () => {
-  test("records a successful prefix before callbacks mutate source history and ignores failed requests", async () => {
+  test.each([false, true])("records a successful prefix before callbacks mutate source history and ignores failed requests, App tools=%s", async appTools => {
     const ctx = mkCtx();
     const state = mkState(ctx);
     let fail = false;
@@ -300,11 +300,12 @@ describe("streamModel — live assistant text sanitization", () => {
     }), name: "deepseek" };
     const { session } = mkSession(provider);
     const messages: LLMMessage[] = [{ role: "user", content: "hello" }];
-    await streamModel(state, ctx, session, { ...mkRequest(messages), baseInstructions: "Stable policy" });
+    await streamModel(state, ctx, session, { ...mkRequest(messages), baseInstructions: "Stable policy", deepSeekAppTools: appTools });
     const prefix = readCompactionQueryPrefix(session)!;
     expect(prefix.source[0]!.content).toBe("hello");
     expect(prefix.messages).toEqual(messages);
     expect(prefix.options.systemPrompt).toBe("Stable policy");
+    expect(prefix.options).toEqual(expect.objectContaining(appTools ? { deepSeekAppTools: true } : {}));
     messages[0]!.content = "edited later";
     expect(prefix.messages[0]!.content).toBe("hello");
     fail = true;

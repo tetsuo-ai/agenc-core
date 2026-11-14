@@ -34,6 +34,8 @@
 import { createHash } from "node:crypto";
 
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
+import { DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES, DEEPSEEK_CONTEXT_IMAGE_BUDGET_BYTES } from "../llm/inline-image-limits.js";
+export { DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES, DEEPSEEK_CONTEXT_IMAGE_BUDGET_BYTES } from "../llm/inline-image-limits.js";
 import { preservesQueryPrefix } from "./query-prefix-providers.js";
 import { withheldImagePlaceholder } from "./query-image-withheld.js";
 
@@ -250,7 +252,6 @@ export function unseenImageSourcesRemovedByCompaction(
   return sources;
 }
 
-export const DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES = 6 * 1024 * 1024;
 export const CONTEXT_IMAGE_BUDGET_ENV = "AGENC_CONTEXT_IMAGE_BUDGET_BYTES";
 export const OMITTED_IMAGE_TEXT =
   "[image omitted: an earlier screenshot is no longer in context; capture or read it again if it is still needed]";
@@ -271,17 +272,21 @@ export function unfitImageText(source: string): string {
     "Do not claim visual verification. Read or capture it again on its own, or use a smaller crop.]";
 }
 
-/** `0` disables the budget; an unset or malformed value uses the default. */
+/** `0` disables the budget; an unset or malformed value uses the provider default. */
 export function resolveContextImageBudgetBytes(
   env: NodeJS.ProcessEnv,
+  provider?: string,
 ): number {
+  const defaultBytes = provider?.trim().toLowerCase() === "deepseek"
+    ? DEEPSEEK_CONTEXT_IMAGE_BUDGET_BYTES
+    : DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES;
   const raw = env[CONTEXT_IMAGE_BUDGET_ENV];
   if (raw === undefined || raw.trim().length === 0) {
-    return DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES;
+    return defaultBytes;
   }
   const parsed = Number(raw.trim());
   if (!Number.isFinite(parsed) || parsed < 0) {
-    return DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES;
+    return defaultBytes;
   }
   return Math.floor(parsed);
 }

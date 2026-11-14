@@ -7,6 +7,7 @@ import {
   boundContextImagesForProvider,
   CONTEXT_IMAGE_BUDGET_ENV,
   DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES,
+  DEEPSEEK_CONTEXT_IMAGE_BUDGET_BYTES,
   EVICTED_IMAGE_TEXT,
   OMITTED_IMAGE_TEXT,
   OVERSIZED_IMAGE_TEXT,
@@ -81,6 +82,27 @@ function prefixRepeats(requests: ReadonlyArray<{ readonly messages: readonly LLM
 }
 
 describe("resolveContextImageBudgetBytes", () => {
+  test("native DeepSeek defaults to 24 MiB", () => {
+    expect(resolveContextImageBudgetBytes({}, "deepseek")).toBe(25_165_824);
+    expect(resolveContextImageBudgetBytes({}, " DeepSeek ")).toBe(DEEPSEEK_CONTEXT_IMAGE_BUDGET_BYTES);
+  });
+
+  test.each([undefined, "openai", "openai-compatible", "openrouter", "anthropic", "gemini", "grok", "ollama"])(
+    "%s keeps the 6 MiB default", provider => {
+      expect(resolveContextImageBudgetBytes({}, provider)).toBe(6_291_456);
+    },
+  );
+
+  test.each(["deepseek", "openai-compatible"])("%s honors overrides and uses its own default for malformed values", provider => {
+    for (const raw of ["0", "2048", " 4096.9 "]) {
+      expect(resolveContextImageBudgetBytes({ [CONTEXT_IMAGE_BUDGET_ENV]: raw }, provider)).toBe(Math.floor(Number(raw)));
+    }
+    for (const raw of ["", " ", "lots", "-5", "Infinity"]) {
+      expect(resolveContextImageBudgetBytes({ [CONTEXT_IMAGE_BUDGET_ENV]: raw }, provider))
+        .toBe(resolveContextImageBudgetBytes({}, provider));
+    }
+  });
+
   test("defaults, disables on 0, ignores malformed values", () => {
     expect(resolveContextImageBudgetBytes({})).toBe(DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES);
     expect(resolveContextImageBudgetBytes({ [CONTEXT_IMAGE_BUDGET_ENV]: "0" })).toBe(0);
@@ -192,6 +214,22 @@ describe("boundContextImageBytes", () => {
 });
 
 describe("admitContextImageBytes", () => {
+  test("DeepSeek fills 24 MiB, evicts down to a tenth, then preserves the prefix until the next batch", () => {
+    const mib = 1024 * 1024;
+    const budget = resolveContextImageBudgetBytes({}, "deepseek");
+    const requests = readingRequests(Array<number>(49).fill(mib), budget);
+    expect(requests.slice(0, 24).map(request => request.omitted)).toEqual(Array(24).fill(0));
+    expect(requests[23]!.retainedBytes).toBe(budget);
+    expect(requests[24]!.retainedBytes).toBe(2 * mib);
+    expect(requests[24]!.omitted).toBe(23);
+    expect(requests[46]!.retainedBytes).toBe(budget);
+    expect(requests[47]!.retainedBytes).toBe(2 * mib);
+    expect(requests[47]!.omitted).toBe(46);
+    expect(prefixRepeats(requests).flatMap((repeats, index) => repeats ? [] : [index + 1])).toEqual([24, 47]);
+    expect(requests.every(request => request.retainedBytes <= budget)).toBe(true);
+    expect(imageSlots(requests[24]!.messages)).toEqual([...Array(23).fill(EVICTED_IMAGE_TEXT), "IMG", "IMG"]);
+  });
+
   test("leaves nine tenths of a prefix-cache budget free between eviction batches", () => {
     const requests = readingRequests(Array(25).fill(1000), 10_000);
     expect(prefixRepeats(requests).flatMap((repeats, index) => repeats ? [] : [index + 2]))

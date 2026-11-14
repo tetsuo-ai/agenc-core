@@ -154,8 +154,11 @@ test("a context-length refusal of a calibrated DeepSeek request compacts the his
     maxOutputTokens: 512,
     chat: async (messages, options): Promise<LLMResponse> => {
       const promptTokens = deepseekPromptTokens(messages, options);
-      // The compaction summarizer's own system prompt names its stage.
-      if (/Stage: (?:map|reduce|final)\./u.test(options?.systemPrompt ?? "")) {
+      // Prefix reuse keeps the main system prompt and appends the summary
+      // instructions. Both summary layouts name their stage.
+      const instructions = [options?.systemPrompt ?? "", ...messages.map(message =>
+        typeof message.content === "string" ? message.content : "")].join("\n");
+      if (/Stage: (?:map|reduce|final)\./u.test(instructions)) {
         summaries++;
         return { content: summary, toolCalls: [], usage: usage(promptTokens), model: MODEL, finishReason: "stop" };
       }
