@@ -1,3 +1,4 @@
+import { leanDefaultReasoningEffort } from "../session/light-request/effort.js";
 /**
  * Thin daemon-client helpers for CLI surfaces.
  *
@@ -863,6 +864,7 @@ async function createBoundAgenCDaemonOnlyTuiContext(
         workspaceRoot: options.cwd,
         provider: selectedProvider,
         model: selectedModel,
+        defaultReasoningEffort: leanDefaultReasoningEffort({ services: { runtimeOptions, configStore } }, selectedProvider),
       }),
       // The bridge exposes provider identity, not an in-process LLMProvider.
       provider: { slug: selectedProvider },

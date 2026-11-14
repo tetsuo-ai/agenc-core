@@ -1,3 +1,4 @@
+import { leanDefaultReasoningEffort } from "../session/light-request/effort.js";
 import { sessionDurableMemoryDirectories } from "../services/extractMemories/memory-paths.js";
 import { deferSidecar } from "../session/deferred-sidecar.js";
 import { oneShotFastModeSelected } from "../one-shot-fast-mode.js";
@@ -1636,6 +1637,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       model,
       provider: resolvedProvider,
       projectTrust,
+      defaultReasoningEffort: leanDefaultReasoningEffort({ services: { runtimeOptions, configStore, providerEnvironment: env } }, resolvedProvider),
     }),
   } satisfies SessionConfiguration;
   const authorizedSessionConfiguration = applySessionExecutionAuthority(

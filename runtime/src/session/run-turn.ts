@@ -1,3 +1,5 @@
+import { leanEditMode, resolveLightRequest } from "./light-request/settings.js";
+import { announceLightRequest } from "./light-request/notice.js";
 import { editThenRunCommand, editThenRunEnabled } from "../tools/edit-then-run.js";
 import { applyWebSearchInstruction, resolveWebSearchMode } from "../tools/web-search-mode.js";
 import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
@@ -1061,7 +1063,8 @@ async function prepareSamplingRequestBoundary(
       session.conversationId,
       attachments,
     );
-    const attachmentMessages = attachmentsToMessages(attachments);
+    const attachmentMessages = attachmentsToMessages(attachments,
+      resolveLightRequest(session, session.services.provider.name) !== undefined);
     if (attachmentMessages.length > 0) {
       state.messagesForQuery = placeRetainedAttachments(
         state,
@@ -1083,7 +1086,7 @@ async function prepareSamplingRequestBoundary(
     );
   }
 
-  const request = buildSamplingRequestContract(state, session, samplingContext, permissionContext);
+  const request = buildSamplingRequestContract(state, session, samplingContext, permissionContext, true);
   state.samplingRequestMaxOutputTokens = request.maxOutputTokens;
 
   return {
@@ -2194,6 +2197,7 @@ export async function* runTurnKernel(
   opts: RunTurnOptions = {},
 ): AsyncGenerator<PhaseEvent, Terminal> {
   session.rolloutStore?.assertModelExecutionAllowed?.();
+  announceLightRequest(session);
   // T6 gap #119: canonical turn-lifecycle emits. Each `runTurn`
   // invocation must flank its work with a `turn_started` +
   // `turn_context` pair and either a matching `turn_complete` (happy
@@ -2825,7 +2829,8 @@ async function* runTurnKernelInner(
       },
       requiresResponse: response => {
         return response.toolCalls.length === 0 || hasConfiguredToolHooks(session) ||
-          (editThenRunEnabled(session.services.runtimeOptions?.lightMode, session.services.providerEnvironment) &&
+          (editThenRunEnabled(session.services.runtimeOptions?.lightMode, session.services.providerEnvironment,
+            leanEditMode(session, session.services.provider.name)) &&
             response.toolCalls.some(call => editThenRunCommand(call, session.services.registry) !== undefined));
       },
       completedTool: result => { state.completedToolResults.push(result); },
@@ -3715,7 +3720,7 @@ async function* runTurnKernelInner(
           session.permissionModeRegistry.current().mode,
         ).messages;
         projectSamplingImages(state, ctx, session, session.services.configStore!.current());
-        const wrapupRequest = buildSamplingRequestContract(state, session, ctx);
+        const wrapupRequest = buildSamplingRequestContract(state, session, ctx, undefined, true);
         rememberSentContextImages(session, wrapupRequest.input, state.messages);
         const wrapped = await stepLimitWrapup({ session, ctx,
           request: wrapupRequest, signal,

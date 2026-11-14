@@ -141,6 +141,8 @@ export interface LLMMessage {
     /** Durable response-item identity retained across compaction replay. */
     readonly responseItemId?: string;
     readonly mergeBoundary?: "user_context";
+    /** Runtime attachment provenance, never inferred from user text. */
+    readonly attachmentKind?: string;
     /** Exact relevant-memory versions already present in a retained attachment. */
     readonly relevantMemoryFingerprints?: readonly string[];
     readonly permissionModeReminder?: "plan" | "plan_exit" | "auto" | "auto_exit";
@@ -773,6 +775,8 @@ export interface LLMChatOptions {
    * field instead of injecting a mid-conversation system message.
    */
   readonly systemPrompt?: string;
+  /** Keep the supplied system text together without interpreting cache markers. */
+  readonly systemPromptLayout?: "single";
   /** Effective input context window for this request. */
   readonly contextWindowTokens?: number;
   /** Positive output-token budget for this request. */

@@ -4,13 +4,20 @@ import type { Tool } from "./types.js";
 
 const EDITORS = new Set(["apply_patch", "Write", "Edit", "MultiEdit"]);
 
-/** Session-owned environment only. The experiment is off by default. */
+/**
+ * Session-owned environment only. The AGENC_EDIT_THEN_RUN experiment is off by default.
+ * The lean edit_mode "check" turns it on with a required check.
+ */
 export function editThenRunEnabled(lightMode: boolean | undefined,
-  environment: Readonly<Record<string, string | undefined>> = {}): boolean {
-  return lightMode === true && environment.AGENC_EDIT_THEN_RUN === "1";
+  environment: Readonly<Record<string, string | undefined>> = {}, leanEditMode?: string): boolean {
+  return lightMode === true && (environment.AGENC_EDIT_THEN_RUN === "1" || leanEditMode === "check");
 }
 
-export function withEditThenRun(tool: Tool): Tool {
+/** edit_mode = "check": an option the model may leave out is rarely used, so the lean request requires it. */
+export const REQUIRED_CHECK_DESCRIPTION =
+  "Shell command that verifies this edit, usually the test command or a probe. It runs right after the edit and its output comes back with the edit.";
+
+export function withEditThenRun(tool: Tool, required = false): Tool {
   if (!EDITORS.has(tool.name)) return tool;
   // Preserve getters and non-enumerable tool capabilities.
   return Object.defineProperties(Object.create(Object.getPrototypeOf(tool)), {
@@ -19,8 +26,9 @@ export function withEditThenRun(tool: Tool): Tool {
       ...tool.inputSchema,
       properties: { ...(tool.inputSchema.properties as Record<string, unknown> | undefined),
         check: { type: "string", minLength: 1,
-          description: "Shell command to run after a successful edit." },
+          description: required ? REQUIRED_CHECK_DESCRIPTION : "Shell command to run after a successful edit." },
       },
+      ...(required ? { required: [...((tool.inputSchema.required as readonly string[] | undefined) ?? []), "check"] } : {}),
     } },
   });
 }

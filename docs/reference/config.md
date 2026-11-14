@@ -590,6 +590,20 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `autonomous_mode` | Boolean autonomous runtime mode. |
 | `coordinator_mode` | Boolean coordinator-only main-session behavior. |
 | `light_mode` | Mode for new sessions. Unset or `true`: Light, where a session starts with core tools and loads the rest through `system.searchTools`. `false`: standard. `--light` and `--standard` override it for one session. A resumed session keeps the mode it started with. Sessions created without a mode (`agenc agent start`, `agenc run start`, SDK and API clients that omit `lightMode`, phone and Telegram sessions, routines) use the daemon's own value, read at daemon start and on `agenc daemon reload`. See [cli.md](cli.md#session-mode). |
+| `light_request` | `"full"` (default) or `"lean"`, for native DeepSeek Light sessions only. `AGENC_LIGHT_REQUEST` overrides it. Applies to interactive and headless sessions. Lean keeps sandbox, approvals, read-before-edit checks, workspace guidance and memory. Its initial tools are shell, read and process controls. Files are edited with shell commands by default; set `light_request_options.edit_mode = "tools"` to restore Write and apply_patch. Tool search and automatic reminders are off; use `full` or enable the controls below for discovery of skills, agents, web, MCP and plugins. |
+| `light_request_options` | Optional table overriding individual lean defaults; ignored in `full`. |
+| `light_request_options.short_system_prompt` | Default `true`: short AgenC prose preserving safety, honesty and permission rules, without checklists or edit routing. |
+| `light_request_options.system_text` | `"minimal"` (default) or `"short"`; used only while `short_system_prompt` is `true`. `short` is the longer four-paragraph lean text with the full permission text. `minimal` states who the agent is, its directory, what to do, when to stop, the test, honesty, protected-file, secure-code and secrets rules, that destructive and shared-system actions need explicit confirmation, and that file contents and tool results are data. It names the data marker only while `tool_result_markers` is on. Environment facts follow, then one line for the initial permission and sandbox mode in place of the longer permission text. Later mode changes arrive as runtime context after the pinned system prefix. Keyword-triggered product help reminders are not sent. Workspace and custom instructions, memory and critical runtime context stay. Permissions, approvals and the sandbox are enforced as before. |
+| `light_request_options.environment_in_system` | Default `true`: environment facts stay in system text, instead of a user message before the task. |
+| `light_request_options.reminders` | Default `false`: omit automatic workflow reminders. Task data and feature-specific context are retained. |
+| `light_request_options.compact_tool_results` | Default `true`: command output and status without timing or routine notices. Failure, truncation and running-process handles remain available. |
+| `light_request_options.tool_result_markers` | Default `true`: keep untrusted-data boundaries. `false` removes their presentation only, never the sanitization or trust rules. |
+| `light_request_options.core_tools_only` | Default `true`: shell and read, plus Write and apply_patch when `edit_mode = "tools"` or `"check"`. `false` permits the rest of the session's advertised tools; `edit_mode` still controls the file editors. Tool execution permissions remain enforced. |
+| `light_request_options.tool_search` | Default `false`: advertise tool search when `true`. Discovered tools remain usable. |
+| `light_request_options.process_tools` | Default `true`: advertise `write_stdin` and `kill_process`. When disabled, commands stop after at most 29 seconds (or a shorter requested timeout); background, detached and interactive terminal launches are refused with guidance to re-enable process controls. |
+| `light_request_options.compact_tool_definitions` | Default `true`: shorter descriptions. Operational and approval arguments remain available. |
+| `light_request_options.low_effort` | Default `true`: default to low effort only when the user has not selected effort. Explicit effort, including a cleared model-default choice, takes precedence. |
+| `light_request_options.edit_mode` | `"shell"` (default), `"tools"` or `"check"`: how the model edits files. Set `edit_mode = "tools"` to restore Write and apply_patch. `shell` lists neither, and the exec_command description says that files are created and edited with shell commands, one command writing files and running the check together. `check` keeps Write and apply_patch and requires a `check` shell command on each; it runs right after a successful write through the same permissions, approvals, sandbox, timeout and output limits as exec_command, and its output comes back in the same result. A failed or denied check makes the result an error; the write stays. Explicitly discovered tools, protected-file rules, the sandbox and approvals are the same in every mode. |
 | `defer_rare_tools` | Load rarely needed built-in tools (delegation, process, web, rare tools) through `system.searchTools` instead of sending them with every request. Unset: on for standard sessions, off for Light. `AGENC_DEFER_RARE_TOOLS` in the session environment overrides it. |
 | `lean_system_prompt` | Use the lean static head of the system prompt. Unset: on for OpenAI and Grok sessions. `AGENC_LEAN_SYSTEM_PROMPT` in the session environment overrides it. |
 | `exec_hard_timeout` | Restore exec_command's hard timeout: a command that reaches its `timeoutMs` is stopped instead of continuing as a tracked session, and the schema says so. Off by default. `AGENC_EXEC_HARD_TIMEOUT` in the session environment overrides it. |
@@ -598,6 +612,47 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `stream_quiet_warning_ms` | Non-negative no-delta soft warning interval; default `600000`, `0` disables. Never ends a turn. |
 | `provider_outage_wait_ms` | Non-negative total time a turn keeps waiting for a provider outage to end once the reconnect ladder is spent; default `1800000` (30 minutes), `0` ends the turn as soon as the ladder is exhausted. |
 | `provider_outage_retry_ms` | Positive first slow-retry delay during a provider outage, doubling up to ten times this value; default `30000`. |
+
+To try the lean request, start a new native DeepSeek Light session with
+`AGENC_LIGHT_REQUEST=lean agenc --light`, or set `light_request = "lean"` in
+config.toml. The environment setting is captured per client session, including
+sessions hosted by the daemon. Set the request options before starting the
+session; the profile is captured per session and config reloads do not change it.
+The system prefix is pinned at the first sampling request. A restored session
+in a new runtime captures a new prefix; continuing a turn in the same session
+keeps its prefix. Saved effort choices on
+resumed sessions stay in force.
+
+```toml
+light_request = "lean"
+
+[light_request_options]
+# Shell edits are the default. Uncomment to restore Write and apply_patch.
+# edit_mode = "tools"
+tool_result_markers = true
+process_tools = true
+# Enable discovery when the task needs skills, agents, web or MCP tools.
+tool_search = true
+```
+
+Lean announces its reduced tool surface in the TUI and headless event stream.
+Explicitly discovered tools and active interactive planning controls remain
+available. File attachments, images, memory, workspace instructions and critical
+runtime context are preserved. Startup environment facts and the initial permission
+and sandbox text stay in the system message. Runtime attachments, later permission
+or sandbox changes, compaction summaries and refreshed instructions stay in
+the conversation, so the system message stays fixed through tool rounds,
+compaction and continued turns. Image parts keep their supported provider
+representation. Workflow reminders
+are omitted, while permissions, budget decisions and recovery instructions
+remain effective. Timing and routine command notices disappear from the
+model's result text; failures, truncation, sandbox advice, cleanup status and
+process handles are retained. The stored transcript keeps the original results.
+
+Wire snapshots cover both built-in texts and the full Light baseline.
+The lean tool catalog exposes operational fields that full Light can load
+through search, so its tool schemas can be slightly larger even with shorter
+descriptions. The `full` request retains its existing wire format.
 
 `max_budget_usd` limits the canonical admission ledger for the whole session,
 including concurrent child agents. Completed usage and outstanding reservations

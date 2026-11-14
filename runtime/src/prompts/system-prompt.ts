@@ -1,3 +1,5 @@
+import { resolveLightRequest } from "../session/light-request/settings.js";
+import { leanLightSystemText, leanMinimalSystemText } from "../session/light-request/system-text.js";
 import { resolveWebSearchMode, WEB_SEARCH_ON_INSTRUCTION } from "../tools/web-search-mode.js";
 /**
  * System prompt assembly — AgenC-owned sections, static-then-dynamic,
@@ -1209,7 +1211,8 @@ export async function assembleSystemPrompt(
     ...(ctx.currentDate !== undefined ? { currentDate: ctx.currentDate } : {}),
   };
   // Managed routing is resolved later by the delegated concrete adapter.
-  const responseDetail = envInfoInputs.provider === "openai" || envInfoInputs.provider === "agenc"
+  const lightRequest = resolveLightRequest(session, envInfoInputs.provider);
+  const responseDetail = envInfoInputs.provider === "openai" || envInfoInputs.provider === "agenc" || lightRequest !== undefined
     ? null
     : getResponseDetailSection(ctx.responseDetailOverride);
 
@@ -1265,7 +1268,14 @@ export async function assembleSystemPrompt(
     readConfiguredLeanSystemPrompt(session),
     envInfoInputs.model,
   );
-  const staticSections: Array<string | null> = light
+  const staticSections: Array<string | null> = lightRequest?.short_system_prompt
+    ? [lightRequest.system_text === "minimal"
+        ? leanMinimalSystemText(cwd, lightRequest.tool_result_markers)
+        : leanLightSystemText(),
+        session.services?.runtimeOptions?.nonInteractive === true ? null : getMemoryInstructionsSection(opts.memoryInstructions),
+        typeof session.services?.runtimeOptions?.deadlineAt === "number" ? LIGHT_BUDGET_DEADLINE : null,
+      ]
+    : light
     ? [
         lightBudgetWorkflow(
           opts.outputStyle != null,
@@ -1445,7 +1455,7 @@ export async function assembleSystemPrompt(
 
   const sections: string[] = [
     ...staticParts,
-    SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+    ...(lightRequest?.environment_in_system ? [] : [SYSTEM_PROMPT_DYNAMIC_BOUNDARY]),
     ...dynamicParts,
   ];
 

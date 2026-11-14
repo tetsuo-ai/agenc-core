@@ -8,7 +8,7 @@ import { resolveApprovalPolicy } from "../permissions/approval-policy.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { SandboxExecutionBrokerAuthority } from "../sandbox/execution-broker.js";
 import { permissionProfileForLiveSandboxPolicies } from "../tools/runtimes/sandboxing.js";
-import type { SessionConfiguration } from "./turn-context.js";
+import type { ReasoningEffort, SessionConfiguration } from "./turn-context.js";
 
 export type SessionExecutionAuthority = Readonly<
   Pick<
@@ -206,6 +206,8 @@ export function sessionConfigurationFromAgenCConfig(params: {
   readonly model: string;
   readonly provider?: string;
   readonly projectTrust?: "trusted" | "untrusted";
+  /** Provider-scoped product default, supplied only for default config provenance. */
+  readonly defaultReasoningEffort?: ReasoningEffort;
 }): SessionConfiguration {
   const effortProvider = params.provider ?? params.config.model_provider;
   // A Bedrock profile id that names no model is seeded by the Claude model a
@@ -225,7 +227,7 @@ export function sessionConfigurationFromAgenCConfig(params: {
     "configured reasoning effort",
   ) === "anthropic" && !effort.levels.includes("xhigh");
   const supportsLiteralMax = effort.levels.includes("max") && !legacyAnthropicEffort;
-  const configuredEffort = params.config.reasoning_effort;
+  const configuredEffort = params.defaultReasoningEffort ?? params.config.reasoning_effort;
   const configPolicy = approvalPolicyValueFromAgenCConfig(
     params.config.approval_policy,
   );

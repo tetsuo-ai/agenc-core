@@ -145,7 +145,8 @@ function systemPromptParts(
 ): readonly string[] {
   const parts: string[] = [];
   const optionPrompt = (optionPromptOverride ?? options?.systemPrompt)?.trim();
-  if (optionPrompt) parts.push(withoutVolatileBoundary(optionPrompt));
+  if (optionPrompt) parts.push(options?.systemPromptLayout === "single"
+    ? optionPrompt : withoutVolatileBoundary(optionPrompt));
   for (const message of messages) {
     if (message.role !== "system" && message.role !== "developer") continue;
     const text = messageTextContent(message.content).trim();
@@ -697,7 +698,7 @@ export function buildChatCompletionsRequest(
       input.providerCapabilityHints?.imageInputContract,
       input.providerCapabilityHints?.acceptsDirectImageInput,
       input.providerCapabilityHints?.sharesPromptPrefixAcrossSessions === true &&
-        input.sharedPrefixTail !== false,
+        input.sharedPrefixTail !== false && promptOptions?.systemPromptLayout !== "single",
       input.providerCapabilityHints?.usesThinkingContentBlocks === true,
       input.providerCapabilityHints?.replaysReasoningDetails === true,
     ),

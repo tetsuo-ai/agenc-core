@@ -309,6 +309,7 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   // User action / configuration
   "mcp_auth_required",
   "model_token_limit_config",
+  "light_request",
   "task_budget_near_limit",
   "user_prompt_submit_hook_blocked",
   "user_prompt_submit_hook_stopped",
