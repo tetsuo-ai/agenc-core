@@ -11,6 +11,9 @@ import { lightBudgetWorkflow, LIGHT_GEMINI_BATCHING } from "../../../../src/prom
 import { lightUsesGeminiBatching } from "../../../../src/tools/light-profile.js";
 import { LIGHT_WORKSPACE_DATA_BOUNDARY } from "../../../../src/tools/untrusted-tool-result-framing.js";
 import type { LLMMessage, LLMTool } from "../../../../src/llm/types.js";
+import { LLMAuthenticationError, LLMRequestRebuiltError } from "../../../../src/llm/errors.js";
+import { isRetryableStreamError } from "../../../../src/session/run-turn-stream-retry.js";
+import { StreamModelError } from "../../../../src/phases/stream-model.js";
 
 const answer = { candidates: [{ content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }] };
 const sse = () => new Response(`data: ${JSON.stringify(answer)}\n\n`, { headers: { "content-type": "text/event-stream" } });
@@ -20,7 +23,7 @@ function provider(model: string, fetchImpl: typeof fetch, extra: Record<string, 
     model, fetchImpl,
     // A credential of its own per test keeps the shared prefix caches apart.
     credentialPlan: { kind: "api-key", credential: `local-test-only-${Math.random()}`, source: "factory" },
-    endpointPlan: createGeminiEndpointPlan({ baseURL: "http://127.0.0.1:8080/v1beta" }),
+    endpointPlan: createGeminiEndpointPlan({}),
     ...extra,
   } as ConstructorParameters<typeof GeminiProvider>[0]);
 }
@@ -66,6 +69,18 @@ describe("Gemini function responses carry workspace data under the AGENC_DATA ke
 
   test("an empty framed result keeps its key", async () => {
     expect(await sentResponse(`${M}\n\n${M}`)).toEqual({ AGENC_DATA: "" });
+    expect(await sentResponse([{ type: "text", text: M }, { type: "text", text: M }])).toEqual({ AGENC_DATA: "" });
+  });
+
+  test("a note the runtime adds after the closing line travels beside the data", async () => {
+    const note = "[tool result shortened to fit the context window: 9,000 of 12,000 characters omitted]";
+    expect(await sentResponse(`${M}\nhead\n[... 9,000 of 12,000 characters omitted ...]\ntail\n${M}\n${note}`))
+      .toEqual({ AGENC_DATA: "head\n[... 9,000 of 12,000 characters omitted ...]\ntail", note });
+    // An image the provider cannot send leaves its note after the frame (older models).
+    expect(await sentResponse([
+      { type: "text", text: M }, { type: "text", text: "Read image pic.gif" }, { type: "text", text: M },
+      { type: "image_url", image_url: { url: "data:image/gif;base64,R0lGODlhAQABAAAAACw=" } },
+    ])).toEqual({ AGENC_DATA: "Read image pic.gif", note: "[image omitted: this provider cannot receive images in tool results]" });
   });
 
   test("a framed JSON body stays one string: untrusted data never becomes response keys", async () => {
@@ -78,6 +93,8 @@ describe("Gemini function responses carry workspace data under the AGENC_DATA ke
     expect(await sentResponse(lookalike)).toEqual({ result: lookalike });
     expect(await sentResponse(`${M}\nopen only`)).toEqual({ result: `${M}\nopen only` });
     expect(await sentResponse(M)).toEqual({ result: M });
+    expect(await sentResponse(`${M}\nbody\n${M}trailing`)).toEqual({ result: `${M}\nbody\n${M}trailing` });
+    expect(await sentResponse(`${M}\nbody\n${M}\nnote with ${M}`)).toEqual({ result: `${M}\nbody\n${M}\nnote with ${M}` });
   });
 
   test("unframed results are sent as before", async () => {
@@ -171,7 +188,7 @@ describe("explicit prefix cache on gemini-3.1-pro-preview", () => {
     const config = {
       model: "gemini-3.1-pro-preview", fetchImpl,
       credentialPlan: { kind: "api-key", credential: "local-test-only-shared", source: "factory" },
-      endpointPlan: createGeminiEndpointPlan({ baseURL: "http://127.0.0.1:8080/v1beta" }),
+      endpointPlan: createGeminiEndpointPlan({}),
     } as ConstructorParameters<typeof GeminiProvider>[0];
     await new GeminiProvider(config).chatStream(messages, () => {}, options);
     await new GeminiProvider(config).chatStream(messages, () => {}, options);
@@ -187,6 +204,7 @@ describe("explicit prefix cache on gemini-3.1-pro-preview", () => {
     ["gemini-4-argon", {}],
     ["gemini-2.5-pro", {}],
     ["gemini-3.1-pro-preview", { cachedContent: "off" }],
+    ["gemini-3.1-pro-preview", { endpointPlan: createGeminiEndpointPlan({ baseURL: "http://127.0.0.1:8080/v1beta" }) }],
     ["gemini-3.1-pro-preview", { endpointPlan: createGeminiEndpointPlan({ vertex: { project: "p", location: "us-central1" } }), credentialPlan: { kind: "api-key", credential: "local-test-only-vertex", source: "factory" } }],
   ])("%s %j never creates or names a prefix cache", async (model, extra) => {
     const fetchImpl = wire();
@@ -231,24 +249,60 @@ describe("explicit prefix cache on gemini-3.1-pro-preview", () => {
     for (const call of calls) expect(call).toEqual(calls[0]);
   });
 
-  test("a refused cached request is surfaced once and the next request carries its head", async () => {
-    let refuse = true;
+  test.each([403, 404, 400])("a cached request refused with %i asks for a rebuilt attempt, which carries the head", async (status) => {
+    let refusals = 0;
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
       if (String(url).endsWith("/cachedContents")) return Response.json({ name: "cachedContents/gone" });
-      if (refuse && JSON.parse(String(init!.body)).cachedContent !== undefined) {
-        refuse = false;
-        return Response.json({ error: { code: 403, status: "PERMISSION_DENIED", message: "CachedContent not found" } }, { status: 403 });
+      if (JSON.parse(String(init!.body)).cachedContent !== undefined) {
+        refusals += 1;
+        return Response.json({ error: { code: status, status: "PERMISSION_DENIED", message: "CachedContent not found (or permission denied)" } }, { status });
       }
       return sse();
     });
     const client = provider("gemini-3.1-pro-preview", fetchImpl);
     for (let i = 0; i < 2; i += 1) { await client.chatStream(messages, () => {}, options); await flush(); }
-    await expect(client.chatStream(messages, () => {}, { ...options, singleWireAttempt: true })).rejects.toThrow();
-    await client.chatStream(messages, () => {}, options);
+    const refused = await client.chatStream(messages, () => {}, { ...options, singleWireAttempt: true }).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(LLMRequestRebuiltError);
+    // The turn's reconnect policy sends such an error again; an authentication error it would not.
+    expect(refused).not.toBeInstanceOf(LLMAuthenticationError);
+    expect(isRetryableStreamError(new StreamModelError(refused))).toBe(true);
+    for (let i = 0; i < 3; i += 1) { await client.chatStream(messages, () => {}, options); await flush(); }
     const calls = modelCalls(fetchImpl);
-    expect(calls.at(-2)!.cachedContent).toBe("cachedContents/gone");
-    expect(calls.at(-1)!.cachedContent).toBeUndefined();
-    expect(calls.at(-1)!.systemInstruction).toBeDefined();
+    expect(refusals).toBe(1);
+    expect(calls.at(-4)!.cachedContent).toBe("cachedContents/gone");
+    for (const call of calls.slice(-3)) {
+      expect(call.cachedContent).toBeUndefined();
+      expect(call.systemInstruction).toBeDefined();
+      expect(call.tools).toBeDefined();
+    }
+    // The refused head is never cached again.
+    expect(fetchImpl.mock.calls.filter((call) => String(call[0]).endsWith("/cachedContents")).length).toBe(1);
+  });
+
+  test("an error that is not a refusal of the request keeps its own class", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+      if (String(url).endsWith("/cachedContents")) return Response.json({ name: "cachedContents/abc123" });
+      if (JSON.parse(String(init!.body)).cachedContent !== undefined) {
+        return Response.json({ error: { code: 429, status: "RESOURCE_EXHAUSTED", message: "quota" } }, { status: 429 });
+      }
+      return sse();
+    });
+    const client = provider("gemini-3.1-pro-preview", fetchImpl);
+    for (let i = 0; i < 2; i += 1) { await client.chatStream(messages, () => {}, options); await flush(); }
+    const error = await client.chatStream(messages, () => {}, { ...options, singleWireAttempt: true }).catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(LLMRequestRebuiltError);
+    expect(error).toBeInstanceOf(Error);
+  });
+
+  test("a refused creation raises no warning and no capability drift", async () => {
+    const emitWarning = vi.fn();
+    const onCapabilityDrift = vi.fn();
+    const fetchImpl = wire(() => Response.json({ error: { code: 400, status: "INVALID_ARGUMENT", message: "cachedContents is not supported for this model" } }, { status: 400 }));
+    const client = provider("gemini-3.1-pro-preview", fetchImpl, { emitWarning, onCapabilityDrift });
+    for (let i = 0; i < 3; i += 1) { await client.chatStream(messages, () => {}, options); await flush(); }
+    expect(fetchImpl.mock.calls.filter((call) => String(call[0]).endsWith("/cachedContents")).length).toBe(1);
+    expect(emitWarning).not.toHaveBeenCalled();
+    expect(onCapabilityDrift).not.toHaveBeenCalled();
   });
 });
 
@@ -258,52 +312,80 @@ describe("GeminiPrefixCache", () => {
   test("a cache is named only inside its usable time and then replaced", async () => {
     let now = 1_000_000;
     let made = 0;
-    const cache = new GeminiPrefixCache(async () => `cachedContents/n${made += 1}`, () => now);
-    expect(cache.lookup("m", "sys", "tools")).toBeUndefined();
+    const cache = new GeminiPrefixCache(() => now);
+    const create = async () => `cachedContents/n${made += 1}`;
+    expect(cache.lookup("m", "sys", "tools", create)).toBeUndefined();
     expect(made).toBe(0);
-    expect(cache.lookup("m", "sys", "tools")).toBeUndefined();
+    expect(cache.lookup("m", "sys", "tools", create)).toBeUndefined();
     await settle();
     expect(made).toBe(1);
-    expect(cache.lookup("m", "sys", "tools")).toBe("cachedContents/n1");
+    expect(cache.lookup("m", "sys", "tools", create)).toBe("cachedContents/n1");
     now += GEMINI_PREFIX_CACHE_USABLE_MS - 1;
-    expect(cache.lookup("m", "sys", "tools")).toBe("cachedContents/n1");
+    expect(cache.lookup("m", "sys", "tools", create)).toBe("cachedContents/n1");
     now += 1;
-    expect(cache.lookup("m", "sys", "tools")).toBeUndefined();
+    expect(cache.lookup("m", "sys", "tools", create)).toBeUndefined();
     await settle();
     expect(made).toBe(2);
-    expect(cache.lookup("m", "sys", "tools")).toBe("cachedContents/n2");
+    expect(cache.lookup("m", "sys", "tools", create)).toBe("cachedContents/n2");
   });
 
   test("another model, system text or tool list is another cache", async () => {
     let made = 0;
-    const cache = new GeminiPrefixCache(async () => `cachedContents/n${made += 1}`, () => 0);
-    for (let i = 0; i < 2; i += 1) cache.lookup("m", "sys", "tools");
+    const cache = new GeminiPrefixCache(() => 0);
+    const create = async () => `cachedContents/n${made += 1}`;
+    for (let i = 0; i < 2; i += 1) cache.lookup("m", "sys", "tools", create);
     await settle();
-    expect(cache.lookup("m", "sys", "tools")).toBe("cachedContents/n1");
-    expect(cache.lookup("m2", "sys", "tools")).toBeUndefined();
-    expect(cache.lookup("m", "sys2", "tools")).toBeUndefined();
-    expect(cache.lookup("m", "sys", "tools2")).toBeUndefined();
+    expect(cache.lookup("m", "sys", "tools", create)).toBe("cachedContents/n1");
+    expect(cache.lookup("m2", "sys", "tools", create)).toBeUndefined();
+    expect(cache.lookup("m", "sys2", "tools", create)).toBeUndefined();
+    expect(cache.lookup("m", "sys", "tools2", create)).toBeUndefined();
   });
 
-  test("a failed or refused cache waits before the next creation", async () => {
+  test("a failed creation waits before the next one; a refused cache is never made again", async () => {
     let now = 0;
     let attempts = 0;
-    const cache = new GeminiPrefixCache(async () => { attempts += 1; if (attempts === 1) throw new Error("offline"); return "cachedContents/ok"; }, () => now);
-    for (let i = 0; i < 3; i += 1) { cache.lookup("m", "s", "t"); await settle(); }
+    const cache = new GeminiPrefixCache(() => now);
+    const create = async () => { attempts += 1; if (attempts === 1) throw new Error("offline"); return "cachedContents/ok"; };
+    for (let i = 0; i < 3; i += 1) { cache.lookup("m", "s", "t", create); await settle(); }
     expect(attempts).toBe(1);
     now += GEMINI_PREFIX_CACHE_RETRY_MS;
-    expect(cache.lookup("m", "s", "t")).toBeUndefined();
+    expect(cache.lookup("m", "s", "t", create)).toBeUndefined();
     await settle();
     expect(attempts).toBe(2);
-    expect(cache.lookup("m", "s", "t")).toBe("cachedContents/ok");
-    cache.forget("cachedContents/ok");
-    expect(cache.lookup("m", "s", "t")).toBeUndefined();
-    await settle();
+    expect(cache.lookup("m", "s", "t", create)).toBe("cachedContents/ok");
+    cache.refuse("cachedContents/ok");
+    now += GEMINI_PREFIX_CACHE_RETRY_MS * 10;
+    for (let i = 0; i < 3; i += 1) { expect(cache.lookup("m", "s", "t", create)).toBeUndefined(); await settle(); }
     expect(attempts).toBe(2);
   });
 
   test("an answer without a cache name is a failure", async () => {
-    const cache = new GeminiPrefixCache(async () => "models/x", () => 0);
-    for (let i = 0; i < 3; i += 1) { expect(cache.lookup("m", "s", "t")).toBeUndefined(); await settle(); }
+    const cache = new GeminiPrefixCache(() => 0);
+    const create = async () => "models/x";
+    for (let i = 0; i < 3; i += 1) { expect(cache.lookup("m", "s", "t", create)).toBeUndefined(); await settle(); }
+  });
+
+  test("after two refusals no head is cached any more", async () => {
+    let made = 0;
+    const cache = new GeminiPrefixCache(() => 0);
+    const create = async () => `cachedContents/n${made += 1}`;
+    for (const head of ["a", "b"]) {
+      for (let i = 0; i < 2; i += 1) cache.lookup("m", head, "t", create);
+      await settle();
+      cache.refuse(cache.lookup("m", head, "t", create)!);
+    }
+    for (let i = 0; i < 3; i += 1) { expect(cache.lookup("m", "c", "t", create)).toBeUndefined(); await settle(); }
+    expect(made).toBe(2);
+  });
+
+  test("the creation uses the caller of the request that is due, not the first one seen", async () => {
+    const cache = new GeminiPrefixCache(() => 0);
+    const first = vi.fn(async () => "cachedContents/first");
+    const second = vi.fn(async () => "cachedContents/second");
+    cache.lookup("m", "s", "t", first);
+    cache.lookup("m", "s", "t", second);
+    await settle();
+    expect(first).not.toHaveBeenCalled();
+    expect(cache.lookup("m", "s", "t", first)).toBe("cachedContents/second");
   });
 });

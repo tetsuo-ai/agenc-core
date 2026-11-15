@@ -26,6 +26,12 @@
  * life, and a new one is made after that. Creation runs beside the model
  * calls and never delays or fails one. A head is cached at its second
  * sighting, so a one-off request (a title, a summary) creates nothing.
+ * When the API refuses a request that named a cache, that head is never
+ * cached again in this process, and after a second refusal no head is: a
+ * refusal that repeats would otherwise cost a turn every few minutes.
+ *
+ * Cost outside the token accounting: Google bills the creation as input
+ * (about 1,440 tokens every USABLE_MS while a session runs) and the storage.
  */
 import { createHash } from "node:crypto";
 
@@ -45,21 +51,29 @@ interface Entry {
   usableUntil: number;
   creating: boolean;
   retryAfter: number;
+  refused: boolean;
 }
+
+/** Refusals of cached requests after which no head is cached any more. */
+const MAX_REFUSALS = 2;
 
 export class GeminiPrefixCache {
   private readonly entries = new Map<string, Entry>();
+  private refusals = 0;
 
-  constructor(
-    private readonly create: GeminiPrefixCacheCreate,
-    private readonly now: () => number = Date.now,
-  ) {}
+  constructor(private readonly now: () => number = Date.now) {}
 
   /**
    * The cache to name in a request with this head, or undefined when the
    * request must carry the head itself. Starts a creation when one is due.
    */
-  lookup(model: string, systemInstruction: unknown, tools: unknown): string | undefined {
+  lookup(
+    model: string,
+    systemInstruction: unknown,
+    tools: unknown,
+    create: GeminiPrefixCacheCreate,
+  ): string | undefined {
+    if (this.refusals >= MAX_REFUSALS) return undefined;
     const key = createHash("sha256")
       .update(JSON.stringify([model, systemInstruction, tools]))
       .digest("hex");
@@ -68,24 +82,26 @@ export class GeminiPrefixCache {
       if (this.entries.size >= MAX_ENTRIES) {
         this.entries.delete(this.entries.keys().next().value as string);
       }
-      entry = { sightings: 0, usableUntil: 0, creating: false, retryAfter: 0 };
+      entry = { sightings: 0, usableUntil: 0, creating: false, retryAfter: 0, refused: false };
       this.entries.set(key, entry);
     }
     entry.sightings += 1;
+    if (entry.refused) return undefined;
     const now = this.now();
     if (entry.name !== undefined && now < entry.usableUntil) return entry.name;
     if (entry.sightings >= 2 && !entry.creating && now >= entry.retryAfter) {
-      this.start(entry, model, systemInstruction, tools, now);
+      this.start(entry, model, systemInstruction, tools, now, create);
     }
     return undefined;
   }
 
-  /** Stop naming a cache the API refused. */
-  forget(name: string): void {
+  /** The API refused a request that named this cache: its head is not cached again. */
+  refuse(name: string): void {
     for (const entry of this.entries.values()) {
       if (entry.name !== name) continue;
       entry.name = undefined;
-      entry.retryAfter = this.now() + GEMINI_PREFIX_CACHE_RETRY_MS;
+      entry.refused = true;
+      this.refusals += 1;
     }
   }
 
@@ -95,6 +111,7 @@ export class GeminiPrefixCache {
     systemInstruction: unknown,
     tools: unknown,
     startedAt: number,
+    create: GeminiPrefixCacheCreate,
   ): void {
     entry.creating = true;
     entry.name = undefined;
@@ -106,8 +123,9 @@ export class GeminiPrefixCache {
     };
     void (async () => {
       try {
-        const name = await this.create(body);
+        const name = await create(body);
         if (!name.startsWith("cachedContents/")) throw new Error("no cache name");
+        if (entry.refused) return;
         entry.name = name;
         // Counted from before the request left, so never later than Google's clock.
         entry.usableUntil = startedAt + GEMINI_PREFIX_CACHE_USABLE_MS;

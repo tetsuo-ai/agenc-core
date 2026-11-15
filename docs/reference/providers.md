@@ -220,7 +220,11 @@ second request with the same head and named from the third on, so about
 which Google turns off for a request that names an explicit cache. Google
 bills storage for the cache (about $0.001 per 10 minutes). Set
 `GEMINI_CACHED_CONTENT=off` to turn this off; a cache of your own named there
-is used instead. Gemini 4 models reject explicit caches, and
+is used instead. The cache is used on Google's own endpoint only, not on
+Vertex or a custom `GEMINI_BASE_URL`. Creating it is billed as input (about
+1,500 tokens every 7 minutes of a running session) and is not part of the
+session's token accounting. If Google refuses a request that names the
+cache, AgenC sends it again with its head and stops caching that head. Gemini 4 models reject explicit caches, and
 `gemini-3.8-flash` gains more from its implicit cache, so neither uses one.
 
 ### New Gemini models

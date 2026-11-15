@@ -17,6 +17,7 @@ import {
   LLMCapabilityError,
   LLMInvalidResponseError,
   LLMProviderError,
+  LLMRequestRebuiltError,
   LLMStreamTruncatedError,
   mapLLMError,
   markLLMInitialHttpRejection,
@@ -366,20 +367,30 @@ function parseJsonObjectText(text: string): Record<string, unknown> | null {
 const GEMINI_WORKSPACE_DATA_KEY = "AGENC_DATA";
 
 /**
- * The body of a result framed as `AGENC_DATA\n<body>\nAGENC_DATA`.
+ * A result framed as `AGENC_DATA\n<body>\nAGENC_DATA`, with the note the
+ * runtime may add after the closing line (an excerpt note of the context
+ * fit, an omitted-image note). In its parts form an empty result is the two
+ * marker lines alone.
  *
- * The framing breaks up the boundary name inside the body, so a body that
- * still holds it was not framed by the runtime and keeps its text form.
+ * The framing breaks up the boundary name inside the body, so a text with
+ * another occurrence was not framed by the runtime and keeps its text form.
  */
-function geminiWorkspaceDataBody(content: string): string | undefined {
-  const open = `${GEMINI_WORKSPACE_DATA_KEY}\n`;
-  const close = `\n${GEMINI_WORKSPACE_DATA_KEY}`;
-  if (
-    content.length < open.length + close.length ||
-    !content.startsWith(open) || !content.endsWith(close)
-  ) return undefined;
-  const body = content.slice(open.length, -close.length);
-  return body.includes(GEMINI_WORKSPACE_DATA_KEY) ? undefined : body;
+function geminiWorkspaceData(
+  content: string,
+): { readonly body: string; readonly note?: string } | undefined {
+  const marker = GEMINI_WORKSPACE_DATA_KEY;
+  if (!content.startsWith(`${marker}\n`)) return undefined;
+  const rest = content.slice(marker.length + 1);
+  const closeAt = rest === marker || rest.startsWith(`${marker}\n`)
+    ? 0
+    : rest.indexOf(`\n${marker}`) + 1;
+  if (closeAt === 0 && !(rest === marker || rest.startsWith(`${marker}\n`))) return undefined;
+  const body = closeAt === 0 ? "" : rest.slice(0, closeAt - 1);
+  const after = rest.slice(closeAt + marker.length);
+  if (after.length > 0 && !after.startsWith("\n")) return undefined;
+  const note = after.slice(1);
+  if (body.includes(marker) || note.includes(marker)) return undefined;
+  return note.length > 0 ? { body, note } : { body };
 }
 
 /**
@@ -400,9 +411,13 @@ function geminiWorkspaceDataBody(content: string): string | undefined {
  * (ai.google.dev/gemini-api/docs/function-calling).
  */
 function functionResponsePayload(content: string): Record<string, unknown> {
-  const workspaceBody = geminiWorkspaceDataBody(content);
-  if (workspaceBody !== undefined) {
-    return { [GEMINI_WORKSPACE_DATA_KEY]: workspaceBody };
+  const workspace = geminiWorkspaceData(content);
+  if (workspace !== undefined) {
+    return {
+      [GEMINI_WORKSPACE_DATA_KEY]: workspace.body,
+      // The runtime's own note about the result (what was left out), outside the data.
+      ...(workspace.note !== undefined ? { note: workspace.note } : {}),
+    };
   }
   return parseJsonObjectText(content) ?? { result: content };
 }
@@ -3850,7 +3865,9 @@ export class GeminiProvider implements LLMProvider {
     body: Record<string, unknown>,
   ): { readonly body: Record<string, unknown>; readonly cacheName?: string } {
     if (
-      this.config.endpointPlan.kind === "vertex" ||
+      // Google's own endpoint only: Vertex has other rules, and a custom
+      // GEMINI_BASE_URL may not serve cachedContents at all.
+      this.config.endpointPlan.kind !== "developer" ||
       this.config.cachedContent !== undefined ||
       !geminiUsesPrefixCache(model) ||
       body.cachedContent !== undefined || body.toolConfig !== undefined ||
@@ -3859,25 +3876,41 @@ export class GeminiProvider implements LLMProvider {
     ) return { body };
     let cache = geminiPrefixCaches.get(this.prefixCacheScope);
     if (cache === undefined) {
-      cache = new GeminiPrefixCache((request) => this.createPrefixCache(request));
+      cache = new GeminiPrefixCache();
       geminiPrefixCaches.set(this.prefixCacheScope, cache);
     }
-    const cacheName = cache.lookup(canonicalGeminiModelName(model), body.systemInstruction, body.tools);
+    const cacheName = cache.lookup(
+      canonicalGeminiModelName(model), body.systemInstruction, body.tools,
+      (request) => this.createPrefixCache(request),
+    );
     if (cacheName === undefined) return { body };
     const { systemInstruction: _systemInstruction, tools: _tools, ...rest } = body;
     return { body: { ...rest, cachedContent: cacheName }, cacheName };
   }
 
   private async createPrefixCache(body: Record<string, unknown>): Promise<string> {
-    const session = this.client.createTurnSession({ wireApi: "custom" });
-    const response = await session.requestJson<Record<string, unknown>>({
-      path: "/cachedContents",
-      method: "POST",
-      body,
+    // A client of its own, without the warning, capability-drift and
+    // fallback hooks: a refused creation is not a failure of the session's
+    // model and must not be shown or counted as one.
+    const client = new ProviderHttpClient({
+      providerName: this.name,
+      baseURL: geminiEndpointFor(this.config.endpointPlan),
+      model: this.config.model,
+      defaultHeaders: this.config.defaultHeaders,
+      resolveAuthHeaders: () => resolveGeminiAuthHeaders(this.config),
       timeoutMs: 30_000,
-      retryBudget: { maxRetries: 0 },
-      singleWireAttempt: true,
+      fetchImpl: this.config.fetchImpl,
+      supportsStreaming: false,
     });
+    const response = await client.createTurnSession({ wireApi: "custom" })
+      .requestJson<Record<string, unknown>>({
+        path: "/cachedContents",
+        method: "POST",
+        body,
+        timeoutMs: 30_000,
+        retryBudget: { maxRetries: 0 },
+        singleWireAttempt: true,
+      });
     const name = response.data.name;
     if (typeof name !== "string") throw new Error("Gemini cachedContents returned no name");
     return name;
@@ -3997,10 +4030,18 @@ export class GeminiProvider implements LLMProvider {
     } catch (error) {
       if (
         wire.cacheName !== undefined && error instanceof ProviderHttpError &&
-        [400, 403, 404].includes(error.status)
+        [400, 403, 404].includes(error.status) && isInitialProviderHttpRejection(error)
       ) {
-        // The API refused the request that named the cache; the next request carries its head.
-        geminiPrefixCaches.get(this.prefixCacheScope)?.forget(wire.cacheName);
+        // The API refused the request that named the cache before sampling
+        // anything. The head is not cached again, and the turn's reconnect
+        // policy sends the request once more, this time with its head: no
+        // retry happens beneath the budget lease. A refusal that had another
+        // cause comes back on that attempt and is reported then.
+        geminiPrefixCaches.get(this.prefixCacheScope)?.refuse(wire.cacheName);
+        throw new LLMRequestRebuiltError(
+          this.name,
+          "Gemini refused the request that named the prefix cache; the next attempt carries the system instruction and tools",
+        );
       }
       mapProviderError(error, singleAttemptPending);
     }
