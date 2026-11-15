@@ -15,6 +15,9 @@ export const meta = {
   description: "The Working line shows the three-dot wave, a running tool breathes on one dot, and no star glyph appears.",
   args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 90_000,
+  // The wave is a change of color. A bare CI=1 (no known CI vendor) turns
+  // color off, so the scenario asks for it instead of taking it from the host.
+  env: { FORCE_COLOR: "3" },
 };
 
 const STARS = /[✢✳✶✻✽]/u;
