@@ -34,6 +34,31 @@ describe('provider runtime request', () => {
     expect(openai.requested.extra?.zeroDataRetention).toBeUndefined()
   })
 
+  test('forwards the OpenAI WebSocket transport only when asked, and only to OpenAI', () => {
+    const extra = (
+      provider: 'openai' | 'deepseek' | 'grok' | 'openrouter',
+      config: Parameters<typeof resolveProviderRuntimeRequest>[0]['config'],
+      environment: Record<string, string> = {},
+    ) => resolveProviderRuntimeRequest({ provider, model: 'm', config, environment }).requested.extra
+    const websocket = { providers: { openai: { transport: 'websocket' as const } } }
+    const http = { providers: { openai: { transport: 'http' as const } } }
+
+    expect(extra('openai', websocket)).toMatchObject({ responsesTransport: 'websocket' })
+    // HTTP is the default and is never sent as a value.
+    expect(extra('openai', {})?.responsesTransport).toBeUndefined()
+    expect(extra('openai', http)?.responsesTransport).toBeUndefined()
+    // The environment wins in both directions; an unknown value changes nothing.
+    expect(extra('openai', {}, { AGENC_OPENAI_TRANSPORT: 'websocket' })).toMatchObject({ responsesTransport: 'websocket' })
+    expect(extra('openai', websocket, { AGENC_OPENAI_TRANSPORT: 'http' })?.responsesTransport).toBeUndefined()
+    expect(extra('openai', websocket, { AGENC_OPENAI_TRANSPORT: 'carrier-pigeon' })).toMatchObject({ responsesTransport: 'websocket' })
+    for (const provider of ['deepseek', 'grok', 'openrouter'] as const) {
+      const requested = extra(provider, websocket, { AGENC_OPENAI_TRANSPORT: 'websocket' })
+      expect(requested?.responsesTransport, provider).toBeUndefined()
+      // Nothing about another provider's request changes with the setting.
+      expect(requested, provider).toEqual(extra(provider, {}))
+    }
+  })
+
   test('asks OpenRouter for zero data retention by default; only an explicit false turns it off', () => {
     for (const config of [{}, { providers: {} }, { providers: { openrouter: {} } }]) {
       const request = resolveProviderRuntimeRequest({

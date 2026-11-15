@@ -12,6 +12,7 @@ import type {
 import type { ProviderEnvironment } from "./provider-options.js";
 import { resolveXaiCapabilityExtra } from "./xai-capability-config.js";
 import { openRouterZeroDataRetentionEnabled } from "./zero-data-retention.js";
+import { parseOpenAIResponsesTransport } from "./providers/openai/responses-transport.js";
 
 export interface ProviderRuntimeRequest {
   readonly requested: ProviderFactoryOptions;
@@ -239,6 +240,13 @@ export function resolveProviderRuntimeRequest(params: {
     ...(params.provider === "openrouter" &&
     openRouterZeroDataRetentionEnabled(params.config)
       ? { zeroDataRetention: true }
+      : {}),
+    // OpenAI Responses over one WebSocket per session, opt-in. The
+    // environment value wins over the config, for one session or one test.
+    ...(params.provider === "openai" &&
+    (parseOpenAIResponsesTransport(params.environment.AGENC_OPENAI_TRANSPORT) ??
+      params.config.providers?.openai?.transport) === "websocket"
+      ? { responsesTransport: "websocket" as const }
       : {}),
     // Bedrock reads the configured profile mapping to apply the right
     // request contract to ids that name no model.

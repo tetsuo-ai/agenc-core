@@ -920,6 +920,39 @@ skips the incremental delta. Chaining an unstored id used to reject
 every later request of a subscription conversation once tools or
 history made it an extension.
 
+### Responses over WebSocket
+
+Opt-in, off by default. `[providers.openai] transport = "websocket"` (or
+`AGENC_OPENAI_TRANSPORT=websocket`) sends the streamed Responses calls of the
+`openai` provider over one WebSocket per session instead of one HTTP request
+per call, using OpenAI's
+[WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode).
+The socket connects to the same `/responses` endpoint with the same
+credentials. Each call is a `response.create` message with the body an HTTP
+call would send, and the answer is the same stream of events.
+
+When a call continues the previous response on the same socket, AgenC sends
+`previous_response_id` and only the new input items (tool outputs, a user
+message). The service keeps the latest response of a connection in memory, so
+this also works with `store: false`, unlike the HTTP continuation above. AgenC sends the full input instead
+whenever the model, the instructions, the tools or another request field
+changed, the earlier history was rewritten (compaction, an edit), or the
+replayed part of the history differs from what the previous response returned.
+Instructions and tools travel on every call either way.
+
+The session returns to HTTP by itself: a call goes over HTTP when the socket
+cannot connect, when the service refuses the call before it starts, or when the
+socket is busy with another call. After two failed connects in a row the
+session stays on HTTP. A cancelled call closes the socket, and the next call
+opens a new one. A socket is replaced before OpenAI's 60 minute limit. A proxy
+configured for HTTP requests is not used by the socket, so behind such a proxy
+the session stays on HTTP.
+
+Other providers ignore the setting, and the config rejects `transport` under
+any other provider table. OpenAI does not document WebSocket mode for ChatGPT
+sign-in; with the setting on, a sign-in session that is refused falls back to
+HTTP as described above.
+
 ### OpenAI prompt cache layout
 
 A Responses request on the platform API puts the static head of the system

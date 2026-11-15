@@ -101,6 +101,9 @@ import {
   assertProviderStructuredOutputCompatibility,
 } from "../../provider-capabilities.js";
 import type { OpenAIProviderConfig } from "./types.js";
+import type { ResponsesWebSocketSession, ResponsesWebSocketTurn } from "./responses-websocket.js";
+import { currentSessionWriteBehind } from "../../../session/write-behind.js";
+import { resolveStreamIdleTimeoutMs } from "../../stream-watchdog.js";
 import { OpenAIAuthSession } from "./auth.js";
 import { parseSSEFrames, type SSEFrame } from "../../_deps/sse.js";
 import {
@@ -1060,6 +1063,15 @@ export class OpenAIProvider implements LLMProvider {
    * dispatch; cleared once a request fits above the warning fraction again.
    */
   private lastSqueezeWarningOutputTokens: number | undefined;
+  /**
+   * The session's socket for streamed Responses calls, created on the first
+   * such call when `responsesTransport` is `websocket`. Its module (and the
+   * `ws` package) loads only then.
+   */
+  private webSocket: {
+    readonly module: typeof import("./responses-websocket.js");
+    readonly session: ResponsesWebSocketSession;
+  } | undefined;
 
   constructor(config: OpenAIProviderConfig) {
     this.config = resolveOpenAIProviderConfig(config);
@@ -1904,6 +1916,70 @@ export class OpenAIProvider implements LLMProvider {
     return undefined;
   }
 
+  /** Release the session's socket, if it opened one. */
+  dispose(): void {
+    this.webSocket?.session.dispose();
+  }
+
+  /**
+   * Start a streamed Responses call on the session's socket (the opt-in
+   * WebSocket transport of the `openai` provider). Returns nothing when the
+   * call goes over HTTP instead, with the same body: the transport is off,
+   * the socket is carrying another response, or it could not connect or
+   * start this one. An `error` frame before the first response event is a
+   * refusal, so nothing was generated and HTTP is still the only attempt
+   * that can generate. A socket that died after the frame was sent may have
+   * run the request, so a single-attempt call reports that instead.
+   */
+  private async beginWebSocketResponse(
+    request: Record<string, unknown>,
+    headers: Readonly<Record<string, string>> | undefined,
+    timeoutMs: number | undefined,
+    options: LLMChatOptions | undefined,
+  ): Promise<ResponsesWebSocketTurn | undefined> {
+    if (this.name !== "openai" || this.config.responsesTransport !== "websocket") return undefined;
+    if (this.webSocket === undefined) {
+      const module = await import("./responses-websocket.js");
+      this.webSocket ??= {
+        module,
+        session: new module.ResponsesWebSocketSession({ providerName: this.name }),
+      };
+    }
+    const { module, session } = this.webSocket;
+    if (!session.available) return undefined;
+    const writeBehind = currentSessionWriteBehind();
+    writeBehind?.assertHealthy();
+    let turn: ResponsesWebSocketTurn;
+    try {
+      turn = await session.begin({
+        target: () => this.client.createTurnSession({ wireApi: "responses" }).resolveWebSocketTarget({
+          api: "responses",
+          path: this.resolvePath("/responses"),
+          headers: withChatGptSessionHeader(headers, this.isChatGptBackend(), request),
+        }),
+        body: request,
+        signal: options?.signal,
+        idleTimeoutMs: normalizeTimeoutMs(timeoutMs) ?? resolveStreamIdleTimeoutMs(),
+      });
+    } catch (error) {
+      if (!(error instanceof module.ResponsesWebSocketFallback)) {
+        writeBehind?.finish();
+        throw error;
+      }
+      if (error.afterSend && !error.refused && options?.singleWireAttempt === true) {
+        writeBehind?.finish();
+        throw new LLMStreamTruncatedError(
+          this.name,
+          "WebSocket closed before the response started",
+        );
+      }
+      return undefined;
+    }
+    // As after an accepted HTTP request: the previous tool step is complete.
+    if (!(oneShotFastModeActive() && writeBehind?.oneShotBuffering)) writeBehind?.finish();
+    return turn;
+  }
+
   private async streamResponses(
     messages: LLMMessage[],
     onChunk: StreamProgressCallback,
@@ -1937,21 +2013,29 @@ export class OpenAIProvider implements LLMProvider {
     };
     let consecutiveFallbackFailures = 0;
     responseStreamAttempts: while (true) {
-      let response: ProviderHttpStreamResponse;
+      let response: ProviderHttpStreamResponse | undefined;
+      let events: AsyncIterable<OpenAISseEvent>;
       try {
-        response = await this.requestStream({
-          api: "responses",
-          headers: withChatGptSessionHeader(headers, this.isChatGptBackend(), request),
-          path: this.resolvePath("/responses"),
-          body: request,
-          timeoutMs,
-          signal: options?.signal,
-          providerFallback: this.providerFallbackForModel(
-            model,
-            options?.singleWireAttempt,
-          ),
-          singleWireAttempt: options?.singleWireAttempt,
-        });
+        const webSocketTurn = await this.beginWebSocketResponse(request, headers, timeoutMs, options);
+        if (webSocketTurn !== undefined) {
+          // Socket frames are the SSE events, so one loop reads both.
+          events = webSocketTurn.events();
+        } else {
+          response = await this.requestStream({
+            api: "responses",
+            headers: withChatGptSessionHeader(headers, this.isChatGptBackend(), request),
+            path: this.resolvePath("/responses"),
+            body: request,
+            timeoutMs,
+            signal: options?.signal,
+            providerFallback: this.providerFallbackForModel(
+              model,
+              options?.singleWireAttempt,
+            ),
+            singleWireAttempt: options?.singleWireAttempt,
+          });
+          events = this.readSseEvents(response);
+        }
       } catch (error) {
         if (isFallbackTriggeredError(error)) throw error;
         const fallbackDecision = this.evaluateConfiguredFallback(
@@ -1984,13 +2068,13 @@ export class OpenAIProvider implements LLMProvider {
       const streamedReasoningItems: Record<string, unknown>[] = [];
       let completedResponse: Record<string, unknown> | null = null;
       let hasResponseOutput = false;
-      let retryDenied = response.headers.get("x-retry-metadata") === "NO_MORE_RETRY";
+      let retryDenied = response?.headers.get("x-retry-metadata") === "NO_MORE_RETRY";
       let overloadEvent: Record<string, unknown> | undefined;
 
       let reportedUsage: LLMResponse["usage"] | undefined;
       let reportedModel = model;
       try {
-        for await (const event of this.readSseEvents(response)) {
+        for await (const event of events) {
           const eventType = event.event ?? String(event.data.type ?? "");
           const responseSnapshot = event.data.response;
           if ((eventType === "response.failed" || eventType === "response.completed" ||
