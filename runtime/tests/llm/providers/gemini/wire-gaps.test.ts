@@ -72,7 +72,7 @@ describe("Gemini function responses carry tool images", () => {
     expect(sentBody(fetchImpl).contents[2].parts[0].functionResponse).toEqual({
       id: "call_1",
       name: "FileRead",
-      response: { result: "Read image pic.png\n[image omitted: this provider cannot receive images in tool results]" },
+      response: { result: "Read image pic.png\n[2 more images omitted: only inline PNG, JPEG and WebP images are sent]" },
       parts: [{ inlineData: { mimeType: "image/webp", data: PNG } }],
     });
   });
@@ -153,6 +153,56 @@ describe("Gemini token counting", () => {
     expect(String(fetchImpl.mock.calls[0]![0])).toContain("gemini-3.8-flash:countTokens");
     expect(result.source).toBe("provider_native");
     expect(result.inputTokens).toBeGreaterThanOrEqual(300_000);
+  });
+
+  test("Gemini 2.5 signatures add nothing to the count", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ totalTokens: 500 }));
+    const count = await provider("gemini-2.5-pro", fetchImpl).tokenCountCapability.countTokens(createTokenAccountingRequest({
+      provider: "gemini", model: "gemini-2.5-pro", messages: signedHistory("gemini-2.5-pro"), options: {},
+    }), new AbortController().signal);
+    expect(sentBody(fetchImpl).generateContentRequest.contents[1].parts[0].thoughtSignature).toBe(signature);
+    expect(count.inputTokens).toBe(500);
+  });
+
+  test("the byte rule switches at exactly half the window", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url) => String(url).includes(":countTokens")
+      ? Response.json({ totalTokens: 7 })
+      : new Response(`data: ${JSON.stringify(answer)}\n\n`, { headers: { "content-type": "text/event-stream" } }));
+    const client = provider("gemini-3.8-flash", fetchImpl);
+    const messages: LLMMessage[] = [{ role: "user", content: "hello" }];
+    // The count is taken on the request the agent loop streams.
+    await client.chatStream(messages, () => {});
+    const bytes = Buffer.byteLength(String(fetchImpl.mock.calls[0]![1]!.body), "utf8");
+    const count = (window: number) => new TokenAccountingService().count(createTokenAccountingRequest({
+      provider: "gemini", model: "gemini-3.8-flash", messages, options: {}, contextWindowTokens: window,
+    }), { capability: client.tokenCountCapability });
+    expect((await count(bytes * 2)).source).toBe("conservative_fallback");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((await count(bytes * 2 - 1)).source).toBe("provider_native");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test.each([
+    ["explicit cached content", 7, { promptCacheKey: "cachedContents/abc" }, [{ role: "user", content: "hello" }], 1_048_576],
+    ["a file reference", 7, {}, [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://example.invalid/a.png" } }] }], 1_048_576],
+    // Its three-character signature adds one token of replayed thinking.
+    ["a thought part", 8, {}, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: [{ type: "thinking", thinking: "hm", signature: "sig" }, { type: "text", text: "hi" }] },
+      { role: "user", content: "again" },
+    ], 1_048_576],
+    ["a lone assistant message (the compaction output count)", 7, {}, [{ role: "assistant", content: "summary" }], 1_048_576],
+    ["a window larger than any Gemini model (the compaction byte cap)", 7, {}, [{ role: "user", content: "hello" }], 4_194_304],
+  ] as const)("%s is still counted by Google however small the request", async (_name, expected, options, messages, window) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ totalTokens: 7 }));
+    const client = provider("gemini-3.8-flash", fetchImpl);
+    const count = await client.tokenCountCapability.countTokens(createTokenAccountingRequest({
+      provider: "gemini", model: "gemini-3.8-flash", messages: messages as unknown as LLMMessage[],
+      options, contextWindowTokens: window,
+    }), new AbortController().signal);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(String(fetchImpl.mock.calls[0]![0])).toContain(":countTokens");
+    expect(count.inputTokens).toBe(expected);
   });
 
   test("a request with no known window is counted as before", async () => {

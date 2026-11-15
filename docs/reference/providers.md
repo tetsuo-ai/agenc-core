@@ -66,9 +66,10 @@ to those models. Thinking tokens count toward the limit. Both have the same
 built-in tools and per-token prices. Explicit context caching is unsupported
 on Gemini 4, and Google ignores sampling parameters.
 
-Native Argon, Carbon and Hydrogen (`gemini-4-hydrogen`) calls can think silently
-for more than five minutes, which is where Node's fetch gives up on a response
-by default. For these three models the header and body silence limits are 20 minutes, the wait Google asks
+Native Argon and Carbon calls can think silently for more than five minutes,
+which is where Node's fetch gives up on a response by default. The same holds
+for Gemini 4 Hydrogen (`gemini-4-hydrogen`), which AgenC has not registered
+yet and runs as a new model (see New Gemini models). For these three models the header and body silence limits are 20 minutes, the wait Google asks
 of a client. A request that already carries a longer limit, or none, keeps it.
 The limit is finite on purpose: a connection that died without a reset would
 otherwise hold the turn until someone cancelled it. This applies to streaming,
@@ -148,7 +149,8 @@ An image in a tool result (a screenshot, an image file the model read) goes
 to Gemini 3 and newer inside the function response, as Google documents for
 multimodal function responses. This covers inline PNG, JPEG and WebP data.
 Other image types, image URLs, and Gemini 2.5 and Gemma models keep a short
-note that the image was left out.
+note that the image was left out. This was checked live on the Gemini
+Developer API, not on Vertex AI.
 
 Sources checked on 2026-10-28 and 2026-11-15: Google's
 [thought signatures guide](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures) and
@@ -160,9 +162,16 @@ Google bills the thinking behind a returned thought signature again as input
 on every later request, and its `countTokens` endpoint leaves that thinking
 out. AgenC adds an estimate for it (a quarter of each signature's length) to
 the count Google returns, so the context size it tracks does not fall behind
-the prompt Google bills. A request whose body is no larger than half the
-context window in bytes cannot fill half the window, so AgenC estimates it
-locally and does not call `countTokens` before the model call.
+the prompt Google bills. This applies to Gemini 3 and newer.
+
+A model request whose body is no larger than half the context window in bytes
+stays far below the window, so AgenC estimates it locally, as it does for
+providers without a counter, and does not call `countTokens` before the model
+call. The estimate is conservative: a session whose compaction threshold is
+set below half the window compacts on the estimate, which can be earlier than
+Google's count would ask. Google's counter is still used for a larger request,
+for explicit cached content, for file references and thought parts, and for
+the summary size check of a compaction.
 
 ### New Gemini models
 
