@@ -74,6 +74,7 @@ import {
 import { sharedPrefixTailEnabled } from "../../wire/shared-prefix-tail.js";
 import { createProviderToolNameWireLookup, decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { parseProviderJson } from "../../wire/parse-json.js";
+import { functionCallFromCustomToolCall, functionCallsFromCustomToolCalls } from "../../wire/responses-openai-freeform.js";
 import {
   coerceUsage,
   assistantTextFromContentBlocks,
@@ -1264,7 +1265,9 @@ export class OpenAIProvider implements LLMProvider {
           });
           this.functionCallItemIds.rememberAll(
             this.name,
-            response.data.output,
+            Array.isArray(response.data.output)
+              ? functionCallsFromCustomToolCalls(response.data.output as Record<string, unknown>[])
+              : response.data.output,
           );
           return parseOpenAIResponsesResponse(
             model,
@@ -1866,11 +1869,16 @@ export class OpenAIProvider implements LLMProvider {
     | "reasoningEffortAllowedValues"
     | "declareNonStrictTools"
     | "appendOnlyContext"
+    | "freeformApplyPatch"
   > {
-    // The ChatGPT backend is not verified for these fields and keeps its
-    // request shape.
-    if (this.name === "openai" && !this.isChatGptBackend()) {
-      return { declareNonStrictTools: true, appendOnlyContext: true };
+    if (this.name === "openai") {
+      // OpenAI's own models only (GPT-5 and later take custom tools).
+      const freeform = this.config.responsesToolFormat === "freeform" && isOpenAiReasoningFamilyModel(model)
+        ? { freeformApplyPatch: true as const } : {};
+      // The ChatGPT backend is not verified for the other fields and keeps
+      // its request shape.
+      return this.isChatGptBackend() ? freeform
+        : { declareNonStrictTools: true, appendOnlyContext: true, ...freeform };
     }
     if (this.name !== "meta") return {};
     const effort = resolveReasoningEffort({ provider: this.name, model });
@@ -2258,6 +2266,7 @@ export class OpenAIProvider implements LLMProvider {
           // any earlier deltas. Treat every nonempty output snapshot as partial.
           hasResponseOutput ||= eventType.startsWith("response.output_") ||
             eventType.startsWith("response.function_call") || eventType.startsWith("response.reasoning") ||
+            eventType.startsWith("response.custom_tool_call") ||
             (Array.isArray(snapshotOutput) && snapshotOutput.length > 0);
           if (eventType === "error" && this.name === "openai") {
             retryDenied ||= forbidsStreamRetry(event.data);
@@ -2293,9 +2302,10 @@ export class OpenAIProvider implements LLMProvider {
           }
 
           if (eventType === "response.output_item.done") {
+            // A freeform (custom) tool call is read as the function call AgenC runs.
             const item =
               event.data.item && typeof event.data.item === "object"
-                ? (event.data.item as Record<string, unknown>)
+                ? functionCallFromCustomToolCall(event.data.item as Record<string, unknown>)
                 : undefined;
             if (
               item?.type === "reasoning" &&
@@ -2484,7 +2494,7 @@ export class OpenAIProvider implements LLMProvider {
         }
       }
       const terminalOutput = Array.isArray(completedResponse.output)
-        ? completedResponse.output as Record<string, unknown>[] : [];
+        ? functionCallsFromCustomToolCalls(completedResponse.output as Record<string, unknown>[]) : [];
       this.functionCallItemIds.rememberAll(this.name, terminalOutput);
       // Some Responses backends omit streamed items in the terminal payload.
       // Preserve their identities for recovery as well as completed calls.

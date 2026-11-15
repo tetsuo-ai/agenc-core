@@ -141,6 +141,7 @@ function sameArguments(left: unknown, right: unknown): boolean {
 
 function isReplayItem(item: unknown): item is Item {
   return isItem(item) && (item.type === "reasoning" || item.type === "function_call" ||
+    item.type === "custom_tool_call" ||
     (item.type === "message" && item.role === "assistant"));
 }
 
@@ -155,7 +156,7 @@ function replayMatchesOutput(replay: readonly Item[], output: readonly Item[]): 
   const reasoningIds = new Set<string>();
   let text = "";
   for (const item of output) {
-    if (item.type === "function_call") {
+    if (item.type === "function_call" || item.type === "custom_tool_call") {
       if (typeof item.call_id !== "string" || item.call_id.length === 0 || calls.has(item.call_id)) {
         return false;
       }
@@ -173,10 +174,13 @@ function replayMatchesOutput(replay: readonly Item[], output: readonly Item[]): 
   }
   let replayText = "";
   for (const item of replay) {
-    if (item.type === "function_call") {
+    if (item.type === "function_call" || item.type === "custom_tool_call") {
       const issued = typeof item.call_id === "string" ? calls.get(item.call_id) : undefined;
-      if (issued === undefined || issued.name !== item.name ||
-        !sameArguments(issued.arguments, item.arguments)) {
+      // A freeform call's input is plain text and is compared exactly.
+      if (issued === undefined || issued.type !== item.type || issued.name !== item.name ||
+        !(item.type === "custom_tool_call"
+          ? typeof item.input === "string" && issued.input === item.input
+          : sameArguments(issued.arguments, item.arguments))) {
         return false;
       }
       calls.delete(item.call_id as string);
