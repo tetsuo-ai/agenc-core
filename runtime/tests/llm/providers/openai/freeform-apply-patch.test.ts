@@ -122,7 +122,9 @@ describe("freeform apply_patch on the Responses wire", () => {
   });
 
   test("replays a patch call and its result as custom items, other calls as function items", () => {
-    const input = build({ freeformApplyPatch: true, functionCallItemId: (id) => id === "call_p" ? ISSUED_ID : undefined })
+    const input = build({ freeformApplyPatch: true, functionCallItemId: (id) =>
+      // A custom call's id is kept under its own key; the function-call id of the same call id is never used for it.
+      id === "custom:call_p" ? ISSUED_ID : id === "call_p" ? "fc_not_for_a_custom_item" : undefined })
       .input as Array<Record<string, unknown>>;
     expect(input.slice(1)).toEqual([
       { type: "function_call", call_id: "call_e", name: "exec_command", arguments: '{"cmd":"ls"}' },
@@ -278,6 +280,101 @@ describe("OpenAIProvider with responsesToolFormat freeform", () => {
       await provider.chatStream(history([execCall, patchCall]), () => {});
       const body = String((fetchImpl.mock.calls[0]?.[1] as RequestInit).body);
       expect(body, `${model} ${JSON.stringify(extra)}`).not.toContain('"custom');
+    }
+  });
+});
+
+describe("freeform apply_patch edge cases", () => {
+  const request: OpenAIResponsesRequestOptions = {
+    model: MODEL, messages: [{ role: "user", content: "change a" }], tools: TOOLS, freeformApplyPatch: true,
+  };
+
+  test("ignores a custom call under another name, and any custom call when the switch is off", () => {
+    const foreign = { ...CUSTOM_ITEM, name: "exec_command", input: "rm -rf /" };
+    expect(parseOpenAIResponsesResponse(MODEL, { id: "r", status: "completed", output: [foreign] }, request).toolCalls).toEqual([]);
+    expect(parseOpenAIResponsesResponse(MODEL, { id: "r", status: "completed", output: [CUSTOM_ITEM] },
+      { ...request, freeformApplyPatch: false }).toolCalls).toEqual([]);
+  });
+
+  test("keeps only the identity of a custom call cut off by the output limit", () => {
+    const parsed = parseOpenAIResponsesResponse(MODEL, {
+      id: "r", status: "incomplete", incomplete_details: { reason: "max_output_tokens" },
+      output: [{ ...CUSTOM_ITEM, input: "*** Begin Patch\n*** Update File: a.ts\n@@\n-const" }],
+    }, request);
+    expect(parsed.finishReason).toBe("length");
+    expect(parsed.toolCalls).toEqual([]);
+    expect(parsed.incompleteToolCalls).toEqual([{ id: "call_p", name: "apply_patch" }]);
+  });
+
+  test("never sends an item id issued for the other item type when the format changes between requests", async () => {
+    // Freeform on, then off: the custom item's id must not ride on a function_call.
+    const turn = () => vi.fn<typeof fetch>().mockResolvedValueOnce(customTurnStream()).mockResolvedValue(answerStream());
+    const onFetch = turn();
+    const on = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, fetchImpl: onFetch, tools: TOOLS, responsesToolFormat: "freeform" });
+    const first = await inSession(() => on.chatStream([{ role: "user", content: "change a" }], () => {}));
+    const offFetch = vi.fn<typeof fetch>().mockResolvedValue(answerStream());
+    const off = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, fetchImpl: offFetch, tools: TOOLS });
+    off.restoreFunctionCallItemIds(on.exportFunctionCallItemIds());
+    await inSession(() => off.chatStream(history(first.toolCalls), () => {}));
+    expect(sentBody(offFetch, 0).input.slice(1)).toEqual([
+      { type: "function_call", call_id: "call_p", name: "apply_patch", arguments: patchCall.arguments },
+      { type: "function_call_output", call_id: "call_p", output: "done call_p" },
+    ]);
+    // The same process, restored: the custom form gets its id back.
+    const againFetch = vi.fn<typeof fetch>().mockResolvedValue(answerStream());
+    const again = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, fetchImpl: againFetch, tools: TOOLS, responsesToolFormat: "freeform" });
+    again.restoreFunctionCallItemIds(on.exportFunctionCallItemIds());
+    await inSession(() => again.chatStream(history(first.toolCalls), () => {}));
+    expect(sentBody(againFetch, 0).input[1]).toMatchObject({ type: "custom_tool_call", id: ISSUED_ID });
+
+    // Freeform off, then on: a function call's id must not ride on a custom_tool_call.
+    const functionItem = { type: "function_call", id: "fc_issued_for_function", call_id: "call_p", name: "apply_patch", arguments: patchCall.arguments };
+    const fnFetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(sse([
+        { type: "response.output_item.done", output_index: 0, item: functionItem },
+        { type: "response.completed", response: { id: "resp_1", status: "completed", model: MODEL, output: [] } },
+      ]));
+    const fn = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, fetchImpl: fnFetch, tools: TOOLS });
+    const fnFirst = await inSession(() => fn.chatStream([{ role: "user", content: "change a" }], () => {}));
+    const flipFetch = vi.fn<typeof fetch>().mockResolvedValue(answerStream());
+    const flipped = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, fetchImpl: flipFetch, tools: TOOLS, responsesToolFormat: "freeform" });
+    flipped.restoreFunctionCallItemIds(fn.exportFunctionCallItemIds());
+    await inSession(() => flipped.chatStream(history(fnFirst.toolCalls), () => {}));
+    expect(sentBody(flipFetch, 0).input[1]).toEqual(
+      { type: "custom_tool_call", call_id: "call_p", name: "apply_patch", input: PATCH });
+  });
+
+  test("reads a streamed turn that mixes a function call and a custom call", async () => {
+    const execItem = { type: "function_call", id: "fc_exec", call_id: "call_e", name: "exec_command", arguments: '{"cmd":"ls"}' };
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(sse([
+        { type: "response.output_item.done", output_index: 0, item: execItem },
+        { type: "response.output_item.done", output_index: 1, item: CUSTOM_ITEM },
+        { type: "response.completed", response: { id: "resp_1", status: "completed", model: MODEL, output: [execItem, CUSTOM_ITEM] } },
+      ]))
+      .mockResolvedValueOnce(answerStream());
+    const provider = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, fetchImpl, tools: TOOLS, responsesToolFormat: "freeform" });
+    const first = await inSession(() => provider.chatStream([{ role: "user", content: "change a" }], () => {}));
+    expect(first.toolCalls).toEqual([execCall, patchCall]);
+    await inSession(() => provider.chatStream(history(first.toolCalls), () => {}));
+    expect(sentBody(fetchImpl, 1).input.slice(1).map((item) => [item.type, item.id ?? null, item.call_id])).toEqual([
+      ["function_call", "fc_exec", "call_e"], ["custom_tool_call", ISSUED_ID, "call_p"],
+      ["function_call_output", null, "call_e"], ["custom_tool_call_output", null, "call_p"],
+    ]);
+  });
+
+  test("keeps the function tool for the o-series and other non GPT-5 ids", async () => {
+    for (const model of ["o3", "o4-mini", "codex-mini-latest", "gpt-4o", "gpt-oss-120b"]) {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(answerStream());
+      const provider = new OpenAIProvider({ apiKey: "sk-test", model, fetchImpl, tools: TOOLS, responsesToolFormat: "freeform", useResponsesApi: true });
+      await inSession(() => provider.chatStream(history([execCall, patchCall]), () => {}), model);
+      expect(String((fetchImpl.mock.calls[0]?.[1] as RequestInit).body), model).not.toContain('"custom');
+    }
+    for (const model of ["gpt-5", "gpt-5.6-sol", "gpt-6-luna", "gpt-6.1-terra", "gpt-6.1-sol"]) {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(answerStream());
+      const provider = new OpenAIProvider({ apiKey: "sk-test", model, fetchImpl, tools: TOOLS, responsesToolFormat: "freeform", useResponsesApi: true });
+      await inSession(() => provider.chatStream(history([patchCall]), () => {}), model);
+      expect(sentBody(fetchImpl, 0).tools.map((tool) => tool.type), model).toEqual(["function", "custom"]);
     }
   });
 });

@@ -35,6 +35,7 @@ import {
 } from "./shared.js";
 import { planOpenAIContext } from "./responses-openai-context.js";
 import {
+  customToolCallItemIdKey,
   freeformCallInput,
   freeformResponsesTool,
   functionCallsFromCustomToolCalls,
@@ -618,21 +619,23 @@ export function buildOpenAIResponsesRequest(
       if (toolCalls.length > 0) responseInput.push(...reasoning);
       for (const toolCall of toolCalls) {
         const callId = normalizeFunctionCallCallId(toolCall.id);
-        const itemId = issuedFunctionCallItemId(input, toolCall.id);
         const freeformInput = input.freeformApplyPatch === true
           ? freeformCallInput(toolCall.name, toolCall.arguments)
           : undefined;
         if (freeformInput !== undefined) {
+          // The id issued for the custom item, never one issued for a function call.
+          const customItemId = issuedFunctionCallItemId(input, customToolCallItemIdKey((toolCall.id ?? "").trim()));
           freeformCallIds.add(callId);
           responseInput.push({
             type: "custom_tool_call",
-            ...(itemId !== undefined ? { id: itemId } : {}),
+            ...(customItemId !== undefined ? { id: customItemId } : {}),
             call_id: callId,
             name: toolCall.name,
             input: freeformInput,
           });
           continue;
         }
+        const itemId = issuedFunctionCallItemId(input, toolCall.id);
         responseInput.push({
           type: "function_call",
           ...(itemId !== undefined ? { id: itemId } : {}),
@@ -714,7 +717,7 @@ export function buildOpenAIResponsesRequest(
       ? "auto"
       : typeof choice === "string" ? choice : {
         type: input.freeformApplyPatch === true && isFreeformToolName(choice.name) &&
-          tools.some((tool) => tool.type === "custom" && tool.name === choice.name)
+          responsesRequestTools(input).some((tool) => tool.type === "custom" && tool.name === choice.name)
           ? "custom" : "function",
         name: encodeMcpToolNameForWire(choice.name),
       };
@@ -850,7 +853,7 @@ export function parseOpenAIResponsesResponse(
 ): LLMResponse {
   // A freeform (custom) tool call is read as the function call AgenC runs.
   const output = Array.isArray(response.output)
-    ? functionCallsFromCustomToolCalls(response.output as Array<Record<string, unknown>>)
+    ? functionCallsFromCustomToolCalls(response.output as Array<Record<string, unknown>>, request.freeformApplyPatch)
     : [];
   const functionCalls = output.filter((item) => item.type === "function_call");
   const initialFinishReason = resolveResponsesFinishReason(response, []);

@@ -44,6 +44,14 @@ export function freeformResponsesTool<T extends Item>(tool: T): T | Item {
   };
 }
 
+/**
+ * The models that take custom tools: GPT-5 and later by their own id. The
+ * o-series and older GPT models keep the function tool.
+ */
+export function openAiModelTakesCustomTools(model: string): boolean {
+  return /^gpt-(?:[5-9]|[1-9]\d)(?:$|[-_.:\d])/u.test(model.trim().toLowerCase().replace(/^openai[/:]/u, ""));
+}
+
 /** Whether a named tool choice selects the freeform tool. */
 export function isFreeformToolName(name: string): boolean {
   return name === FREEFORM_TOOL_NAME;
@@ -69,12 +77,14 @@ export function freeformCallInput(name: string, argumentsJson: string): string |
 }
 
 /**
- * A `custom_tool_call` output item as the function call AgenC runs: the same
- * ids and name, with the text as the `input` argument. Other items are
- * returned as they are.
+ * A `custom_tool_call` output item for apply_patch as the function call AgenC
+ * runs: the same ids and name, with the text as the `input` argument. Only a
+ * request that declared the freeform tool (`enabled`) reads one; any other
+ * item, a custom call under another name, or a custom call nobody asked for
+ * is returned as it is and stays ignored.
  */
-export function functionCallFromCustomToolCall<T extends Item>(item: T): T | Item {
-  if (item.type !== "custom_tool_call") return item;
+export function functionCallFromCustomToolCall<T extends Item>(item: T, enabled: boolean | undefined): T | Item {
+  if (enabled !== true || item.type !== "custom_tool_call" || item.name !== FREEFORM_TOOL_NAME) return item;
   const { input, ...rest } = item;
   return {
     ...rest,
@@ -84,6 +94,27 @@ export function functionCallFromCustomToolCall<T extends Item>(item: T): T | Ite
 }
 
 /** `functionCallFromCustomToolCall` over an output array. */
-export function functionCallsFromCustomToolCalls(output: readonly Item[]): Item[] {
-  return output.map((item) => functionCallFromCustomToolCall(item));
+export function functionCallsFromCustomToolCalls(output: readonly Item[], enabled: boolean | undefined): Item[] {
+  return enabled === true ? output.map((item) => functionCallFromCustomToolCall(item, enabled)) : [...output];
+}
+
+/**
+ * The key a custom call's issued item id is remembered under. An item id
+ * belongs to one item type, so a custom call's id is kept apart from the
+ * function-call ids: a call replayed in the other form (the format changed
+ * between two requests of a session) finds no id and goes back without one.
+ */
+export function customToolCallItemIdKey(callId: string): string {
+  return `custom:${callId}`;
+}
+
+/**
+ * The record `ResponsesFunctionCallItemIds` remembers for an output item: a
+ * custom call under its own key, every other item as it is.
+ */
+export function itemIdRecord(item: unknown): unknown {
+  if (item === null || typeof item !== "object" || Array.isArray(item)) return item;
+  const record = item as Item;
+  if (record.type !== "custom_tool_call" || typeof record.call_id !== "string") return item;
+  return { type: "function_call", call_id: customToolCallItemIdKey(record.call_id), id: record.id };
 }

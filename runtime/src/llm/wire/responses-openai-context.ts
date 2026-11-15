@@ -36,7 +36,7 @@ function isCustomGrammarTool(tool: Item): boolean {
     typeof tool.name === "string" && typeof tool.description === "string" &&
     format !== null && typeof format === "object" && !Array.isArray(format) &&
     onlyKeys(format, ["type", "syntax", "definition"]) && format.type === "grammar" &&
-    (format.syntax === "lark" || format.syntax === "regex") && typeof format.definition === "string";
+    format.syntax === "lark" && typeof format.definition === "string";
 }
 
 function toolList(value: unknown): value is Item[] {

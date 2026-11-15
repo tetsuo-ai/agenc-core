@@ -74,7 +74,12 @@ import {
 import { sharedPrefixTailEnabled } from "../../wire/shared-prefix-tail.js";
 import { createProviderToolNameWireLookup, decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { parseProviderJson } from "../../wire/parse-json.js";
-import { functionCallFromCustomToolCall, functionCallsFromCustomToolCalls } from "../../wire/responses-openai-freeform.js";
+import {
+  functionCallFromCustomToolCall,
+  functionCallsFromCustomToolCalls,
+  itemIdRecord,
+  openAiModelTakesCustomTools,
+} from "../../wire/responses-openai-freeform.js";
 import {
   coerceUsage,
   assistantTextFromContentBlocks,
@@ -1265,9 +1270,7 @@ export class OpenAIProvider implements LLMProvider {
           });
           this.functionCallItemIds.rememberAll(
             this.name,
-            Array.isArray(response.data.output)
-              ? functionCallsFromCustomToolCalls(response.data.output as Record<string, unknown>[])
-              : response.data.output,
+            Array.isArray(response.data.output) ? response.data.output.map(itemIdRecord) : response.data.output,
           );
           return parseOpenAIResponsesResponse(
             model,
@@ -1873,7 +1876,7 @@ export class OpenAIProvider implements LLMProvider {
   > {
     if (this.name === "openai") {
       // OpenAI's own models only (GPT-5 and later take custom tools).
-      const freeform = this.config.responsesToolFormat === "freeform" && isOpenAiReasoningFamilyModel(model)
+      const freeform = this.config.responsesToolFormat === "freeform" && openAiModelTakesCustomTools(model)
         ? { freeformApplyPatch: true as const } : {};
       // The ChatGPT backend is not verified for the other fields and keeps
       // its request shape.
@@ -2302,11 +2305,14 @@ export class OpenAIProvider implements LLMProvider {
           }
 
           if (eventType === "response.output_item.done") {
-            // A freeform (custom) tool call is read as the function call AgenC runs.
-            const item =
+            // A freeform (custom) apply_patch call is read as the function call AgenC runs.
+            const issuedItem =
               event.data.item && typeof event.data.item === "object"
-                ? functionCallFromCustomToolCall(event.data.item as Record<string, unknown>)
+                ? (event.data.item as Record<string, unknown>)
                 : undefined;
+            const item = issuedItem !== undefined
+              ? functionCallFromCustomToolCall(issuedItem, requestOptions.freeformApplyPatch)
+              : undefined;
             if (
               item?.type === "reasoning" &&
               requestOptions.reasoningReplayProvider !== undefined
@@ -2318,7 +2324,7 @@ export class OpenAIProvider implements LLMProvider {
               // Wait for the terminal status before validating or publishing it.
               streamedFunctionItems.push(item);
               // Keep the issued item id for the call's next appearance in history.
-              this.functionCallItemIds.remember(this.name, item);
+              this.functionCallItemIds.remember(this.name, itemIdRecord(issuedItem));
               const id = String(item.call_id ?? item.id ?? "").trim();
               const name = String(item.name ?? "").trim();
               const args = String(item.arguments ?? "");
@@ -2493,9 +2499,10 @@ export class OpenAIProvider implements LLMProvider {
           onChunk({ content: "", done: false, toolCalls: [toolCall] });
         }
       }
-      const terminalOutput = Array.isArray(completedResponse.output)
-        ? functionCallsFromCustomToolCalls(completedResponse.output as Record<string, unknown>[]) : [];
-      this.functionCallItemIds.rememberAll(this.name, terminalOutput);
+      const issuedOutput = Array.isArray(completedResponse.output)
+        ? completedResponse.output as Record<string, unknown>[] : [];
+      this.functionCallItemIds.rememberAll(this.name, issuedOutput.map(itemIdRecord));
+      const terminalOutput = functionCallsFromCustomToolCalls(issuedOutput, requestOptions.freeformApplyPatch);
       // Some Responses backends omit streamed items in the terminal payload.
       // Preserve their identities for recovery as well as completed calls.
       const responseWithStreamedCalls = {
