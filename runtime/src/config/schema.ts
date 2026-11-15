@@ -697,10 +697,11 @@ export interface ProviderConfig {
   readonly zero_data_retention?: boolean;
   /**
    * How streamed Responses calls travel. Accepted only under
-   * `providers.openai`: `http` (SSE, the default) or `websocket`, one socket
-   * per session that sends only the new input items when the request
-   * continues the previous response and falls back to HTTP on any connect or
-   * protocol failure (see docs/reference/providers.md).
+   * `providers.openai`: `http` (SSE) or `websocket`, one socket per session
+   * that sends only the new input items when the request continues the
+   * previous response and falls back to HTTP on any connect or protocol
+   * failure. Unset, Light sessions use `websocket` and everything else
+   * `http` (see docs/reference/providers.md).
    */
   readonly transport?: "http" | "websocket";
   readonly context_window_tokens?: number;

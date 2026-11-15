@@ -1,6 +1,7 @@
 import { projectRepeatedReads } from "../tools/read-result-projection.js";
 import { resolveLightRequest } from "../session/light-request/settings.js";
 import { defaultLightModelVerbosity } from "../llm/openai-light-verbosity.js";
+import { lightSessionUsesOpenAiSocket } from "../llm/openai-light-transport.js";
 import { DegenerateTextDetector } from "../llm/degenerate-text.js";
 import { completeReasoningCapSample, type ReasoningCapSample } from "../session/reasoning-cap-policy.js";
 /**
@@ -366,6 +367,8 @@ export function buildProviderOptions(
     // field unless the user chose a level (see openai-light-verbosity.ts).
     modelVerbosity: ctx.modelVerbosity ??
       defaultLightModelVerbosity(session, session.services.provider.name, model),
+    ...(lightSessionUsesOpenAiSocket(session, session.services.provider.name)
+      ? { lightSession: true as const } : {}),
     // Lean carries this live preference in runtime context, outside the
     // pinned system prefix. Do not let the wire fallback append it again.
     responseDetailOverride: resolveLightRequest(session, session.services.provider.name) === undefined

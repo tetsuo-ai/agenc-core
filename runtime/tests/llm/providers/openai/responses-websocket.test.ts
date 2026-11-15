@@ -56,10 +56,14 @@ class MockResponsesEndpoint {
   readonly upgrades: IncomingMessage[] = [];
   readonly httpBodies: string[] = [];
   readonly sockets: WebSocket[] = [];
+  /** For each frame, the index of the socket that carried it. */
+  readonly frameSockets: number[] = [];
   /** Refuse the upgrade with this HTTP status. */
   refuseUpgrade: number | undefined;
   /** Cut the connection of an upgrade request without an answer. */
   cutUpgrade = false;
+  /** Answer an upgrade request only after this long. */
+  delayUpgradeMs = 0;
   reply: Reply = (_frame, socket, index) => sendAll(socket, toolTurn(`resp_${index + 1}`));
   httpEvents: () => Frame[] = () => answerTurn("resp_http");
 
@@ -88,14 +92,17 @@ class MockResponsesEndpoint {
         socket.end(`HTTP/1.1 ${this.refuseUpgrade ?? 404} Refused\r\nConnection: close\r\n\r\n`);
         return;
       }
-      this.wss.handleUpgrade(request, socket, head, (client) => {
+      const accept = (): void => this.wss.handleUpgrade(request, socket, head, (client) => {
         this.sockets.push(client);
         client.on("message", (data) => {
           const frame = JSON.parse(data.toString()) as Frame;
           this.frames.push(frame);
+          this.frameSockets.push(this.sockets.indexOf(client));
           this.reply(frame, client, this.frames.length - 1);
         });
       });
+      if (this.delayUpgradeMs > 0) setTimeout(accept, this.delayUpgradeMs);
+      else accept();
     });
   }
 
@@ -179,6 +186,9 @@ function historyAfter(first: LLMResponse, toolOutput = "A"): LLMMessage[] {
 }
 
 const USER: LLMMessage[] = [{ role: "user", content: "read a" }];
+/** What a Light session's main loop passes, and what its start passes. */
+const LIGHT: LLMChatOptions = { ...OPTIONS, lightSession: true };
+const START = { conversationId: "conv-ws35b", threadId: "thread-ws35b" };
 const TOOL_OUTPUT = { type: "function_call_output", call_id: "call_1", output: "A" };
 
 let endpoint: MockResponsesEndpoint | undefined;
@@ -629,7 +639,7 @@ describe("OpenAIProvider Responses over WebSocket", () => {
     expect(endpoint.frames).toHaveLength(1);
   });
 
-  test("keeps HTTP as the default and leaves every other provider on HTTP, byte for byte", async () => {
+  test("leaves calls outside a Light session and every other provider on HTTP, byte for byte", async () => {
     const { endpoint, baseURL } = await start();
     const defaults = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, baseURL });
     await stream(defaults, USER);
@@ -644,11 +654,319 @@ describe("OpenAIProvider Responses over WebSocket", () => {
         apiKeyEnvLabel: "DEEPSEEK_API_KEY", useResponsesApi: true,
         ...(transport !== undefined ? { responsesTransport: transport } : {}),
       });
-      await inScope(() => other.chatStream(USER, () => {}, OPTIONS));
+      providers.push(other);
+      // Not even a Light session start or a marked call opens a socket for another provider.
+      other.prewarmStartup({ ...START, lightSession: true });
+      await inScope(() => other.chatStream(USER, () => {}, { ...OPTIONS, lightSession: true }));
     }
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(endpoint.upgrades).toHaveLength(0);
     expect(endpoint.httpBodies).toHaveLength(4);
     expect(endpoint.httpBodies[3]).toBe(endpoint.httpBodies[2]);
+  });
+});
+
+describe("OpenAIProvider WebSocket by default for Light sessions, with pre-connect", () => {
+  /** The provider as a session gets it: no transport configured. */
+  function light(baseURL: string, config: Partial<ConstructorParameters<typeof OpenAIProvider>[0]> = {}): OpenAIProvider {
+    const provider = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, baseURL, ...config });
+    providers.push(provider);
+    return provider;
+  }
+  const upgrades = (count: number): Promise<void> => expect.poll(() => endpoint!.sockets.length).toBe(count);
+
+  test("opens the socket when a Light session starts and sends the first call on it", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.reply = (_frame, socket, index) =>
+      sendAll(socket, index === 0 ? toolTurn("resp_1") : answerTurn("resp_2"));
+    const provider = light(baseURL);
+
+    provider.prewarmStartup({ ...START, lightSession: true });
+    await upgrades(1);
+    // Connected, and nothing sent: a pre-connect costs no request.
+    expect(endpoint.frames).toHaveLength(0);
+    expect(endpoint.httpBodies).toHaveLength(0);
+    expect(endpoint.upgrades[0]!.headers.authorization).toBe("Bearer sk-test");
+
+    const first = await stream(provider, USER, LIGHT);
+    const second = await stream(provider, historyAfter(first), LIGHT);
+    expect(second.content).toBe("done");
+    expect(endpoint.upgrades).toHaveLength(1);
+    expect(endpoint.httpBodies).toHaveLength(0);
+    expect(endpoint.frames[0]!.previous_response_id).toBeUndefined();
+    expect(endpoint.frames[1]!.previous_response_id).toBe("resp_1");
+    expect(endpoint.frames[1]!.input).toEqual([TOOL_OUTPUT]);
+  });
+
+  test("a call that arrives during the pre-connect shares its handshake", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.delayUpgradeMs = 120;
+    endpoint.reply = (_frame, socket) => sendAll(socket, answerTurn("resp_1"));
+    const provider = light(baseURL);
+
+    provider.prewarmStartup({ ...START, lightSession: true });
+    expect((await stream(provider, USER, LIGHT)).content).toBe("done");
+    expect(endpoint.upgrades).toHaveLength(1);
+    expect(endpoint.frames).toHaveLength(1);
+    expect(endpoint.httpBodies).toHaveLength(0);
+  });
+
+  test("uses the socket for a Light call without a session start, and HTTP for an unmarked call", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.reply = (_frame, socket) => sendAll(socket, answerTurn("resp_1"));
+    const provider = light(baseURL);
+
+    await stream(provider, USER, LIGHT);
+    expect(endpoint.upgrades).toHaveLength(1);
+    expect(endpoint.httpBodies).toHaveLength(0);
+    // An auxiliary call of the same provider (no Light mark) keeps HTTP.
+    await stream(provider, USER);
+    expect(endpoint.frames).toHaveLength(1);
+    expect(endpoint.httpBodies).toHaveLength(1);
+  });
+
+  test("opens no socket for the http transport, for a session that is not Light, or for a model on Chat Completions", async () => {
+    const { endpoint, baseURL } = await start();
+    const optedOut = light(baseURL, { responsesTransport: "http" });
+    optedOut.prewarmStartup({ ...START, lightSession: true });
+    light(baseURL).prewarmStartup(START);
+    light(baseURL, { useResponsesApi: false, model: "gpt-4o" }).prewarmStartup({ ...START, lightSession: true });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(endpoint.upgrades).toHaveLength(0);
+
+    // The opt-out sends what the socket-less provider sends, byte for byte.
+    await stream(optedOut, USER, LIGHT);
+    await stream(light(baseURL), USER);
+    expect(endpoint.upgrades).toHaveLength(0);
+    expect(endpoint.httpBodies).toHaveLength(2);
+    expect(endpoint.httpBodies[1]).toBe(endpoint.httpBodies[0]);
+  });
+
+  test("the configured websocket transport pre-connects for any session", async () => {
+    const { baseURL } = await start();
+    openai(baseURL).prewarmStartup(START);
+    await upgrades(1);
+  });
+
+  test("sends the session header of the ChatGPT backend on the pre-connect", async () => {
+    const { endpoint, baseURL } = await start();
+    light(baseURL, { chatgptBackend: true }).prewarmStartup({ ...START, lightSession: true });
+    await upgrades(1);
+    expect(endpoint.upgrades[0]!.headers.session_id).toBe(START.conversationId);
+  });
+
+  test("reopens the socket after the far end closes it idle, and stops when the new ones go unused", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.reply = (_frame, socket, index) =>
+      sendAll(socket, index === 0 ? toolTurn("resp_1") : answerTurn("resp_2"));
+    const provider = light(baseURL);
+    provider.prewarmStartup({ ...START, lightSession: true });
+    await upgrades(1);
+    const first = await stream(provider, USER, LIGHT);
+
+    // Idle close by the far end: the next socket is opened at once, not by the next call.
+    endpoint.sockets[0]!.close(1000);
+    await upgrades(2);
+    const second = await stream(provider, historyAfter(first), LIGHT);
+    expect(second.content).toBe("done");
+    expect(endpoint.frameSockets).toEqual([0, 1]);
+    // A new connection has no memory of the previous response: full input.
+    expect(endpoint.frames[1]!.previous_response_id).toBeUndefined();
+    expect((endpoint.frames[1]!.input as unknown[]).at(-1)).toEqual(TOOL_OUTPUT);
+    expect(endpoint.httpBodies).toHaveLength(0);
+
+    // Sockets that are closed unused are replaced twice, then no more until a call asks.
+    endpoint.sockets[1]!.close(1000);
+    await upgrades(3);
+    endpoint.sockets[2]!.close(1000);
+    await upgrades(4);
+    endpoint.sockets[3]!.close(1000);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(endpoint.upgrades).toHaveLength(4);
+    expect((await stream(provider, USER, LIGHT)).content).toBe("done");
+    expect(endpoint.upgrades).toHaveLength(5);
+    expect(endpoint.httpBodies).toHaveLength(0);
+  });
+
+  test("a socket cut mid-response (1006) is reported like a cut SSE stream and the retry runs on a new socket", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.reply = (_frame, socket, index) => {
+      if (index === 1) {
+        socket.send(JSON.stringify({ type: "response.created", response: { id: "resp_cut" } }));
+        // No close frame: the client sees an abnormal closure, code 1006.
+        socket.send(JSON.stringify({ type: "response.output_text.delta", delta: "par" }), () => socket.terminate());
+        return;
+      }
+      sendAll(socket, index === 0 ? toolTurn("resp_1") : answerTurn("resp_3"));
+    };
+    const provider = light(baseURL);
+    provider.prewarmStartup({ ...START, lightSession: true });
+    const history = historyAfter(await stream(provider, USER, LIGHT));
+
+    await expect(stream(provider, history, LIGHT)).rejects.toBeInstanceOf(LLMStreamTruncatedError);
+    // The replacement is opened without waiting for the retry.
+    await upgrades(2);
+    const retried = await stream(provider, history, LIGHT);
+
+    expect(retried.content).toBe("done");
+    expect(endpoint.upgrades).toHaveLength(2);
+    expect(endpoint.httpBodies).toHaveLength(0);
+    expect(endpoint.frameSockets).toEqual([0, 0, 1]);
+    expect(endpoint.frames[1]!.previous_response_id).toBe("resp_1");
+    expect(endpoint.frames[2]!.previous_response_id).toBeUndefined();
+    expect((endpoint.frames[2]!.input as unknown[]).at(-1)).toEqual(TOOL_OUTPUT);
+  });
+
+  test("a refused continuation is answered over HTTP with the full body, with one notice", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.reply = (frame, socket, index) => {
+      if (frame.previous_response_id !== undefined) {
+        return sendAll(socket, [{
+          type: "error", status: 400,
+          error: {
+            type: "invalid_request_error", code: "previous_response_not_found",
+            message: "Previous response with id 'resp_1' not found.", param: "previous_response_id",
+          },
+        }]);
+      }
+      sendAll(socket, index === 0 ? toolTurn("resp_1") : answerTurn(`resp_${index + 1}`));
+    };
+    const warnings: string[] = [];
+    const provider = light(baseURL, { emitWarning: (warning) => warnings.push(warning.cause) });
+    provider.prewarmStartup({ ...START, lightSession: true });
+    const history = historyAfter(await stream(provider, USER, LIGHT));
+
+    expect((await stream(provider, history, LIGHT)).content).toBe("done");
+    expect(endpoint.httpBodies).toHaveLength(1);
+    const httpBody = JSON.parse(endpoint.httpBodies[0]!) as Frame;
+    expect(httpBody.previous_response_id).toBeUndefined();
+    expect((httpBody.input as unknown[]).at(-1)).toEqual(TOOL_OUTPUT);
+
+    // The socket stays, with the full input from now on, and the notice is not repeated.
+    expect((await stream(provider, history, LIGHT)).content).toBe("done");
+    expect(endpoint.frames.at(-1)!.previous_response_id).toBeUndefined();
+    expect(endpoint.httpBodies).toHaveLength(1);
+    expect(endpoint.upgrades).toHaveLength(1);
+    expect(warnings).toEqual(["openai_websocket_full_input"]);
+  });
+
+  test("the 60 minute limit of the service moves the call to a new socket with the full input", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.reply = (_frame, socket, index) => {
+      if (index === 1) {
+        return sendAll(socket, [{
+          type: "error", status: 400,
+          error: {
+            type: "invalid_request_error", code: "websocket_connection_limit_reached",
+            message: "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.",
+          },
+        }]);
+      }
+      sendAll(socket, index === 0 ? toolTurn("resp_1") : answerTurn("resp_2"));
+    };
+    const warnings: string[] = [];
+    const provider = light(baseURL, { emitWarning: (warning) => warnings.push(warning.cause) });
+    provider.prewarmStartup({ ...START, lightSession: true });
+    const second = await stream(provider, historyAfter(await stream(provider, USER, LIGHT)), LIGHT);
+
+    expect(second.content).toBe("done");
+    expect(endpoint.upgrades).toHaveLength(2);
+    expect(endpoint.httpBodies).toHaveLength(0);
+    expect(endpoint.frameSockets).toEqual([0, 0, 1]);
+    expect(endpoint.frames[2]!.previous_response_id).toBeUndefined();
+    expect((endpoint.frames[2]!.input as unknown[]).at(-1)).toEqual(TOOL_OUTPUT);
+    expect(warnings).toEqual([]);
+  });
+
+  test("a call cancelled mid-stream closes its socket and a new one is ready for the next call", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.reply = (_frame, socket, index) => {
+      if (index === 0) {
+        return sendAll(socket, [
+          { type: "response.created", response: { id: "resp_slow" } },
+          { type: "response.output_text.delta", delta: "par" },
+        ]);
+      }
+      sendAll(socket, answerTurn("resp_2"));
+    };
+    const provider = light(baseURL);
+    provider.prewarmStartup({ ...START, lightSession: true });
+    await upgrades(1);
+    const controller = new AbortController();
+    const chunks: string[] = [];
+    const pending = inScope(() => provider.chatStream(USER, (chunk) => {
+      if (chunk.content) chunks.push(chunk.content);
+    }, { ...LIGHT, signal: controller.signal }));
+    await expect.poll(() => chunks.join("")).toBe("par");
+    const serverSide = endpoint.sockets[0]!;
+    const closed = new Promise<void>((resolve) => serverSide.once("close", () => resolve()));
+    controller.abort();
+
+    await expect(pending).rejects.toThrow();
+    await closed;
+    await upgrades(2);
+    expect(endpoint.frames).toHaveLength(1);
+    const next = await stream(provider, USER, LIGHT);
+    expect(next.content).toBe("done");
+    expect(endpoint.upgrades).toHaveLength(2);
+    expect(endpoint.frameSockets).toEqual([0, 1]);
+    expect(endpoint.httpBodies).toHaveLength(0);
+  });
+
+  test("a default try against a host without WebSocket mode settles on HTTP after one connect, silently", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.refuseUpgrade = 404;
+    const warnings: string[] = [];
+    const diagnostics: string[] = [];
+    const provider = light(baseURL, {
+      emitWarning: (warning) => warnings.push(warning.cause),
+      emitDiagnostic: (diagnostic) => diagnostics.push(diagnostic.cause),
+    });
+    provider.prewarmStartup({ ...START, lightSession: true });
+    await expect.poll(() => diagnostics).toEqual(["openai_websocket_preconnect_failed"]);
+
+    const viaDefault = await stream(provider, USER, LIGHT);
+    await stream(provider, USER, LIGHT);
+    const direct = await stream(light(baseURL, { responsesTransport: "http" }), USER, LIGHT);
+    expect(endpoint.upgrades).toHaveLength(1);
+    expect(endpoint.httpBodies).toHaveLength(3);
+    expect(new Set(endpoint.httpBodies).size).toBe(1);
+    expect(viaDefault).toEqual(direct);
+    expect(warnings).toEqual([]);
+
+    // Without a session start the first call is the one try, also without a notice.
+    const late = light(baseURL, { emitWarning: (warning) => warnings.push(warning.cause) });
+    await stream(late, USER, LIGHT);
+    await stream(late, USER, LIGHT);
+    expect(endpoint.upgrades).toHaveLength(2);
+    expect(warnings).toEqual([]);
+  });
+
+  test("with the configured transport a failed pre-connect is the first of the two failed starts", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.refuseUpgrade = 404;
+    const warnings: string[] = [];
+    const provider = openai(baseURL, { emitWarning: (warning) => warnings.push(warning.cause) });
+    provider.prewarmStartup(START);
+    await expect.poll(() => endpoint.upgrades.length).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect((await stream(provider, USER)).content).toBe("done");
+    await stream(provider, USER);
+    expect(endpoint.upgrades).toHaveLength(2);
+    expect(endpoint.httpBodies).toHaveLength(2);
+    expect(warnings).toEqual(["openai_websocket_unavailable"]);
+  });
+
+  test("dispose during the pre-connect leaves no socket behind", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.delayUpgradeMs = 60;
+    const provider = light(baseURL);
+    provider.prewarmStartup({ ...START, lightSession: true });
+    await expect.poll(() => endpoint.upgrades.length).toBe(1);
+    provider.dispose();
+    await expect.poll(() => endpoint.sockets.length).toBe(1);
+    await expect.poll(() => endpoint.sockets[0]!.readyState).toBe(WebSocket.CLOSED);
   });
 });
 
@@ -683,6 +1001,41 @@ describe("ResponsesWebSocketSession", () => {
       expect(endpoint.upgrades).toHaveLength(2);
       expect(endpoint.frames[2]!.previous_response_id).toBeUndefined();
       expect(session.stats).toMatchObject({ connects: 2, turns: 3, incrementalTurns: 1, fallbacks: 0 });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  test("replaces an idle pre-connected socket at its age limit without a call", async () => {
+    const { endpoint, baseURL } = await start();
+    const session = new ResponsesWebSocketSession({ providerName: "openai", maxConnectionAgeMs: 150 });
+    const target = async () => ({ url: `${baseURL.replace("http", "ws")}/responses`, headers: {} });
+    try {
+      expect(await session.preconnect(target)).toBe(true);
+      expect(await drain(session, baseURL, [user])).toBe(false);
+      expect(endpoint.upgrades).toHaveLength(1);
+      await expect.poll(() => endpoint.sockets.length, { timeout: 2000 }).toBe(2);
+      // The old socket is closed, and the next call starts a new chain on the new one.
+      await expect.poll(() => endpoint.sockets[0]!.readyState).toBe(WebSocket.CLOSED);
+      expect(await drain(session, baseURL, [user, ...replay, TOOL_OUTPUT])).toBe(false);
+      expect(endpoint.frameSockets).toEqual([0, 1]);
+      expect(session.stats).toMatchObject({ connects: 2, preconnects: 2, turns: 2, fallbacks: 0 });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  test("a pre-connect is one connect: repeated and concurrent calls share it", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.delayUpgradeMs = 50;
+    const session = new ResponsesWebSocketSession({ providerName: "openai" });
+    const target = async () => ({ url: `${baseURL.replace("http", "ws")}/responses`, headers: {} });
+    try {
+      const [first, second] = await Promise.all([session.preconnect(target), session.preconnect(target)]);
+      expect([first, second]).toEqual([true, true]);
+      expect(await session.preconnect(target)).toBe(true);
+      expect(endpoint.upgrades).toHaveLength(1);
+      expect(session.stats).toMatchObject({ connects: 1, preconnects: 1, connectFailures: 0 });
     } finally {
       session.dispose();
     }

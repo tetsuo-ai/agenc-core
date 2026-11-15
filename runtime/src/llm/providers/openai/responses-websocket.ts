@@ -1,5 +1,5 @@
 /**
- * OpenAI Responses API over one WebSocket per provider session (opt-in).
+ * OpenAI Responses API over one WebSocket per provider session.
  *
  * The socket carries the same create body as `POST /responses`, as a
  * `response.create` frame, and answers with the same streaming events, one
@@ -44,6 +44,8 @@ export interface ResponsesWebSocketStats {
   turns: number;
   incrementalTurns: number;
   fallbacks: number;
+  /** Sockets opened ahead of a request: at session start or after one was lost. */
+  preconnects: number;
 }
 
 /**
@@ -91,6 +93,12 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 /** The service closes a connection at 60 minutes; replace it before that. */
 const DEFAULT_MAX_CONNECTION_AGE_MS = 55 * 60_000;
 const FAILURES_BEFORE_HTTP_ONLY = 2;
+/**
+ * Sockets opened ahead of a request that may go unused in a row. A far end
+ * that closes idle sockets would otherwise be reconnected to for as long as
+ * the session sits idle.
+ */
+const MAX_UNUSED_CONNECTS = 2;
 /**
  * How long a sent frame may stay unanswered. The first event of a response
  * arrives within a second; a socket that stays silent is half open (no ping
@@ -239,6 +247,15 @@ function refusesContinuation(error: Item): boolean {
     (typeof error.message === "string" && error.message.includes("previous_response_id"));
 }
 
+/** A handshake nobody waits for must not keep the process alive. */
+function unrefHandshake(socket: WebSocket): void {
+  const request = (socket as unknown as {
+    _req?: { socket?: { unref?: () => void }; once?: (event: "socket", listener: (raw: { unref?: () => void }) => void) => void };
+  })._req;
+  if (request?.socket !== undefined && request.socket !== null) request.socket.unref?.();
+  else request?.once?.("socket", (raw) => raw.unref?.());
+}
+
 function abortError(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("Operation aborted", "AbortError");
 }
@@ -259,13 +276,18 @@ interface Connection {
   readonly queue: Arrival[];
   wake?: () => void;
   closed: boolean;
+  ageTimer?: ReturnType<typeof setTimeout>;
 }
+
+type TargetResolver = () => Promise<ResponsesWebSocketTarget>;
 
 export interface ResponsesWebSocketSessionOptions {
   readonly providerName: string;
   readonly connectTimeoutMs?: number;
   readonly maxConnectionAgeMs?: number;
   readonly firstEventTimeoutMs?: number;
+  /** Failed starts in a row that keep the session on HTTP (default 2). */
+  readonly failuresBeforeHttpOnly?: number;
   readonly now?: () => number;
 }
 
@@ -283,7 +305,7 @@ export interface ResponsesWebSocketBeginOptions {
 /** One socket, one response at a time, and the chain to continue from. */
 export class ResponsesWebSocketSession {
   readonly stats: ResponsesWebSocketStats = {
-    connects: 0, connectFailures: 0, turns: 0, incrementalTurns: 0, fallbacks: 0,
+    connects: 0, connectFailures: 0, turns: 0, incrementalTurns: 0, fallbacks: 0, preconnects: 0,
   };
 
   private readonly options: ResponsesWebSocketSessionOptions;
@@ -294,6 +316,12 @@ export class ResponsesWebSocketSession {
   private httpOnly = false;
   private incrementalRefused = false;
   private disposed = false;
+  /** The connect in flight, shared by a request that arrives meanwhile. Never rejects. */
+  private opening: Promise<Connection | Error> | undefined;
+  /** Where a socket opened ahead of a request connects; set by `preconnect`. */
+  private ahead: TargetResolver | undefined;
+  /** Sockets opened since the last response started. */
+  private unusedConnects = 0;
 
   constructor(options: ResponsesWebSocketSessionOptions) {
     this.options = options;
@@ -317,6 +345,42 @@ export class ResponsesWebSocketSession {
   dispose(): void {
     this.disposed = true;
     this.drop();
+  }
+
+  /**
+   * Open the socket ahead of the first request, so that request does not wait
+   * for the connect, and keep doing so when a socket is lost later: closed by
+   * the far end while idle, at its age limit, or with a response that was cut
+   * or cancelled. `target` must be callable outside a request. Resolves to
+   * whether a socket is open; a failure counts as a failed start and is not
+   * retried until a request asks.
+   */
+  async preconnect(target: TargetResolver): Promise<boolean> {
+    this.ahead = target;
+    if (this.disposed || this.httpOnly) return false;
+    if (this.usable(this.connection)) return true;
+    if (this.busy && this.opening === undefined) return false;
+    if (!this.busy && this.connection !== undefined) this.drop();
+    const opening = this.opening ?? this.openAhead();
+    return opening === undefined ? false : !((await opening) instanceof Error);
+  }
+
+  private usable(connection: Connection | undefined): connection is Connection {
+    return connection !== undefined && !connection.closed &&
+      connection.socket.readyState === WebSocket.OPEN &&
+      (this.options.now ?? Date.now)() - connection.openedAt <
+        (this.options.maxConnectionAgeMs ?? DEFAULT_MAX_CONNECTION_AGE_MS);
+  }
+
+  /** Replace a lost socket in the background when `preconnect` asked for that. */
+  private openAhead(): Promise<Connection | Error> | undefined {
+    if (this.ahead === undefined || this.disposed || this.httpOnly ||
+      this.connection !== undefined || this.opening !== undefined ||
+      this.unusedConnects >= MAX_UNUSED_CONNECTS) {
+      return undefined;
+    }
+    this.stats.preconnects += 1;
+    return this.open(this.ahead, false);
   }
 
   /**
@@ -360,6 +424,7 @@ export class ResponsesWebSocketSession {
           Math.min(idle, this.options.firstEventTimeoutMs ?? DEFAULT_FIRST_EVENT_TIMEOUT_MS));
         if (first.kind === "aborted") {
           this.drop();
+          void this.openAhead();
           throw abortError(options.signal!);
         }
         if (first.kind !== "frame") {
@@ -383,6 +448,7 @@ export class ResponsesWebSocketSession {
           });
         }
         this.consecutiveFailures = 0;
+        this.unusedConnects = 0;
         this.stats.turns += 1;
         if (incremental) this.stats.incrementalTurns += 1;
         return {
@@ -392,6 +458,7 @@ export class ResponsesWebSocketSession {
             if (this.connection === connection) this.drop();
             else connection.socket.terminate();
             this.release();
+            void this.openAhead();
           },
         };
       }
@@ -418,7 +485,9 @@ export class ResponsesWebSocketSession {
   private failed(): void {
     this.drop();
     this.consecutiveFailures += 1;
-    if (this.consecutiveFailures >= FAILURES_BEFORE_HTTP_ONLY) this.httpOnly = true;
+    if (this.consecutiveFailures >= (this.options.failuresBeforeHttpOnly ?? FAILURES_BEFORE_HTTP_ONLY)) {
+      this.httpOnly = true;
+    }
   }
 
   private drop(): void {
@@ -427,6 +496,7 @@ export class ResponsesWebSocketSession {
     this.chain = undefined;
     if (connection === undefined) return;
     connection.closed = true;
+    if (connection.ageTimer !== undefined) clearTimeout(connection.ageTimer);
     // A reader still waiting on this connection must see it end.
     connection.queue.push({ kind: "closed" });
     connection.wake?.();
@@ -438,67 +508,124 @@ export class ResponsesWebSocketSession {
   }
 
   private async connect(options: ResponsesWebSocketBeginOptions): Promise<Connection> {
-    const now = this.options.now ?? Date.now;
     const current = this.connection;
-    if (current !== undefined) {
-      const maxAge = this.options.maxConnectionAgeMs ?? DEFAULT_MAX_CONNECTION_AGE_MS;
-      if (!current.closed && current.socket.readyState === WebSocket.OPEN &&
-        now() - current.openedAt < maxAge) {
-        return current;
-      }
-      this.drop();
-    }
-    if (options.signal?.aborted) throw abortError(options.signal);
-    let socket: WebSocket | undefined;
+    if (this.usable(current)) return current;
+    if (current !== undefined) this.drop();
+    const signal = options.signal;
+    if (signal?.aborted) throw abortError(signal);
+    // A connect already in flight (opened ahead of this request) is this request's connect.
+    const opening = this.opening ?? this.open(options.target, true);
+    // A socket opened ahead does not hold the process; a request waiting for it does.
+    const hold = setInterval(() => undefined, 60_000);
+    let onAbort: (() => void) | undefined;
+    let result: Connection | Error | "aborted";
     try {
-      const target = await options.target();
-      socket = new WebSocket(target.url, {
-        headers: { ...target.headers },
-        handshakeTimeout: this.options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
-        perMessageDeflate: false,
-        followRedirects: false,
-      });
-      // A socket given up during the handshake still reports its error.
-      socket.on("error", () => undefined);
-      await this.opened(socket, options.signal);
-    } catch (error) {
-      try {
-        socket?.terminate();
-      } catch {
-        // Never opened.
-      }
-      if (options.signal?.aborted) throw abortError(options.signal);
-      this.stats.connectFailures += 1;
-      this.failed();
-      throw this.fallback(`connect failed: ${error instanceof Error ? error.message : String(error)}`);
+      result = await (signal === undefined ? opening : Promise.race([
+        opening,
+        new Promise<"aborted">((resolve) => {
+          onAbort = () => resolve("aborted");
+          signal.addEventListener("abort", onAbort, { once: true });
+        }),
+      ]));
+    } finally {
+      clearInterval(hold);
+      if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);
     }
-    const connection: Connection = { socket, openedAt: now(), queue: [], closed: false };
-    const arrive = (arrival: Arrival): void => {
-      connection.queue.push(arrival);
-      connection.wake?.();
-    };
-    socket.on("message", (data: RawData, isBinary: boolean) => {
-      if (isBinary) return arrive({ kind: "invalid" });
-      let parsed: unknown;
+    // The handshake goes on without the request: the next one finds the socket open.
+    if (result === "aborted" || signal?.aborted) throw abortError(signal!);
+    if (result instanceof Error) throw this.fallback(`connect failed: ${result.message}`);
+    if (this.connection !== result || !this.usable(result)) {
+      throw this.fallback("connect failed: the socket closed right after the handshake");
+    }
+    return result;
+  }
+
+  /** One handshake. Resolves to the error instead of rejecting; a failure counts as a failed start. */
+  private open(target: TargetResolver, forRequest: boolean): Promise<Connection | Error> {
+    const now = this.options.now ?? Date.now;
+    const attempt = async (): Promise<Connection | Error> => {
+      let socket: WebSocket | undefined;
       try {
-        parsed = JSON.parse(data.toString());
-      } catch {
-        return arrive({ kind: "invalid" });
+        const resolved = await target();
+        if (this.disposed) return new Error("session disposed");
+        socket = new WebSocket(resolved.url, {
+          headers: { ...resolved.headers },
+          handshakeTimeout: this.options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
+          perMessageDeflate: false,
+          followRedirects: false,
+        });
+        // A socket given up during the handshake still reports its error.
+        socket.on("error", () => undefined);
+        if (!forRequest) unrefHandshake(socket);
+        await this.opened(socket, undefined);
+      } catch (error) {
+        try {
+          socket?.terminate();
+        } catch {
+          // Never opened.
+        }
+        if (this.disposed) return new Error("session disposed");
+        this.stats.connectFailures += 1;
+        this.failed();
+        return error instanceof Error ? error : new Error(String(error));
       }
-      arrive(isItem(parsed) && typeof parsed.type === "string"
-        ? { kind: "frame", data: parsed }
-        : { kind: "invalid" });
-    });
-    const closed = (): void => {
-      if (connection.closed) return;
-      connection.closed = true;
-      arrive({ kind: "closed" });
+      if (this.disposed) {
+        socket.terminate();
+        return new Error("session disposed");
+      }
+      const connection: Connection = { socket, openedAt: now(), queue: [], closed: false };
+      const arrive = (arrival: Arrival): void => {
+        connection.queue.push(arrival);
+        connection.wake?.();
+      };
+      socket.on("message", (data: RawData, isBinary: boolean) => {
+        if (isBinary) return arrive({ kind: "invalid" });
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(data.toString());
+        } catch {
+          return arrive({ kind: "invalid" });
+        }
+        arrive(isItem(parsed) && typeof parsed.type === "string"
+          ? { kind: "frame", data: parsed }
+          : { kind: "invalid" });
+      });
+      const closed = (): void => {
+        if (connection.closed) return;
+        connection.closed = true;
+        arrive({ kind: "closed" });
+        // Closed by the far end between responses: open the next one now, not on the next request.
+        if (this.connection === connection && !this.busy) {
+          this.drop();
+          void this.openAhead();
+        }
+      };
+      socket.on("close", closed);
+      socket.on("error", closed);
+      this.connection = connection;
+      this.stats.connects += 1;
+      this.unusedConnects += 1;
+      keepProcessAlive(socket, false);
+      // An idle socket at its age limit is replaced then, not on the next request.
+      const maxAge = this.options.maxConnectionAgeMs ?? DEFAULT_MAX_CONNECTION_AGE_MS;
+      if (this.ahead !== undefined && Number.isFinite(maxAge) && maxAge > 0) {
+        connection.ageTimer = setTimeout(() => this.retire(connection), maxAge);
+        connection.ageTimer.unref?.();
+      }
+      return connection;
     };
-    socket.on("close", closed);
-    socket.on("error", closed);
-    this.connection = connection;
-    this.stats.connects += 1;
-    return connection;
+    const opening: Promise<Connection | Error> = attempt().finally(() => {
+      if (this.opening === opening) this.opening = undefined;
+    });
+    this.opening = opening;
+    return opening;
+  }
+
+  /** Replace an idle socket that reached its age limit; a busy one is replaced when its response ends. */
+  private retire(connection: Connection): void {
+    if (this.connection !== connection || this.busy) return;
+    this.drop();
+    void this.openAhead();
   }
 
   private opened(socket: WebSocket, signal: AbortSignal | undefined): Promise<void> {
@@ -576,6 +703,7 @@ export class ResponsesWebSocketSession {
           this.drop();
           finished = true;
           this.release();
+          void this.openAhead();
           yield { data };
           return;
         }
@@ -595,6 +723,7 @@ export class ResponsesWebSocketSession {
         if (this.connection === connection) this.drop();
         else connection.socket.terminate();
         this.release();
+        void this.openAhead();
       }
     }
   }
@@ -608,6 +737,12 @@ export class ResponsesWebSocketSession {
   ): void {
     this.release();
     if (this.connection !== connection) return;
+    if (this.ahead !== undefined && !this.usable(connection)) {
+      // Closed or at its age limit when the response ended: the next one starts on a new socket.
+      this.drop();
+      void this.openAhead();
+      return;
+    }
     const response = isItem(data.response) ? data.response : {};
     const terminalOutput = Array.isArray(response.output) ? response.output.filter(isItem) : [];
     this.chain = type === "response.completed" &&

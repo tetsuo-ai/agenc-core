@@ -760,6 +760,13 @@ export interface LLMChatOptions {
    */
   readonly singleWireAttempt?: boolean;
   /**
+   * The call belongs to the main loop of a Light session on the `openai`
+   * provider, whose streamed Responses calls travel over the session's
+   * WebSocket unless a transport is configured. Never set for another
+   * provider.
+   */
+  readonly lightSession?: boolean;
+  /**
    * @internal Opaque handle returned by `getExecutionProfile(options)`. It
    * prevents a managed provider from resolving a different route between
    * budget reservation and the single admitted wire attempt.
@@ -1071,6 +1078,8 @@ export type ToolHandler = (
 export interface LLMProviderStartupPrewarmParams {
   readonly conversationId: string;
   readonly threadId: string;
+  /** Set for a Light session on the `openai` provider (see `lightSession` in the chat options). */
+  readonly lightSession?: boolean;
 }
 
 export interface LLMProviderStartupPrewarmHandle {

@@ -180,7 +180,8 @@ costs $0.00075 ($0.75 per 1,000). See
 `AGENC_OPENAI_TRANSPORT` (`http` or `websocket`) overrides
 `[providers.openai] transport` for a session: `websocket` sends streamed
 Responses calls of the `openai` provider over one WebSocket per session and
-`http` keeps Server-Sent Events, the default. Any other value is ignored. See
+`http` keeps Server-Sent Events. Unset, Light sessions use the WebSocket and
+all other calls HTTP, so `http` is the opt-out. Any other value is ignored. See
 [providers.md](providers.md#responses-over-websocket).
 
 `AGENC_OPENAI_REASONING_REPLAY` (boolean-like, on by default) controls whether

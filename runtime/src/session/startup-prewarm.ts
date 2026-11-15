@@ -1,5 +1,6 @@
 import type { LLMProviderStartupPrewarmHandle } from "../llm/types.js";
 import type { Session } from "./session.js";
+import { lightSessionUsesOpenAiSocket } from "../llm/openai-light-transport.js";
 
 const DEFAULT_PROVIDER_STARTUP_PREWARM_BOUND_MS = 250;
 
@@ -224,6 +225,8 @@ export function scheduleProviderStartupPrewarm(
       prewarmStartup({
         conversationId: session.conversationId,
         threadId,
+        ...(lightSessionUsesOpenAiSocket(session, session.services.provider.name)
+          ? { lightSession: true as const } : {}),
       }),
     );
     store.setProviderTask(prewarm, { boundMs });

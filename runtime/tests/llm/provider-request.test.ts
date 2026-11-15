@@ -34,7 +34,7 @@ describe('provider runtime request', () => {
     expect(openai.requested.extra?.zeroDataRetention).toBeUndefined()
   })
 
-  test('forwards the OpenAI WebSocket transport only when asked, and only to OpenAI', () => {
+  test('forwards a configured OpenAI Responses transport as it is, and only to OpenAI', () => {
     const extra = (
       provider: 'openai' | 'deepseek' | 'grok' | 'openrouter',
       config: Parameters<typeof resolveProviderRuntimeRequest>[0]['config'],
@@ -44,16 +44,19 @@ describe('provider runtime request', () => {
     const http = { providers: { openai: { transport: 'http' as const } } }
 
     expect(extra('openai', websocket)).toMatchObject({ responsesTransport: 'websocket' })
-    // HTTP is the default and is never sent as a value.
+    // Nothing configured: the provider decides (WebSocket for Light sessions).
     expect(extra('openai', {})?.responsesTransport).toBeUndefined()
-    expect(extra('openai', http)?.responsesTransport).toBeUndefined()
+    // The opt-out travels as a value.
+    expect(extra('openai', http)).toMatchObject({ responsesTransport: 'http' })
     // The environment wins in both directions; an unknown value changes nothing.
     expect(extra('openai', {}, { AGENC_OPENAI_TRANSPORT: 'websocket' })).toMatchObject({ responsesTransport: 'websocket' })
-    expect(extra('openai', websocket, { AGENC_OPENAI_TRANSPORT: 'http' })?.responsesTransport).toBeUndefined()
+    expect(extra('openai', websocket, { AGENC_OPENAI_TRANSPORT: 'http' })).toMatchObject({ responsesTransport: 'http' })
+    expect(extra('openai', {}, { AGENC_OPENAI_TRANSPORT: 'http' })).toMatchObject({ responsesTransport: 'http' })
     expect(extra('openai', websocket, { AGENC_OPENAI_TRANSPORT: 'carrier-pigeon' })).toMatchObject({ responsesTransport: 'websocket' })
     for (const provider of ['deepseek', 'grok', 'openrouter'] as const) {
       const requested = extra(provider, websocket, { AGENC_OPENAI_TRANSPORT: 'websocket' })
       expect(requested?.responsesTransport, provider).toBeUndefined()
+      expect(extra(provider, http, { AGENC_OPENAI_TRANSPORT: 'http' }), provider).toEqual(extra(provider, {}))
       // Nothing about another provider's request changes with the setting.
       expect(requested, provider).toEqual(extra(provider, {}))
     }
