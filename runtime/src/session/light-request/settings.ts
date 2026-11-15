@@ -1,8 +1,6 @@
 import type { AgenCConfig, LightRequestOptions } from "../../config/schema.js";
 
-// Native DeepSeek Light runs lean unless the user chose otherwise (0.19.34). Other providers and
-// standard sessions never reach the lean profile (resolveLightRequest returns early for them).
-export const DEFAULT_LIGHT_REQUEST = "lean" as const;
+export const DEFAULT_LIGHT_REQUEST = "full" as const;
 
 /** All lean defaults live here so measurement results can change them together. */
 export const LEAN_REQUEST_DEFAULTS: Readonly<Required<LightRequestOptions>> = Object.freeze({
@@ -24,35 +22,9 @@ export const LEAN_REQUEST_DEFAULTS: Readonly<Required<LightRequestOptions>> = Ob
 
 export type LeanEditMode = Required<LightRequestOptions>["edit_mode"];
 
-/**
- * Applied only when nobody chose a request (no `light_request`, no AGENC_LIGHT_REQUEST): the default keeps
- * tool search on, so sub-agents, web, MCP and skills stay reachable for everyone who did not opt into the
- * measured lean profile. An explicit `light_request = "lean"` keeps LEAN_REQUEST_DEFAULTS as they are, and
- * `light_request_options` override both.
- */
-export const DEFAULT_LEAN_OVERRIDES: Readonly<Partial<Required<LightRequestOptions>>> = Object.freeze({
-  tool_search: true,
-});
-
-/**
- * Interactive sessions with the default lean profile, measured on 2026-11-14 in the real TUI (asks first, native
- * Flash), keep two things the measured headless profile drops:
- * - edit_mode "tools": Write and apply_patch, so each change shows as a change and is approved as an edit. Shell
- *   edits showed only a flattened `cat > file <<EOF ...` command, and the model re-read and re-ran after its own
- *   write set off the file-change notice.
- * - system_text "short": the full permission text. The minimal text sends one permission sentence
- *   (run-turn-sampling-request.ts leanPermissionSentence), so a command the sandbox kept off the network
- *   ended with "Could not resolve host" instead of an escalation request (real-TUI scenario K7).
- * Headless runs keep the measured profile.
- */
-export const DEFAULT_LEAN_INTERACTIVE_OVERRIDES: Readonly<Partial<Required<LightRequestOptions>>> = Object.freeze({
-  edit_mode: "tools",
-  system_text: "short",
-});
-
 export interface LightRequestSession {
   readonly services?: {
-    readonly runtimeOptions?: { readonly lightMode?: boolean; readonly simpleMode?: boolean; readonly nonInteractive?: boolean };
+    readonly runtimeOptions?: { readonly lightMode?: boolean; readonly simpleMode?: boolean };
     readonly providerEnvironment?: Readonly<Record<string, string | undefined>>;
     readonly configStore?: {
       current(): AgenCConfig;
@@ -82,26 +54,11 @@ export function resolveLightRequest(
   const captured = sessionSettings.get(session);
   if (captured !== undefined) return captured ?? undefined;
   const config = services.configStore?.current();
-  const chosen = chosenLightRequest(session);
-  const mode = chosen ?? DEFAULT_LIGHT_REQUEST;
-  const interactive = services.runtimeOptions.nonInteractive !== true;
-  const base = chosen !== undefined ? LEAN_REQUEST_DEFAULTS : {
-    ...LEAN_REQUEST_DEFAULTS, ...DEFAULT_LEAN_OVERRIDES, ...(interactive ? DEFAULT_LEAN_INTERACTIVE_OVERRIDES : {}),
-  };
-  const settings = mode === "lean" ? Object.freeze({ ...base, ...config?.light_request_options }) : null;
+  const override = services.providerEnvironment?.AGENC_LIGHT_REQUEST;
+  const mode = override === undefined ? config?.light_request ?? DEFAULT_LIGHT_REQUEST : parseLightRequest(override);
+  const settings = mode === "lean" ? Object.freeze({ ...LEAN_REQUEST_DEFAULTS, ...config?.light_request_options }) : null;
   sessionSettings.set(session, settings);
   return settings ?? undefined;
-}
-
-/**
- * The request the user chose for this session: AGENC_LIGHT_REQUEST from the captured client environment,
- * else `light_request` from config, else undefined (the default applies). Throws on an invalid override,
- * as resolveLightRequest always did.
- */
-export function chosenLightRequest(session: LightRequestSession): "full" | "lean" | undefined {
-  const override = session.services?.providerEnvironment?.AGENC_LIGHT_REQUEST;
-  if (override !== undefined) return parseLightRequest(override);
-  return session.services?.configStore?.current()?.light_request;
 }
 
 /**

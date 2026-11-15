@@ -808,7 +808,6 @@ function PromptInput({
       : false;
   const thinkingEnabled = useAppState((s) => s.thinkingEnabled);
   const effortValue = useAppState((s) => s.effortValue);
-  const effortFromInitialSettings = useAppState((s) => s.effortFromInitialSettings);
   const viewedTeammate = getViewedTeammateTask(store.getState());
   const viewingAgentName = viewedTeammate?.identity.agentName;
   // identity.color is typed as `string | undefined` (not AgentColorName) because
@@ -3230,16 +3229,13 @@ function PromptInput({
     // Same-key notifications are deduplicated. Remove the previous label so
     // a canonical reload cannot leave its old effort displayed for 12s.
     removeNotification("effort-level");
-    // The session's initial settings fill in the effort it starts with (the lean
-    // Light request defaults native DeepSeek to low): a starting value, not a change.
-    if (effortFromInitialSettings === true) return;
     addNotification({
       key: "effort-level",
       text: effortNotificationText,
       priority: "high",
       timeoutMs: 12_000,
     });
-  }, [effortNotificationText, effortFromInitialSettings, addNotification, removeNotification]);
+  }, [effortNotificationText, addNotification, removeNotification]);
   const { columns, rows } = useTerminalSize();
   const promptGlyphs = selectAgenCTuiGlyphs();
   const textInputColumns = clampPromptTextInputColumns(

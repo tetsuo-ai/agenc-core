@@ -10,8 +10,6 @@ function registryFor(provider: string, model: string, lightMode = true) {
     provider: { name: provider },
     providerService: { current: () => ({ provider, model }) },
     runtimeOptions: { lightMode },
-    // The full Light request; lean (shell edits) is the native DeepSeek default since 0.19.34.
-    providerEnvironment: { AGENC_LIGHT_REQUEST: "full" },
   });
   return { session, registry: buildToolRegistry({ workspaceRoot: "/tmp", lightMode, getSession: () => session }) };
 }

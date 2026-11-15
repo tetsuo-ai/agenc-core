@@ -9,8 +9,7 @@ async function head(input: { nonInteractive: boolean; exactOutput?: boolean; sty
   const session = {
     services: {
       runtimeOptions: { lightMode: true, nonInteractive: input.nonInteractive, exactOutput: input.exactOutput },
-      // The full Light request; lean is the native DeepSeek default since 0.19.34.
-      providerEnvironment: { AGENC_LIGHT_REQUEST: "full" },
+      providerEnvironment: {},
     },
   } as unknown as Session;
   return (await assembleSystemPromptSnapshot({

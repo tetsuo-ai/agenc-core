@@ -1603,7 +1603,7 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
 
 describe("Light finish rules per provider", () => {
   const lightSession = (env: Record<string, string> = {}) =>
-    ({ services: { runtimeOptions: { lightMode: true }, providerEnvironment: { AGENC_LIGHT_REQUEST: "full", ...env } } }) as unknown as Session;
+    ({ services: { runtimeOptions: { lightMode: true }, providerEnvironment: env } }) as unknown as Session;
   const head = async (provider: string, env?: Record<string, string>, outputStyle?: { name: string; prompt: string }) =>
     (await assembleSystemPromptSnapshot({ profile: "light", ctx: fakeCtx(), session: lightSession(env), provider, outputStyle })).staticPrefix;
 
@@ -1662,7 +1662,7 @@ test.each(["deepseek", "openai", "grok", "zai"])(
       profile: "light", ctx: fakeCtx(), provider,
       session: { services: {
         runtimeOptions: { lightMode: true, nonInteractive: true, ...(deadlineAt === undefined ? {} : { deadlineAt }) },
-        providerEnvironment: { AGENC_LEAN_SYSTEM_PROMPT: lean, AGENC_LIGHT_REQUEST: "full" },
+        providerEnvironment: { AGENC_LEAN_SYSTEM_PROMPT: lean },
       } } as unknown as Session,
     });
     const off = await assemble("0");
@@ -1705,7 +1705,7 @@ test.each([["openai", true], ["deepseek", false]])("Light names apply_patch as t
 
 describe("Light's model-family tuning follows the model through gateways", () => {
   const lightSession = (env: Record<string, string> = {}) =>
-    ({ services: { runtimeOptions: { lightMode: true, nonInteractive: true }, providerEnvironment: { AGENC_LIGHT_REQUEST: "full", ...env } } }) as unknown as Session;
+    ({ services: { runtimeOptions: { lightMode: true, nonInteractive: true }, providerEnvironment: env } }) as unknown as Session;
   const head = async (provider: string, model: string, env?: Record<string, string>) =>
     (await assembleSystemPromptSnapshot({ profile: "light", ctx: fakeCtx(), session: lightSession(env), provider,
       promptIdentity: { provider, model } })).staticPrefix;

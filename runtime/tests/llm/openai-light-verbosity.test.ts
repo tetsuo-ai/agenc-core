@@ -5,9 +5,15 @@ import { defaultLightModelVerbosity } from "../../src/llm/openai-light-verbosity
 const light = { services: { runtimeOptions: { lightMode: true } } };
 
 describe("defaultLightModelVerbosity", () => {
-  test("asks GPT-6 Light sessions on OpenAI for low verbosity", () => {
-    for (const model of ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-6-sol"]) {
+  test("asks Light sessions on gpt-6.1-terra and gpt-6.1-sol for low verbosity", () => {
+    for (const model of ["gpt-6.1-sol", "gpt-6.1-terra", " GPT-6.1-Sol "]) {
       expect(defaultLightModelVerbosity(light, "openai", model)).toBe("low");
+    }
+  });
+
+  test("leaves the GPT-6 models it was not measured on at the API default", () => {
+    for (const model of ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"]) {
+      expect(defaultLightModelVerbosity(light, "openai", model)).toBeUndefined();
     }
   });
 
