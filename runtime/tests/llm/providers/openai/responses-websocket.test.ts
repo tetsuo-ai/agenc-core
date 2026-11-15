@@ -11,7 +11,7 @@ import {
   responsesWebSocketFixedPart,
   type ResponsesWebSocketChain,
 } from "../../../../src/llm/providers/openai/responses-websocket.js";
-import { LLMStreamTruncatedError } from "../../../../src/llm/errors.js";
+import { LLMStreamRetryDeniedError, LLMStreamTruncatedError } from "../../../../src/llm/errors.js";
 import type { LLMChatOptions, LLMMessage, LLMResponse, LLMTool } from "../../../../src/llm/types.js";
 import { runWithStartupProviderSelection } from "../../../../src/utils/model/providers.js";
 
@@ -64,6 +64,8 @@ class MockResponsesEndpoint {
   cutUpgrade = false;
   /** Answer an upgrade request only after this long. */
   delayUpgradeMs = 0;
+  /** Accept sockets but never read from them, so a large client write cannot finish. */
+  stopReading = false;
   reply: Reply = (_frame, socket, index) => sendAll(socket, toolTurn(`resp_${index + 1}`));
   httpEvents: () => Frame[] = () => answerTurn("resp_http");
 
@@ -94,6 +96,7 @@ class MockResponsesEndpoint {
       }
       const accept = (): void => this.wss.handleUpgrade(request, socket, head, (client) => {
         this.sockets.push(client);
+        if (this.stopReading) (client as unknown as { _socket: { pause(): void } })._socket.pause();
         client.on("message", (data) => {
           const frame = JSON.parse(data.toString()) as Frame;
           this.frames.push(frame);
@@ -265,6 +268,27 @@ describe("planResponsesWebSocketInput", () => {
     ["a reasoning item the response did not issue", body([user, replay[0], { ...replay[1]!, id: "rs_other" }, replay[2], TOOL_OUTPUT])],
   ])("plans no incremental input for %s", (_label, next) => {
     expect(planResponsesWebSocketInput(chain(), next)).toBeUndefined();
+  });
+
+  test("plans no incremental input when the replayed assistant text differs only in whitespace", () => {
+    const chain: ResponsesWebSocketChain = {
+      responseId: "resp_1",
+      fixed: responsesWebSocketFixedPart({ model: MODEL, input: [] }),
+      input: [JSON.stringify({ type: "message", role: "user", content: [] })],
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "    pass" }] }],
+    };
+    const request = (text: string) => ({
+      model: MODEL,
+      input: [
+        { type: "message", role: "user", content: [] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text }] },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "next" }] },
+      ],
+    });
+    expect(planResponsesWebSocketInput(chain, request("    pass"))).toHaveLength(1);
+    // The service would keep "    pass" while the history says otherwise.
+    expect(planResponsesWebSocketInput(chain, request("pass"))).toBeUndefined();
+    expect(planResponsesWebSocketInput(chain, request("    pass\n"))).toBeUndefined();
   });
 
   test("plans no incremental input after an output item it cannot compare", () => {
@@ -850,6 +874,63 @@ describe("OpenAIProvider WebSocket by default for Light sessions, with pre-conne
     expect(warnings).toEqual(["openai_websocket_full_input"]);
   });
 
+  test("an early error frame that forbids a retry ends the call and is not resubmitted over HTTP", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.reply = (_frame, socket) => sendAll(socket, [{
+      type: "error", status: 503,
+      headers: { "x-retry-metadata": "NO_MORE_RETRY" },
+      error: { type: "server_error", code: "server_is_overloaded", message: "Our servers are overloaded." },
+    }]);
+    const provider = light(baseURL);
+
+    await expect(stream(provider, USER, LIGHT)).rejects.toBeInstanceOf(LLMStreamRetryDeniedError);
+    expect(endpoint.frames).toHaveLength(1);
+    expect(endpoint.httpBodies).toHaveLength(0);
+
+    // The same error without the directive is still answered over HTTP.
+    endpoint.reply = (_frame, socket) => sendAll(socket, [{
+      type: "error", status: 503,
+      error: { type: "server_error", code: "server_is_overloaded", message: "Our servers are overloaded." },
+    }]);
+    expect((await stream(light(baseURL), USER, LIGHT)).content).toBe("done");
+    expect(endpoint.httpBodies).toHaveLength(1);
+  });
+
+  test("the provider's client releases the socket: closed at once, not reopened, and usable again later", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.reply = (_frame, socket) => sendAll(socket, answerTurn("resp_1"));
+    const provider = light(baseURL);
+    provider.prewarmStartup!({ ...START, lightSession: true });
+    await upgrades(1);
+    await stream(provider, USER, LIGHT);
+
+    // What a session does at shutdown and when another provider takes over.
+    (provider as unknown as { client: { releaseTransports(): void } }).client.releaseTransports();
+    await expect.poll(() => endpoint.sockets[0]!.readyState).toBe(WebSocket.CLOSED);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(endpoint.upgrades).toHaveLength(1);
+
+    // The provider is not broken: a later call connects again, and its socket is not replaced ahead.
+    expect((await stream(provider, USER, LIGHT)).content).toBe("done");
+    expect(endpoint.upgrades).toHaveLength(2);
+    expect(endpoint.httpBodies).toHaveLength(0);
+    endpoint.sockets[1]!.close(1000);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(endpoint.upgrades).toHaveLength(2);
+  });
+
+  test("a release during the pre-connect ends the handshake", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.delayUpgradeMs = 60;
+    const provider = light(baseURL);
+    provider.prewarmStartup!({ ...START, lightSession: true });
+    await expect.poll(() => endpoint.upgrades.length).toBe(1);
+    (provider as unknown as { client: { releaseTransports(): void } }).client.releaseTransports();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(endpoint.sockets.every((socket) => socket.readyState === WebSocket.CLOSED)).toBe(true);
+    expect(endpoint.upgrades).toHaveLength(1);
+  });
+
   test("the 60 minute limit of the service moves the call to a new socket with the full input", async () => {
     const { endpoint, baseURL } = await start();
     endpoint.reply = (_frame, socket, index) => {
@@ -1074,6 +1155,67 @@ describe("ResponsesWebSocketSession", () => {
       expect(await session.preconnect(target)).toBe("open");
       expect(endpoint.upgrades).toHaveLength(1);
       expect(session.stats).toMatchObject({ connects: 1, preconnects: 1, connectFailures: 0 });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  test("a write the peer never reads is given up at the send timeout, and a cancel ends it at once", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.stopReading = true;
+    const target = async () => ({ url: `${baseURL.replace("http", "ws")}/responses`, headers: {} });
+    // Far more than the socket buffers of both ends hold.
+    const huge = [{ type: "message", role: "user", content: [{ type: "input_text", text: "x".repeat(48 * 1024 * 1024) }] }];
+
+    const session = new ResponsesWebSocketSession({ providerName: "openai", sendTimeoutMs: 300 });
+    try {
+      const started = Date.now();
+      const failure = await session.begin({ target, body: body(huge) }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ResponsesWebSocketFallback);
+      expect((failure as ResponsesWebSocketFallback).message).toBe("send timed out");
+      // The frame may have reached the service in part: a single-attempt caller must know.
+      expect((failure as ResponsesWebSocketFallback).afterSend).toBe(true);
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(session.available).toBe(true);
+    } finally {
+      session.dispose();
+    }
+
+    const cancelled = new ResponsesWebSocketSession({ providerName: "openai", sendTimeoutMs: 60_000 });
+    try {
+      const controller = new AbortController();
+      const pending = cancelled.begin({ target, body: body(huge), signal: controller.signal });
+      await expect.poll(() => endpoint.sockets.length).toBe(2);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const started = Date.now();
+      controller.abort(new Error("cancelled by the user"));
+      await expect(pending).rejects.toThrow("cancelled by the user");
+      expect(Date.now() - started).toBeLessThan(2000);
+      // The lane is free again (the stalled socket was terminated; its peer does not read the close).
+      expect(cancelled.available).toBe(true);
+    } finally {
+      cancelled.dispose();
+    }
+  });
+
+  test("standing down closes an idle socket and stops the reopening; a response in flight keeps its socket", async () => {
+    const { endpoint, baseURL } = await start();
+    const session = new ResponsesWebSocketSession({ providerName: "openai", maxConnectionAgeMs: 300 });
+    const target = async () => ({ url: `${baseURL.replace("http", "ws")}/responses`, headers: {} });
+    try {
+      expect(await session.preconnect(target)).toBe("open");
+      session.standDown();
+      await expect.poll(() => endpoint.sockets[0]!.readyState).toBe(WebSocket.CLOSED);
+      // Neither the close nor the age limit opens another one.
+      await new Promise((resolve) => setTimeout(resolve, 450));
+      expect(endpoint.upgrades).toHaveLength(1);
+
+      const turn = await session.begin({ target, body: body([user]) });
+      session.standDown();
+      const types: string[] = [];
+      for await (const event of turn.events()) types.push(String(event.data.type));
+      expect(types.at(-1)).toBe("response.completed");
+      expect(endpoint.upgrades).toHaveLength(2);
     } finally {
       session.dispose();
     }

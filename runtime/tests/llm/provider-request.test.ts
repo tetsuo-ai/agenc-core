@@ -53,12 +53,8 @@ describe('provider runtime request', () => {
     expect(extra('openai', websocket, { AGENC_OPENAI_TRANSPORT: 'http' })).toMatchObject({ responsesTransport: 'http' })
     expect(extra('openai', {}, { AGENC_OPENAI_TRANSPORT: 'http' })).toMatchObject({ responsesTransport: 'http' })
     expect(extra('openai', websocket, { AGENC_OPENAI_TRANSPORT: 'carrier-pigeon' })).toMatchObject({ responsesTransport: 'websocket' })
-    // The socket does not use an HTTP proxy: with one for the endpoint and no choice made, HTTP.
-    const proxy = { HTTPS_PROXY: 'http://proxy.internal:3128' }
-    expect(extra('openai', {}, proxy)).toMatchObject({ responsesTransport: 'http' })
-    expect(extra('openai', {}, { ...proxy, NO_PROXY: 'api.openai.com' })?.responsesTransport).toBeUndefined()
-    expect(extra('openai', websocket, proxy)).toMatchObject({ responsesTransport: 'websocket' })
-    expect(extra('deepseek', {}, proxy)).toEqual(extra('deepseek', {}))
+    // The proxy case is decided after credential resolution, not here.
+    expect(extra('openai', {}, { HTTPS_PROXY: 'http://proxy.internal:3128' })?.responsesTransport).toBeUndefined()
     for (const provider of ['deepseek', 'grok', 'openrouter'] as const) {
       const requested = extra(provider, websocket, { AGENC_OPENAI_TRANSPORT: 'websocket' })
       expect(requested?.responsesTransport, provider).toBeUndefined()

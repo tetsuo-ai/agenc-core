@@ -13,7 +13,6 @@ import type { ProviderEnvironment } from "./provider-options.js";
 import { resolveXaiCapabilityExtra } from "./xai-capability-config.js";
 import { openRouterZeroDataRetentionEnabled } from "./zero-data-retention.js";
 import { parseOpenAIResponsesTransport } from "./providers/openai/responses-transport.js";
-import { getWebSocketProxyUrl } from "../utils/proxy.js";
 
 export interface ProviderRuntimeRequest {
   readonly requested: ProviderFactoryOptions;
@@ -205,15 +204,12 @@ export function resolveProviderRuntimeRequest(params: {
   const environmentTimeoutMs = parseTimeoutMs(
     params.environment.API_TIMEOUT_MS,
   );
-  // The WebSocket does not use an HTTP proxy. Where one applies to the
-  // endpoint, a session with no transport configured stays on HTTP.
+  // The HTTP proxy case of the default is decided after credential
+  // resolution, where the endpoint is final (resolveProviderCredentialAuthority).
   const openAiResponsesTransport = params.provider !== "openai"
     ? undefined
     : parseOpenAIResponsesTransport(params.environment.AGENC_OPENAI_TRANSPORT) ??
-      params.config.providers?.openai?.transport ??
-      (getWebSocketProxyUrl(settings?.baseURL ?? "https://api.openai.com/v1", params.environment) !== undefined
-        ? "http" as const
-        : undefined);
+      params.config.providers?.openai?.transport;
   const extra = {
     ...(params.baseExtra ?? {}),
     ...providerTransportExtra(

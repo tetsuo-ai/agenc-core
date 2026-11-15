@@ -105,6 +105,7 @@ const MAX_UNUSED_CONNECTS = 2;
  * tells), and the stream idle timeout is off by default.
  */
 const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 30_000;
+const DEFAULT_SEND_TIMEOUT_MS = 30_000;
 
 function isItem(value: unknown): value is Item {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -187,7 +188,8 @@ function replayMatchesOutput(replay: readonly Item[], output: readonly Item[]): 
       replayText += part;
     }
   }
-  return calls.size === 0 && replayText.trim() === text.trim();
+  // Exactly: an edit that only changes whitespace is still an edit.
+  return calls.size === 0 && replayText === text;
 }
 
 /**
@@ -286,6 +288,8 @@ export interface ResponsesWebSocketSessionOptions {
   readonly connectTimeoutMs?: number;
   readonly maxConnectionAgeMs?: number;
   readonly firstEventTimeoutMs?: number;
+  /** How long writing a frame may take before the socket is given up (default 30 s). */
+  readonly sendTimeoutMs?: number;
   /** Failed starts in a row that keep the session on HTTP (default 2). */
   readonly failuresBeforeHttpOnly?: number;
   readonly now?: () => number;
@@ -417,13 +421,16 @@ export class ResponsesWebSocketSession {
         this.chain = undefined;
         // Anything that arrived after the previous response ended is not this one's.
         connection.queue.length = 0;
-        try {
-          await new Promise<void>((resolve, reject) => {
-            connection.socket.send(JSON.stringify(frame), (error) => error ? reject(error) : resolve());
-          });
-        } catch {
+        // A peer that stops reading leaves the write pending: bound it, and let a cancel end it.
+        const sent = await this.send(connection, JSON.stringify(frame), options.signal);
+        if (sent === "aborted") {
+          this.drop();
+          void this.openAhead();
+          throw abortError(options.signal!);
+        }
+        if (sent !== "sent") {
           this.failed();
-          throw this.fallback("send failed", { afterSend: true });
+          throw this.fallback(sent === "timeout" ? "send timed out" : "send failed", { afterSend: true });
         }
         const idle = options.idleTimeoutMs !== undefined && options.idleTimeoutMs > 0
           ? options.idleTimeoutMs
@@ -474,6 +481,45 @@ export class ResponsesWebSocketSession {
       this.release();
       throw error;
     }
+  }
+
+  private send(
+    connection: Connection,
+    text: string,
+    signal: AbortSignal | undefined,
+  ): Promise<"sent" | "failed" | "timeout" | "aborted"> {
+    return new Promise((resolve) => {
+      const settle = (result: "sent" | "failed" | "timeout" | "aborted"): void => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        resolve(result);
+      };
+      const onAbort = (): void => settle("aborted");
+      const timer = setTimeout(() => settle("timeout"), this.options.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      try {
+        connection.socket.send(text, (error) => settle(error ? "failed" : "sent"));
+      } catch {
+        settle("failed");
+      }
+    });
+  }
+
+  /**
+   * The owner is done with the socket for now (its session ended, or another
+   * provider took over): close an idle socket and stop opening one ahead. A
+   * response in flight keeps its socket. Unlike `dispose`, a later request
+   * may connect again.
+   */
+  standDown(): void {
+    this.ahead = undefined;
+    try {
+      this.handshake?.terminate();
+    } catch {
+      // Not connected yet.
+    }
+    if (!this.busy) this.drop();
+    else if (this.connection?.ageTimer !== undefined) clearTimeout(this.connection.ageTimer);
   }
 
   /** The lane is free; an idle socket must not keep the process alive. */

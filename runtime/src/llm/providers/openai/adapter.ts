@@ -1088,6 +1088,8 @@ export class OpenAIProvider implements LLMProvider {
   /** WebSocket transport notices already given to this session. */
   private readonly webSocketNotices = new Set<string>();
   private webSocketDisposed = false;
+  /** Set when the owner released the socket; a new session start clears it. */
+  private webSocketReleased = false;
 
   constructor(config: OpenAIProviderConfig) {
     this.config = resolveOpenAIProviderConfig(config);
@@ -1106,6 +1108,7 @@ export class OpenAIProvider implements LLMProvider {
       emitWarning: this.config.emitWarning,
       onCapabilityDrift: this.config.onCapabilityDrift,
     });
+    if (this.name === "openai") this.client.registerTransportRelease(() => this.releaseWebSocket());
   }
 
   private evaluateConfiguredFallback(
@@ -1933,6 +1936,12 @@ export class OpenAIProvider implements LLMProvider {
     return undefined;
   }
 
+  /** Close the socket between uses; see `ResponsesWebSocketSession.standDown`. */
+  private releaseWebSocket(): void {
+    this.webSocketReleased = true;
+    this.webSocket?.session.standDown();
+  }
+
   /** Release the session's socket, if it opened one. */
   dispose(): void {
     this.webSocketDisposed = true;
@@ -2004,11 +2013,14 @@ export class OpenAIProvider implements LLMProvider {
       !this.usesResponsesApi(model, this.config.tools ?? [], undefined)) {
       return;
     }
+    this.webSocketReleased = false;
     void this.preconnectWebSocket(params.conversationId).catch(() => undefined);
   }
 
   private async preconnectWebSocket(conversationId: string): Promise<void> {
     const { session } = await this.ensureWebSocket();
+    // Released while the socket module loaded: the owner is gone.
+    if (this.webSocketReleased) return;
     // The ChatGPT backend's upgrade carries the session header its requests carry.
     const key = conversationId.trim();
     const headers = withChatGptSessionHeader(
@@ -2071,6 +2083,20 @@ export class OpenAIProvider implements LLMProvider {
       if (!(error instanceof module.ResponsesWebSocketFallback)) {
         writeBehind?.finish();
         throw error;
+      }
+      if (error.refused && error.errorFrame !== undefined && forbidsStreamRetry(error.errorFrame)) {
+        // The service refused the request and forbade a retry. Resubmitting
+        // over HTTP would be that retry: hand the frame to the event loop,
+        // which ends the call as it does for the same event over SSE.
+        writeBehind?.finish();
+        const frame = error.errorFrame;
+        return {
+          incremental: false,
+          events: async function* () {
+            yield { data: frame };
+          },
+          cancel: () => undefined,
+        };
       }
       this.reportWebSocketFallback(session, error.message);
       if (error.afterSend && !error.refused && options?.singleWireAttempt === true) {
