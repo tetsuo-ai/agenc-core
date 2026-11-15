@@ -886,11 +886,6 @@ describe("AgenC TUI session transcript", () => {
     expect(transcript.messages).toMatchObject([
       {
         subtype: "collab_agent",
-        title: "Waiting for thread-1",
-        state: "running",
-      },
-      {
-        subtype: "collab_agent",
         title: "Wait call timed out",
         state: "info",
         details: ["thread-1: Running"],

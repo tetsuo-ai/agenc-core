@@ -2,6 +2,7 @@ import type { AgenCBridgeSession } from "../session-types.js";
 import type { AppState } from "./AppStateStore.js";
 import { isRecord } from "../../utils/record.js";
 import { projectDaemonWorkerTask } from "./collabAgentTaskSync.js";
+import { isInternalAgentPath } from "../../agents/internal-agents.js";
 
 export type DaemonSessionSnapshot = Awaited<ReturnType<NonNullable<AgenCBridgeSession["getDaemonSessionSnapshot"]>>>;
 
@@ -52,6 +53,10 @@ export function startDaemonWorkerTaskPolling(
         const tasks = Object.fromEntries(Object.entries(state.tasks).filter(([, task]) =>
           task.type !== "local_agent" || task.daemonWorker?.projection !== projection));
         for (const worker of snapshot.nativeWorkers!) {
+          // The runtime's own upkeep agents (memory extraction) are not the
+          // user's agents: they must not count as "1 agent", offer "stop
+          // agents" or leave "1 local agent still running" under a turn.
+          if (isInternalAgentPath(worker.agentPath)) continue;
           const previous = state.tasks[worker.agentId];
           // Only native collaboration rows from this session can be adopted.
           if (previous !== undefined && (previous.type !== "local_agent" || previous.nativeWorker !== true ||

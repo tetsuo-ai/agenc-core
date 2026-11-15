@@ -58,23 +58,9 @@ describe("session transcript collab resume coverage", () => {
       {
         type: "system",
         subtype: "collab_agent",
-        title: "Resuming planner",
-        details: [],
-        state: "running",
-      },
-      {
-        type: "system",
-        subtype: "collab_agent",
         title: "Resumed planner",
         details: ["status: paused: snapshot expired"],
         state: "info",
-      },
-      {
-        type: "system",
-        subtype: "collab_agent",
-        title: "Closing planner",
-        details: [],
-        state: "running",
       },
       {
         type: "system",

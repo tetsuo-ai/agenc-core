@@ -522,9 +522,10 @@ describe("session transcript coverage swarm row 003", () => {
     expect(transcript.inProgressToolUseIDs).toEqual(new Set(["spawn-running"]));
     expect(transcript.messages).toMatchObject([
       {
+        // An interrupted agent has stopped working: a static row, no spinner.
         subtype: "collab_agent",
         title: "Spawned reviewer",
-        state: "running",
+        state: "info",
         details: expect.arrayContaining([
           "review the changes",
           "status: Interrupted - operator paused the worker",
@@ -539,21 +540,9 @@ describe("session transcript coverage swarm row 003", () => {
       },
       {
         subtype: "collab_agent",
-        title: "Sending input to shortid",
-        state: "running",
-        details: ["send status"],
-      },
-      {
-        subtype: "collab_agent",
         title: "Sent input to shortid",
         state: "info",
         details: ["status: unavailable"],
-      },
-      {
-        subtype: "collab_agent",
-        title: "Waiting for agents",
-        state: "running",
-        details: [],
       },
       {
         subtype: "collab_agent",
