@@ -22,7 +22,7 @@ export function ToolUseLoader({
         dim={!isError && isUnresolved}
         // Callers that already know the row is frozen (replayed history, a
         // collapsed group that is no longer the active one) pass false, and a
-        // still star costs nothing on the render clock.
+        // still dot costs nothing on the render clock.
         reducedMotion={!shouldAnimate}
       />
     </Box>

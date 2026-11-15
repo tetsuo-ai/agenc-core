@@ -61,9 +61,12 @@ describe("status line layout", () => {
       expect(layout.fits).toBe(true);
       expect([...layout.left, ...layout.right].map(fact => fact.key))
         .toEqual([...set.left, ...set.right].map(fact => fact.key));
-      expect(layout.right.at(-1)).toEqual(set === LONG_MODEL_UNKNOWN_ZDR
-        ? { key: "zdr", spans: [{ text: "ZDR?", color: "inactive" }] }
-        : { key: "zdr", spans: [{ text: "ZDR", color: "error" }] });
+      // An unknown ZDR state shows no badge; a known one is never dropped.
+      if (set === LONG_MODEL_UNKNOWN_ZDR) {
+        expect(layout.right.some(fact => fact.key === "zdr")).toBe(false);
+      } else {
+        expect(layout.right.at(-1)).toEqual({ key: "zdr", spans: [{ text: "ZDR", color: "error" }] });
+      }
       const available = columns - 2 * STATUS_LINE_PADDING;
       if (layout.rows === 1) {
         expect(statusLineGroupWidth(layout.left) + STATUS_LINE_BLOCK_GAP + statusLineGroupWidth(layout.right)).toBeLessThanOrEqual(available);
@@ -105,8 +108,8 @@ describe("status line layout", () => {
   });
 
   it("says no price for a price it does not know once the row runs short", () => {
-    const layout = layoutStatusLine(40, LONG_MODEL_UNKNOWN_ZDR.left, LONG_MODEL_UNKNOWN_ZDR.right);
-    expect(text(layout.right)).toBe("ctx 2% · c 82% · no price · ZDR?");
+    const layout = layoutStatusLine(37, LONG_MODEL.left, LONG_MODEL.right);
+    expect(text(layout.right)).toBe("ctx 2% · c 82% · no price · ZDR");
     expect(layout.right.find(fact => fact.key === "spend")).toEqual({ key: "spend", spans: [{ text: "no price", color: "text" }] });
   });
 
@@ -125,7 +128,8 @@ describe("status line layout", () => {
       statusLineRightFacts([], zdr).find(fact => fact.key === "zdr")?.forms;
     expect(badge({ provider: "cerebras", state: "zdr", reason: "r" })).toEqual([[{ text: "ZDR", color: "success" }]]);
     expect(badge({ provider: "grok", state: "retained", reason: "r" })).toEqual([[{ text: "ZDR", color: "error" }]]);
-    expect(badge({ provider: "openai-compatible", state: "unknown", reason: "r" })).toEqual([[{ text: "ZDR?", color: "inactive" }]]);
+    // An unknown state shows no badge on the line; /status explains it.
+    expect(badge({ provider: "openai-compatible", state: "unknown", reason: "r" })).toBeUndefined();
     // Before the session's provider is known there is nothing true to show.
     expect(badge(null)).toBeUndefined();
   });

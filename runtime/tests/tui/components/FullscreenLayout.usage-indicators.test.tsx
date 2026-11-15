@@ -180,7 +180,7 @@ describe("status line cache share", () => {
 
   test("narrow terminals shorten facts one step at a time and never drop the cache share", async () => {
     const model = modelDisplayString(MODEL);
-    const left = ["~/project", model, "high effort", "asks first"].join(" · ");
+    const left = ["project", model, "high effort", "asks first"].join(" · ");
     const right = "ctx 9% · cache 91% · $0.0044";
     // The row is padded by two columns on each side, with a two-column gap before the right block.
     const fits = 4 + stringWidth(left) + 2 + stringWidth(right);
@@ -192,12 +192,12 @@ describe("status line cache share", () => {
 
     // One column short: the effort takes its short form first, nothing goes.
     const effort = await footer({ columns: fits - 1, effort: "high effort" });
-    expect(effort).toContain(["~/project", model, "high", "asks first"].join(" · "));
+    expect(effort).toContain(["project", model, "high", "asks first"].join(" · "));
     expect(effort).toContain(right);
 
     // Then the mode, then the cache share's name.
     const mode = await footer({ columns: fits - " effort".length - 1, effort: "high effort" });
-    expect(mode).toContain(["~/project", model, "high", "asks"].join(" · "));
+    expect(mode).toContain(["project", model, "high", "asks"].join(" · "));
     expect(mode).toContain(right);
     const cache = await footer({ columns: fits - " effort".length - " first".length - 1, effort: "high effort" });
     expect(cache).toContain("ctx 9% · c 91% · $0.0044");
@@ -327,7 +327,7 @@ describe("status line usage colors", () => {
     expect(colorOf("·", firstSeparator)).toBe(theme.text2);
     expect(colorOf("·", firstSeparator + 1)).toBe(theme.text2);
     // The left side keeps its colors.
-    expect(colorOf("~/project")).toBe(theme.text2);
+    expect(colorOf("project")).toBe(theme.text2);
     expect(colorOf(modelDisplayString(MODEL))).toBe(theme.text);
     expect(colorOf("asks first")).toBe(theme.text);
   });
@@ -376,7 +376,7 @@ describe("status line ZDR badge", () => {
     expect(status.length).toBe(columns >= 80 ? 1 : 2);
   });
 
-  test.each(["olive", "dark", "light"] as const)("%s: green when nothing is kept, red when it may be, dim when unknown", async (setting) => {
+  test.each(["olive", "dark", "light"] as const)("%s: green when nothing is kept, red when it may be, no badge when unknown", async (setting) => {
     const theme = getTheme(resolveThemeSetting(setting));
     const green = await coloredFooter(setting, { zdr: ZDR.zdr });
     expect(green.text.trimEnd().endsWith("ZDR")).toBe(true);
@@ -384,8 +384,7 @@ describe("status line ZDR badge", () => {
     const red = await coloredFooter(setting, { zdr: ZDR.retained });
     expect(red.colorOf("ZDR", red.text.lastIndexOf("ZDR"))).toBe(theme.error);
     const unknown = await coloredFooter(setting, { zdr: ZDR.unknown });
-    expect(unknown.text.trimEnd().endsWith("ZDR?")).toBe(true);
-    expect(unknown.colorOf("ZDR?", unknown.text.lastIndexOf("ZDR?"))).toBe(theme.inactive);
+    expect(unknown.text).not.toContain("ZDR");
     // The usage block keeps its colors next to the badge.
     expect(red.colorOf("9%", red.text.indexOf("ctx 9%"))).toBe(theme.accentSoft);
   });

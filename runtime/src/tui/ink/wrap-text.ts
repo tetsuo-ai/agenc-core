@@ -1,3 +1,4 @@
+import stripAnsi from 'strip-ansi'
 import sliceAnsi from '../../utils/sliceAnsi.js'
 import { stringWidth } from './stringWidth.js'
 import type { Styles } from './styles.js'
@@ -54,15 +55,41 @@ function truncate(
 const TAB_INTERVAL = 8
 
 /**
+ * A list marker at the start of a line, after any indent: a bullet (-, *, +),
+ * a number, a letter or a short roman numeral with a dot or parenthesis, then
+ * the spaces after it and an optional task box.
+ */
+const LIST_MARKER_RE = /^( *)(?:[-*+]|\d{1,9}[.)]|[a-z][.)]|[ivx]{1,4}[.)]) +(?:\[[ xX]\] +)?/
+
+/**
+ * Columns from the start of a list line to its text: the rows that continue
+ * a wrapped item hang under the text, not under the marker. Zero when the
+ * line does not start with a list marker.
+ */
+export function listItemHangWidth(line: string): number {
+  const match = LIST_MARKER_RE.exec(stripAnsi(line))
+  return match === null ? 0 : stringWidth(match[0])
+}
+
+/**
  * Word wrap that drops the space left over at each wrap point but keeps the
  * indent of every source line. The rows that continue an indented line get
  * the same indent, so a nested list item or a line of code stays in its
- * column. A plain trimming wrap would move all of them to column 0.
+ * column. A list item's rows hang under its text, past the marker. A plain
+ * trimming wrap would move all of them to column 0.
  */
 function wrapTrimKeepingIndent(text: string, maxWidth: number): string {
   return text
     .split('\n')
     .map(line => {
+      const hang = listItemHangWidth(line)
+      // A very wide marker must still leave half the width for the text.
+      if (hang > 0 && hang <= Math.floor(maxWidth / 2) && stringWidth(line) > maxWidth) {
+        const head = sliceAnsi(line, 0, hang)
+        const rows = wrapAnsi(sliceAnsi(line, hang), maxWidth - hang, { trim: true, hard: true }).split('\n')
+        const pad = ' '.repeat(hang)
+        return rows.map((row, index) => (index === 0 ? head : pad) + row).join('\n')
+      }
       const body = line.trimStart()
       if (body.length === 0 || body.length === line.length) {
         return wrapAnsi(line, maxWidth, { trim: true, hard: true })

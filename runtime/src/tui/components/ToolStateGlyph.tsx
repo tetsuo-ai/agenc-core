@@ -2,51 +2,59 @@ import React, { useEffect, useState } from "react";
 
 import { resolveAgenCTuiGlyphMode } from "../glyphs.js";
 import { Box, Text } from "../ink.js";
-import type { Theme } from "../../utils/theme.js";
+import { getTheme, type Theme } from "../../utils/theme.js";
+import { blendRgb } from "./colorBlend.js";
+import { useTheme } from "./design-system/ThemeProvider.js";
+import ThemedText from "./design-system/ThemedText.js";
 
 export type ToolGlyphState = "queued" | "running" | "done" | "failed";
 
 /**
- * Frames for the star beside a running tool call: the points sweep out from
- * the centre and back, so a live tool reads as moving without the row jumping.
+ * A running tool call or agent row shows one dot that breathes: it fades
+ * between two grays and back, so a live row reads as alive without the
+ * glyph changing shape or the row jumping. A finished row keeps a solid dot.
  *
- * The unicode set is drawn from the star family already proven in this TUI
- * (`glyphs.spinnerFrames`). A bare ASCII `*` mixed among unicode stars renders
- * as a thin, raised glyph and visibly flickers once per cycle, which is why
- * `getDefaultCharacters` avoids it too. In ascii mode the arms rotate instead
- * — `+` axis-aligned, `*` six-armed, `x` diagonal — which is the same idea
- * with characters every terminal already has.
+ * The ANSI themes cannot blend tones, so there the dot breathes by size
+ * instead (small, medium, full, medium). Ascii mode does the same with
+ * characters every terminal has.
  */
-const UNICODE_STAR_FRAMES = ["✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳"] as const;
-const ASCII_STAR_FRAMES = ["+", "*", "x", "*"] as const;
+export const TOOL_BREATH_FRAME_MS = 100;
+/** Steps in one breath: 2.4 s at 100 ms a step, as in the approved mockup. */
+export const TOOL_BREATH_CYCLE_FRAMES = 24;
+const RUNNING_DOT = "●";
+const UNICODE_BREATH_SHAPES = ["·", "•", "●", "•"] as const;
+const ASCII_BREATH_SHAPES = [".", "o", "O", "o"] as const;
 
 /**
- * Slower than the composer spinner (90ms): several tool rows can be in flight
- * at once, and a fast sweep across a column of them reads as noise.
- */
-export const TOOL_STAR_FRAME_MS = 120;
-
-/**
- * Resolved states are static. `running` is only used when motion is off —
- * it must differ from `done` so a reduced-motion user can still tell an
- * in-flight tool from a finished one.
+ * Resolved states are static. `running` is only static when motion is off;
+ * its hollow ring must differ from the solid `done` dot so a reduced-motion
+ * user can still tell an in-flight tool from a finished one.
  */
 const UNICODE_STATIC: Readonly<Record<ToolGlyphState, string>> = {
   queued: "·",
-  running: "✳",
-  done: "✶",
+  running: "○",
+  done: "●",
   failed: "✕",
 };
 
 const ASCII_STATIC: Readonly<Record<ToolGlyphState, string>> = {
   queued: ".",
-  running: "+",
+  running: "o",
   done: "*",
   failed: "X",
 };
 
-export function toolStarFrames(ascii: boolean): readonly string[] {
-  return ascii ? ASCII_STAR_FRAMES : UNICODE_STAR_FRAMES;
+/** How far into the breath a step is: 0 at the start, 1 at the middle. */
+export function toolBreathWeight(frame: number): number {
+  const step = ((frame % TOOL_BREATH_CYCLE_FRAMES) + TOOL_BREATH_CYCLE_FRAMES) % TOOL_BREATH_CYCLE_FRAMES;
+  return (1 - Math.cos((2 * Math.PI * step) / TOOL_BREATH_CYCLE_FRAMES)) / 2;
+}
+
+/** The shape a breathing dot takes on a step where tones cannot blend. */
+export function toolBreathShape(frame: number, ascii: boolean): string {
+  const shapes = ascii ? ASCII_BREATH_SHAPES : UNICODE_BREATH_SHAPES;
+  const step = Math.floor((((frame % TOOL_BREATH_CYCLE_FRAMES) + TOOL_BREATH_CYCLE_FRAMES) % TOOL_BREATH_CYCLE_FRAMES) / (TOOL_BREATH_CYCLE_FRAMES / shapes.length));
+  return shapes[step % shapes.length]!;
 }
 
 export function toolStaticGlyph(
@@ -57,7 +65,7 @@ export function toolStaticGlyph(
 }
 
 /**
- * The glyph beside a tool call. Animates only while the tool is actually
+ * The glyph beside a tool call. Breathes only while the tool is actually
  * running, so the transcript's finished rows stay off the animation clock.
  */
 export function ToolStateGlyph({
@@ -72,37 +80,43 @@ export function ToolStateGlyph({
   readonly reducedMotion?: boolean;
 }): React.ReactElement {
   const ascii = resolveAgenCTuiGlyphMode() === "ascii";
-  const frames = toolStarFrames(ascii);
   const animating = state === "running" && !reducedMotion;
   const [frame, setFrame] = useState(0);
+  const [themeName] = useTheme();
 
   useEffect(() => {
     if (!animating) return;
     const timer = setInterval(
-      () => setFrame((value) => (value + 1) % frames.length),
-      TOOL_STAR_FRAME_MS,
+      () => setFrame((value) => (value + 1) % TOOL_BREATH_CYCLE_FRAMES),
+      TOOL_BREATH_FRAME_MS,
     );
     return () => clearInterval(timer);
-  }, [animating, frames.length]);
+  }, [animating]);
 
-  const glyph = animating
-    ? frames[frame % frames.length] ?? frames[0]!
-    : toolStaticGlyph(state, ascii);
+  if (animating) {
+    const theme = getTheme(themeName);
+    const tone = ascii ? null : blendRgb(theme.inactive, theme.subtle, toolBreathWeight(frame));
+    return tone === null ? (
+      <ThemedText color="inactive">{toolBreathShape(frame, ascii)}</ThemedText>
+    ) : (
+      <ThemedText color={tone}>{RUNNING_DOT}</ThemedText>
+    );
+  }
 
   return (
     <Text color={color} dimColor={dim}>
-      {glyph}
+      {toolStaticGlyph(state, ascii)}
     </Text>
   );
 }
 
 /**
- * A one-line "this is happening right now" label: the running star followed by
- * the text, dimmed like the rest of the progress chrome.
+ * A one-line "this is happening right now" label: the breathing dot followed
+ * by the text, dimmed like the rest of the progress chrome.
  *
- * Every in-flight thing in the transcript should say so the same way — a tool
- * call, a permission wait, a classifier check, a wait on other agents — so the
- * eye learns one mark instead of four.
+ * Every in-flight thing in the transcript should say so the same way: a tool
+ * call, a permission wait, a classifier check, a wait on other agents. The eye
+ * learns one mark instead of four.
  */
 export function RunningLabel({
   text,

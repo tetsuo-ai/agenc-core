@@ -1,7 +1,4 @@
-import {
-  resolveAgenCTuiGlyphMode,
-  selectAgenCTuiGlyphs,
-} from '../../glyphs.js'
+import { selectAgenCTuiGlyphs } from '../../glyphs.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import { getGraphemeSegmenter } from '../../../utils/intl.js'
 import type { RGBColor as RGBColorString } from '../../ink/styles.js'
@@ -50,21 +47,9 @@ type SpinnerGlyphEnv = {
 export function getDefaultCharacters(
   env: SpinnerGlyphEnv = process.env,
 ): string[] {
-  const glyphs = selectAgenCTuiGlyphs(env)
-  if (resolveAgenCTuiGlyphMode(env) === 'ascii') {
-    return [...glyphs.spinnerFrames]
-  }
-  if (env.TERM === 'xterm-ghostty') {
-    return ['·', '✢', '✳', '✶', '✻', '*'] // Use * instead of ✽ for Ghostty because the latter renders in a way that's slightly offset
-  }
-  return process.platform === 'darwin'
-    ? [...glyphs.spinnerFrames]
-    : // Mirror the macOS flower-star frame family (glyphs.spinnerFrames). The
-      // index-2 frame is `✳`, NOT a bare ASCII `*`: the asterisk renders as a
-      // thin glyph between the fat unicode stars and visibly flickers each
-      // animation cycle. (The Ghostty branch above keeps a `*` deliberately,
-      // with a documented offset-rendering rationale.)
-      ['·', '✢', '✳', '✶', '✻', '✽']
+  // One breathing dot (small, medium, full, medium) on every platform and
+  // terminal; ascii mode has its own rotating frames.
+  return [...selectAgenCTuiGlyphs(env).spinnerFrames]
 }
 
 export function getReducedMotionDot(

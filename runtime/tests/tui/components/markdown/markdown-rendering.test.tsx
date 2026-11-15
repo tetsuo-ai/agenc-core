@@ -271,14 +271,13 @@ describe('markdown rendering components', () => {
       line.length - line.replace(/^ +/u, '').length
 
     // The two bullet markers ("- ") sit flush-left (lead 0). Every other row is
-    // a soft-wrap continuation and must ALSO start at column 0 — no stray leading
-    // space. Revert-sensitivity: without "wrap-trim" the final continuation
-    // ("system fonts.") keeps the boundary space and renders at lead 1, so the
-    // uniform-edge assertion below fails.
+    // a soft-wrap continuation and hangs under the item's text, all at the same
+    // lead 2: no stray one-column jitter from a leftover boundary space.
     const leads = lines.map(leadingSpaces)
-    expect(leads.every((lead) => lead === 0)).toBe(true)
-    // And the specific measured jitter case is gone: no continuation begins with
-    // a space.
-    expect(lines.some((line) => /^ /u.test(line))).toBe(false)
+    const bullets = lines.filter((line) => line.startsWith('- '))
+    expect(bullets).toHaveLength(2)
+    for (const [index, line] of lines.entries()) {
+      expect([line, leads[index]]).toEqual([line, line.startsWith('- ') ? 0 : 2])
+    }
   })
 })

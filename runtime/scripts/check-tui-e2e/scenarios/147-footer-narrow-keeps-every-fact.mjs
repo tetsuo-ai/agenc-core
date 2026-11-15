@@ -1,5 +1,5 @@
 /**
- * A 40-column terminal keeps every status line fact and the ZDR badge.
+ * A 40-column terminal keeps every status line fact.
  *
  * Owner request (2026-10-22): the footer must fit its content to the width so
  * everything stays visible at a small width, and show a ZDR badge. Before,
@@ -7,7 +7,8 @@
  * the off-peak note, and at 40 columns could cut the model name to nothing.
  *
  * The gate's model is an OpenAI-compatible server on 127.0.0.1, which could be a
- * proxy to a cloud API, so the badge reads ZDR? (unknown). After a
+ * proxy to a cloud API, so AgenC cannot tell whether data is kept and the line
+ * shows no ZDR badge (owner, 2026-11-14: no "ZDR?" while unknown). After a
  * turn the line has a folder, model, mode, context share and spend; at 40
  * columns they take short forms and the usage block moves to a second row,
  * right under the first, with the prompt above both.
@@ -17,7 +18,7 @@ import assert from "node:assert/strict";
 import { renderPtyRows } from "../harness.mjs";
 
 export const meta = {
-  description: "A 40-column status line keeps every fact and the ZDR badge on two rows.",
+  description: "A 40-column status line keeps every fact on two rows, with no badge for an unknown ZDR state.",
   timeoutMs: 60_000,
 };
 
@@ -35,10 +36,11 @@ export default async function (session) {
   const [first, second] = filled.slice(-2);
   const frame = rows.join("\n");
   assert.ok(first !== undefined && second !== undefined, `no status line in:\n${frame}`);
-  // Two rows, one under the other: facts on the first, usage and the badge on the second.
+  // Two rows, one under the other: facts on the first, usage on the second.
   assert.equal(second.index, first.index + 1, `the status rows are not adjacent:\n${frame}`);
   assert.match(first.row, /project · local-pi[^\s]*model · asks\s*$/u, `first status row:\n${frame}`);
-  assert.match(second.row, /ctx \d+% · \$0\.00\d* · ZDR\?\s*$/u, `second status row:\n${frame}`);
+  assert.match(second.row, /ctx \d+% · \$0\.00\d*\s*$/u, `second status row:\n${frame}`);
+  assert.ok(!frame.includes("ZDR"), `an unknown ZDR state is shown:\n${frame}`);
   // The prompt stays above the status line, not under or over it.
   const prompt = rows.findIndex((row) => row.includes("❯") && !row.includes("ALPHA") && !row.includes("Reply"));
   assert.ok(prompt >= 0 && prompt < first.index, `the prompt is not above the status line:\n${frame}`);

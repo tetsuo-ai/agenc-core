@@ -4,8 +4,8 @@
  * Every fact stays visible. When one row is too narrow, the facts take their
  * short forms one step at a time, most readable change first ("high effort"
  * becomes "high", "asks first" becomes "asks", "cache 82%" becomes "c 82%",
- * "$0.041 off-peak" becomes "$0.041 op", the folder path becomes its last
- * name), then the folder and the model are shortened in the middle down to a
+ * "$0.041 off-peak" becomes "$0.041 op"; the folder already shows only its
+ * own name), then the folder and the model are shortened in the middle down to a
  * readable floor. When one row still cannot hold everything, the usage block
  * moves to a second row, where both rows start again from the full forms and
  * compact only as far as each needs, down to a lower floor if they must.

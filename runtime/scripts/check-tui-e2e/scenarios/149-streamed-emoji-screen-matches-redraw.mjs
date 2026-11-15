@@ -30,7 +30,9 @@ export const meta = {
   timeoutMs: 300_000,
 };
 
-const ROWS = 30;
+// 34 rows: a sent message's band has an empty row above and below its text
+// (2026-11-14), so the two prompts of a pass take four more rows than before.
+const ROWS = 34;
 const LONG_COMMAND =
   "sleep 0.6; echo '=== P4-EDL: w boot_b magisk_patched.img ===' && echo timeout 600 python3 edl.py --loader ../qcm2290_fhprg.elf w boot_b magisk_patched.img --memory=ufs --debugmode streamed-screen-marker";
 

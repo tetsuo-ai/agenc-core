@@ -31,25 +31,9 @@ function withPlatform<T>(platform: NodeJS.Platform, callback: () => T): T {
 
 describe('spinner utility coverage edges', () => {
   test('handles narrow layouts, unicode frame fallbacks, hue sectors, and cached RGB parsing', () => {
-    // The Linux/default unicode fallback now mirrors the macOS flower-star
-    // frame family: index 2 is `✳`, not a bare ASCII `*` (the `*` rendered as a
-    // thin glyph that flickered between the fat unicode stars each cycle).
-    expect(withPlatform('linux', () => getDefaultCharacters({ TERM: 'xterm-256color' }))).toEqual([
-      '·',
-      '✢',
-      '✳',
-      '✶',
-      '✻',
-      '✽',
-    ])
-    expect(withPlatform('darwin', () => getDefaultCharacters({ TERM: 'xterm-256color' }))).toEqual([
-      '·',
-      '✢',
-      '✳',
-      '✶',
-      '✻',
-      '✽',
-    ])
+    // Every platform uses the same breathing dot frames.
+    expect(withPlatform('linux', () => getDefaultCharacters({ TERM: 'xterm-256color' }))).toEqual(['·', '•', '●', '•'])
+    expect(withPlatform('darwin', () => getDefaultCharacters({ TERM: 'xterm-256color' }))).toEqual(['·', '•', '●', '•'])
 
     expect(truncateSpinnerText('waiting', 0, '...')).toBe('')
     expect(truncateSpinnerText('waiting', 2, '...')).toBe('..')

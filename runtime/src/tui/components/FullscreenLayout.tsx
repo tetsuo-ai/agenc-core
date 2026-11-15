@@ -17,7 +17,6 @@ import type { Message } from '../../types/message.js';
 import { openBrowser, openPath } from '../../utils/browser.js';
 import { logError } from '../../utils/log.js';
 import { plural } from '../../utils/stringUtils.js';
-import { truncateMiddleToWidth } from '../../utils/truncate.js';
 import { modelDisplayString } from '../../utils/model/model.js';
 import { getTotalCost } from '../../cost/tracker.js';
 import { formatUsdCost } from '../../session/cost.js';
@@ -705,16 +704,15 @@ export function statusLineUsageItems(
 
 /**
  * The status line's ZDR badge: green when the provider and model keep
- * nothing, red when data may be kept, a dim "ZDR?" when AgenC cannot tell
- * (a custom address). It has no shorter form and is never dropped.
+ * nothing, red when data may be kept. While AgenC cannot tell (a custom
+ * address) the line shows no badge; /status still explains the state. A
+ * known badge has no shorter form and is never dropped.
  */
 export function statusLineZdrFact(status: ZeroDataRetentionStatus | null): StatusLineFact | null {
-  if (status === null) return null;
+  if (status === null || status.state === 'unknown') return null;
   const span: StatusLineSpan = status.state === 'zdr'
     ? { text: 'ZDR', color: 'success' }
-    : status.state === 'retained'
-      ? { text: 'ZDR', color: 'error' }
-      : { text: 'ZDR?', color: 'inactive' };
+    : { text: 'ZDR', color: 'error' };
   return { key: 'zdr', forms: [[span]] };
 }
 
@@ -789,10 +787,6 @@ export function workspacePathLabel(cwd: string, home: string = homedir()): strin
       : directory;
 }
 
-function workspaceFolderLabel(columns: number): string {
-  return truncateMiddleToWidth(workspacePathLabel(process.cwd()), Math.max(12, Math.floor(columns * 0.24)));
-}
-
 /** The workspace folder's own name; `~` for the home directory itself. */
 export function folderName(cwd: string, home: string = homedir()): string {
   const label = workspacePathLabel(cwd, home);
@@ -850,7 +844,9 @@ function StatusLineChrome({ columns, onRowsChange }: {
   const shellCount = Object.values(tasks).filter(task =>
     isBackgroundTask(task) && task.type === 'local_bash',
   ).length;
-  const folder = React.useMemo(() => workspaceFolderLabel(columns), [columns]);
+  // Only the folder's own name ("~" for home): a path cut in the middle
+  // ("/Users/someone…/project") says less and takes more room.
+  const folder = React.useMemo(() => folderName(process.cwd()), []);
   const spend = useSessionSpendLabel();
   const effort = useStatusEffort();
   const contextPercent = useStatusContextUsage();

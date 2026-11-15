@@ -4,10 +4,7 @@ import { describe, expect, test } from 'vitest'
 import type { AdvisorBlock } from '../../utils/advisor.js'
 import { renderToString } from '../../utils/staticRender.js'
 import { AdvisorMessage } from '../message-renderers/AdvisorMessage.js'
-import {
-  toolStarFrames,
-  toolStaticGlyph,
-} from '../components/ToolStateGlyph.js'
+import { toolStaticGlyph } from '../components/ToolStateGlyph.js'
 
 function normalize(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
@@ -56,10 +53,8 @@ describe('AdvisorMessage coverage swarm row 056', () => {
     )
 
     expect(output).toContain('Advising')
-    // In flight: a star mid-sweep, whichever frame the static render caught.
-    expect(toolStarFrames(false).some((frame) => output.includes(frame))).toBe(
-      true,
-    )
+    // In flight: the breathing dot, whichever step the static render caught.
+    expect(['●', '•', '·'].some((glyph) => output.includes(glyph))).toBe(true)
     expect(output).not.toContain('using')
     expect(output).not.toContain('{}')
   })
