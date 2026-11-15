@@ -46,7 +46,7 @@ function ctx(): TurnContext {
 }
 
 async function lightPrefix(provider: "deepseek" | "openai") {
-  const session = { services: { runtimeOptions: { lightMode: true }, providerEnvironment: {}, provider: { name: provider }, providerService: { current: () => ({ provider, model: provider === "deepseek" ? "deepseek-flash" : "gpt-6-luna" }) } } } as unknown as Session;
+  const session = { services: { runtimeOptions: { lightMode: true }, providerEnvironment: { AGENC_LIGHT_REQUEST: "full" }, provider: { name: provider }, providerService: { current: () => ({ provider, model: provider === "deepseek" ? "deepseek-flash" : "gpt-6-luna" }) } } } as unknown as Session;
   const snapshot = await assembleSystemPromptSnapshot({
     profile: "light", provider, ctx: ctx(), session,
     memoryInstructions: buildLightMemoryInstructionLines().join("\n"),

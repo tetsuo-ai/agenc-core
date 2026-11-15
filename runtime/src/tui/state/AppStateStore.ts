@@ -356,6 +356,9 @@ export type AppState = DeepImmutable<{
   advisorModel?: string
   // Effort value
   effortValue?: EffortValue
+  // True while effortValue came from the session's initial runtime settings (the effort it starts with, which a
+  // runtime default can fill in, such as low under the lean Light request). The prompt never flashes it as a change.
+  effortFromInitialSettings?: boolean
   // Swarm mode: when on, the agent is nudged to fan out divisible work to
   // parallel sub-agents by default (see the /swarm command and the
   // swarm-mode prompt attachment). Spawns still require approval per policy.

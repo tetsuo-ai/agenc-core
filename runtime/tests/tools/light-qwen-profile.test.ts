@@ -18,7 +18,7 @@ function count(text: string, part: string): number {
 }
 
 async function lightHead(provider: string, model: string, environment: Record<string, string> = {}, nonInteractive = false) {
-  const session = { services: { runtimeOptions: { lightMode: true, nonInteractive }, providerEnvironment: environment } } as unknown as Session;
+  const session = { services: { runtimeOptions: { lightMode: true, nonInteractive }, providerEnvironment: { AGENC_LIGHT_REQUEST: "full", ...environment } } } as unknown as Session;
   return (await assembleSystemPromptSnapshot({
     profile: "light", ctx: mkCtx(), session, provider, promptIdentity: { provider, model },
   })).staticPrefix;
