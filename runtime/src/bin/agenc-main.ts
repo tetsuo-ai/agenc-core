@@ -1097,6 +1097,7 @@ type EarlyInputCapture = {
   readonly stopCapturingEarlyInput?: (options?: {
     readonly restoreRawMode?: boolean;
   }) => void;
+  readonly waitForTerminalReports?: (timeoutMs?: number) => Promise<void>;
 };
 
 
@@ -1104,6 +1105,10 @@ async function startTuiEarlyInputCapture(preserveWhitespace = false): Promise<()
   try {
     const mod = (await import("../utils/earlyInput.js")) as EarlyInputCapture;
     mod.startCapturingEarlyInput?.();
+    // Keep raw mode until the terminal answers the startup background query
+    // (one round trip), so the 'auto' theme is known before the first frame
+    // and the reply is never echoed.
+    await mod.waitForTerminalReports?.();
     return () => mod.consumeEarlyInput?.({ restoreRawMode: true, preserveWhitespace }) ?? "";
   } catch {
     return () => "";

@@ -13,6 +13,29 @@
 
 import { lastGrapheme } from './intl.js'
 import { tokenizeCliOptionRegion } from '../bin/cli-option-region.js'
+import {
+  setCachedTerminalBackground,
+  themeFromOscColor,
+} from './terminalBackground.js'
+
+/**
+ * Startup terminal queries: the OSC 11 background color (BEL-terminated, the
+ * widest support), then DA1 as a sentinel. Every terminal answers DA1 and
+ * terminals answer in order, so the DA1 reply means any background report has
+ * already arrived (or the terminal has none).
+ */
+const STARTUP_TERMINAL_QUERIES = '\x1b]11;?\x07\x1b[c'
+const DA1_REPORT = /^\x1b\[\?[\d;]*c$/
+/** Upper bound on waiting for the DA1 reply: one round trip, even over SSH. */
+const TERMINAL_REPORTS_TIMEOUT_MS = 400
+
+let pendingReports: { readonly promise: Promise<void>; readonly settle: () => void } | null = null
+
+function settleTerminalReports(): void {
+  const pending = pendingReports
+  pendingReports = null
+  pending?.settle()
+}
 
 // Buffer for early input characters
 let earlyInputBuffer = ''
@@ -64,10 +87,58 @@ export function startCapturingEarlyInput(): void {
     }
 
     process.stdin.on('readable', readableHandler)
+    // Ask the terminal for its background while this capture owns raw stdin,
+    // so the 'auto' theme is right from the first frame. processChunk strips
+    // the replies from the typed text and records the background; the caller
+    // waits for them with waitForTerminalReports() before raw mode is given
+    // back, so a reply is never echoed onto the screen. A terminal without
+    // OSC 11 leaves the default, and the OSC 11 watcher polls after mount.
+    if (process.stdout.isTTY) {
+      let settle = (): void => {}
+      const promise = new Promise<void>(resolve => { settle = resolve })
+      pendingReports = { promise, settle }
+      process.stdout.write(STARTUP_TERMINAL_QUERIES)
+    }
   } catch {
     // If we can't set raw mode, just silently continue without early capture
     isCapturing = false
   }
+}
+
+/**
+ * Record an OSC 11 background color report (the reply to the query sent when
+ * capture starts) so 'auto' resolves before the first frame.
+ */
+function recordBackgroundReport(sequence: string): void {
+  if (DA1_REPORT.test(sequence)) {
+    settleTerminalReports()
+    return
+  }
+  const report = /^\x1b\]11;([^\x07\x1b]*)/.exec(sequence)
+  if (!report) return
+  const background = themeFromOscColor(report[1]!)
+  if (background) setCachedTerminalBackground(background)
+}
+
+/**
+ * Wait until the terminal has answered the startup queries (its DA1 reply
+ * arrived), at most `timeoutMs`. Call it right after startCapturingEarlyInput
+ * and before the captured input is consumed: raw mode stays on meanwhile, so
+ * the replies are read here instead of being echoed by the terminal.
+ */
+export async function waitForTerminalReports(
+  timeoutMs: number = TERMINAL_REPORTS_TIMEOUT_MS,
+): Promise<void> {
+  const pending = pendingReports
+  if (pending === null) return
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([
+    pending.promise,
+    new Promise<void>(resolve => {
+      timer = setTimeout(resolve, timeoutMs)
+    }),
+  ])
+  if (timer !== undefined) clearTimeout(timer)
 }
 
 /**
@@ -110,6 +181,7 @@ function processChunk(str: string): void {
       const rest = str.slice(i)
       const sequence = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|O[@-~]|\][^\x07]*(?:\x07|\x1b\\))/.exec(rest)
       if (sequence) {
+        recordBackgroundReport(sequence[0])
         i += sequence[0].length
       } else if (/^\x1b(?:\[[0-?]*[ -/]*|O|\][^\x07]*)?$/.test(rest)) {
         pendingEscape = rest
@@ -150,6 +222,7 @@ export function stopCapturingEarlyInput(): void {
 
   isCapturing = false
   pendingEscape = ''
+  settleTerminalReports()
 
   if (readableHandler) {
     process.stdin.removeListener('readable', readableHandler)

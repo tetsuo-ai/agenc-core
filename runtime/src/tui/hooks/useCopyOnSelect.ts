@@ -88,7 +88,8 @@ export function useCopyOnSelect(
 
 /**
  * Pipe the theme's selectionBg color into the Ink StylePool so the
- * selection overlay renders a solid blue bg instead of SGR-7 inverse.
+ * selection overlay renders the theme's solid selection colors instead of
+ * SGR-7 inverse.
  * Ink is theme-agnostic (layering: colorize.ts "theme resolution happens
  * at component layer, not here") — this is the bridge. Fires on mount
  * (before any mouse input is possible) and again whenever the theme flips,
@@ -97,6 +98,10 @@ export function useCopyOnSelect(
 export function useSelectionBgColor(selection: Selection): void {
   const [themeName] = useTheme()
   useEffect(() => {
-    selection.setSelectionBgColor(getTheme(themeName).selectionBg)
+    const theme = getTheme(themeName)
+    selection.setSelectionBgColor(theme.selectionBg)
+    // Themes pair the selection bg with one fg so every selected cell stays
+    // readable, whatever gray it was drawn in.
+    selection.setSelectionFgColor(theme.selectionFg)
   }, [selection, themeName])
 }

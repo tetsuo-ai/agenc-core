@@ -10,6 +10,7 @@ const harness = vi.hoisted(() => ({
   hasSelection: vi.fn(() => false),
   latestSubscriber: null as (() => void) | null,
   selectionBgColors: [] as string[],
+  selectionFgColors: [] as (string | null)[],
   themeName: 'dark',
   unsubscribe: vi.fn(),
   reset() {
@@ -22,6 +23,7 @@ const harness = vi.hoisted(() => ({
     this.hasSelection.mockReturnValue(false)
     this.latestSubscriber = null
     this.selectionBgColors = []
+    this.selectionFgColors = []
     this.themeName = 'dark'
     this.unsubscribe.mockReset()
   },
@@ -42,7 +44,10 @@ vi.mock('./useSettings.js', () => ({
 }))
 
 vi.mock('../../utils/theme.js', () => ({
-  getTheme: (name: string) => ({ selectionBg: `${name}-selection` }),
+  getTheme: (name: string) => ({
+    selectionBg: `${name}-selection`,
+    selectionFg: `${name}-selection-text`,
+  }),
 }))
 
 import { createRoot } from '../ink/root.js'
@@ -90,6 +95,9 @@ function createSelection() {
     setSelectionBgColor: (color: string) => {
       harness.selectionBgColors.push(color)
     },
+    setSelectionFgColor: (color: string | null) => {
+      harness.selectionFgColors.push(color)
+    },
     subscribe: vi.fn((subscriber: () => void) => {
       harness.latestSubscriber = subscriber
       return harness.unsubscribe
@@ -131,6 +139,7 @@ describe('useCopyOnSelect wave200 coverage', () => {
 
       expect(selection.subscribe).not.toHaveBeenCalled()
       expect(harness.selectionBgColors).toEqual(['dark-selection'])
+      expect(harness.selectionFgColors).toEqual(['dark-selection-text'])
 
       isActive = true
       harness.themeName = 'light'
@@ -140,6 +149,10 @@ describe('useCopyOnSelect wave200 coverage', () => {
       expect(harness.selectionBgColors).toEqual([
         'dark-selection',
         'light-selection',
+      ])
+      expect(harness.selectionFgColors).toEqual([
+        'dark-selection-text',
+        'light-selection-text',
       ])
 
       harness.getState.mockReturnValue({ isDragging: true })

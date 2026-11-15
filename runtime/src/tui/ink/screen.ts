@@ -253,10 +253,23 @@ export class StylePool {
    * Cache is keyed by baseId only — setSelectionBg() clears it on change.
    */
   private selectionBgCode: AnsiCode | null = null
+  /**
+   * Optional selection foreground. A solid selection bg that stands out from
+   * the terminal background cannot also keep every theme gray readable on it,
+   * so themes pair it with one foreground: with a fg set, the overlay replaces
+   * the cell's fg (39m) and drops dim (SGR 2) as well. Bold, italic and
+   * underline stay. Null keeps each cell's own fg.
+   */
+  private selectionFgCode: AnsiCode | null = null
   private selectionBgCache = new Map<number, number>()
   setSelectionBg(bg: AnsiCode | null): void {
     if (this.selectionBgCode?.code === bg?.code) return
     this.selectionBgCode = bg
+    this.selectionBgCache.clear()
+  }
+  setSelectionFg(fg: AnsiCode | null): void {
+    if (this.selectionFgCode?.code === fg?.code) return
+    this.selectionFgCode = fg
     this.selectionBgCache.clear()
   }
   withSelectionBg(baseId: number): number {
@@ -264,12 +277,18 @@ export class StylePool {
     if (bg === null) return this.withInverse(baseId)
     let id = this.selectionBgCache.get(baseId)
     if (id === undefined) {
-      // Keep everything except bg (49m) and inverse (27m). Fg, bold, dim,
-      // italic, underline, strikethrough all preserved.
+      const fg = this.selectionFgCode
+      // Keep everything except bg (49m) and inverse (27m), plus the fg (39m)
+      // and dim (SGR 2) when the theme sets a selection fg. Bold, italic,
+      // underline and strikethrough are preserved.
       const kept = this.get(baseId).filter(
-        c => c.endCode !== '\x1b[49m' && c.endCode !== '\x1b[27m',
+        c =>
+          c.endCode !== '\x1b[49m' &&
+          c.endCode !== '\x1b[27m' &&
+          (fg === null || (c.endCode !== '\x1b[39m' && c.code !== '\x1b[2m')),
       )
       kept.push(bg)
+      if (fg !== null) kept.push(fg)
       id = this.intern(kept)
       this.selectionBgCache.set(baseId, id)
     }
