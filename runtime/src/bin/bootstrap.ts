@@ -47,6 +47,7 @@ import { sessionToolPolicyNoFsWriteTools } from "../permissions/session-tool-pol
 import type { ToolPermissionContext } from "../permissions/types.js";
 import { buildTurnContext, type TurnContext } from "../session/turn-context.js";
 import { Session, type SessionState } from "../session/session.js";
+import { preconnectProviderWhileSessionWaits } from "../session/startup-prewarm.js";
 import {
   createSessionMcpManager,
   createSessionMcpService,
@@ -2474,6 +2475,7 @@ async function bootstrapLocalRuntimeSessionScoped(
         if (options.deferAgentStartupSideEffects === true) {
           s.appendDeferredOrdinarySubmitHook(activateAgentStartupSideEffects);
           void preloadOrdinarySubmitModules();
+          preconnectProviderWhileSessionWaits(s);
         } else {
           await activateAgentStartupSideEffects();
         }

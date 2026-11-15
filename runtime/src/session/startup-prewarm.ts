@@ -211,6 +211,34 @@ function ensureStartupPrewarmStore(
   return store;
 }
 
+/**
+ * A daemon session defers its startup prewarm to its first ordinary submit,
+ * which leaves the `openai` provider's socket about 70 ms ahead of the first
+ * model call: the call then waits for the connect (0.24 s measured on the
+ * platform API, 0.68 s with ChatGPT sign-in). So the socket alone is opened
+ * when the session is created, while it waits for the user. Nothing is sent
+ * on it, no other provider is called, and the provider decides whether it
+ * opens one at all (see `OpenAIProvider.prewarmStartup`). The deferred
+ * prewarm still runs at the submit and finds the socket open.
+ */
+export function preconnectProviderWhileSessionWaits(session: Session): void {
+  const provider = session.services.provider;
+  if (provider.name !== "openai") return;
+  const prewarmStartup = provider.prewarmStartup;
+  if (prewarmStartup === undefined) return;
+  try {
+    const started = prewarmStartup({
+      conversationId: session.conversationId,
+      threadId: session.conversationId,
+      ...(lightSessionUsesOpenAiSocket(session, provider.name) ? { lightSession: true as const } : {}),
+    });
+    // Best-effort: the first call connects by itself.
+    void Promise.resolve(started).catch(() => undefined);
+  } catch {
+    /* best-effort */
+  }
+}
+
 export function scheduleProviderStartupPrewarm(
   session: Session,
   threadId: string,

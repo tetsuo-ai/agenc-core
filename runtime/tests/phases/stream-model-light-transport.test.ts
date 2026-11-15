@@ -1,7 +1,10 @@
 import { describe, expect, test } from "vitest";
 
 import { buildProviderOptions } from "../../src/phases/stream-model.js";
-import { scheduleProviderStartupPrewarm } from "../../src/session/startup-prewarm.js";
+import {
+  preconnectProviderWhileSessionWaits,
+  scheduleProviderStartupPrewarm,
+} from "../../src/session/startup-prewarm.js";
 import type { LLMProviderStartupPrewarmParams } from "../../src/llm/types.js";
 
 function sessionFor(provider: string, runtimeOptions: Record<string, unknown>, starts: LLMProviderStartupPrewarmParams[] = []) {
@@ -59,5 +62,27 @@ describe("Light sessions on the openai provider are marked for its WebSocket tra
       { conversationId: "light-transport", threadId: "thread-2" },
       { conversationId: "light-transport", threadId: "thread-3" },
     ]);
+  });
+
+  test("a session that waits for its first submit starts only the openai provider's hook", () => {
+    const starts: LLMProviderStartupPrewarmParams[] = [];
+    preconnectProviderWhileSessionWaits(sessionFor("openai", { lightMode: true }, starts) as never);
+    preconnectProviderWhileSessionWaits(sessionFor("openai", { lightMode: false }, starts) as never);
+    for (const provider of ["deepseek", "grok", "openrouter", "anthropic", "meta"]) {
+      preconnectProviderWhileSessionWaits(sessionFor(provider, { lightMode: true }, starts) as never);
+    }
+    expect(starts).toEqual([
+      { conversationId: "light-transport", threadId: "light-transport", lightSession: true },
+      // The provider opens a socket here only when the websocket transport is configured.
+      { conversationId: "light-transport", threadId: "light-transport" },
+    ]);
+    // No hook, a throwing hook and a rejecting hook are all harmless.
+    const bare = sessionFor("openai", { lightMode: true });
+    (bare.services.provider as { prewarmStartup?: unknown }).prewarmStartup = undefined;
+    preconnectProviderWhileSessionWaits(bare as never);
+    (bare.services.provider as { prewarmStartup?: unknown }).prewarmStartup = () => { throw new Error("no"); };
+    preconnectProviderWhileSessionWaits(bare as never);
+    (bare.services.provider as { prewarmStartup?: unknown }).prewarmStartup = () => Promise.reject(new Error("no"));
+    preconnectProviderWhileSessionWaits(bare as never);
   });
 });
