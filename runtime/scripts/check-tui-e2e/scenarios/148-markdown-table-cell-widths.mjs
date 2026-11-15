@@ -12,6 +12,9 @@
  * same width and every vertical border under a joint of the top rule. This
  * is checked at 120 and 80 columns, in the dark and the light theme, and
  * after a resize in both directions while the table is on screen.
+ *
+ * The frame is the refined look (owner pick, 2026-11-14): rounded corners,
+ * one rule under the header and no rule between body rows.
  */
 import assert from "node:assert/strict";
 
@@ -24,7 +27,7 @@ export const meta = {
 };
 
 const ROWS = 60;
-const JOINTS = "┌┬┐├┼┤└┴┘";
+const JOINTS = "╭┬╮├┼┤╰┴╯┌┐└┘";
 const squeeze = (text) => text.replace(/\s+/gu, "");
 
 // What the cells show: the Markdown without the pipes, the rule and the
@@ -65,6 +68,13 @@ function checkTable(session, from, label) {
     );
     if (!isRule) shown += row.text.replace(/│/gu, "");
   }
+
+  // The refined frame: rounded corners, one rule under the header, no rule
+  // between body rows.
+  assert.equal(table[0].cells[joints[0]], "╭", `${label}: the top rule has no rounded corner:\n${picture}`);
+  assert.equal(table.at(-1).cells[joints[0]], "╰", `${label}: the bottom rule has no rounded corner:\n${picture}`);
+  const innerRules = table.slice(1, -1).filter((row) => JOINTS.includes(row.cells[joints[0]]));
+  assert.equal(innerRules.length, 1, `${label}: expected one rule under the header and none between rows:\n${picture}`);
 
   // Every character of every cell is on screen once: none lost, none doubled.
   assert.equal(sorted(squeeze(shown)), sorted(TABLE_TEXT), `${label}: the cells do not hold the table text:\n${picture}`);
