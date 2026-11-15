@@ -34,12 +34,28 @@ Core defaults to `gemini-3.8-flash` for the Gemini provider. Gemini 4 Argon
 than Flash. Carbon is Google's strongest reasoning model and spends more
 thinking tokens per turn than Argon, so it is slower and uses more tokens.
 Choose either with `/model` or an explicit model setting.
-`gemini-3.1-pro-preview` remains selectable the same way.
+Gemini 4 Hydrogen (`gemini-4-hydrogen`) follows them: it costs less than
+Argon and Carbon, has a free tier, and is the only Gemini model with an
+`xhigh` level. `gemini-3.1-pro-preview` remains selectable the same way.
 
 `gemini-3.7-flash` and `gemini-3.5-flash` are deprecated. Google answers them
 with `gemini-3.8-flash` and `gemini-3.6-flash`, so AgenC hides them from the
 model list, keeps saved settings that name them working, and prices them as
-the model that answers.
+the model that answers. The same holds for `gemini-3.1-flash-lite-preview`,
+which Google answers with `gemini-3.1-flash-lite`.
+
+`gemini-2.5-pro` and `gemini-2.5-flash` were deprecated on November 2, 2026.
+Google no longer offers them to new keys (HTTP 404) and routes them to
+`gemini-3.8-flash` and `gemini-3.5-flash-lite` from December 1, 2026. AgenC
+hides both from the model list and keeps saved settings working.
+`gemini-3-pro-preview` was shut down on March 9, 2026 and is no longer a
+known model.
+
+The moving aliases `gemini-pro-latest`, `gemini-flash-latest` and
+`gemini-flash-lite-latest` are accepted when Google's model list has them.
+Google re-points an alias with two weeks' notice, so an alias takes its
+limits from that list, takes no effort setting (the model thinks at its own
+default), and shows its cost as unknown.
 
 The native Gemini adapter sends an explicit effort as
 `generationConfig.thinkingConfig.thinkingLevel`. The model catalog, `/effort`,
@@ -50,25 +66,27 @@ supported-level metadata.
 | --- | --- | --- |
 | `gemini-4-argon` | `low`, `medium`, `high` | `medium` |
 | `gemini-4-carbon` | `low`, `medium`, `high` | `medium` |
+| `gemini-4-hydrogen` | `low`, `medium`, `high`, `xhigh` | `high` |
 | `gemini-3.8-flash` | `low`, `medium`, `high` | `medium` |
 | `gemini-3.1-pro-preview` | `low`, `medium`, `high` | `high` |
 | `gemini-3.6-flash` | `minimal`, `low`, `medium`, `high` | `medium` |
 | `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite` | `minimal`, `low`, `medium`, `high` | `minimal` |
 | `gemini-3.7-flash` (deprecated) | `low`, `medium`, `high` | `medium` |
 | `gemini-3.5-flash` (deprecated) | `minimal`, `low`, `medium`, `high` | `medium` |
+| `gemini-3.1-flash-lite-preview` (served by 3.1 Flash-Lite) | `minimal`, `low`, `medium`, `high` | `minimal` |
 | `gemini-3-flash-preview` | `minimal`, `low`, `medium`, `high` | `high` |
-| `gemini-3-pro-preview` | `low`, `high` | `high` |
 
-Gemini 4 Argon and Carbon each share one 1,048,576-token window between input,
-thinking and output. A streamed response may use 65,536 output tokens, and a non-streaming
-call at most 32,768, so AgenC lowers the limit it sends on non-streaming calls
-to those models. Thinking tokens count toward the limit. Both have the same
+Gemini 4 Argon, Carbon and Hydrogen each share one 1,048,576-token window between input,
+thinking and output. A streamed response may use 65,536 output tokens. On Argon
+and Carbon a non-streaming call returns at most 32,768, so AgenC lowers the
+limit it sends on non-streaming calls to those two models; Hydrogen returns
+65,536 either way. Thinking tokens count toward the limit. Argon and Carbon have the same
 built-in tools and per-token prices. Explicit context caching is unsupported
 on Gemini 4, and Google ignores sampling parameters.
 
-Native Argon and Carbon calls can think silently for more than five minutes,
-which is where Node's fetch gives up on a response by default. For these two
-models the header and body silence limits are 20 minutes, the wait Google asks
+Native Gemini 4 calls can think silently for more than five minutes,
+which is where Node's fetch gives up on a response by default. For the three
+Gemini 4 models the header and body silence limits are 20 minutes, the wait Google asks
 of a client. A request that already carries a longer limit, or none, keeps it.
 The limit is finite on purpose: a connection that died without a reset would
 otherwise hold the turn until someone cancelled it. This applies to streaming,
@@ -89,13 +107,15 @@ default. A cleared or dropped effort stays cleared: the configured
 runs at its own default until a level is chosen again.
 
 Unsupported explicit levels fail before a request is sent. AgenC does not
-translate `minimal`, `xhigh`, or `max` into a different Gemini level. Unknown
+translate `minimal`, `xhigh`, or `max` into a different Gemini level; `xhigh`
+is sent only to Gemini 4 Hydrogen, which has that level. Unknown
 model variants do not inherit levels from a name prefix. Gemini 2.5 Pro,
 Flash, and Flash-Lite use `thinkingBudget` on the native `generateContent`
 API, so AgenC does not accept named effort levels for those models or invent
 a token-budget conversion.
 
-Sources checked on 2026-09-08, 2026-10-28 and for Carbon on 2026-11-11: Google's
+Sources checked on 2026-09-08, 2026-10-28, for Carbon on 2026-11-11, and with
+the model list, deprecations page and live requests on 2026-11-15: Google's
 [native ThinkingConfig reference](https://ai.google.dev/api/generate-content#ThinkingConfig),
 [thinking guide](https://ai.google.dev/gemini-api/docs/generate-content/thinking),
 [Latest Gemini models guide](https://ai.google.dev/gemini-api/docs/generate-content/latest-model), and
@@ -110,7 +130,12 @@ the rate in effect when it ran, switching at 00:00 UTC on the first day of the
 new price. Argon and Carbon cost $2 per million input tokens and $10 per
 million output tokens through November 30, then $4 and $20. Implicit caching
 discounts input by 95% ($0.10, then $0.20 per million cached tokens). Output
-prices include thinking tokens. A Gemini model with no price row shows its
+prices include thinking tokens. Gemini 4 Hydrogen costs $1.50 per million
+input tokens, $7.50 per million output tokens and $0.075 per million cached
+tokens, with no announced change. `gemini-2.5-pro` is billed at the
+`gemini-3.8-flash` rates once Google routes it there; because that is a
+lower price, AgenC switches at 08:00 UTC on December 2, 2026, so an estimate
+near the change errs high. A Gemini model with no price row shows its
 cost as unknown; AgenC never borrows another model's price for it.
 
 Since October 26, 2026, new paid Gemini API projects keep `generateContent`

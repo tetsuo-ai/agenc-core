@@ -758,7 +758,8 @@ const GEMINI_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       priority: index,
       // A deprecated id Google routes to another model stays resolvable for
       // saved settings but is no longer offered (gemini-thinking-models.ts).
-      visibility: entry.routedTo === undefined ? "list" : "hide",
+      // So does an id Google has deprecated and closed to new users.
+      visibility: entry.routedTo === undefined && entry.deprecated !== true ? "list" : "hide",
     })),
   );
 

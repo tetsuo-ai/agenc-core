@@ -1,7 +1,7 @@
 import { LLMProviderError } from "../errors.js";
 import { publishedModelCatalogEntry } from "./published-model-catalog.js";
 
-export type GeminiThinkingLevel = "minimal" | "low" | "medium" | "high";
+export type GeminiThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
 
 interface GeminiThinkingModel {
   readonly model: string;
@@ -22,11 +22,17 @@ interface GeminiThinkingModel {
    * it and it is priced as the model that answers.
    */
   readonly routedTo?: string;
+  /**
+   * Google has deprecated the id and no longer offers it to new users, but
+   * still answers it under its own name. Pickers hide it; saved settings
+   * keep resolving.
+   */
+  readonly deprecated?: boolean;
 }
 
 const PRO_LEVELS = Object.freeze(["low", "medium", "high"] as const);
 const FLASH_LEVELS = Object.freeze(["minimal", ...PRO_LEVELS] as const);
-const ORIGINAL_PRO_LEVELS = Object.freeze(["low", "high"] as const);
+const HYDROGEN_LEVELS = Object.freeze([...PRO_LEVELS, "xhigh"] as const);
 const BUDGET_LEVELS = Object.freeze([] as const);
 
 // Levels per model probed live on generateContent (2026-09-11): 3.8 Flash,
@@ -47,6 +53,27 @@ const BUDGET_LEVELS = Object.freeze([] as const);
 // Argon, including HTTP 400 for MINIMAL. It uses more thinking tokens per
 // turn (ai.google.dev/gemini-api/docs/generate-content/latest-model).
 //
+// Gemini 4 Hydrogen (2026-11-12, probed 2026-11-15): the thinking guide lists
+// low, medium, high (default) and xhigh. Live: MINIMAL answers HTTP 400, the
+// other four answer; XHIGH answers HTTP 400 on Argon, Carbon and 3.8 Flash.
+// GET /v1beta/models reports outputTokenLimit 65,536 for it, so it has no
+// lower non-streaming cap.
+//
+// Checked against the docs and the live API on 2026-11-15:
+// - gemini-3-pro-preview was shut down on 2026-03-09 and answers HTTP 404, so
+//   it has no row any more.
+// - gemini-3.1-flash-lite-preview is listed as shut down (2026-05-25) but
+//   the API still answers it with modelVersion "gemini-3.1-flash-lite".
+// - gemini-2.5-pro and gemini-2.5-flash were deprecated on 2026-11-02 and
+//   answer HTTP 404 for a key that never used them. From 2026-12-01 Google
+//   routes them to gemini-3.8-flash and gemini-3.5-flash-lite. With no
+//   levels here a request names no thinking control, which both the old and
+//   the routed model accept.
+// - gemini-3.1-flash-lite shuts down on 2027-05-07 (deprecations page). The
+//   row carries no retirement date: a dated row is refused from that day
+//   on, the live list cannot vouch for a bundled Gemini id, and Google kept
+//   answering gemini-3.1-flash-lite-preview long after its own date.
+//
 // Deprecated 2026-10-08 (changelog): requests for gemini-3.7-flash and
 // gemini-3.5-flash are routed to gemini-3.8-flash and gemini-3.6-flash. A
 // live request for each returned modelVersion "gemini-3.8-flash" and
@@ -54,6 +81,7 @@ const BUDGET_LEVELS = Object.freeze([] as const);
 export const GEMINI_THINKING_MODELS: readonly GeminiThinkingModel[] = Object.freeze(([
   { model: "gemini-4-argon", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "medium", curated: true, maxOutputTokens: 65_536, nonStreamingMaxOutputTokens: 32_768 },
   { model: "gemini-4-carbon", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "medium", curated: true, maxOutputTokens: 65_536, nonStreamingMaxOutputTokens: 32_768 },
+  { model: "gemini-4-hydrogen", control: "thinkingLevel", levels: HYDROGEN_LEVELS, defaultLevel: "high", curated: true, maxOutputTokens: 65_536 },
   { model: "gemini-3.1-pro-preview", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "high", curated: true },
   { model: "gemini-3.8-flash", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "medium", curated: true },
   { model: "gemini-3.7-flash", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "medium", curated: true, routedTo: "gemini-3.8-flash" },
@@ -61,10 +89,10 @@ export const GEMINI_THINKING_MODELS: readonly GeminiThinkingModel[] = Object.fre
   { model: "gemini-3.5-flash", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "medium", curated: true, routedTo: "gemini-3.6-flash" },
   { model: "gemini-3.5-flash-lite", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "minimal", curated: true },
   { model: "gemini-3.1-flash-lite", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "minimal", curated: true },
-  { model: "gemini-2.5-flash", control: "thinkingBudget", levels: BUDGET_LEVELS, curated: true },
+  { model: "gemini-3.1-flash-lite-preview", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "minimal", curated: true, routedTo: "gemini-3.1-flash-lite" },
+  { model: "gemini-2.5-flash", control: "thinkingBudget", levels: BUDGET_LEVELS, curated: true, deprecated: true },
   { model: "gemini-3-flash-preview", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "high", curated: true },
-  { model: "gemini-3-pro-preview", control: "thinkingLevel", levels: ORIGINAL_PRO_LEVELS, defaultLevel: "high", curated: false },
-  { model: "gemini-2.5-pro", control: "thinkingBudget", levels: BUDGET_LEVELS, curated: true },
+  { model: "gemini-2.5-pro", control: "thinkingBudget", levels: BUDGET_LEVELS, curated: true, deprecated: true },
   { model: "gemini-2.5-flash-lite", control: "thinkingBudget", levels: BUDGET_LEVELS, curated: true },
   // Official hosted Gemma guide: minimal disables thinking, high enables it.
   { model: "gemini-3.1-pro-preview-customtools", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "high", curated: true },

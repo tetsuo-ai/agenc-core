@@ -22,25 +22,33 @@ const MODEL_LEVELS = [
   // high; a live MINIMAL request answers HTTP 400.
   ["gemini-4-argon", ["low", "medium", "high"]],
   ["gemini-4-carbon", ["low", "medium", "high"]],
+  // Thinking guide and live probes 2026-11-15: Hydrogen adds xhigh.
+  ["gemini-4-hydrogen", ["low", "medium", "high", "xhigh"]],
   ["gemini-3.1-pro-preview", ["low", "medium", "high"]],
   ["gemini-3.8-flash", ["low", "medium", "high"]],
   ["gemini-3.6-flash", ["minimal", "low", "medium", "high"]],
   ["gemini-3.5-flash-lite", ["minimal", "low", "medium", "high"]],
   ["gemini-3.1-flash-lite", ["minimal", "low", "medium", "high"]],
   ["gemini-3-flash-preview", ["minimal", "low", "medium", "high"]],
-  ["gemini-3-pro-preview", ["low", "high"]],
+  ["gemini-2.5-flash-lite", []],
+] as const;
+// Deprecated 2026-11-02 and closed to keys that never used them (HTTP 404);
+// earlier users are answered until Google routes the ids on 2026-12-01.
+const DEPRECATED_MODEL_LEVELS = [
   ["gemini-2.5-pro", []],
   ["gemini-2.5-flash", []],
-  ["gemini-2.5-flash-lite", []],
 ] as const;
 // Deprecated 2026-10-08: Google serves these ids with gemini-3.8-flash and
 // gemini-3.6-flash. They keep the levels of the model that answers.
 const ROUTED_MODEL_LEVELS = [
   ["gemini-3.7-flash", ["low", "medium", "high"], "gemini-3.8-flash"],
   ["gemini-3.5-flash", ["minimal", "low", "medium", "high"], "gemini-3.6-flash"],
+  // Listed as shut down, still answered by gemini-3.1-flash-lite (2026-11-15).
+  ["gemini-3.1-flash-lite-preview", ["minimal", "low", "medium", "high"], "gemini-3.1-flash-lite"],
 ] as const;
 const WIRE_MODEL_LEVELS = [
   ...MODEL_LEVELS,
+  ...DEPRECATED_MODEL_LEVELS,
   ...ROUTED_MODEL_LEVELS.map(([model, levels]) => [model, levels] as const),
 ] as const;
 const DIRECTORIES: string[] = [];
@@ -96,6 +104,25 @@ describe("Gemini reasoning metadata", () => {
     expect(resolveProviderModelCapabilities({ provider: "gemini", model }).acceptsReasoningEffort).toBe(false);
   });
 
+  test.each(DEPRECATED_MODEL_LEVELS)("keeps deprecated %s resolvable but out of the picker", async (model, levels) => {
+    expect(resolveGeminiThinkingModel(model)).toMatchObject({ deprecated: true, control: "thinkingBudget" });
+    expect(resolveRegisteredModelCatalogEntry({ provider: "gemini", model })).toMatchObject({
+      supportedReasoningLevels: levels,
+      visibility: "hide",
+    });
+    const manager = new StaticModelsManager({
+      config: { ...defaultConfig(), model_provider: "gemini", model },
+    });
+    expect((await manager.getModelInfo(model)).showInPicker).toBe(false);
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.gemini).toContain(model);
+  });
+
+  test("has no row for gemini-3-pro-preview, shut down on 2026-03-09", () => {
+    expect(resolveGeminiThinkingModel("gemini-3-pro-preview")).toBeUndefined();
+    expect(resolveRegisteredModelCatalogEntry({ provider: "gemini", model: "gemini-3-pro-preview" })).toBeUndefined();
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.gemini).not.toContain("gemini-3-pro-preview");
+  });
+
   test.each(ROUTED_MODEL_LEVELS)("keeps deprecated %s resolvable but out of the picker", async (model, levels, servedBy) => {
     expect(resolveGeminiThinkingModel(model)?.routedTo).toBe(servedBy);
     expect(resolveRegisteredModelCatalogEntry({ provider: "gemini", model })).toMatchObject({
@@ -124,6 +151,7 @@ describe("Gemini reasoning metadata", () => {
   test.each([
     ["gemini-4-argon", "medium"],
     ["gemini-4-carbon", "medium"],
+    ["gemini-4-hydrogen", "high"],
     ["gemini-3.8-flash", "medium"],
     ["gemini-3.6-flash", "medium"],
     ["gemini-3.5-flash-lite", "minimal"],
@@ -183,6 +211,9 @@ describe.each(["chat", "stream", "count"] as const)("Gemini %s reasoning wire co
     ["gemini-4-carbon", "minimal"],
     ["gemini-4-argon", "xhigh"],
     ["gemini-4-carbon", "xhigh"],
+    ["gemini-4-hydrogen", "minimal"],
+    ["gemini-4-hydrogen", "max"],
+    ["gemini-3.8-flash", "xhigh"],
     ["gemini-4-argon", "max"],
     ["gemini-4-carbon", "max"],
     ["gemini-3.1-pro-preview", "minimal"],

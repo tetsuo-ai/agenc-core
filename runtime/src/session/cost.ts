@@ -608,12 +608,32 @@ function geminiDatedTier(
 //   3.6 Flash (changelog 2026-10-08), so they bill as those models. The page
 //   no longer lists a 3.5 Flash price.
 const COST_TIER_GEMINI_4_ARGON = geminiDatedTier([2, 10, 0.1], [4, 20, 0.2], "2026-12-01");
+// Gemini 4 Hydrogen (pricing page, read 2026-11-15): $1.50 / $7.50 / $0.075,
+// no end date, no long-context tier, implicit caching only; has a free tier.
+const COST_TIER_GEMINI_4_HYDROGEN = geminiTier([1.5, 7.5, 0.075]);
 const COST_TIER_GEMINI_3_1_PRO = geminiTier([2, 12, 0.2], [4, 18, 0.4]);
 const COST_TIER_GEMINI_3_FLASH = geminiDatedTier([0.75, 3.75, 0.075], [1.5, 7.5, 0.15], "2027-01-01");
 const COST_TIER_GEMINI_3_FLASH_LITE = geminiTier([0.3, 2.5, 0.03]);
 const COST_TIER_GEMINI_3_1_FLASH_LITE = geminiTier([0.25, 1.5, 0.025]);
 const COST_TIER_GEMINI_3_FLASH_PREVIEW = geminiTier([0.5, 3, 0.05]);
 const COST_TIER_GEMINI_2_5_PRO = geminiTier([1.25, 10, 0.125], [2.5, 15, 0.25]);
+// Deprecated 2026-11-02: from 2026-12-01 the Gemini API answers requests for
+// gemini-2.5-pro with gemini-3.8-flash and bills them at its rates
+// (deprecations page). The new rates are lower and the page names no hour, so
+// the row switches at 08:00 UTC on 2026-12-02, after December 1 has ended in
+// every time zone Google could mean: an estimate around the change errs
+// high, not low. Only the gemini: key carries the date; the bare id, which
+// other routes can fall back to, keeps the 2.5 Pro rates. The gemini: key
+// also prices Vertex AI, whose schedule for 2.5 Pro was not checked.
+// gemini-2.5-flash goes to gemini-3.5-flash-lite the same day, whose rates
+// equal the 2.5 Flash row, so that row needs no date.
+const COST_TIER_GEMINI_2_5_PRO_ROUTED = Object.freeze({
+  ...COST_TIER_GEMINI_2_5_PRO,
+  priceChange: Object.freeze({
+    effectiveFromMs: Date.parse("2026-12-02T08:00:00Z"),
+    rates: COST_TIER_GEMINI_3_FLASH,
+  }),
+});
 const COST_TIER_GEMINI_2_5_FLASH = geminiTier([0.3, 2.5, 0.03]);
 const COST_TIER_GEMINI_2_5_FLASH_LITE = geminiTier([0.1, 0.4, 0.01]);
 
@@ -1322,6 +1342,7 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     // Gemini rates and sources sit with the COST_TIER_GEMINI_* rows above.
     ...geminiCostAliases("gemini-4-argon", COST_TIER_GEMINI_4_ARGON),
     ...geminiCostAliases("gemini-4-carbon", COST_TIER_GEMINI_4_ARGON),
+    ...geminiCostAliases("gemini-4-hydrogen", COST_TIER_GEMINI_4_HYDROGEN),
     ...geminiCostAliases("gemini-3.1-pro-preview", COST_TIER_GEMINI_3_1_PRO),
     ...geminiCostAliases("gemini-3.1-pro-preview-customtools", COST_TIER_GEMINI_3_1_PRO),
     // Gemma is free-only on the Gemini API pricing page (2026-09-29).
@@ -1335,8 +1356,11 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ...geminiCostAliases("gemini-3.5-flash", COST_TIER_GEMINI_3_FLASH),
     ...geminiCostAliases("gemini-3.5-flash-lite", COST_TIER_GEMINI_3_FLASH_LITE),
     ...geminiCostAliases("gemini-3.1-flash-lite", COST_TIER_GEMINI_3_1_FLASH_LITE),
+    // Shut down as a model; the id is still answered by gemini-3.1-flash-lite.
+    ...geminiCostAliases("gemini-3.1-flash-lite-preview", COST_TIER_GEMINI_3_1_FLASH_LITE),
     ...geminiCostAliases("gemini-3-flash-preview", COST_TIER_GEMINI_3_FLASH_PREVIEW),
     ...geminiCostAliases("gemini-2.5-pro", COST_TIER_GEMINI_2_5_PRO),
+    "gemini:gemini-2.5-pro": COST_TIER_GEMINI_2_5_PRO_ROUTED,
     ...geminiCostAliases("gemini-2.5-flash", COST_TIER_GEMINI_2_5_FLASH),
     ...geminiCostAliases("gemini-2.5-flash-lite", COST_TIER_GEMINI_2_5_FLASH_LITE),
     ...Object.fromEntries(MISTRAL_CHAT_MODELS.flatMap((entry) => {

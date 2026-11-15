@@ -55,7 +55,7 @@ function getActiveProviderModel(): ModelName | undefined {
 export function getSmallFastModel(): ModelName {
   // For Gemini provider, use a fast model
   if (getAPIProvider() === 'gemini') {
-    return getActiveProviderModel() || 'gemini-2.0-flash-lite'
+    return getActiveProviderModel() || 'gemini-3.5-flash-lite'
   }
   if (getAPIProvider() === 'mistral') {
     return getActiveProviderModel() || 'ministral-3b-latest'
@@ -150,7 +150,7 @@ export function getBestModel(): ModelName {
 export function getDefaultOpusModel(): ModelName {
   // Gemini provider
   if (getAPIProvider() === 'gemini') {
-    return getActiveProviderModel() || 'gemini-2.5-pro'
+    return getActiveProviderModel() || 'gemini-3.1-pro-preview'
   }
   // Mistral provider
   if (getAPIProvider() === 'mistral') {
@@ -192,7 +192,7 @@ export function getDefaultOpusModel(): ModelName {
 export function getDefaultSonnetModel(): ModelName {
   // Gemini provider
   if (getAPIProvider() === 'gemini') {
-    return getActiveProviderModel() || 'gemini-2.0-flash'
+    return getActiveProviderModel() || 'gemini-3.8-flash'
   }
   // Mistral provider
   if (getAPIProvider() === 'mistral') {
@@ -249,7 +249,7 @@ export function getDefaultHaikuModel(): ModelName {
   }
   // Gemini provider
   if (getAPIProvider() === 'gemini') {
-    return getActiveProviderModel() || 'gemini-2.0-flash-lite'
+    return getActiveProviderModel() || 'gemini-3.5-flash-lite'
   }
   // NVIDIA NIM
   if (getAPIProvider() === 'nvidia-nim') {
@@ -290,7 +290,7 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
   }
   // Gemini provider: always use the configured Gemini model
   if (getAPIProvider() === 'gemini') {
-    return getActiveProviderModel() || 'gemini-2.0-flash'
+    return getActiveProviderModel() || 'gemini-3.8-flash'
   }
   if (getAPIProvider() === 'mistral') {
     return getActiveProviderModel() || 'mistral-medium-latest'

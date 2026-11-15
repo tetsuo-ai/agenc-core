@@ -10,6 +10,6 @@ export function geminiTransportFetch(
   fetchImpl?: typeof fetch,
 ): typeof fetch | undefined {
   const registered = resolveGeminiThinkingModel(model)?.model;
-  if (registered !== "gemini-4-argon" && registered !== "gemini-4-carbon") return fetchImpl;
+  if (registered === undefined || !registered.startsWith("gemini-4-")) return fetchImpl;
   return transportSilenceFetch(fetchImpl);
 }

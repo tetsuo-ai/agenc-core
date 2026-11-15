@@ -184,8 +184,12 @@ describe("Gemini prices that change on an announced date", () => {
     expect(before?.entry).toMatchObject({ inputUsdPer1K: 0.00075, outputUsdPer1K: 0.00375, cachedInputUsdPer1K: 0.000075 });
     expect(after?.entry).toMatchObject({ inputUsdPer1K: 0.0015, outputUsdPer1K: 0.0075, cachedInputUsdPer1K: 0.00015 });
     // A row without an announced change reports no date dependence.
-    expect(resolveModelCostEntry({ provider: "gemini", model: "gemini-2.5-pro" }, DEFAULT_MODEL_COSTS))
+    expect(resolveModelCostEntry({ provider: "gemini", model: "gemini-2.5-flash-lite" }, DEFAULT_MODEL_COSTS))
       .not.toHaveProperty("dated");
+    // gemini-2.5-pro is answered by gemini-3.8-flash from December 2026, so its
+    // row now depends on the date too.
+    expect(resolveModelCostEntry({ provider: "gemini", model: "gemini-2.5-pro" }, DEFAULT_MODEL_COSTS))
+      .toMatchObject({ key: "gemini:gemini-2.5-pro", dated: true });
   });
 
   it("bounds unknown models by the announced later rates too", () => {
