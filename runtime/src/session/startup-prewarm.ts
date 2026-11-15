@@ -221,7 +221,10 @@ function ensureStartupPrewarmStore(
  * opens one at all (see `OpenAIProvider.prewarmStartup`). The deferred
  * prewarm still runs at the submit and finds the socket open.
  */
-export function preconnectProviderWhileSessionWaits(session: Session): void {
+export function preconnectProviderWhileSessionWaits(session: {
+  readonly conversationId: string;
+  readonly services: Pick<Session["services"], "provider" | "runtimeOptions">;
+}): void {
   const provider = session.services.provider;
   if (provider.name !== "openai") return;
   const prewarmStartup = provider.prewarmStartup;

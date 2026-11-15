@@ -47,6 +47,7 @@ import { sessionToolPolicyNoFsWriteTools } from "../permissions/session-tool-pol
 import type { ToolPermissionContext } from "../permissions/types.js";
 import { buildTurnContext, type TurnContext } from "../session/turn-context.js";
 import { Session, type SessionState } from "../session/session.js";
+import { withPrintProviderPreconnect } from "../session/print-provider-preconnect.js";
 import { preconnectProviderWhileSessionWaits } from "../session/startup-prewarm.js";
 import {
   createSessionMcpManager,
@@ -1553,6 +1554,10 @@ async function bootstrapLocalRuntimeSessionScoped(
     resolvedProvider,
     initialAuthority.factoryOptions,
   );
+  return withPrintProviderPreconnect({
+    provider, conversationId, runtimeOptions, environment: env,
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+  }, async () => {
   const capabilityEntry = resolveProviderCapabilityEntry({
     provider: profileProvider,
     model,
@@ -2557,5 +2562,6 @@ async function bootstrapLocalRuntimeSessionScoped(
   } finally {
     options.signal?.removeEventListener("abort", abortStartup);
   }
+  });
   });
 }
