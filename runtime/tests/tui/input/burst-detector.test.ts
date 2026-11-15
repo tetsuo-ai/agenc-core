@@ -7,6 +7,7 @@ import {
   recordInputBurst,
   resetBurstDetector,
 } from './burst-detector.js'
+import { INITIAL_STATE, parseMultipleKeypresses } from '../ink/parse-keypress.js'
 
 describe('burst-detector (B-NEW2)', () => {
   beforeEach(() => {
@@ -61,6 +62,26 @@ describe('burst-detector (B-NEW2)', () => {
     expect(consumeSuspectedPaste()).toBe(true)
     expect(consumeSuspectedPaste()).toBe(false)
     expect(isSuspectedPaste()).toBe(false)
+  })
+
+  it('does not count terminal responses as input (the auto theme background poll)', () => {
+    // What xterm answers to the two-second background poll: an OSC 11 report
+    // and a DA1 report, 61 characters in one stdin chunk.
+    const reports = '\x1b]11;rgb:1e1e/1e1e/1e1e\x07\x1b[?64;1;2;6;9;15;16;17;18;21;22;28c'
+    expect(reports.length).toBeGreaterThan(BURST_DETECTOR_THRESHOLDS.charThreshold)
+    parseMultipleKeypresses(INITIAL_STATE, reports)
+    // Two polls answered in the same window, and other report kinds.
+    parseMultipleKeypresses(INITIAL_STATE, `${reports}${reports}\x1bP>|xterm(370)\x1b\\\x1b[>41;370;0c\x1b[?2026;2$y\x1b[?1u\x1b[?12;40R`)
+    expect(isSuspectedPaste()).toBe(false)
+    // Typed characters next to a report still count as themselves only.
+    parseMultipleKeypresses(INITIAL_STATE, `ab${reports}c`)
+    expect(isSuspectedPaste()).toBe(false)
+  })
+
+  it('still flags an unbracketed burst that arrives with a terminal response', () => {
+    const reports = '\x1b]11;rgb:1e1e/1e1e/1e1e\x07\x1b[?64;1;2c'
+    parseMultipleKeypresses(INITIAL_STATE, `${reports}${'x'.repeat(BURST_DETECTOR_THRESHOLDS.charThreshold + 1)}`)
+    expect(consumeSuspectedPaste()).toBe(true)
   })
 
   it('records nothing when called with zero or negative chars', () => {

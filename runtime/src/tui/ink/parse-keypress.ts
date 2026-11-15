@@ -59,6 +59,13 @@ const OSC_RESPONSE_RE = /^\x1b\](\d+);(.*?)(?:\x07|\x1b\\)$/s
 // goes through the pty, not the environment.
 // eslint-disable-next-line no-control-regex
 const XTVERSION_RE = /^\x1bP>\|(.*?)(?:\x07|\x1b\\)$/s
+// Every terminal response above, unanchored, to take them out of a stdin
+// chunk before the paste-burst count. The terminal sends these on its own
+// (the 'auto' theme asks for the background every two seconds and the answer
+// is an OSC 11 report plus a DA1 report, 60 characters or so on xterm). They
+// never reach the composer, so they are not typed or pasted input.
+// eslint-disable-next-line no-control-regex
+const TERMINAL_RESPONSES_RE = /\x1b\[\?[\d;]*c|\x1b\[>[\d;]*c|\x1b\[\?\d+;\d+\$y|\x1b\[\?\d+u|\x1b\[\?\d+;\d+R|\x1b\]\d+;[^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP>\|[^\x07\x1b]*(?:\x07|\x1b\\)/g
 // SGR mouse event: CSI < button ; col ; row M (press) or m (release)
 // Button codes: 64=wheel-up, 65=wheel-down (0x40 | wheel-bit).
 // Button 32=left-drag (0x20 | motion-bit). Plain 0/1/2 = left/mid/right click.
@@ -227,11 +234,16 @@ export function parseMultipleKeypresses(
   // Feed the burst detector (B-NEW2). BPM-wrapped pastes are identifiable
   // by literal PASTE_START/PASTE_END escape sequences in the raw input.
   // Anything else of meaningful size is unmarked stdin — the path we need
-  // to gate before bash submission.
+  // to gate before bash submission. Terminal responses are left out: they
+  // answer our own queries and would otherwise arm the gate with no input
+  // from the user at all.
   if (!isFlush && inputString.length > 0) {
     const hasBpmMarker =
       inputString.includes(PASTE_START) || inputString.includes(PASTE_END)
-    recordInputBurst(inputString.length, hasBpmMarker)
+    recordInputBurst(
+      inputString.replace(TERMINAL_RESPONSES_RE, '').length,
+      hasBpmMarker,
+    )
   }
 
   // Tokenize the input

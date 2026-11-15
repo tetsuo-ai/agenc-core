@@ -185,8 +185,9 @@ describe('queued inputs list', () => {
       { columns: 100, color: true },
     )
     expect(stripAnsi(ansi)).toContain(HEADER)
-    // No background color anywhere (SGR 40-49, 100-107).
-    expect(ansi).not.toMatch(/\x1b\[(?:[0-9;]*;)?(?:4[0-8]|10[0-7])[;m]/)
+    // No background color anywhere (SGR 40-49, 100-107). Truecolor foregrounds are
+    // removed first: a gray such as 100;100;100 is not SGR 100.
+    expect(ansi.replace(/38;2;\d+;\d+;\d+/g, '')).not.toMatch(/\x1b\[(?:[0-9;]*;)?(?:4[0-8]|10[0-7])[;m]/)
     // One foreground color, and it is a gray: red, green and blue are equal.
     const colors = new Set(Array.from(ansi.matchAll(/\x1b\[38;2;(\d+);(\d+);(\d+)m/g), match => match.slice(1).join(',')))
     expect(colors.size).toBe(1)

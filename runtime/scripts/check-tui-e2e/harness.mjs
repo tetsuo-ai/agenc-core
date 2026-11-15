@@ -550,6 +550,20 @@ export function normalizePtyOutput(raw, opts = {}) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * True when a PTY chunk holds nothing but the terminal background poll: the
+ * OSC 11 query the default "auto" theme repeats every two seconds, with the
+ * DA1 sentinel that follows it. The poll draws nothing, so the idle wait must
+ * not count it as activity; otherwise an idle window of two seconds or more
+ * never completes.
+ */
+export function isBackgroundPollOnly(data) {
+  return (
+    data.length > 0 &&
+    data.replace(/\x1b\]11;\?(?:\x07|\x1b\\)|\x1b\[c/gu, "") === ""
+  );
+}
+
 export function frameLooksBusy(frame) {
   return (
     /\bSynchronizing\b/u.test(frame) || /\besc to interrupt\b/iu.test(frame)
@@ -586,6 +600,8 @@ export class TuiSession {
     this.abortError = null;
     this.cleanupPromise = null;
     this.buffer = "";
+    // Bytes of background poll queries in the buffer; the idle wait skips them.
+    this.backgroundPollBytes = 0;
     this.exited = false;
     this.exitInfo = null;
     // Watermark for waitFor: every successful match advances this past the
@@ -831,7 +847,7 @@ export class TuiSession {
       env,
     });
     this.term.onData((data) => {
-      this.buffer += data;
+      this.recordOutput(data);
       if (data.includes(XTVERSION_QUERY)) {
         this.term.write(XTVERSION_REPLY);
       }
@@ -911,6 +927,14 @@ export class TuiSession {
     throw new Error(`waitFor(${label ?? re}): timeout after ${timeout}ms`);
   }
 
+  /** Append one PTY chunk to the buffer and count background poll bytes. */
+  recordOutput(data) {
+    this.buffer += data;
+    if (isBackgroundPollOnly(data)) {
+      this.backgroundPollBytes += data.length;
+    }
+  }
+
   /**
    * Wait until the TUI's PTY output stream stops emitting bytes for at
    * least `idleWindow` milliseconds. This is the canonical "TUI is done
@@ -934,11 +958,13 @@ export class TuiSession {
   } = {}) {
     const waitLabel = requireRenderedFrame ? "waitForPrompt" : "waitForIdle";
     const start = Date.now();
-    let lastSize = this.buffer.length;
+    // Output size without the background poll, which draws nothing.
+    const drawnSize = () => this.buffer.length - this.backgroundPollBytes;
+    let lastSize = drawnSize();
     let stableSince = Date.now();
     while (Date.now() - start < timeout) {
       this.throwIfAborted();
-      if (this.buffer.length === lastSize) {
+      if (drawnSize() === lastSize) {
         const frame = this.latestFrame;
         if (
           frameLooksBusy(frame) ||
@@ -950,7 +976,7 @@ export class TuiSession {
           return;
         }
       } else {
-        lastSize = this.buffer.length;
+        lastSize = drawnSize();
         stableSince = Date.now();
       }
       if (this.exited) {
