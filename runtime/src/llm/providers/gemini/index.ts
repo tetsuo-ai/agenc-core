@@ -361,16 +361,51 @@ function functionResponsePayload(content: string): Record<string, unknown> {
   return parseJsonObjectText(content) ?? { result: content };
 }
 
-function functionResponseText(content: LLMMessage["content"]): string {
+/** Image types Google documents for media inside a function response. */
+const GEMINI_FUNCTION_RESPONSE_IMAGE_TYPES: ReadonlySet<string> = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+]);
+
+/**
+ * The images of a tool result as function-response media.
+ *
+ * Gemini 3 and newer read media placed inside the function response
+ * (`functionResponse.parts[].inlineData`;
+ * ai.google.dev/gemini-api/docs/generate-content/function-calling,
+ * "Multimodal function responses": "include multimodal content inside the
+ * function response, not outside it"). A live gemini-3.8-flash and
+ * gemini-4-argon request described an image sent this way (2026-11-15).
+ * Older models and images that are not inline PNG, JPEG or WebP data keep
+ * the omission note.
+ */
+function geminiFunctionResponseMedia(
+  content: LLMMessage["content"],
+  model: string,
+): GeminiPart[] {
+  if (typeof content === "string" || !geminiValidatesCallSignatures(model)) return [];
+  const media: GeminiPart[] = [];
+  for (const part of content) {
+    if (part.type !== "image_url") continue;
+    const inline = parseDataUrl(part.image_url.url, "image");
+    if (inline === null || !GEMINI_FUNCTION_RESPONSE_IMAGE_TYPES.has(inline.mimeType)) continue;
+    media.push({ inlineData: { mimeType: inline.mimeType, data: inline.data } });
+  }
+  return media;
+}
+
+function functionResponseText(content: LLMMessage["content"], sentImages = 0): string {
   if (typeof content === "string") return content;
   const text = content
     .filter((part) => part.type !== "image_url")
     .map((part) => messageTextContent([part]))
     .filter((part) => part.length > 0)
     .join("\n");
-  const hasImage = content.some((part) => part.type === "image_url");
+  const hasOmittedImage =
+    content.filter((part) => part.type === "image_url").length > sentImages;
   const note = "[image omitted: this provider cannot receive images in tool results]";
-  return hasImage ? (text.length > 0 ? `${text}\n${note}` : note) : text;
+  return hasOmittedImage ? (text.length > 0 ? `${text}\n${note}` : note) : text;
 }
 
 function parseDataUrl(
@@ -742,13 +777,15 @@ function buildGeminiContents(messages: readonly LLMMessage[], model: string): {
       const id = message.toolCallId !== undefined && sentCallIds.has(message.toolCallId)
         ? message.toolCallId
         : undefined;
+      const media = geminiFunctionResponseMedia(message.content, model);
       (responses ??= []).push({
         functionResponse: {
           ...(id !== undefined ? { id } : {}),
           name,
           response: functionResponsePayload(
-            functionResponseText(message.content),
+            functionResponseText(message.content, media.length),
           ),
+          ...(media.length > 0 ? { parts: media } : {}),
         },
       });
       continue;
@@ -3042,6 +3079,51 @@ function buildGeminiRequest(args: {
   };
 }
 
+/**
+ * Tokens the thought signatures of a request add to its prompt.
+ *
+ * A signature carries the thinking of its step, and Google bills that
+ * thinking again as input on every later request ("Thought signatures
+ * increase the input tokens billed when sent back in subsequent requests",
+ * ai.google.dev/gemini-api/docs/generate-content/thinking). countTokens
+ * leaves it out: in a live gemini-3.8-flash session of 33 calls it answered
+ * 7,584 for a request whose promptTokenCount was 25,444, and the difference
+ * was the sum of the earlier thoughtsTokenCount values on every call
+ * (2026-11-15). A signature is base64 and measured 4.2 to 18 characters per
+ * thought token on gemini-3.8-flash and gemini-4-argon, so a quarter of its
+ * length does not undercount. The placeholder carries no thinking.
+ */
+function geminiReplayedThoughtTokens(contents: unknown): number {
+  let characters = 0;
+  for (const content of Array.isArray(contents) ? contents : []) {
+    const parts = isRecord(content) && Array.isArray(content.parts) ? content.parts : [];
+    for (const part of parts) {
+      const signature = isRecord(part) ? geminiThoughtSignature(part) : undefined;
+      if (signature !== undefined && signature !== GEMINI_SKIP_THOUGHT_SIGNATURE) {
+        characters += signature.length;
+      }
+    }
+  }
+  return Math.ceil(characters / 4);
+}
+
+/**
+ * True when a request is too small to need Google's counter.
+ *
+ * A token is at least one byte of the request, so a body no larger than half
+ * the context window cannot fill more than half of it. The countTokens round
+ * trip (90 to 210 ms before every model call, measured 2026-11-15) then
+ * decides nothing, and the caller's local estimate, the one every provider
+ * without a counter uses, takes its place.
+ */
+function geminiCountIsUnneeded(
+  body: Record<string, unknown>,
+  contextWindowTokens: number | undefined,
+): boolean {
+  if (contextWindowTokens === undefined || !(contextWindowTokens > 0)) return false;
+  return Buffer.byteLength(JSON.stringify(body), "utf8") * 2 <= contextWindowTokens;
+}
+
 function validateGeminiToolCall(raw: unknown): LLMToolCall {
   const result = validateToolCallDetailed(raw);
   if (result.toolCall) return result.toolCall;
@@ -3577,6 +3659,13 @@ export class GeminiProvider implements LLMProvider {
       // Counts the request the agent loop streams.
       streaming: true,
     });
+    if (geminiCountIsUnneeded(generateContentRequest, accountingRequest.contextWindowTokens)) {
+      // Rejecting hands the count to the token accounting service's local
+      // estimate without a request on the wire.
+      throw new Error(
+        "Gemini token counting skipped: the request is far below the context window",
+      );
+    }
     const vertexCount = this.config.endpointPlan.kind === "vertex";
     if (
       vertexCount &&
@@ -3610,14 +3699,17 @@ export class GeminiProvider implements LLMProvider {
       retryBudget: { maxRetries: 0 },
       singleWireAttempt: true,
     });
-    const inputTokens = response.data.totalTokens;
+    const countedTokens = response.data.totalTokens;
     if (
-      typeof inputTokens !== "number" ||
-      !Number.isSafeInteger(inputTokens) ||
-      inputTokens < 0
+      typeof countedTokens !== "number" ||
+      !Number.isSafeInteger(countedTokens) ||
+      countedTokens < 0
     ) {
       throw new Error("Gemini token counter returned invalid totalTokens");
     }
+    const inputTokens = countedTokens === 0
+      ? 0
+      : countedTokens + geminiReplayedThoughtTokens(generateContentRequest.contents);
     return {
       inputTokens,
       complete: true,
