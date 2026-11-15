@@ -75,6 +75,12 @@ import { sharedPrefixTailEnabled } from "../../wire/shared-prefix-tail.js";
 import { createProviderToolNameWireLookup, decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { parseProviderJson } from "../../wire/parse-json.js";
 import {
+  functionCallFromCustomToolCall,
+  functionCallsFromCustomToolCalls,
+  itemIdRecord,
+  openAiModelTakesCustomTools,
+} from "../../wire/responses-openai-freeform.js";
+import {
   coerceUsage,
   assistantTextFromContentBlocks,
   thinkingTextFromContentBlocks,
@@ -1264,7 +1270,7 @@ export class OpenAIProvider implements LLMProvider {
           });
           this.functionCallItemIds.rememberAll(
             this.name,
-            response.data.output,
+            Array.isArray(response.data.output) ? response.data.output.map(itemIdRecord) : response.data.output,
           );
           return parseOpenAIResponsesResponse(
             model,
@@ -1866,11 +1872,16 @@ export class OpenAIProvider implements LLMProvider {
     | "reasoningEffortAllowedValues"
     | "declareNonStrictTools"
     | "appendOnlyContext"
+    | "freeformApplyPatch"
   > {
-    // The ChatGPT backend is not verified for these fields and keeps its
-    // request shape.
-    if (this.name === "openai" && !this.isChatGptBackend()) {
-      return { declareNonStrictTools: true, appendOnlyContext: true };
+    if (this.name === "openai") {
+      // OpenAI's own models only (GPT-5 and later take custom tools).
+      const freeform = this.config.responsesToolFormat === "freeform" && openAiModelTakesCustomTools(model)
+        ? { freeformApplyPatch: true as const } : {};
+      // The ChatGPT backend is not verified for the other fields and keeps
+      // its request shape.
+      return this.isChatGptBackend() ? freeform
+        : { declareNonStrictTools: true, appendOnlyContext: true, ...freeform };
     }
     if (this.name !== "meta") return {};
     const effort = resolveReasoningEffort({ provider: this.name, model });
@@ -2258,6 +2269,7 @@ export class OpenAIProvider implements LLMProvider {
           // any earlier deltas. Treat every nonempty output snapshot as partial.
           hasResponseOutput ||= eventType.startsWith("response.output_") ||
             eventType.startsWith("response.function_call") || eventType.startsWith("response.reasoning") ||
+            eventType.startsWith("response.custom_tool_call") ||
             (Array.isArray(snapshotOutput) && snapshotOutput.length > 0);
           if (eventType === "error" && this.name === "openai") {
             retryDenied ||= forbidsStreamRetry(event.data);
@@ -2293,10 +2305,14 @@ export class OpenAIProvider implements LLMProvider {
           }
 
           if (eventType === "response.output_item.done") {
-            const item =
+            // A freeform (custom) apply_patch call is read as the function call AgenC runs.
+            const issuedItem =
               event.data.item && typeof event.data.item === "object"
                 ? (event.data.item as Record<string, unknown>)
                 : undefined;
+            const item = issuedItem !== undefined
+              ? functionCallFromCustomToolCall(issuedItem, requestOptions.freeformApplyPatch)
+              : undefined;
             if (
               item?.type === "reasoning" &&
               requestOptions.reasoningReplayProvider !== undefined
@@ -2308,7 +2324,7 @@ export class OpenAIProvider implements LLMProvider {
               // Wait for the terminal status before validating or publishing it.
               streamedFunctionItems.push(item);
               // Keep the issued item id for the call's next appearance in history.
-              this.functionCallItemIds.remember(this.name, item);
+              this.functionCallItemIds.remember(this.name, itemIdRecord(issuedItem));
               const id = String(item.call_id ?? item.id ?? "").trim();
               const name = String(item.name ?? "").trim();
               const args = String(item.arguments ?? "");
@@ -2483,9 +2499,10 @@ export class OpenAIProvider implements LLMProvider {
           onChunk({ content: "", done: false, toolCalls: [toolCall] });
         }
       }
-      const terminalOutput = Array.isArray(completedResponse.output)
+      const issuedOutput = Array.isArray(completedResponse.output)
         ? completedResponse.output as Record<string, unknown>[] : [];
-      this.functionCallItemIds.rememberAll(this.name, terminalOutput);
+      this.functionCallItemIds.rememberAll(this.name, issuedOutput.map(itemIdRecord));
+      const terminalOutput = functionCallsFromCustomToolCalls(issuedOutput, requestOptions.freeformApplyPatch);
       // Some Responses backends omit streamed items in the terminal payload.
       // Preserve their identities for recovery as well as completed calls.
       const responseWithStreamedCalls = {

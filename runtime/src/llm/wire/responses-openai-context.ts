@@ -29,12 +29,23 @@ function onlyKeys(value: object, keys: readonly string[]): boolean {
   return Object.keys(value).every(key => keys.includes(key));
 }
 
+/** A freeform (custom) tool with a grammar, as `responses-openai-freeform.ts` declares apply_patch. */
+function isCustomGrammarTool(tool: Item): boolean {
+  const format = tool.format as Item | null | undefined;
+  return tool.type === "custom" && onlyKeys(tool, ["type", "name", "description", "format"]) &&
+    typeof tool.name === "string" && typeof tool.description === "string" &&
+    format !== null && typeof format === "object" && !Array.isArray(format) &&
+    onlyKeys(format, ["type", "syntax", "definition"]) && format.type === "grammar" &&
+    format.syntax === "lark" && typeof format.definition === "string";
+}
+
 function toolList(value: unknown): value is Item[] {
   return Array.isArray(value) && value.every(tool => tool !== null && typeof tool === "object" &&
-    onlyKeys(tool, ["type", "name", "description", "parameters", "strict"]) &&
+    (isCustomGrammarTool(tool) ||
+    (onlyKeys(tool, ["type", "name", "description", "parameters", "strict"]) &&
     (tool.strict === undefined || typeof tool.strict === "boolean") &&
     tool.type === "function" && typeof tool.name === "string" && typeof tool.description === "string" &&
-    tool.parameters !== null && typeof tool.parameters === "object" && !Array.isArray(tool.parameters));
+    tool.parameters !== null && typeof tool.parameters === "object" && !Array.isArray(tool.parameters))));
 }
 
 /** Durable data is validated before being used as provider configuration. */

@@ -177,6 +177,14 @@ names that pass the local fetcher's own checks are sent. Each successful fetch
 costs $0.00075 ($0.75 per 1,000). See
 [Direct DeepSeek](../providers/deepseek-direct.md#web-fetch).
 
+`AGENC_OPENAI_TOOL_FORMAT` (`function` or `freeform`) overrides
+`[providers.openai] tool_format` for a session. `freeform` makes the `openai` provider declare
+`apply_patch` to GPT-5 and later models as an OpenAI custom (freeform) tool
+on the Responses API: the model writes the patch as plain text under a Lark
+grammar instead of a JSON string argument. The tool, its validation and its
+results are unchanged. Unset or `function` keeps the JSON function tool; any
+other value is ignored, and no other provider reads it.
+
 `AGENC_OPENAI_TRANSPORT` (`http` or `websocket`) overrides
 `[providers.openai] transport` for a session: `websocket` sends streamed
 Responses calls of the `openai` provider over one WebSocket per session and
@@ -533,7 +541,7 @@ autostart. Ordinary startup leaves it unset.
 
 ### AGENC_O*
 
-`AGENC_OAUTH_CLIENT_ID`, `AGENC_OAUTH_DEV_ENDPOINTS` (test-only switch that points the local OAuth flows at the development endpoints), `AGENC_OAUTH_TOKEN`, `AGENC_ONBOARDING`, `AGENC_ONE_SHOT_COMPACT_RETRIES`, `AGENC_OPENAI_CONTEXT_WINDOWS`, `AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW`, `AGENC_OPENAI_MAX_OUTPUT_TOKENS`, `AGENC_OPENAI_REASONING_REPLAY`, `AGENC_OPENAI_TRANSPORT`, `AGENC_ORGANIZATION_UUID`, `AGENC_OVERRIDE_DATE`.
+`AGENC_OAUTH_CLIENT_ID`, `AGENC_OAUTH_DEV_ENDPOINTS` (test-only switch that points the local OAuth flows at the development endpoints), `AGENC_OAUTH_TOKEN`, `AGENC_ONBOARDING`, `AGENC_ONE_SHOT_COMPACT_RETRIES`, `AGENC_OPENAI_CONTEXT_WINDOWS`, `AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW`, `AGENC_OPENAI_MAX_OUTPUT_TOKENS`, `AGENC_OPENAI_REASONING_REPLAY`, `AGENC_OPENAI_TOOL_FORMAT`, `AGENC_OPENAI_TRANSPORT`, `AGENC_ORGANIZATION_UUID`, `AGENC_OVERRIDE_DATE`.
 
 ### AGENC_P*
 

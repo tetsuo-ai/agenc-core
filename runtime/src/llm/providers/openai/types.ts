@@ -36,6 +36,13 @@ export interface OpenAIProviderConfig extends LLMProviderConfig {
    * providers built on this adapter ignore it.
    */
   readonly responsesTransport?: "http" | "websocket";
+  /**
+   * How the `openai` provider declares apply_patch on the Responses API:
+   * `freeform` sends OpenAI's custom tool form (plain patch text under a Lark
+   * grammar) to GPT-5 and later; unset or `function` keeps the JSON function
+   * tool. Other providers built on this adapter ignore it.
+   */
+  readonly responsesToolFormat?: "function" | "freeform";
   readonly authMode?: "api_key" | "oauth";
   readonly oauth?: OpenAIOAuthConfig;
   readonly defaultHeaders?: Readonly<Record<string, string>>;
