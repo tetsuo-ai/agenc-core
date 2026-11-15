@@ -751,6 +751,7 @@ vi.mock("./PromptInputModeIndicator.js", () => ({
 
 vi.mock("./PromptInputQueuedCommands.js", () => ({
   PromptInputQueuedCommands: () => null,
+  PromptBandQueuedInputs: () => null,
 }));
 
 vi.mock("./PromptInputStashNotice.js", () => ({

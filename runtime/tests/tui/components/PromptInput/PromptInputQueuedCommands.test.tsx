@@ -82,7 +82,7 @@ describe('PromptInputQueuedCommands', () => {
     ]
     const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
 
-    await renderToString(<PromptInputQueuedCommands />, 100)
+    await renderToString(<PromptInputQueuedCommands showInputs />, 100)
 
     expect(createUserMessageSpy).toHaveBeenCalledTimes(2)
     // Every queued preview must receive an explicit empty timestamp; a bare
@@ -97,7 +97,7 @@ describe('PromptInputQueuedCommands', () => {
   it('shows a next-turn guidance banner for queued prompt messages', async () => {
     const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
 
-    const output = await renderToString(<PromptInputQueuedCommands />, 100)
+    const output = await renderToString(<PromptInputQueuedCommands showInputs />, 100)
 
     expect(output).toContain('queued for next turn')
     expect(output).toContain('1  Use another library')
@@ -110,7 +110,7 @@ describe('PromptInputQueuedCommands', () => {
   it('does NOT repeat the "esc to interrupt" hint on the queued banner', async () => {
     const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
 
-    const output = await renderToString(<PromptInputQueuedCommands />, 100)
+    const output = await renderToString(<PromptInputQueuedCommands showInputs />, 100)
 
     // A queue can only exist while a turn is loading (inputs are enqueued only
     // when isLoading — applyBusyInputSubmissionPolicy returns false otherwise),
@@ -132,7 +132,7 @@ describe('PromptInputQueuedCommands', () => {
     ]
     const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
 
-    const output = await renderToString(<PromptInputQueuedCommands />, 100)
+    const output = await renderToString(<PromptInputQueuedCommands showInputs />, 100)
 
     // The banner advertises the per-item queue control next to the interrupt
     // hint, so the user can discover that a queued item can be dropped.
@@ -145,12 +145,28 @@ describe('PromptInputQueuedCommands', () => {
     queueFixture.commands = []
     const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
 
-    const output = await renderToString(<PromptInputQueuedCommands />, 100)
+    const output = await renderToString(<PromptInputQueuedCommands showInputs />, 100)
 
     // No queue → no affordance at all (and no empty banner).
     expect(output).not.toContain('drops the last')
     expect(output).not.toContain('queued for next turn')
     expect(output.trim()).toBe('')
+  })
+
+  it('draws nothing for typed inputs while they wait in the prompt band', async () => {
+    // Since 0.19.34 typed inputs are listed inside the prompt band; this list
+    // takes them only with showInputs (the prompt is hidden). Nothing else is
+    // queued, so not even the blank row above the list is drawn.
+    queueFixture.commands = [
+      { value: 'first prompt', mode: 'prompt' },
+      { value: 'echo queued', mode: 'bash' },
+    ]
+    const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
+
+    const output = await renderToString(<PromptInputQueuedCommands />, 100)
+
+    expect(output.trim()).toBe('')
+    expect(createUserMessageSpy).not.toHaveBeenCalled()
   })
 
   it('shows queued bash commands as next-turn input', async () => {
@@ -162,7 +178,7 @@ describe('PromptInputQueuedCommands', () => {
     ]
     const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
 
-    const output = await renderToString(<PromptInputQueuedCommands />, 100)
+    const output = await renderToString(<PromptInputQueuedCommands showInputs />, 100)
 
     expect(output).toContain('queued for next turn')
     // The "!" marks it as a shell line, as in the prompt.
@@ -178,7 +194,7 @@ describe('PromptInputQueuedCommands', () => {
     ]
     const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
 
-    const output = await renderToString(<PromptInputQueuedCommands />, 100)
+    const output = await renderToString(<PromptInputQueuedCommands showInputs />, 100)
 
     // The list is plain text: nothing parses the command as tags, so it is
     // shown exactly as typed and cannot fake a tool result.
@@ -204,7 +220,7 @@ describe('PromptInputQueuedCommands', () => {
     ]
     const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
 
-    const output = await renderToString(<PromptInputQueuedCommands />, 100)
+    const output = await renderToString(<PromptInputQueuedCommands showInputs />, 100)
 
     expect(output).toContain('queued for next turn')
     expect(output).toMatch(/^\s*1\s*$/m)
@@ -221,7 +237,7 @@ describe('PromptInputQueuedCommands', () => {
     ]
     const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
 
-    const output = await renderToString(<PromptInputQueuedCommands />, 100)
+    const output = await renderToString(<PromptInputQueuedCommands showInputs />, 100)
 
     expect(output).not.toContain('idle_notification')
     expect(output.trim()).toBe('')
@@ -234,7 +250,7 @@ describe('PromptInputQueuedCommands', () => {
     }))
     const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
 
-    const output = await renderToString(<PromptInputQueuedCommands />, 120)
+    const output = await renderToString(<PromptInputQueuedCommands showInputs />, 120)
 
     expect(output).toContain('task 1')
     expect(output).toContain('task 2')

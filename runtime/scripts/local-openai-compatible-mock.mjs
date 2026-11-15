@@ -165,10 +165,23 @@ export const MARKDOWN_REPLY_FIXTURES = Object.freeze({
 /** Size and pause of the pieces of a streamed fixture reply. */
 const STREAM_PIECE_CHARS = 9;
 const STREAM_PIECE_PAUSE_MS = 15;
+/**
+ * Pause of a "slow streamed" fixture reply: the same text over about four
+ * times as long, so a scenario can queue inputs and act on them while the
+ * turn still runs.
+ */
+const SLOW_STREAM_PIECE_PAUSE_MS = 60;
+
+/** The pause between pieces a prompt asks for. */
+function streamPauseForPrompt(prompt) {
+  return /\breply with the slow streamed markdown fixture\b/i.test(prompt)
+    ? SLOW_STREAM_PIECE_PAUSE_MS
+    : STREAM_PIECE_PAUSE_MS;
+}
 
 /** The fixture a prompt asks to have streamed in pieces, or undefined. */
 function streamedFixtureForPrompt(prompt) {
-  const name = /\breply with the streamed markdown fixture\s+([a-z0-9-]+)/i.exec(
+  const name = /\breply with the (?:slow )?streamed markdown fixture\s+([a-z0-9-]+)/i.exec(
     prompt,
   )?.[1];
   return name && Object.hasOwn(MARKDOWN_REPLY_FIXTURES, name)
@@ -473,7 +486,7 @@ function respondWithText(response, body, text) {
  * Stream a text in small pieces with a pause between them, as a model does.
  * The transcript then grows a few characters at a time and repaints often.
  */
-async function respondWithStreamedText(response, body, text) {
+async function respondWithStreamedText(response, body, text, pauseMs = STREAM_PIECE_PAUSE_MS) {
   response.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache",
@@ -485,7 +498,7 @@ async function respondWithStreamedText(response, body, text) {
   for (let start = 0; start < characters.length; start += STREAM_PIECE_CHARS) {
     const piece = characters.slice(start, start + STREAM_PIECE_CHARS).join("");
     send(makeChunk(body, { index: 0, delta: { content: piece }, finish_reason: null }));
-    await new Promise((resolve) => setTimeout(resolve, STREAM_PIECE_PAUSE_MS));
+    await new Promise((resolve) => setTimeout(resolve, pauseMs));
   }
   send({
     ...makeChunk(body, { index: 0, delta: {}, finish_reason: "stop" }),
@@ -541,7 +554,7 @@ async function handleChatCompletions(request, response) {
   }
   const streamed = completedTools > 0 ? undefined : streamedFixtureForPrompt(prompt);
   if (streamed !== undefined) {
-    await respondWithStreamedText(response, body, streamed);
+    await respondWithStreamedText(response, body, streamed, streamPauseForPrompt(prompt));
     return;
   }
   respondWithText(

@@ -97,7 +97,7 @@ async function renderQueuedCommands(): Promise<string> {
     '../../../src/tui/components/PromptInput/PromptInputQueuedCommands.js'
   )
 
-  return renderToString(<PromptInputQueuedCommands />, { columns: 120 })
+  return renderToString(<PromptInputQueuedCommands showInputs />, { columns: 120 })
 }
 
 describe('PromptInputQueuedCommands coverage swarm 180', () => {

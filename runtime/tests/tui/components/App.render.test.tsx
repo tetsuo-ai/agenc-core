@@ -670,6 +670,11 @@ vi.mock("./dialogs/CostThresholdDialog.js", async () => {
 vi.mock("./PromptInput/PromptInput.js", async () => {
   const React = await import("react");
   const { parseLocalControlCommand } = await import("../../../src/commands/local-control.js");
+  // Queued inputs wait inside the prompt band: the stand-in prompt draws the
+  // real band block, so what the user sees of the queue stays checked here.
+  const { PromptBandQueuedInputs } = await import(
+    "../../../src/tui/components/PromptInput/PromptInputQueuedCommands.js"
+  );
   return {
     default: ({
       input,
@@ -695,6 +700,8 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       onboardingInput,
       onBashSubmit,
       draftRestoreRevision,
+      queueOwner,
+      listAllQueuedInputs,
     }: {
       input: string;
       onSubmit: (
@@ -725,6 +732,8 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       onOpenModelMenu?: () => Promise<void> | void;
       onboardingInput?: unknown;
       draftRestoreRevision?: number;
+      queueOwner?: unknown;
+      listAllQueuedInputs?: boolean;
       onBashSubmit?: (
         command: string,
         admittedCwd?: string,
@@ -766,8 +775,18 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         onboardingInput,
         onBashSubmit,
         draftRestoreRevision,
+        listAllQueuedInputs,
       });
-      return React.createElement("ink-text", null, `prompt:${input}`);
+      return React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(PromptBandQueuedInputs, {
+          queueOwner: queueOwner as never,
+          listAll: listAllQueuedInputs === true,
+          width: 94,
+        }),
+        React.createElement("ink-text", null, `prompt:${input}`),
+      );
     },
   };
 });
@@ -2339,8 +2358,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       for (const prompt of ["OPEN IT IN CHROME", "run", "runeun", "so"]) {
         await (providerProbe.promptProps.at(-1)!.onSubmit as (value: string, helpers: typeof helpers) => Promise<void>)(prompt, helpers);
       }
-      // The queued prompts are listed by number, every one of them, in order.
+      // The queued prompts are listed by number in the prompt band, every one
+      // of them, in order: the band lists them all while review blocks them.
       await vi.waitFor(() => expect(stripAnsi(output()).replace(/\s/gu, "")).toContain("4so"));
+      expect(providerProbe.promptProps.at(-1)!.listAllQueuedInputs).toBe(true);
       // The output is the stream of repaints, so each entry is checked on its own.
       for (const entry of ["OPENITINCHROME", "2run", "3runeun", "4so", "dropsthelast"]) {
         expect(stripAnsi(output()).replace(/\s/gu, "")).toContain(entry);

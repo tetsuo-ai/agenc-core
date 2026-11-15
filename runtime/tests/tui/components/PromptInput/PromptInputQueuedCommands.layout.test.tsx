@@ -1,5 +1,10 @@
 /**
- * The list of queued inputs under the transcript.
+ * The list of queued inputs outside the prompt band.
+ *
+ * Since 0.19.34 typed inputs wait inside the prompt band
+ * (PromptBandQueuedInputs.test.tsx). This list is drawn only with
+ * showInputs, while the prompt itself is hidden (a permission request or
+ * another overlay owns it), so the queue never drops out of view.
  *
  * Owner report (2026-11-11, third screenshot): the queued inputs were shown
  * as tinted bands with a "queued" label each, and one message appeared
@@ -48,7 +53,7 @@ const prompts = (...values: string[]) => values.map(value => ({ value, mode: 'pr
 
 async function frame(width: number): Promise<string[]> {
   const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
-  const output = await renderToString(<PromptInputQueuedCommands />, width)
+  const output = await renderToString(<PromptInputQueuedCommands showInputs />, width)
   return output.split('\n').map(line => line.trimEnd())
 }
 
@@ -117,7 +122,7 @@ describe('queued inputs list', () => {
     // must see each of them, not five and a count.
     queueFixture.commands = prompts(...Array.from({ length: 12 }, (_, index) => `input number ${index + 1}`))
     const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
-    const output = await renderToString(<PromptInputQueuedCommands listAll />, 80)
+    const output = await renderToString(<PromptInputQueuedCommands showInputs listAll />, 80)
     const rows = block(output.split('\n').map(line => line.trimEnd()))
     expect(rows).toHaveLength(13)
     expect(rows[1]).toBe('   1  input number 1')
@@ -175,7 +180,7 @@ describe('queued inputs list', () => {
     const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
     const ansi = await renderToAnsiString(
       <ThemeProvider initialState={theme}>
-        <PromptInputQueuedCommands />
+        <PromptInputQueuedCommands showInputs />
       </ThemeProvider>,
       { columns: 100, color: true },
     )
