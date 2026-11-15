@@ -54,7 +54,7 @@ const PROFILES: Readonly<Record<string, Readonly<Record<string, ChildModelProfil
   grok: Object.freeze({ "grok-4.6": BALANCED, "grok-4.7": STRONG, "grok-4-1-fast-reasoning": BALANCED }),
   gemini: Object.freeze({
     "gemini-2.5-flash": COMPACT, "gemini-2.5-pro": BALANCED,
-    "gemini-3-flash-preview": BALANCED, "gemini-3-pro-preview": STRONG,
+    "gemini-3-flash-preview": BALANCED,
     "gemini-3.1-pro-preview": STRONG,
     "gemini-3.8-flash": BALANCED, "gemini-3.7-flash": BALANCED, "gemini-3.6-flash": BALANCED,
     "gemini-3.5-flash": BALANCED, "gemini-3.5-flash-lite": COMPACT, "gemini-3.1-flash-lite": COMPACT,

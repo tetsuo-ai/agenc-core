@@ -50,7 +50,12 @@ const NON_CHAT_ID_PARTS = Object.freeze([
   "veo",
 ]);
 
-const CHAT_MODEL_ID = /^(?:gemini|gemma)-\d[a-z0-9.-]*$/u;
+// A versioned id (gemini-4-argon, gemma-4-31b-it) or one of the moving
+// aliases Google lists: gemini-pro-latest, gemini-flash-latest and
+// gemini-flash-lite-latest. Google re-points an alias with two weeks'
+// notice, so an alias never gets a bundled row: its limits come from the
+// live list and a request for it names no thinking level.
+const CHAT_MODEL_ID = /^(?:(?:gemini|gemma)-\d[a-z0-9.-]*|gemini-(?:pro|flash|flash-lite)-latest)$/u;
 const TEXT_IMAGE = Object.freeze(["text", "image"] as const);
 const NO_LEVELS = Object.freeze([] as const);
 const NO_SPEED_TIERS = Object.freeze([] as const);

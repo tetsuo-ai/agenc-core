@@ -270,8 +270,24 @@ function isDeepSeekThinkingModel(model: string): boolean {
   );
 }
 
-function isGeminiThinkingModel(model: string): boolean {
+/**
+ * The Gemini models whose stored thinking a model switch may carry over. Only
+ * 2.5 has been verified; the newer models validate thought signatures, so
+ * they stay out until a replay of foreign thinking is proven to be accepted.
+ */
+function geminiAcceptsThinkingHistory(model: string): boolean {
   return matchesModelFamily(model, /(?:^|[/:])gemini-2\.5(?:$|[-_.:])/);
+}
+
+function isGeminiThinkingModel(model: string): boolean {
+  // Gemini 2.5 and every newer chat model thinks (the model pages on
+  // ai.google.dev list Thinking as supported from 2.5 on), as do hosted
+  // Gemma 4 and newer, Robotics-ER 2 and the -latest aliases, which point at current
+  // models.
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])(?:gemini-(?:2\.5|[3-9]\d*(?:\.\d+)?|[1-9]\d+(?:\.\d+)?)|gemma-(?:[4-9]|[1-9]\d)|gemini-robotics-er-2|gemini-(?:pro|flash|flash-lite)-latest)(?:$|[-_.:])/,
+  );
 }
 
 
@@ -591,7 +607,7 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     // payloads, but this runtime slice does not yet replay stored `audio_url`
     // history into that wire format.
     acceptsAudioHistory: false,
-    acceptsThinkingHistory: isGeminiThinkingModel,
+    acceptsThinkingHistory: geminiAcceptsThinkingHistory,
     acceptsReasoningEffort: false,
   },
   mistral: HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
