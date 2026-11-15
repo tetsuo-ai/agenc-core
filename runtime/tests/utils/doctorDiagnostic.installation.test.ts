@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -183,6 +184,97 @@ describe("Doctor installation detection", () => {
           cwd: root,
         }),
       ).resolves.toEqual(wrapper);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "skips an older agenc earlier on PATH and finds the wrapper that launched this runtime",
+    async () => {
+      // The generated wrapper puts its private Node directory first on PATH,
+      // so inside AgenC an old launcher left there comes before the wrapper.
+      const { root, runtimeBin, wrapperPath, wrapper } = fixture();
+      const nodeDir = join(root, ".agenc", "bin");
+      mkdirSync(nodeDir, { recursive: true });
+      const legacy = join(nodeDir, "agenc");
+      writeFileSync(
+        legacy,
+        `#!/bin/sh\nexec "${process.execPath}" "${join(root, "old-runtime", "bin", "agenc")}" "$@"\n`,
+      );
+      chmodSync(legacy, 0o755);
+
+      await expect(
+        findActiveGeneratedWrapper({
+          invokedPath: runtimeBin,
+          environment: {
+            PATH: [nodeDir, dirname(wrapperPath)].join(delimiter),
+          },
+          cwd: root,
+        }),
+      ).resolves.toEqual(wrapper);
+      await expect(
+        getCurrentInstallationType({
+          invokedPath: runtimeBin,
+          environment: {
+            PATH: [nodeDir, dirname(wrapperPath)].join(delimiter),
+          },
+          cwd: root,
+        }),
+      ).resolves.toBe("native");
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "skips an earlier canonical wrapper and a symlink that do not launch this runtime",
+    async () => {
+      const { root, runtimeBin, wrapperPath, wrapper } = fixture();
+      const otherRuntime = join(root, "runtime", "bin", "other");
+      writeFileSync(otherRuntime, "#!/usr/bin/env node\n");
+      const otherDir = join(root, "other-bin");
+      mkdirSync(otherDir);
+      const otherWrapper = join(otherDir, "agenc");
+      writeFileSync(
+        otherWrapper,
+        renderGeneratedWrapperContent({
+          kind: "posix",
+          nodeBin: process.execPath,
+          runtimeBin: otherRuntime,
+          agencHome: join(root, ".agenc"),
+        }),
+      );
+      chmodSync(otherWrapper, 0o755);
+      const linkDir = join(root, "link-bin");
+      mkdirSync(linkDir);
+      symlinkSync(wrapperPath, join(linkDir, "agenc"));
+
+      await expect(
+        findActiveGeneratedWrapper({
+          invokedPath: runtimeBin,
+          environment: {
+            PATH: [otherDir, linkDir, dirname(wrapperPath)].join(delimiter),
+          },
+          cwd: root,
+        }),
+      ).resolves.toEqual(wrapper);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "returns null when no agenc on PATH launches this runtime",
+    async () => {
+      const { root, runtimeBin } = fixture();
+      const legacyDir = join(root, "legacy-bin");
+      mkdirSync(legacyDir);
+      const legacy = join(legacyDir, "agenc");
+      writeFileSync(legacy, "#!/bin/sh\nexec agenc-old \"$@\"\n");
+      chmodSync(legacy, 0o755);
+
+      await expect(
+        findActiveGeneratedWrapper({
+          invokedPath: runtimeBin,
+          environment: { PATH: legacyDir },
+          cwd: root,
+        }),
+      ).resolves.toBeNull();
     },
   );
 

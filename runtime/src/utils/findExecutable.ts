@@ -21,10 +21,50 @@ export async function findExecutableOnCapturedPath(
   environment: NodeJS.ProcessEnv,
   cwd: string,
 ): Promise<string | null> {
+  for await (const candidate of executablesOnCapturedPath(
+    command,
+    environment,
+    cwd,
+  )) {
+    return candidate
+  }
+  return null
+}
+
+/**
+ * Every executable named `command` on a captured PATH snapshot, in PATH order
+ * and without repeats. A caller that needs one specific install (for example
+ * the wrapper that launched this runtime) checks each candidate, because an
+ * unrelated executable with the same name can come first.
+ */
+export async function findAllExecutablesOnCapturedPath(
+  command: string,
+  environment: NodeJS.ProcessEnv,
+  cwd: string,
+): Promise<string[]> {
+  const found: string[] = []
+  const seen = new Set<string>()
+  for await (const candidate of executablesOnCapturedPath(
+    command,
+    environment,
+    cwd,
+  )) {
+    if (seen.has(candidate)) continue
+    seen.add(candidate)
+    found.push(candidate)
+  }
+  return found
+}
+
+async function* executablesOnCapturedPath(
+  command: string,
+  environment: NodeJS.ProcessEnv,
+  cwd: string,
+): AsyncGenerator<string> {
   const searchPath =
     nonEmptyEnvironmentValue(environment.PATH) ??
     nonEmptyEnvironmentValue(environment.Path)
-  if (searchPath === undefined) return null
+  if (searchPath === undefined) return
 
   const windows = getPlatform() === 'windows'
   const extensions =
@@ -47,17 +87,16 @@ export async function findExecutableOnCapturedPath(
         : resolve(cwd, unquoted)
     for (const extension of extensions) {
       const candidate = join(directory, `${command}${extension}`)
+      let executable = false
       try {
         const info = await stat(candidate)
-        if (info.isFile() && (windows || (info.mode & 0o111) !== 0)) {
-          return candidate
-        }
+        executable = info.isFile() && (windows || (info.mode & 0o111) !== 0)
       } catch {
         // Continue to the next captured PATH candidate.
       }
+      if (executable) yield candidate
     }
   }
-  return null
 }
 
 /**
