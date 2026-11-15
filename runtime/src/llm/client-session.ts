@@ -1376,11 +1376,11 @@ export class ProviderHttpClientSession {
     await sleep(retryDelay.delayMs, options.signal);
   }
 
-  private async fetchResponse(
+  /** The method, URL and headers of a request, before any body. */
+  private async resolveRequestTarget(
     options: ProviderHttpRequestOptions,
     attempt: number,
-    signal?: AbortSignal,
-  ): Promise<Response> {
+  ): Promise<{ readonly method: string; readonly url: URL; readonly headers: Headers }> {
     const method = options.method ?? "POST";
     const path =
       options.path ??
@@ -1414,6 +1414,28 @@ export class ProviderHttpClientSession {
       normalizeHeaders(headers, resolved ?? undefined);
     }
     normalizeHeaders(headers, options.headers);
+    return { method, url, headers };
+  }
+
+  /**
+   * Where a WebSocket for the same endpoint connects and what its upgrade
+   * request carries: the URL of the HTTP request with `http` as `ws` and
+   * `https` as `wss`, and the same default, auth and request headers.
+   */
+  async resolveWebSocketTarget(
+    options: Pick<ProviderHttpRequestOptions, "api" | "path" | "headers" | "query">,
+  ): Promise<{ readonly url: string; readonly headers: Readonly<Record<string, string>> }> {
+    const { url, headers } = await this.resolveRequestTarget({ ...options, method: "GET" }, 0);
+    url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
+    return { url: url.toString(), headers: Object.fromEntries(headers.entries()) };
+  }
+
+  private async fetchResponse(
+    options: ProviderHttpRequestOptions,
+    attempt: number,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    const { method, url, headers } = await this.resolveRequestTarget(options, attempt);
 
     let body: string | undefined;
     if (options.body !== undefined) {

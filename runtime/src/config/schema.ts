@@ -695,6 +695,22 @@ export interface ProviderConfig {
    * this field (see docs/reference/providers.md).
    */
   readonly zero_data_retention?: boolean;
+  /**
+   * How streamed Responses calls travel. Accepted only under
+   * `providers.openai`: `http` (SSE) or `websocket`, one socket per session
+   * that sends only the new input items when the request continues the
+   * previous response and falls back to HTTP on any connect or protocol
+   * failure. Unset, Light sessions use `websocket` and everything else
+   * `http` (see docs/reference/providers.md).
+   */
+  readonly transport?: "http" | "websocket";
+  /**
+   * How apply_patch is declared on the Responses API. Accepted only under
+   * `providers.openai`: `freeform` sends OpenAI's custom tool form (plain
+   * patch text under a Lark grammar) to GPT-5 and later; `function`, the
+   * default, keeps the JSON function tool (see docs/reference/config.md).
+   */
+  readonly tool_format?: "function" | "freeform";
   readonly context_window_tokens?: number;
   readonly max_output_tokens?: number;
   /**
@@ -1764,6 +1780,8 @@ const PROVIDER_KEYS: ReadonlySet<string> = new Set([
   "remote_mcp",
   "incremental_continuation",
   "zero_data_retention",
+  "transport",
+  "tool_format",
   "auth",
 ]);
 
@@ -2223,6 +2241,32 @@ function validateSingleProviderConfig(
       );
     }
     out.zero_data_retention = zeroDataRetention;
+  }
+  if (record.transport !== undefined) {
+    const field = fieldPath(providerId, "transport");
+    if (providerId !== "openai") {
+      throw new InvalidProviderConfigError(
+        field,
+        "transport applies only under providers.openai, whose Responses API has a WebSocket mode",
+      );
+    }
+    if (record.transport !== "http" && record.transport !== "websocket") {
+      throw new InvalidProviderConfigError(field, "must be http or websocket");
+    }
+    out.transport = record.transport;
+  }
+  if (record.tool_format !== undefined) {
+    const field = fieldPath(providerId, "tool_format");
+    if (providerId !== "openai") {
+      throw new InvalidProviderConfigError(
+        field,
+        "tool_format applies only under providers.openai, whose Responses API has custom (freeform) tools",
+      );
+    }
+    if (record.tool_format !== "function" && record.tool_format !== "freeform") {
+      throw new InvalidProviderConfigError(field, "must be function or freeform");
+    }
+    out.tool_format = record.tool_format;
   }
   if (record.auth !== undefined) {
     const field = fieldPath(providerId, "auth");

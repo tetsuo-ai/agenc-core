@@ -914,6 +914,21 @@ describe("schema: closed config block validators (CF-13)", () => {
     }
   });
 
+  test("validateProviderConfig accepts transport only under providers.openai", () => {
+    expect(validateProviderConfig({ openai: { transport: "websocket" } })).toEqual({
+      openai: { transport: "websocket" },
+    });
+    expect(validateProviderConfig({ openai: { transport: "http" } })).toEqual({
+      openai: { transport: "http" },
+    });
+    expect(() => validateProviderConfig({ openai: { transport: "ws" } })).toThrow(/must be http or websocket/u);
+    for (const provider of ["deepseek", "grok", "anthropic", "openrouter"]) {
+      expect(() =>
+        validateProviderConfig({ [provider]: { transport: "websocket" } }),
+      ).toThrow(/applies only under providers\.openai/u);
+    }
+  });
+
   test("validateProviderConfig accepts auth only for the providers with an account sign-in", () => {
     expect(validateProviderConfig({ openai: { auth: "oauth" }, grok: { auth: "api-key" } })).toEqual({
       openai: { auth: "oauth" },

@@ -134,6 +134,10 @@ export type ProviderRuntimeExtra = Partial<
   readonly useResponsesApi?: boolean;
   readonly store?: boolean;
   readonly chatgptBackend?: boolean;
+  /** Unset: the provider's default (WebSocket for Light sessions, HTTP otherwise). */
+  readonly responsesTransport?: "http" | "websocket";
+  /** `freeform`: apply_patch as an OpenAI custom tool. Unset: the function tool. */
+  readonly responsesToolFormat?: "function" | "freeform";
   readonly authMode?: "api_key" | "oauth";
   readonly oauth?: Record<string, unknown>;
   readonly openAiCompatibility?: {
@@ -211,6 +215,8 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "useResponsesApi",
   "store",
   "chatgptBackend",
+  "responsesTransport",
+  "responsesToolFormat",
   "authMode",
   "oauth",
   "openAiCompatibility",
@@ -698,6 +704,14 @@ function readRuntimeExtra(
       : {}),
     ...(readBoolean(extra, "chatgptBackend") !== undefined
       ? { chatgptBackend: readBoolean(extra, "chatgptBackend") }
+      : {}),
+    ...(readString(extra, "responsesTransport") === "websocket" ||
+    readString(extra, "responsesTransport") === "http"
+      ? { responsesTransport: readString(extra, "responsesTransport") as "http" | "websocket" }
+      : {}),
+    ...(readString(extra, "responsesToolFormat") === "freeform" ||
+    readString(extra, "responsesToolFormat") === "function"
+      ? { responsesToolFormat: readString(extra, "responsesToolFormat") as "function" | "freeform" }
       : {}),
     ...(readString(extra, "authMode") === "api_key" ||
     readString(extra, "authMode") === "oauth"
@@ -1252,6 +1266,12 @@ export function createProvider(
         ...(extra.store !== undefined ? { store: extra.store } : {}),
         ...(extra.chatgptBackend !== undefined
           ? { chatgptBackend: extra.chatgptBackend }
+          : {}),
+        ...(extra.responsesTransport !== undefined
+          ? { responsesTransport: extra.responsesTransport }
+          : {}),
+        ...(extra.responsesToolFormat !== undefined
+          ? { responsesToolFormat: extra.responsesToolFormat }
           : {}),
         ...(extra.contextWindowTokens !== undefined
           ? { contextWindowTokens: extra.contextWindowTokens }

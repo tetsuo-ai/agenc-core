@@ -8,6 +8,7 @@
  * never participate in provider selection here.
  */
 
+import { getWebSocketProxyUrl } from "../utils/proxy.js";
 import { snapshotProviderEnvironment, type ProviderEnvironment } from "./provider-environment.js";
 export { snapshotProviderEnvironment, type ProviderEnvironment } from "./provider-environment.js";
 import {
@@ -57,6 +58,9 @@ import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { LLMMissingCredentialsError } from "./errors.js";
 
 /** Lower-precedence credentials discovered at the canonical ingress. */
+
+const OPENAI_PLATFORM_BASE_URL = "https://api.openai.com/v1";
+
 export interface ProviderCredentialCandidates {
   readonly savedApiKey?: string;
 }
@@ -779,6 +783,16 @@ function resolveProviderCredentialAuthorityCore(
   }
 
   let extra = mergeExtra(requested.extra, resolvedExtra, forcedExtra);
+  // The Responses WebSocket does not use an HTTP proxy. The endpoint is final
+  // only here (a ChatGPT sign-in moves it to chatgpt.com), so this is where a
+  // session with no transport chosen is kept on HTTP when a proxy applies to
+  // the endpoint its requests go to.
+  if (
+    provider === "openai" && extra?.responsesTransport === undefined &&
+    getWebSocketProxyUrl(baseURL ?? OPENAI_PLATFORM_BASE_URL, env) !== undefined
+  ) {
+    extra = { ...(extra ?? {}), responsesTransport: "http" };
+  }
   if (provider === "openrouter" && resolvedExtra.defaultHeaders !== undefined) {
     extra = {
       ...(extra ?? {}),

@@ -21,7 +21,8 @@ import {
 
 // Rows from GET /v1beta/models on 2026-10-28 with the project key, trimmed to
 // one model of each kind, plus one fictional model ("gemini-4-futura-preview")
-// standing in for a model Google ships after this Core release.
+// standing in for a model Google ships after this Core release, plus the
+// three moving aliases and two managed agents from the 2026-11-15 list.
 const FUTURE = "gemini-4-futura-preview";
 const LIVE_LIST = {
   models: [
@@ -29,6 +30,12 @@ const LIVE_LIST = {
     { name: "models/gemini-4-carbon", displayName: "Gemini 4 Carbon", inputTokenLimit: 1_048_576, outputTokenLimit: 32_768, supportedGenerationMethods: ["generateContent", "countTokens", "batchGenerateContent"], thinking: true },
     { name: "models/gemini-3.8-flash", displayName: "Gemini 3.8 Flash", inputTokenLimit: 1_048_576, outputTokenLimit: 65_536, supportedGenerationMethods: ["generateContent", "countTokens", "createCachedContent", "batchGenerateContent"], thinking: true },
     { name: "models/gemini-3.1-flash-lite-preview", displayName: "Gemini 3.1 Flash Lite Preview", inputTokenLimit: 1_048_576, outputTokenLimit: 65_536, supportedGenerationMethods: ["generateContent", "countTokens", "createCachedContent", "batchGenerateContent"], thinking: true },
+    { name: "models/gemini-pro-latest", displayName: "Gemini Pro Latest", inputTokenLimit: 1_048_576, outputTokenLimit: 65_536, supportedGenerationMethods: ["generateContent", "countTokens", "createCachedContent", "batchGenerateContent"], thinking: true },
+    { name: "models/gemini-flash-latest", displayName: "Gemini Flash Latest", inputTokenLimit: 1_048_576, outputTokenLimit: 65_536, supportedGenerationMethods: ["generateContent", "countTokens", "createCachedContent", "batchGenerateContent"], thinking: true },
+    { name: "models/gemini-flash-lite-latest", displayName: "Gemini Flash-Lite Latest", inputTokenLimit: 1_048_576, outputTokenLimit: 65_536, supportedGenerationMethods: ["generateContent", "countTokens", "createCachedContent", "batchGenerateContent"], thinking: true },
+    { name: "models/antigravity-preview-latest", displayName: "Antigravity Agent Preview Latest", inputTokenLimit: 1_048_576, outputTokenLimit: 65_536, supportedGenerationMethods: ["generateContent", "countTokens"] },
+    { name: "models/deep-research-preview-04-2026", displayName: "Deep Research Preview (Apr-21-2026)", inputTokenLimit: 1_048_576, outputTokenLimit: 65_536, supportedGenerationMethods: ["generateContent", "countTokens"], thinking: true },
+    { name: "models/gemini-nano-banana-2.1", displayName: "Nano Banana 2.1", inputTokenLimit: 65_536, outputTokenLimit: 65_536, supportedGenerationMethods: ["generateContent", "countTokens", "batchGenerateContent"], thinking: true },
     { name: `models/${FUTURE}`, displayName: "Gemini 4 Futura Preview", inputTokenLimit: 2_097_152, outputTokenLimit: 32_768, supportedGenerationMethods: ["generateContent", "countTokens"], thinking: true },
     { name: "models/gemini-3.8-flash-tts", displayName: "Gemini 3.8 Flash TTS", inputTokenLimit: 8_192, outputTokenLimit: 16_384, supportedGenerationMethods: ["generateContent", "countTokens", "batchGenerateContent"] },
     { name: "models/gemini-3.1-flash-image", displayName: "Nano Banana 2", inputTokenLimit: 65_536, outputTokenLimit: 65_536, supportedGenerationMethods: ["generateContent", "countTokens", "batchGenerateContent"], thinking: true },
@@ -55,7 +62,8 @@ async function discover(fetchImpl = listFetch()) {
 describe("Gemini live model list", () => {
   test("keeps only chat models the bundled registry does not know", () => {
     const rows = parseGeminiLiveModels(LIVE_LIST);
-    expect(rows?.map((row) => row.model)).toEqual(["gemini-3.1-flash-lite-preview", FUTURE]);
+    // gemini-3.1-flash-lite-preview has a bundled row (routed to 3.1 Flash-Lite).
+    expect(rows?.map((row) => row.model)).toEqual(["gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest", FUTURE]);
     expect(rows?.find((row) => row.model === FUTURE)).toEqual({
       model: FUTURE,
       displayName: "Gemini 4 Futura Preview",
@@ -71,6 +79,14 @@ describe("Gemini live model list", () => {
     ["gemini-4-futura-preview", true],
     ["gemini-3.9-flash", true],
     ["gemma-5-12b-it", true],
+    ["gemini-pro-latest", true],
+    ["gemini-flash-latest", true],
+    ["gemini-flash-lite-latest", true],
+    ["gemini-ultra-latest", false],
+    ["gemini-latest", false],
+    ["gemini-nano-banana-2.1", false],
+    ["antigravity-preview-latest", false],
+    ["deep-research-preview-04-2026", false],
     ["gemini-3.8-flash-tts", false],
     ["gemini-3.1-flash-image", false],
     ["gemini-3.8-live", false],
@@ -98,7 +114,16 @@ describe("Gemini live model list", () => {
 
   test("reads the list with the Gemini key header and publishes the new rows", async () => {
     const { fetchImpl, models } = await discover();
-    expect(models?.map((row) => row.model)).toEqual(["gemini-3.1-flash-lite-preview", FUTURE]);
+    expect(models?.map((row) => row.model)).toEqual(["gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest", FUTURE]);
+    // A moving alias takes its limits from the list and names no level.
+    expect(resolveRegisteredModelCatalogEntry({ provider: "gemini", model: "gemini-flash-latest" })).toMatchObject({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 65_536,
+      supportsThinking: true,
+      supportedReasoningLevels: [],
+    });
+    expect(resolveGeminiReasoningEffort("gemini-flash-latest", "minimal")).toBeUndefined();
+    expect(resolveProviderModelCapabilities({ provider: "gemini", model: "gemini-pro-latest" }).supportsExtendedThinking).toBe(true);
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
       "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
     );
@@ -167,6 +192,7 @@ describe("Gemini live model list", () => {
     await discover();
     expect(() => assertModelCatalogSelection({}, "gemini", FUTURE, {})).not.toThrow();
     expect(() => assertModelCatalogSelection({}, "gemini", "gemini-3.1-flash-lite-preview", {})).not.toThrow();
+    expect(() => assertModelCatalogSelection({}, "gemini", "gemini-flash-latest", {})).not.toThrow();
     expect(() => assertModelCatalogSelection({}, "gemini", "gemini-4-futura", {}))
       .toThrow(/unknown model 'gemini-4-futura'.*did you mean/u);
     expect(() => assertModelCatalogSelection({}, "gemini", "gemini-3.8-flash", {})).not.toThrow();

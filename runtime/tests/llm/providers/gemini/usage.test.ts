@@ -246,8 +246,11 @@ describe("Gemini thinking usage consumers", () => {
 
     expect(admitted.reasoningOutputTokens).toBe(1);
 
-    const inclusiveCost = computeUsdCost(admitted, DEFAULT_MODEL_COSTS);
-    const exclusiveCost = computeUsdCost(exclusiveOutput, DEFAULT_MODEL_COSTS);
+    // The gemini-2.5-pro row changes price on 2026-12-02; price the call
+    // before that so the expected figure does not depend on the clock.
+    const pricedAtMs = Date.parse("2026-11-15T00:00:00Z");
+    const inclusiveCost = computeUsdCost({ ...admitted, pricedAtMs }, DEFAULT_MODEL_COSTS);
+    const exclusiveCost = computeUsdCost({ ...exclusiveOutput, pricedAtMs }, DEFAULT_MODEL_COSTS);
     expect(computeUsdCostWithResolution(admitted, DEFAULT_MODEL_COSTS).known).toBe(
       true,
     );

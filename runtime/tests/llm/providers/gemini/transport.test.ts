@@ -19,7 +19,7 @@ describe("Gemini transport options", () => {
     } finally { nativeFetch.mockRestore(); }
   });
 
-  test.each(["gemini-4-argon", "gemini-4-carbon"])("uses %s transport for token counting but keeps health checks unchanged", async model => {
+  test.each(["gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen"])("uses %s transport for token counting but keeps health checks unchanged", async model => {
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ totalTokens: 1 }));
     const client = new GeminiProvider({
       model, fetchImpl,
@@ -48,7 +48,7 @@ describe("Gemini transport options", () => {
   });
 
   test.each([
-    "gemini-4-argon", "gemini-4-carbon", "models/gemini-4-carbon",
+    "gemini-4-argon", "gemini-4-carbon", "models/gemini-4-carbon", "gemini-4-hydrogen",
     "publishers/google/models/gemini-4-argon", "gemini:gemini-4-carbon", "google/gemini-4-argon",
   ])("changes only the dispatch silence timers for registered %s", async model => {
     const dispatch = vi.fn<Dispatcher["dispatch"]>().mockReturnValue(false);

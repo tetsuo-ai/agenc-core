@@ -21,7 +21,10 @@ export function geminiTransportFetch(
   model: string,
   fetchImpl?: typeof fetch,
 ): typeof fetch | undefined {
-  const id = resolveGeminiThinkingModel(model)?.model ?? canonicalGeminiModelName(model).trim().toLowerCase();
-  if (!GEMINI_4_SILENT_MODELS.has(id)) return fetchImpl;
+  // Every registered Gemini 4 model, and the ids named above even when the
+  // registry does not list them.
+  const registered = resolveGeminiThinkingModel(model)?.model;
+  const id = registered ?? canonicalGeminiModelName(model).trim().toLowerCase();
+  if (registered?.startsWith("gemini-4-") !== true && !GEMINI_4_SILENT_MODELS.has(id)) return fetchImpl;
   return transportSilenceFetch(fetchImpl);
 }

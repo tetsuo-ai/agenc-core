@@ -185,7 +185,7 @@ function summarizeOutputItems(output: readonly unknown[]): {
   for (const item of output) {
     if (!item || typeof item !== "object") continue;
     const record = item as Record<string, unknown>;
-    if (record.type === "function_call") toolCalls += 1;
+    if (record.type === "function_call" || record.type === "custom_tool_call") toolCalls += 1;
     if (record.type === "message") {
       outputTextChars += messageTextChars(record.content);
     }

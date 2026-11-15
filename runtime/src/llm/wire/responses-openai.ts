@@ -34,6 +34,13 @@ import {
   withSerializedMetrics,
 } from "./shared.js";
 import { planOpenAIContext } from "./responses-openai-context.js";
+import {
+  customToolCallItemIdKey,
+  freeformCallInput,
+  freeformResponsesTool,
+  functionCallsFromCustomToolCalls,
+  isFreeformToolName,
+} from "./responses-openai-freeform.js";
 import { toOpenAIResponsesTools } from "./tools.js";
 import { withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
 import {
@@ -100,6 +107,12 @@ export interface OpenAIResponsesRequestOptions {
    * whenever it can, and strict mode requires every property.
    */
   readonly declareNonStrictTools?: boolean;
+  /**
+   * Declare apply_patch as an OpenAI freeform (custom) tool with its Lark
+   * grammar, and carry its calls in history as `custom_tool_call` items
+   * (see `responses-openai-freeform.ts`). The `openai` provider only.
+   */
+  readonly freeformApplyPatch?: boolean;
 }
 
 const NESTED_SCHEMA_LISTS = ["anyOf", "oneOf", "allOf", "prefixItems"] as const;
@@ -340,17 +353,18 @@ export function closeDanglingFunctionCalls(
 ): void {
   const answered = new Set<string>();
   for (const item of responseInput) {
-    if (item.type === "function_call_output" && typeof item.call_id === "string") {
+    if ((item.type === "function_call_output" || item.type === "custom_tool_call_output") &&
+      typeof item.call_id === "string") {
       answered.add(item.call_id);
     }
   }
   for (let index = responseInput.length - 1; index >= 0; index -= 1) {
     const item = responseInput[index]!;
-    if (item.type !== "function_call") continue;
+    if (item.type !== "function_call" && item.type !== "custom_tool_call") continue;
     const callId = item.call_id;
     if (typeof callId !== "string" || answered.has(callId)) continue;
     responseInput.splice(index + 1, 0, {
-      type: "function_call_output",
+      type: item.type === "custom_tool_call" ? "custom_tool_call_output" : "function_call_output",
       call_id: callId,
       output:
         "[interrupted: this call produced no result. Do not wait on it; proceed fresh.]",
@@ -506,11 +520,13 @@ const MODELS_KEEPING_SUMMARY_DEFAULT: ReadonlySet<string> = new Set([
  * The context plan records and compares these same definitions, so tools
  * sent later through `additional_tools` keep the declaration too.
  */
-function responsesRequestTools(input: OpenAIResponsesRequestOptions) {
-  return toOpenAIResponsesTools(omitsToolsForChoice(input) ? [] : input.tools).map((tool) =>
-    input.declareNonStrictTools === true && !isStrictCompatibleToolSchema(tool.parameters)
+function responsesRequestTools(input: OpenAIResponsesRequestOptions): Record<string, unknown>[] {
+  return toOpenAIResponsesTools(omitsToolsForChoice(input) ? [] : input.tools).map((tool) => {
+    const declared = input.declareNonStrictTools === true && !isStrictCompatibleToolSchema(tool.parameters)
       ? { ...tool, strict: false }
-      : tool);
+      : tool;
+    return input.freeformApplyPatch === true ? freeformResponsesTool(declared) : declared;
+  });
 }
 
 function openAIContextPlan(input: OpenAIResponsesRequestOptions, messages = prepareMessagesForWire(input.messages)) {
@@ -570,6 +586,8 @@ export function buildOpenAIResponsesRequest(
     .join("\n\n");
   const replayProvider = reasoningReplayProvider(input);
   const responseInput: Array<Record<string, unknown>> = [];
+  /** Call ids sent as `custom_tool_call`; their results go back as `custom_tool_call_output`. */
+  const freeformCallIds = new Set<string>();
   const context = openAIContextPlan(input, messages);
 
   for (const [index, message] of messages.entries()) {
@@ -601,6 +619,22 @@ export function buildOpenAIResponsesRequest(
       if (toolCalls.length > 0) responseInput.push(...reasoning);
       for (const toolCall of toolCalls) {
         const callId = normalizeFunctionCallCallId(toolCall.id);
+        const freeformInput = input.freeformApplyPatch === true
+          ? freeformCallInput(toolCall.name, toolCall.arguments)
+          : undefined;
+        if (freeformInput !== undefined) {
+          // The id issued for the custom item, never one issued for a function call.
+          const customItemId = issuedFunctionCallItemId(input, customToolCallItemIdKey((toolCall.id ?? "").trim()));
+          freeformCallIds.add(callId);
+          responseInput.push({
+            type: "custom_tool_call",
+            ...(customItemId !== undefined ? { id: customItemId } : {}),
+            call_id: callId,
+            name: toolCall.name,
+            input: freeformInput,
+          });
+          continue;
+        }
         const itemId = issuedFunctionCallItemId(input, toolCall.id);
         responseInput.push({
           type: "function_call",
@@ -617,9 +651,10 @@ export function buildOpenAIResponsesRequest(
     }
 
     if (message.role === "tool") {
+      const callId = normalizeFunctionCallCallId(message.toolCallId);
       responseInput.push({
-        type: "function_call_output",
-        call_id: normalizeFunctionCallCallId(message.toolCallId),
+        type: freeformCallIds.has(callId) ? "custom_tool_call_output" : "function_call_output",
+        call_id: callId,
         output: toResponsesToolOutput(message.content),
       });
       continue;
@@ -681,7 +716,9 @@ export function buildOpenAIResponsesRequest(
     body.tool_choice = input.toolChoicePolicy === "auto_only"
       ? "auto"
       : typeof choice === "string" ? choice : {
-        type: "function",
+        type: input.freeformApplyPatch === true && isFreeformToolName(choice.name) &&
+          responsesRequestTools(input).some((tool) => tool.type === "custom" && tool.name === choice.name)
+          ? "custom" : "function",
         name: encodeMcpToolNameForWire(choice.name),
       };
   }
@@ -814,8 +851,9 @@ export function parseOpenAIResponsesResponse(
   response: Record<string, unknown>,
   request: OpenAIResponsesRequestOptions,
 ): LLMResponse {
+  // A freeform (custom) tool call is read as the function call AgenC runs.
   const output = Array.isArray(response.output)
-    ? (response.output as Array<Record<string, unknown>>)
+    ? functionCallsFromCustomToolCalls(response.output as Array<Record<string, unknown>>, request.freeformApplyPatch)
     : [];
   const functionCalls = output.filter((item) => item.type === "function_call");
   const initialFinishReason = resolveResponsesFinishReason(response, []);

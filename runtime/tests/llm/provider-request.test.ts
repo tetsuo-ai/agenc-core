@@ -34,6 +34,36 @@ describe('provider runtime request', () => {
     expect(openai.requested.extra?.zeroDataRetention).toBeUndefined()
   })
 
+  test('forwards a configured OpenAI Responses transport as it is, and only to OpenAI', () => {
+    const extra = (
+      provider: 'openai' | 'deepseek' | 'grok' | 'openrouter',
+      config: Parameters<typeof resolveProviderRuntimeRequest>[0]['config'],
+      environment: Record<string, string> = {},
+    ) => resolveProviderRuntimeRequest({ provider, model: 'm', config, environment }).requested.extra
+    const websocket = { providers: { openai: { transport: 'websocket' as const } } }
+    const http = { providers: { openai: { transport: 'http' as const } } }
+
+    expect(extra('openai', websocket)).toMatchObject({ responsesTransport: 'websocket' })
+    // Nothing configured: the provider decides (WebSocket for Light sessions).
+    expect(extra('openai', {})?.responsesTransport).toBeUndefined()
+    // The opt-out travels as a value.
+    expect(extra('openai', http)).toMatchObject({ responsesTransport: 'http' })
+    // The environment wins in both directions; an unknown value changes nothing.
+    expect(extra('openai', {}, { AGENC_OPENAI_TRANSPORT: 'websocket' })).toMatchObject({ responsesTransport: 'websocket' })
+    expect(extra('openai', websocket, { AGENC_OPENAI_TRANSPORT: 'http' })).toMatchObject({ responsesTransport: 'http' })
+    expect(extra('openai', {}, { AGENC_OPENAI_TRANSPORT: 'http' })).toMatchObject({ responsesTransport: 'http' })
+    expect(extra('openai', websocket, { AGENC_OPENAI_TRANSPORT: 'carrier-pigeon' })).toMatchObject({ responsesTransport: 'websocket' })
+    // The proxy case is decided after credential resolution, not here.
+    expect(extra('openai', {}, { HTTPS_PROXY: 'http://proxy.internal:3128' })?.responsesTransport).toBeUndefined()
+    for (const provider of ['deepseek', 'grok', 'openrouter'] as const) {
+      const requested = extra(provider, websocket, { AGENC_OPENAI_TRANSPORT: 'websocket' })
+      expect(requested?.responsesTransport, provider).toBeUndefined()
+      expect(extra(provider, http, { AGENC_OPENAI_TRANSPORT: 'http' }), provider).toEqual(extra(provider, {}))
+      // Nothing about another provider's request changes with the setting.
+      expect(requested, provider).toEqual(extra(provider, {}))
+    }
+  })
+
   test('asks OpenRouter for zero data retention by default; only an explicit false turns it off', () => {
     for (const config of [{}, { providers: {} }, { providers: { openrouter: {} } }]) {
       const request = resolveProviderRuntimeRequest({
