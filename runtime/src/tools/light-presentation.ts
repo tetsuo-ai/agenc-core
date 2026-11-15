@@ -91,6 +91,8 @@ export function lightPresentation(
     readonly glmServerChecks?: boolean;
     readonly writeWithApplyPatch?: boolean;
     readonly compactCore?: boolean;
+    /** OpenAI Light's `exec-args` switch: the lean exec_command without workdir and background. */
+    readonly shortExecArgs?: boolean;
   } = {},
 ): LLMTool {
   const canonical = tool.function.name === "Edit" && (tool.function.parameters.properties as Record<string, unknown> | undefined)?.edits !== undefined
@@ -104,7 +106,9 @@ export function lightPresentation(
     ? { ...sessionTool, function: { ...sessionTool.function, description: `${sessionTool.function.description} ${LIGHT_GLM_SERVER_CHECKS}` } }
     : described;
   if (options.leanExec === true && tool.function.name === "exec_command") {
-    return withOnlyFields(presented, LEAN_EXEC_FIELDS, LEAN_EXEC_POINTER);
+    return options.shortExecArgs === true
+      ? withOnlyFields(presented, SHORT_EXEC_FIELDS, SHORT_EXEC_POINTER)
+      : withOnlyFields(presented, LEAN_EXEC_FIELDS, LEAN_EXEC_POINTER);
   }
   if (options.compactCore === true && tool.function.name === "exec_command") {
     return withOnlyFields(presented, COMPACT_EXEC_FIELDS, COMPACT_EXEC_POINTER);
@@ -274,6 +278,17 @@ const LEAN_EXEC_FIELDS: ReadonlySet<string> = new Set(["cmd", "workdir", "timeou
  */
 const LEAN_EXEC_POINTER =
   " Advanced fields (yield_time_ms, tty, login, shell, detach, max_output_tokens): system.searchTools select:exec_command loads them.";
+
+/**
+ * The lean exec_command of a Light session on OpenAI with the `exec-args` switch (llm/openai-light-output.ts).
+ * GPT-6.1 Terra and Sol write every listed field on every call: in the rollouts of round 4 job oaiout each call
+ * carried `"workdir":"<absolute workspace path>"` and `"background":false`, more than half of the characters of
+ * exec_command's arguments. A command runs in the workspace root without workdir, and background stays accepted
+ * and named here for the long job that needs it.
+ */
+const SHORT_EXEC_FIELDS: ReadonlySet<string> = new Set(["cmd", "timeoutMs"]);
+const SHORT_EXEC_POINTER =
+  " Runs in the workspace root. Advanced fields (workdir, background, yield_time_ms, tty, login, shell, detach, max_output_tokens): system.searchTools select:exec_command loads them.";
 
 /**
  * Native DeepSeek Light's compact core catalog (tool-registry.ts compactDeepSeekCoreCatalog). DeepSeek

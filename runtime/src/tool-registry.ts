@@ -1,4 +1,5 @@
 import { leanEditMode, resolveLightRequest } from "./session/light-request/settings.js";
+import { openAiLightOutputEnabled } from "./llm/openai-light-output.js";
 import { editThenRunEnabled, withEditThenRun } from "./tools/edit-then-run.js";
 import { suggestToolForUnknownName } from "./tools/tool-name-suggestion.js";
 import { unknownToolResult } from "./tools/results.js";
@@ -1655,6 +1656,8 @@ export function buildToolRegistry(
       const stableCore = stableDeepSeekCoreCatalog();
       const compactCore = !fullCore && compactDeepSeekCoreCatalog(searchVisible);
       const leanExec = !stableCore && searchVisible && !discoveredToolNames.has("exec_command");
+      const shortExecArgs = leanExec && openAiLightOutputEnabled(
+        options.getSession?.()?.services?.providerEnvironment, identity.provider, "exec-args");
       const leanGrep = searchVisible && !discoveredToolNames.has("Grep");
       const leanSearch = (compactCore || !stableCore) && !discoveredToolNames.has(SYSTEM_SEARCH_TOOLS_NAME);
       const leanRead = (compactCore || (!stableCore && searchVisible)) && !discoveredToolNames.has("FileRead");
@@ -1667,7 +1670,7 @@ export function buildToolRegistry(
         if (spec.tool.metadata?.source !== "builtin") return tool;
         if (options.lightMode === true) {
           return lightPresentation(tool, { leanExec, leanSearch, leanRead, compactCore, lightSession: true,
-            writeWithApplyPatch,
+            writeWithApplyPatch, shortExecArgs,
             glmServerChecks: describesServerChecks() });
         }
         // Standard sessions with the default deferral send compact wording for
