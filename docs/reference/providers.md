@@ -961,14 +961,17 @@ session stays on HTTP and shows one notice (`openai_websocket_unavailable`). If
 the service refuses a continuation, the session keeps the socket, sends the
 full input on every call from then on, and shows one notice
 (`openai_websocket_full_input`). A cancelled call closes the socket. A socket
-is replaced before OpenAI's 60 minute limit. A proxy configured for HTTP
-requests is not used by the socket, so behind such a proxy the session stays
-on HTTP.
+is replaced before OpenAI's 60 minute limit. A failed
+pre-connect is not one of the two failed connects.
 
-When `[providers.openai] base_url` points at a host that is not OpenAI's (a
-gateway, a local server) and no transport is set, the WebSocket is only a
-try: one failed connect, with a 3 second limit, keeps the session on HTTP and
-shows no notice. Set `transport = "http"` to skip the try.
+The default applies to OpenAI's own endpoints (`api.openai.com`, its regional
+hosts and the ChatGPT backend). Without a setting, a session stays on HTTP
+when `[providers.openai] base_url` points at another remote host (a gateway),
+or when an HTTP proxy is configured for the endpoint, because the socket does
+not use the proxy. A local endpoint (`localhost`, `127.0.0.1`) gets one quiet
+try: a failed start, with a 3 second connect limit, keeps the session on HTTP
+and shows no notice. `transport = "websocket"` forces the socket in all these
+cases and `transport = "http"` skips it.
 
 Other providers never open a socket, and the config rejects `transport` under
 any other provider table. OpenAI does not document WebSocket mode for ChatGPT

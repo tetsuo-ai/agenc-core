@@ -105,6 +105,7 @@ import type { OpenAIProviderConfig } from "./types.js";
 import type { ResponsesWebSocketSession, ResponsesWebSocketTurn } from "./responses-websocket.js";
 import { currentSessionWriteBehind } from "../../../session/write-behind.js";
 import { resolveStreamIdleTimeoutMs } from "../../stream-watchdog.js";
+import { getWebSocketProxyUrl } from "../../../utils/proxy.js";
 import { OpenAIAuthSession } from "./auth.js";
 import { parseSSEFrames, type SSEFrame } from "../../_deps/sse.js";
 import {
@@ -132,8 +133,18 @@ import {
 const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
   "OpenAI Responses stream emitted invalid function_call";
 const OPENAI_STREAM_FAILED_MESSAGE = "OpenAI stream failed";
-/** Connect timeout of a WebSocket tried by default against a host that is not OpenAI's. */
+/** Connect timeout of a WebSocket tried by default against a local endpoint. */
 const PROBE_WEBSOCKET_CONNECT_TIMEOUT_MS = 3_000;
+
+/** api.openai.com and its regional hosts, and the ChatGPT backend's host. */
+function isOpenAiHost(baseURL: string): boolean {
+  try {
+    const host = new URL(baseURL).hostname.toLowerCase();
+    return host === "api.openai.com" || host.endsWith(".api.openai.com") || host === "chatgpt.com";
+  } catch {
+    return false;
+  }
+}
 const OPENAI_STREAM_RATE_LIMIT_CODES: ReadonlySet<string> = new Set([
   "rate_limit_exceeded",
   "rate_limit",
@@ -1078,10 +1089,13 @@ export class OpenAIProvider implements LLMProvider {
   /** WebSocket transport notices already given to this session. */
   private readonly webSocketNotices = new Set<string>();
   private webSocketDisposed = false;
+  /** Whether the WebSocket default applies to this provider's endpoint; resolved once. */
+  private webSocketDefaultAllowed: boolean | undefined;
 
   constructor(config: OpenAIProviderConfig) {
     this.config = resolveOpenAIProviderConfig(config);
     this.name = this.config.providerName;
+    if (this.name === "openai") this.prewarmStartup = (params) => this.preconnectAtStartup(params);
     this.auth = new OpenAIAuthSession(this.config);
     this.client = new ProviderHttpClient({
       providerName: this.name,
@@ -1932,25 +1946,30 @@ export class OpenAIProvider implements LLMProvider {
    * How a streamed Responses call travels. Only the `openai` provider has the
    * choice: a configured transport wins, and without one the calls of a Light
    * session go over the session's WebSocket and every other call over HTTP.
+   * The default never applies where the socket would leave the path HTTP
+   * takes or reach a service not known to have the mode: an injected fetch,
+   * an HTTP proxy for this endpoint (the socket does not use it), or a remote
+   * host that is not OpenAI's. A local endpoint (a proxy or recorder in front
+   * of OpenAI, a local server) gets one quiet try.
    */
   private responsesTransportFor(lightSession: boolean): "http" | "websocket" {
     if (this.name !== "openai") return "http";
-    return this.config.responsesTransport ?? (lightSession ? "websocket" : "http");
+    if (this.config.responsesTransport !== undefined) return this.config.responsesTransport;
+    if (!lightSession || this.config.fetchImpl !== undefined) return "http";
+    this.webSocketDefaultAllowed ??=
+      (this.isChatGptBackend() || isOpenAiHost(this.config.baseURL) || isLocalBaseURL(this.config.baseURL)) &&
+      getWebSocketProxyUrl(this.config.baseURL, process.env) === undefined;
+    return this.webSocketDefaultAllowed ? "websocket" : "http";
   }
 
   /**
-   * True when the socket is tried by default against a host that is not
-   * OpenAI's (a gateway, a local server). Nobody asked for a WebSocket there,
-   * so one failed connect settles it and the session says nothing.
+   * True when the socket is tried by default against a local endpoint.
+   * Nobody asked for a WebSocket there, so one failed start settles it and
+   * the session says nothing.
    */
   private webSocketIsProbe(): boolean {
-    if (this.config.responsesTransport !== undefined || this.isChatGptBackend()) return false;
-    try {
-      const host = new URL(this.config.baseURL).hostname.toLowerCase();
-      return host !== "api.openai.com" && host !== "chatgpt.com";
-    } catch {
-      return true;
-    }
+    return this.config.responsesTransport === undefined && !this.isChatGptBackend() &&
+      !isOpenAiHost(this.config.baseURL);
   }
 
   private async ensureWebSocket(): Promise<NonNullable<OpenAIProvider["webSocket"]>> {
@@ -1976,9 +1995,13 @@ export class OpenAIProvider implements LLMProvider {
    * for the `http` transport, or for a session that is not Light unless the
    * WebSocket transport was configured. Returns no handle: the first turn
    * uses this provider as usual and finds the socket open or opening.
-   * An arrow property: the session calls the hook detached from the provider.
+   * Only the `openai` provider has the hook (set in the constructor, bound:
+   * the session calls it detached), so no other provider built on this
+   * adapter gains a startup step.
    */
-  readonly prewarmStartup = (params: LLMProviderStartupPrewarmParams): void => {
+  readonly prewarmStartup?: (params: LLMProviderStartupPrewarmParams) => void;
+
+  private preconnectAtStartup(params: LLMProviderStartupPrewarmParams): void {
     if (this.responsesTransportFor(params.lightSession === true) !== "websocket") return;
     const model = this.config.model;
     if (openAiModelRequiresBufferedResponse(model) ||
@@ -1986,7 +2009,7 @@ export class OpenAIProvider implements LLMProvider {
       return;
     }
     void this.preconnectWebSocket(params.conversationId).catch(() => undefined);
-  };
+  }
 
   private async preconnectWebSocket(conversationId: string): Promise<void> {
     const { session } = await this.ensureWebSocket();
@@ -1997,17 +2020,17 @@ export class OpenAIProvider implements LLMProvider {
       this.isChatGptBackend(),
       key.length > 0 ? { prompt_cache_key: normalizePromptCacheKey(key) } : {},
     );
-    const open = await session.preconnect(() =>
+    const outcome = await session.preconnect(() =>
       this.auth.withAuthorizedOperation(() =>
         this.client.createTurnSession({ wireApi: "responses" }).resolveWebSocketTarget({
           api: "responses",
           path: this.resolvePath("/responses"),
           headers,
         })));
-    if (!open && !this.webSocketDisposed) {
+    if (outcome === "failed" && !this.webSocketDisposed) {
       this.config.emitDiagnostic?.({
         cause: "openai_websocket_preconnect_failed",
-        message: JSON.stringify({ provider: this.name, httpOnly: session.httpOnlyForSession, ...session.stats }),
+        message: JSON.stringify({ provider: this.name, ...session.stats }),
       });
     }
   }

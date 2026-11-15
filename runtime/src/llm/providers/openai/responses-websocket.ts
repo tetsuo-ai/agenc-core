@@ -318,6 +318,8 @@ export class ResponsesWebSocketSession {
   private disposed = false;
   /** The connect in flight, shared by a request that arrives meanwhile. Never rejects. */
   private opening: Promise<Connection | Error> | undefined;
+  /** The socket of the connect in flight, to end it with the session. */
+  private handshake: WebSocket | undefined;
   /** Where a socket opened ahead of a request connects; set by `preconnect`. */
   private ahead: TargetResolver | undefined;
   /** Sockets opened since the last response started. */
@@ -345,24 +347,30 @@ export class ResponsesWebSocketSession {
   dispose(): void {
     this.disposed = true;
     this.drop();
+    try {
+      this.handshake?.terminate();
+    } catch {
+      // Not connected yet.
+    }
   }
 
   /**
    * Open the socket ahead of the first request, so that request does not wait
    * for the connect, and keep doing so when a socket is lost later: closed by
    * the far end while idle, at its age limit, or with a response that was cut
-   * or cancelled. `target` must be callable outside a request. Resolves to
-   * whether a socket is open; a failure counts as a failed start and is not
-   * retried until a request asks.
+   * or cancelled. `target` must be callable outside a request. A failure here
+   * is not a failed start of a request (the credential may only need the
+   * refresh a request triggers) and is not retried until a request asks.
    */
-  async preconnect(target: TargetResolver): Promise<boolean> {
+  async preconnect(target: TargetResolver): Promise<"open" | "failed" | "skipped"> {
     this.ahead = target;
-    if (this.disposed || this.httpOnly) return false;
-    if (this.usable(this.connection)) return true;
-    if (this.busy && this.opening === undefined) return false;
+    if (this.disposed || this.httpOnly) return "skipped";
+    if (this.usable(this.connection)) return "open";
+    if (this.busy && this.opening === undefined) return "skipped";
     if (!this.busy && this.connection !== undefined) this.drop();
     const opening = this.opening ?? this.openAhead();
-    return opening === undefined ? false : !((await opening) instanceof Error);
+    if (opening === undefined) return "skipped";
+    return (await opening) instanceof Error ? "failed" : "open";
   }
 
   private usable(connection: Connection | undefined): connection is Connection {
@@ -531,29 +539,50 @@ export class ResponsesWebSocketSession {
       clearInterval(hold);
       if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);
     }
-    // The handshake goes on without the request: the next one finds the socket open.
-    if (result === "aborted" || signal?.aborted) throw abortError(signal!);
-    if (result instanceof Error) throw this.fallback(`connect failed: ${result.message}`);
+    if (result === "aborted" || signal?.aborted) {
+      // The handshake goes on without the request (the next one finds the
+      // socket open), but must not hold the process.
+      if (this.handshake !== undefined) unrefHandshake(this.handshake);
+      throw abortError(signal!);
+    }
+    if (result instanceof Error) {
+      this.failed();
+      throw this.fallback(`connect failed: ${result.message}`);
+    }
     if (this.connection !== result || !this.usable(result)) {
+      this.failed();
       throw this.fallback("connect failed: the socket closed right after the handshake");
     }
     return result;
   }
 
-  /** One handshake. Resolves to the error instead of rejecting; a failure counts as a failed start. */
+  /**
+   * One handshake, the target included, within the connect timeout. Resolves
+   * to the error instead of rejecting. Whether a failure is a failed start is
+   * the waiting request's call.
+   */
   private open(target: TargetResolver, forRequest: boolean): Promise<Connection | Error> {
     const now = this.options.now ?? Date.now;
     const attempt = async (): Promise<Connection | Error> => {
       let socket: WebSocket | undefined;
+      const timeoutMs = this.options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const resolved = await target();
+        const resolved = await Promise.race([
+          target(),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error("the connection target did not resolve in time")), timeoutMs);
+            if (!forRequest) timer.unref?.();
+          }),
+        ]);
         if (this.disposed) return new Error("session disposed");
         socket = new WebSocket(resolved.url, {
           headers: { ...resolved.headers },
-          handshakeTimeout: this.options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
+          handshakeTimeout: timeoutMs,
           perMessageDeflate: false,
           followRedirects: false,
         });
+        this.handshake = socket;
         // A socket given up during the handshake still reports its error.
         socket.on("error", () => undefined);
         if (!forRequest) unrefHandshake(socket);
@@ -566,8 +595,11 @@ export class ResponsesWebSocketSession {
         }
         if (this.disposed) return new Error("session disposed");
         this.stats.connectFailures += 1;
-        this.failed();
+        this.drop();
         return error instanceof Error ? error : new Error(String(error));
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+        if (this.handshake === socket) this.handshake = undefined;
       }
       if (this.disposed) {
         socket.terminate();

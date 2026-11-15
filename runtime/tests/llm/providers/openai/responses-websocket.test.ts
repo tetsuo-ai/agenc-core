@@ -655,8 +655,8 @@ describe("OpenAIProvider Responses over WebSocket", () => {
         ...(transport !== undefined ? { responsesTransport: transport } : {}),
       });
       providers.push(other);
-      // Not even a Light session start or a marked call opens a socket for another provider.
-      other.prewarmStartup({ ...START, lightSession: true });
+      // Another provider has no startup hook, and a marked call opens no socket for it.
+      expect(other.prewarmStartup).toBeUndefined();
       await inScope(() => other.chatStream(USER, () => {}, { ...OPTIONS, lightSession: true }));
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -681,7 +681,7 @@ describe("OpenAIProvider WebSocket by default for Light sessions, with pre-conne
       sendAll(socket, index === 0 ? toolTurn("resp_1") : answerTurn("resp_2"));
     const provider = light(baseURL);
 
-    provider.prewarmStartup({ ...START, lightSession: true });
+    provider.prewarmStartup!({ ...START, lightSession: true });
     await upgrades(1);
     // Connected, and nothing sent: a pre-connect costs no request.
     expect(endpoint.frames).toHaveLength(0);
@@ -704,7 +704,7 @@ describe("OpenAIProvider WebSocket by default for Light sessions, with pre-conne
     endpoint.reply = (_frame, socket) => sendAll(socket, answerTurn("resp_1"));
     const provider = light(baseURL);
 
-    provider.prewarmStartup({ ...START, lightSession: true });
+    provider.prewarmStartup!({ ...START, lightSession: true });
     expect((await stream(provider, USER, LIGHT)).content).toBe("done");
     expect(endpoint.upgrades).toHaveLength(1);
     expect(endpoint.frames).toHaveLength(1);
@@ -728,9 +728,9 @@ describe("OpenAIProvider WebSocket by default for Light sessions, with pre-conne
   test("opens no socket for the http transport, for a session that is not Light, or for a model on Chat Completions", async () => {
     const { endpoint, baseURL } = await start();
     const optedOut = light(baseURL, { responsesTransport: "http" });
-    optedOut.prewarmStartup({ ...START, lightSession: true });
-    light(baseURL).prewarmStartup(START);
-    light(baseURL, { useResponsesApi: false, model: "gpt-4o" }).prewarmStartup({ ...START, lightSession: true });
+    optedOut.prewarmStartup!({ ...START, lightSession: true });
+    light(baseURL).prewarmStartup!(START);
+    light(baseURL, { useResponsesApi: false, model: "gpt-4o" }).prewarmStartup!({ ...START, lightSession: true });
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(endpoint.upgrades).toHaveLength(0);
 
@@ -744,13 +744,13 @@ describe("OpenAIProvider WebSocket by default for Light sessions, with pre-conne
 
   test("the configured websocket transport pre-connects for any session", async () => {
     const { baseURL } = await start();
-    openai(baseURL).prewarmStartup(START);
+    openai(baseURL).prewarmStartup!(START);
     await upgrades(1);
   });
 
   test("sends the session header of the ChatGPT backend on the pre-connect", async () => {
     const { endpoint, baseURL } = await start();
-    light(baseURL, { chatgptBackend: true }).prewarmStartup({ ...START, lightSession: true });
+    light(baseURL, { chatgptBackend: true }).prewarmStartup!({ ...START, lightSession: true });
     await upgrades(1);
     expect(endpoint.upgrades[0]!.headers.session_id).toBe(START.conversationId);
   });
@@ -760,7 +760,7 @@ describe("OpenAIProvider WebSocket by default for Light sessions, with pre-conne
     endpoint.reply = (_frame, socket, index) =>
       sendAll(socket, index === 0 ? toolTurn("resp_1") : answerTurn("resp_2"));
     const provider = light(baseURL);
-    provider.prewarmStartup({ ...START, lightSession: true });
+    provider.prewarmStartup!({ ...START, lightSession: true });
     await upgrades(1);
     const first = await stream(provider, USER, LIGHT);
 
@@ -800,7 +800,7 @@ describe("OpenAIProvider WebSocket by default for Light sessions, with pre-conne
       sendAll(socket, index === 0 ? toolTurn("resp_1") : answerTurn("resp_3"));
     };
     const provider = light(baseURL);
-    provider.prewarmStartup({ ...START, lightSession: true });
+    provider.prewarmStartup!({ ...START, lightSession: true });
     const history = historyAfter(await stream(provider, USER, LIGHT));
 
     await expect(stream(provider, history, LIGHT)).rejects.toBeInstanceOf(LLMStreamTruncatedError);
@@ -833,7 +833,7 @@ describe("OpenAIProvider WebSocket by default for Light sessions, with pre-conne
     };
     const warnings: string[] = [];
     const provider = light(baseURL, { emitWarning: (warning) => warnings.push(warning.cause) });
-    provider.prewarmStartup({ ...START, lightSession: true });
+    provider.prewarmStartup!({ ...START, lightSession: true });
     const history = historyAfter(await stream(provider, USER, LIGHT));
 
     expect((await stream(provider, history, LIGHT)).content).toBe("done");
@@ -866,7 +866,7 @@ describe("OpenAIProvider WebSocket by default for Light sessions, with pre-conne
     };
     const warnings: string[] = [];
     const provider = light(baseURL, { emitWarning: (warning) => warnings.push(warning.cause) });
-    provider.prewarmStartup({ ...START, lightSession: true });
+    provider.prewarmStartup!({ ...START, lightSession: true });
     const second = await stream(provider, historyAfter(await stream(provider, USER, LIGHT)), LIGHT);
 
     expect(second.content).toBe("done");
@@ -890,7 +890,7 @@ describe("OpenAIProvider WebSocket by default for Light sessions, with pre-conne
       sendAll(socket, answerTurn("resp_2"));
     };
     const provider = light(baseURL);
-    provider.prewarmStartup({ ...START, lightSession: true });
+    provider.prewarmStartup!({ ...START, lightSession: true });
     await upgrades(1);
     const controller = new AbortController();
     const chunks: string[] = [];
@@ -913,7 +913,7 @@ describe("OpenAIProvider WebSocket by default for Light sessions, with pre-conne
     expect(endpoint.httpBodies).toHaveLength(0);
   });
 
-  test("a default try against a host without WebSocket mode settles on HTTP after one connect, silently", async () => {
+  test("a default try against a local endpoint without WebSocket mode settles on HTTP after one failed start, silently", async () => {
     const { endpoint, baseURL } = await start();
     endpoint.refuseUpgrade = 404;
     const warnings: string[] = [];
@@ -922,51 +922,90 @@ describe("OpenAIProvider WebSocket by default for Light sessions, with pre-conne
       emitWarning: (warning) => warnings.push(warning.cause),
       emitDiagnostic: (diagnostic) => diagnostics.push(diagnostic.cause),
     });
-    provider.prewarmStartup({ ...START, lightSession: true });
+    provider.prewarmStartup!({ ...START, lightSession: true });
     await expect.poll(() => diagnostics).toEqual(["openai_websocket_preconnect_failed"]);
 
     const viaDefault = await stream(provider, USER, LIGHT);
     await stream(provider, USER, LIGHT);
     const direct = await stream(light(baseURL, { responsesTransport: "http" }), USER, LIGHT);
-    expect(endpoint.upgrades).toHaveLength(1);
+    // The pre-connect and the first call's own try; nothing after that.
+    expect(endpoint.upgrades).toHaveLength(2);
     expect(endpoint.httpBodies).toHaveLength(3);
     expect(new Set(endpoint.httpBodies).size).toBe(1);
     expect(viaDefault).toEqual(direct);
-    expect(warnings).toEqual([]);
-
-    // Without a session start the first call is the one try, also without a notice.
-    const late = light(baseURL, { emitWarning: (warning) => warnings.push(warning.cause) });
-    await stream(late, USER, LIGHT);
-    await stream(late, USER, LIGHT);
-    expect(endpoint.upgrades).toHaveLength(2);
+    expect(diagnostics).toEqual(["openai_websocket_preconnect_failed", "openai_websocket_fallback"]);
     expect(warnings).toEqual([]);
   });
 
-  test("with the configured transport a failed pre-connect is the first of the two failed starts", async () => {
+  test("on OpenAI's own endpoints two failed starts keep the session on HTTP with the notice", async () => {
     const { endpoint, baseURL } = await start();
     endpoint.refuseUpgrade = 404;
     const warnings: string[] = [];
-    const provider = openai(baseURL, { emitWarning: (warning) => warnings.push(warning.cause) });
-    provider.prewarmStartup(START);
+    // The ChatGPT backend flag marks the endpoint as OpenAI's, whatever its address.
+    const provider = light(baseURL, { chatgptBackend: true, emitWarning: (warning) => warnings.push(warning.cause) });
+    provider.prewarmStartup!({ ...START, lightSession: true });
     await expect.poll(() => endpoint.upgrades.length).toBe(1);
-    await new Promise((resolve) => setTimeout(resolve, 30));
 
-    expect((await stream(provider, USER)).content).toBe("done");
-    await stream(provider, USER);
-    expect(endpoint.upgrades).toHaveLength(2);
-    expect(endpoint.httpBodies).toHaveLength(2);
+    for (let call = 0; call < 3; call += 1) expect((await stream(provider, USER, LIGHT)).content).toBe("done");
+    // The failed pre-connect is not one of the two.
+    expect(endpoint.upgrades).toHaveLength(3);
+    expect(endpoint.httpBodies).toHaveLength(3);
     expect(warnings).toEqual(["openai_websocket_unavailable"]);
+  });
+
+  test("a pre-connect refused for its credential does not cost the session its socket", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.refuseUpgrade = 401;
+    endpoint.reply = (_frame, socket) => sendAll(socket, answerTurn("resp_1"));
+    const warnings: string[] = [];
+    const diagnostics: string[] = [];
+    const provider = light(baseURL, {
+      chatgptBackend: true,
+      emitWarning: (warning) => warnings.push(warning.cause),
+      emitDiagnostic: (diagnostic) => diagnostics.push(diagnostic.cause),
+    });
+    provider.prewarmStartup!({ ...START, lightSession: true });
+    await expect.poll(() => diagnostics).toEqual(["openai_websocket_preconnect_failed"]);
+
+    // The first call is refused too and goes over HTTP (where a 401 refreshes the sign-in) ...
+    expect((await stream(provider, USER, LIGHT)).content).toBe("done");
+    expect(endpoint.httpBodies).toHaveLength(1);
+    // ... and with the credential accepted again the next call is on the socket.
+    endpoint.refuseUpgrade = undefined;
+    expect((await stream(provider, USER, LIGHT)).content).toBe("done");
+    expect(endpoint.frames).toHaveLength(1);
+    expect(endpoint.httpBodies).toHaveLength(1);
+    expect(warnings).toEqual([]);
+  });
+
+  test("opens no socket by default when an HTTP proxy applies to the endpoint or a fetch is injected", async () => {
+    const { endpoint, baseURL } = await start();
+    const before = process.env.HTTPS_PROXY;
+    process.env.HTTPS_PROXY = "http://127.0.0.1:9";
+    try {
+      const proxied = light(baseURL);
+      proxied.prewarmStartup!({ ...START, lightSession: true });
+      const injected = light(baseURL, { fetchImpl: (...args: Parameters<typeof fetch>) => fetch(...args) });
+      injected.prewarmStartup!({ ...START, lightSession: true });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(endpoint.upgrades).toHaveLength(0);
+    } finally {
+      if (before === undefined) delete process.env.HTTPS_PROXY;
+      else process.env.HTTPS_PROXY = before;
+    }
   });
 
   test("dispose during the pre-connect leaves no socket behind", async () => {
     const { endpoint, baseURL } = await start();
     endpoint.delayUpgradeMs = 60;
     const provider = light(baseURL);
-    provider.prewarmStartup({ ...START, lightSession: true });
+    provider.prewarmStartup!({ ...START, lightSession: true });
     await expect.poll(() => endpoint.upgrades.length).toBe(1);
     provider.dispose();
-    await expect.poll(() => endpoint.sockets.length).toBe(1);
-    await expect.poll(() => endpoint.sockets[0]!.readyState).toBe(WebSocket.CLOSED);
+    // The handshake ends with the provider: the endpoint's late answer finds nobody.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(endpoint.sockets.every((socket) => socket.readyState === WebSocket.CLOSED)).toBe(true);
+    expect(endpoint.frames).toHaveLength(0);
   });
 });
 
@@ -1008,13 +1047,13 @@ describe("ResponsesWebSocketSession", () => {
 
   test("replaces an idle pre-connected socket at its age limit without a call", async () => {
     const { endpoint, baseURL } = await start();
-    const session = new ResponsesWebSocketSession({ providerName: "openai", maxConnectionAgeMs: 150 });
+    const session = new ResponsesWebSocketSession({ providerName: "openai", maxConnectionAgeMs: 800 });
     const target = async () => ({ url: `${baseURL.replace("http", "ws")}/responses`, headers: {} });
     try {
-      expect(await session.preconnect(target)).toBe(true);
+      expect(await session.preconnect(target)).toBe("open");
       expect(await drain(session, baseURL, [user])).toBe(false);
       expect(endpoint.upgrades).toHaveLength(1);
-      await expect.poll(() => endpoint.sockets.length, { timeout: 2000 }).toBe(2);
+      await expect.poll(() => endpoint.sockets.length, { timeout: 5000 }).toBe(2);
       // The old socket is closed, and the next call starts a new chain on the new one.
       await expect.poll(() => endpoint.sockets[0]!.readyState).toBe(WebSocket.CLOSED);
       expect(await drain(session, baseURL, [user, ...replay, TOOL_OUTPUT])).toBe(false);
@@ -1032,8 +1071,8 @@ describe("ResponsesWebSocketSession", () => {
     const target = async () => ({ url: `${baseURL.replace("http", "ws")}/responses`, headers: {} });
     try {
       const [first, second] = await Promise.all([session.preconnect(target), session.preconnect(target)]);
-      expect([first, second]).toEqual([true, true]);
-      expect(await session.preconnect(target)).toBe(true);
+      expect([first, second]).toEqual(["open", "open"]);
+      expect(await session.preconnect(target)).toBe("open");
       expect(endpoint.upgrades).toHaveLength(1);
       expect(session.stats).toMatchObject({ connects: 1, preconnects: 1, connectFailures: 0 });
     } finally {
