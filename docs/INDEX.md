@@ -3,7 +3,7 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.19.33**; embedding SDK
+Version in tree: **runtime / launcher 0.19.34**; embedding SDK
 **0.3.0**. Default provider **grok**; fresh-config session and direct-provider
 default **grok-4.6**. OpenRouter's default remains
 **`x-ai/grok-4.5`** (see [providers.md](reference/providers.md)).
@@ -99,6 +99,7 @@ history; the linked pages below are current product truth.
 
 | Doc | Summary |
 | --- | --- |
+| [releases/0.19.34.md](releases/0.19.34.md) | AgenC 0.19.34: Windows with Smart App Control; /update finds the right launcher; auto theme, readable colors and visible selection; calmer chat: input-colored sent band, light tables, queue in the input box, short turn line; lean Light default on native DeepSeek; low verbosity for Light on GPT-6 |
 | [releases/0.19.33.md](releases/0.19.33.md) | AgenC 0.19.33: Long sessions wait and compact with fewer wasted calls and keep image-heavy runs on the prompt cache; lean Light request for native DeepSeek; Muse Ember, Qwen4 Max Preview and DeepSeek app tools; ChatGPT cache fix; table and emoji display fixes; MCP SSE token |
 | [releases/0.19.32.md](releases/0.19.32.md) | AgenC 0.19.32: Fixes the 0.19.31 compaction failure after the core tool list expands; keeps screenshots in saved conversations; faster tool calls; more repeat refusals |
 | [releases/0.19.31.md](releases/0.19.31.md) | AgenC 0.19.31: native DeepSeek sessions that keep their cached prefix across a resume, a restart and a compaction, screenshots kept through compaction, helper requests no longer read inside code or quotes, default sandbox_permissions spellings that run, refusals of repeated calls that count only since real progress, and nested .git files and links handled in the sandbox on Linux and macOS |
@@ -167,7 +168,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.19.33) |
+| [`../README.md`](../README.md) | Product README (0.19.34) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |
