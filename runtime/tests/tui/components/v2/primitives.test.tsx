@@ -431,6 +431,41 @@ describe('Tool call header arg spacing', () => {
 
 describe('Msg role glyph', () => {
 
+  it('shows a sent prompt with no ❯, its text in the input column', async () => {
+    const output = await renderToString(
+      <Msg role="user">
+        <Text>hi there</Text>
+      </Msg>,
+      { columns: 100, rows: 12 },
+    )
+
+    // Owner request (2026-11-14): a sent message reads like the input box it
+    // came from, without the caret. The empty two-cell glyph slot keeps the
+    // text in the input's column.
+    expect(output).not.toContain('❯')
+    expect(output).toContain('  hi there')
+  })
+
+  it('keeps the ❯ on a labeled user item and on a queued preview', async () => {
+    const labeled = await renderToString(
+      <Msg role="user" label="command">
+        <Text>/review</Text>
+      </Msg>,
+      { columns: 100, rows: 12 },
+    )
+    expect(labeled).toContain('❯ command')
+
+    const queued = await renderToString(
+      <QueuedMessageProvider isFirst>
+        <Msg role="user">
+          <Text>pending body</Text>
+        </Msg>
+      </QueuedMessageProvider>,
+      { columns: 100, rows: 12 },
+    )
+    expect(queued).toContain('❯')
+  })
+
   it('marks an agenc reply with a single ● glyph and hides its label', async () => {
     const output = await renderToString(
       <Msg role="agenc" label="agenc">

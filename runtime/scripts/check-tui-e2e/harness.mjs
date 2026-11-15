@@ -242,7 +242,7 @@ function printableChar(ch) {
   return ch >= " " && ch !== "\x7f";
 }
 
-export function hasRenderedAssistantReply(rows) {
+export function hasRenderedAssistantReply(rows, { submitted } = {}) {
   const headerRe = /([▮│])\s+AGENC\b/;
   let headerIdx = -1;
   for (let rowIndex = rows.length - 1; rowIndex >= 0; rowIndex -= 1) {
@@ -252,7 +252,7 @@ export function hasRenderedAssistantReply(rows) {
     }
   }
   if (headerIdx === -1) {
-    return hasRenderedCompactAssistantReply(rows);
+    return hasRenderedCompactAssistantReply(rows, submitted);
   }
 
   const headerMatch = headerRe.exec(rows[headerIdx]);
@@ -282,17 +282,31 @@ export function hasRenderedAssistantReply(rows) {
 
 /**
  * The compact transcript deliberately omits a repeated AGENC speaker label.
- * User rows reserve a seven-cell label slot (`❯ ` plus padding); assistant
+ * User rows reserve a seven-cell label slot (`❯ `, blank since 0.19.34, plus padding); assistant
  * rows reserve the same slot and start their content at the identical column.
  * Detect the first real body row at that column without accepting text from
  * the footer or a slash-command overlay.
  */
-function hasRenderedCompactAssistantReply(rows) {
+function findSubmittedPromptRow(rows, promptIdx, submitted) {
+  // Since 0.19.34 a sent prompt shows no ❯: its text sits in the input's
+  // column with an empty two-cell glyph slot before it. Find the row by the
+  // text the harness submitted instead.
+  const needle = String(submitted ?? "").split("\n")[0].trim().slice(0, 24);
+  if (needle.length === 0) return null;
+  const at = rows[promptIdx].indexOf(needle);
+  if (at < 2) return null;
+  return { promptCol: at - 2, contentCol: at };
+}
+
+function hasRenderedCompactAssistantReply(rows, submitted) {
   for (let promptIdx = rows.length - 1; promptIdx >= 0; promptIdx -= 1) {
     const prompt = /❯\s+\S/u.exec(rows[promptIdx]);
-    if (prompt === null) continue;
-    const promptCol = prompt.index;
-    const contentCol = promptCol + /^❯\s+/u.exec(prompt[0])[0].length;
+    const anchor =
+      prompt !== null
+        ? { promptCol: prompt.index, contentCol: prompt.index + /^❯\s+/u.exec(prompt[0])[0].length }
+        : findSubmittedPromptRow(rows, promptIdx, submitted);
+    if (anchor === null) continue;
+    const { promptCol, contentCol } = anchor;
     // The reply normally follows within one or two rows. A small bounded
     // window tolerates wrapped prompts and an optional timestamp row while
     // staying above composer/status chrome on short terminals.
@@ -876,6 +890,9 @@ export class TuiSession {
       this.term.write(ch);
       await sleep(perCharMs);
     }
+    // Remember what was typed, so the reply check can find the sent prompt
+    // by its text (a sent prompt shows no caret since 0.19.34).
+    this.typedSinceSubmit = (this.typedSinceSubmit ?? "") + text;
   }
 
   /**
@@ -885,6 +902,14 @@ export class TuiSession {
   send(bytes) {
     this.throwIfAborted();
     this.term.write(bytes);
+    // An Enter sent as raw bytes submits whatever was typed before it.
+    if (/[\r\n]/u.test(String(bytes))) this.noteSubmitted();
+  }
+
+  /** Record the text typed since the last submit as the submitted prompt. */
+  noteSubmitted() {
+    if (this.typedSinceSubmit) this.lastSubmittedText = this.typedSinceSubmit;
+    this.typedSinceSubmit = "";
   }
 
   /**
@@ -893,6 +918,7 @@ export class TuiSession {
   async submit(text = "") {
     this.throwIfAborted();
     if (text) await this.type(text);
+    this.noteSubmitted();
     await sleep(80);
     this.mark();
     this.term.write("\r");
@@ -1221,6 +1247,7 @@ export class TuiSession {
     this.sendEscape();
     await new Promise((r) => setTimeout(r, 80));
     this.term.write("\r");
+    this.noteSubmitted();
   }
 
   /**
@@ -1244,7 +1271,7 @@ export class TuiSession {
         cols: this.cols,
         rows: this.rows,
       });
-      if (hasRenderedAssistantReply(rows)) {
+      if (hasRenderedAssistantReply(rows, { submitted: this.lastSubmittedText })) {
         this.watermark = this.buffer.length;
         return;
       }

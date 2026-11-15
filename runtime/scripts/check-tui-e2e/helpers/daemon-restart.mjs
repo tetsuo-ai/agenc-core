@@ -55,6 +55,8 @@ export async function submitAndWaitForOutcome(session, text) {
             cols: session.cols,
             rows: session.rows,
           }),
+          // A sent prompt shows no caret since 0.19.34: find it by its text.
+          { submitted: text },
         )
       ) {
         outcome = "reply";

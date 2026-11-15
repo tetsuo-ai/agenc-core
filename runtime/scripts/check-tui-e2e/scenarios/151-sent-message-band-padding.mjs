@@ -25,6 +25,8 @@ function checkBand(session, label) {
   const frame = rows.join("\n");
   const sent = rows.findIndex((row) => row.includes(MESSAGE));
   assert.ok(sent >= 2 && sent + 2 < rows.length, `${label}: the sent message is not on screen:\n${frame}`);
+  // Since 0.19.34 a sent message shows only its text on its band, no caret.
+  assert.ok(!rows[sent].includes("❯"), `${label}: the sent message still shows a caret:\n${frame}`);
   const textColumn = rows[sent].indexOf(MESSAGE);
   const band = fills[sent][textColumn];
   assert.notEqual(band, "", `${label}: the sent message has no band:\n${frame}`);

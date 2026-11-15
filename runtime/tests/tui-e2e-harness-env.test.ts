@@ -67,6 +67,18 @@ describe("TUI E2E harness state isolation", () => {
     ).toBe(true);
   });
 
+  it("finds a sent prompt by its text when it shows no ❯", () => {
+    // Since 0.19.34 a sent prompt sits in its band without the ❯ glyph.
+    const rows = [
+      "",
+      "   hi there",
+      "",
+      " ● OK",
+    ];
+    expect(hasRenderedAssistantReply(rows, { submitted: "hi there" })).toBe(true);
+    expect(hasRenderedAssistantReply(rows)).toBe(false);
+  });
+
   it("requires reply content inside the assistant message boundary", () => {
     expect(
       hasRenderedAssistantReply([
