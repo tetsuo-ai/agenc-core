@@ -126,6 +126,14 @@ export function lightUsesDeepSeekWorkRules(providerName: string | undefined, mod
     providerName?.trim().toLowerCase() !== "abliteration";
 }
 
+/**
+ * Native Gemini Light sessions get the fuller batching sentence (prompts/light-budget-prompt.ts
+ * LIGHT_GEMINI_BATCHING). Gemini models served by another provider keep what they were measured with.
+ */
+export function lightUsesGeminiBatching(providerName: string | undefined): boolean {
+  return providerName?.trim().toLowerCase() === "gemini";
+}
+
 /** DeepSeek, abliteration.ai Large V2 and QwenCloud Qwen3.8 Light sessions use batch Edit (#3163). */
 export function lightUsesBatchEdit(providerName: string | undefined, model?: string): boolean {
   return modelFamilyFor(providerName, model) === "deepseek" || lightUsesGlmTuning(providerName, model) ||

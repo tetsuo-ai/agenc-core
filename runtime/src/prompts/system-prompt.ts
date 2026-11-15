@@ -45,7 +45,7 @@ import {
   lightBudgetActions,
   LIGHT_BUDGET_DEADLINE,
 } from "./light-budget-prompt.js";
-import { lightEditsWithApplyPatch, lightStatesTaskLimits, lightUsesDeepSeekPrompt, lightUsesDeepSeekWorkRules, lightUsesDeepSeekWrite, lightUsesGlmTuning, lightUsesQwenTuning } from "../tools/light-profile.js";
+import { lightEditsWithApplyPatch, lightStatesTaskLimits, lightUsesGeminiBatching, lightUsesDeepSeekPrompt, lightUsesDeepSeekWorkRules, lightUsesDeepSeekWrite, lightUsesGlmTuning, lightUsesQwenTuning } from "../tools/light-profile.js";
 import { spawnSync } from "node:child_process";
 import { platform as osPlatform, type as osType, release as osRelease } from "node:os";
 
@@ -1296,6 +1296,7 @@ export async function assembleSystemPrompt(
             write: opts.enabledToolNames?.has("Write") ?? true,
             applyPatch: opts.enabledToolNames?.has("apply_patch") ?? true,
           },
+          lightUsesGeminiBatching(envInfoInputs.provider),
         ),
         lightBudgetSystem(),
         lightBudgetActions(),

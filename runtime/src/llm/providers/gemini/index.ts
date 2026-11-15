@@ -5,7 +5,7 @@
  */
 
 import { Buffer } from "node:buffer";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
@@ -66,6 +66,7 @@ import {
   type GeminiUsageDiagnosticSink,
 } from "./usage.js";
 import { geminiTransportFetch } from "./transport.js";
+import { GeminiPrefixCache } from "./prefix-cache.js";
 
 export interface GeminiProviderConfig extends Omit<LLMProviderConfig, "baseURL"> {
   readonly credentialPlan: GeminiCredentialPlan;
@@ -357,7 +358,52 @@ function parseJsonObjectText(text: string): Record<string, unknown> | null {
   }
 }
 
+/**
+ * Light's boundary name for workspace tool results
+ * (tools/untrusted-tool-result-framing.ts LIGHT_WORKSPACE_DATA_BOUNDARY; a
+ * test holds the two equal).
+ */
+const GEMINI_WORKSPACE_DATA_KEY = "AGENC_DATA";
+
+/**
+ * The body of a result framed as `AGENC_DATA\n<body>\nAGENC_DATA`.
+ *
+ * The framing breaks up the boundary name inside the body, so a body that
+ * still holds it was not framed by the runtime and keeps its text form.
+ */
+function geminiWorkspaceDataBody(content: string): string | undefined {
+  const open = `${GEMINI_WORKSPACE_DATA_KEY}\n`;
+  const close = `\n${GEMINI_WORKSPACE_DATA_KEY}`;
+  if (
+    content.length < open.length + close.length ||
+    !content.startsWith(open) || !content.endsWith(close)
+  ) return undefined;
+  const body = content.slice(open.length, -close.length);
+  return body.includes(GEMINI_WORKSPACE_DATA_KEY) ? undefined : body;
+}
+
+/**
+ * The `response` object of a function response.
+ *
+ * A workspace result reaches the provider between two AGENC_DATA marker
+ * lines. Gemini gets the same boundary as the key of the response object:
+ * `{"AGENC_DATA": "<body>"}`. The system text names AGENC_DATA as the mark
+ * of untrusted data, and a JSON key cannot be closed by the data inside it.
+ *
+ * The marker lines made gemini-3.8-flash answer with nothing. After a step
+ * of several small parallel reads it returned an empty candidate with
+ * finishReason STOP and no thinking, or one junk line that ended the turn
+ * as a success. Replays of three such recorded requests and 15 neighbouring
+ * states (2026-11-15): 56 of 90 answers were empty or junk with the marker
+ * lines, 2 of 90 with the key. Google's guide puts tool output in the
+ * response object under a key of the caller's choice
+ * (ai.google.dev/gemini-api/docs/function-calling).
+ */
 function functionResponsePayload(content: string): Record<string, unknown> {
+  const workspaceBody = geminiWorkspaceDataBody(content);
+  if (workspaceBody !== undefined) {
+    return { [GEMINI_WORKSPACE_DATA_KEY]: workspaceBody };
+  }
   return parseJsonObjectText(content) ?? { result: content };
 }
 
@@ -3630,16 +3676,45 @@ class GeminiStreamState {
   }
 }
 
+/**
+ * Models whose small requests miss Google's implicit cache and that accept
+ * an explicit one (prefix-cache.ts). gemini-3.8-flash is left out: its
+ * implicit cache starts near 2,700 prompt tokens and then covers the whole
+ * history but the last 2,000 tokens, which an explicit cache would turn off.
+ */
+function geminiUsesPrefixCache(model: string): boolean {
+  const name = canonicalGeminiModelName(model);
+  return name === "gemini-3.1-pro-preview" || name === "gemini-3.1-pro-preview-customtools";
+}
+
+/**
+ * The largest request that names the prefix cache. A request with an
+ * explicit cache gets no implicit caching, and gemini-3.1-pro-preview's
+ * implicit cache covered requests from about 10,700 tokens (smallest cached
+ * part seen: 8,555 tokens). A Light request measured 4.7 bytes per prompt
+ * token, so larger requests carry their head and leave the history to the
+ * implicit cache.
+ */
+export const GEMINI_PREFIX_CACHE_MAX_REQUEST_BYTES = 40_000;
+
+/** One prefix cache per endpoint and credential, shared by rebuilt providers. */
+const geminiPrefixCaches = new Map<string, GeminiPrefixCache>();
+
 export class GeminiProvider implements LLMProvider {
   readonly name = "gemini";
   readonly tokenCountCapability: ProviderTokenCountCapability;
 
   private readonly config: GeminiProviderConfig;
   private readonly client: ProviderHttpClient;
+  private readonly prefixCacheScope: string;
 
   constructor(config: GeminiProviderConfig) {
     assertNoGeminiAuthDefaultHeaders(config.defaultHeaders);
     this.config = { ...config };
+    // The scope never leaves the process: a cache belongs to one credential.
+    this.prefixCacheScope = createHash("sha256")
+      .update(JSON.stringify([geminiEndpointFor(this.config.endpointPlan), this.config.credentialPlan ?? null]))
+      .digest("hex");
     this.client = new ProviderHttpClient({
       providerName: this.name,
       baseURL: geminiEndpointFor(this.config.endpointPlan),
@@ -3764,6 +3839,50 @@ export class GeminiProvider implements LLMProvider {
     };
   }
 
+  /**
+   * The request as it goes on the wire: with the explicit prefix cache in
+   * place of the system instruction and tools when one is ready and pays
+   * (prefix-cache.ts). `GEMINI_CACHED_CONTENT=off`, or a cache of the
+   * user's own, turns this off.
+   */
+  private withPrefixCache(
+    model: string,
+    body: Record<string, unknown>,
+  ): { readonly body: Record<string, unknown>; readonly cacheName?: string } {
+    if (
+      this.config.endpointPlan.kind === "vertex" ||
+      this.config.cachedContent !== undefined ||
+      !geminiUsesPrefixCache(model) ||
+      body.cachedContent !== undefined || body.toolConfig !== undefined ||
+      body.systemInstruction === undefined || body.tools === undefined ||
+      Buffer.byteLength(JSON.stringify(body), "utf8") > GEMINI_PREFIX_CACHE_MAX_REQUEST_BYTES
+    ) return { body };
+    let cache = geminiPrefixCaches.get(this.prefixCacheScope);
+    if (cache === undefined) {
+      cache = new GeminiPrefixCache((request) => this.createPrefixCache(request));
+      geminiPrefixCaches.set(this.prefixCacheScope, cache);
+    }
+    const cacheName = cache.lookup(canonicalGeminiModelName(model), body.systemInstruction, body.tools);
+    if (cacheName === undefined) return { body };
+    const { systemInstruction: _systemInstruction, tools: _tools, ...rest } = body;
+    return { body: { ...rest, cachedContent: cacheName }, cacheName };
+  }
+
+  private async createPrefixCache(body: Record<string, unknown>): Promise<string> {
+    const session = this.client.createTurnSession({ wireApi: "custom" });
+    const response = await session.requestJson<Record<string, unknown>>({
+      path: "/cachedContents",
+      method: "POST",
+      body,
+      timeoutMs: 30_000,
+      retryBudget: { maxRetries: 0 },
+      singleWireAttempt: true,
+    });
+    const name = response.data.name;
+    if (typeof name !== "string") throw new Error("Gemini cachedContents returned no name");
+    return name;
+  }
+
   async chat(
     messages: LLMMessage[],
     options?: LLMChatOptions,
@@ -3837,6 +3956,7 @@ export class GeminiProvider implements LLMProvider {
       streaming: true,
     });
     const metrics = requestMetrics({ messages, tools, body, stream: true });
+    const wire = this.withPrefixCache(model, body);
 
     let singleAttemptPending = options?.singleWireAttempt === true;
     try {
@@ -3849,7 +3969,7 @@ export class GeminiProvider implements LLMProvider {
         method: "POST",
         headers: { accept: "text/event-stream" },
         query: { alt: "sse" },
-        body,
+        body: wire.body,
         timeoutMs: options?.timeoutMs,
         signal: options?.signal,
         providerFallback: this.config.providerFallback
@@ -3875,6 +3995,13 @@ export class GeminiProvider implements LLMProvider {
         requestMetrics: metrics,
       };
     } catch (error) {
+      if (
+        wire.cacheName !== undefined && error instanceof ProviderHttpError &&
+        [400, 403, 404].includes(error.status)
+      ) {
+        // The API refused the request that named the cache; the next request carries its head.
+        geminiPrefixCaches.get(this.prefixCacheScope)?.forget(wire.cacheName);
+      }
       mapProviderError(error, singleAttemptPending);
     }
   }
