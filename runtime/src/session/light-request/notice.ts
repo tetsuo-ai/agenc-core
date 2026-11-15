@@ -1,5 +1,5 @@
 import type { Session } from "../session.js";
-import { chosenLightRequest, resolveLightRequest } from "./settings.js";
+import { resolveLightRequest } from "./settings.js";
 
 const announced = new WeakMap<Session, string>();
 
@@ -10,11 +10,6 @@ export function announceLightRequest(session: Session): void {
   if (announced.get(session) === signature) return;
   announced.set(session, signature);
   if (lean === undefined) return;
-  // Lean is the native DeepSeek default since 0.19.34. Announce it only when the user chose it; the
-  // default keeps tool search on, so it does not reduce what the session can reach.
-  let chosen: "full" | "lean" | undefined;
-  try { chosen = chosenLightRequest(session); } catch { return; }
-  if (chosen !== "lean") return;
   const details = [
     "Lean Light request is active.",
     ...(lean.core_tools_only ? [lean.edit_mode === "shell"

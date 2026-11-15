@@ -15,7 +15,5 @@ export function syncRuntimeEffortEventToAppState(
   if (effort !== null &&
       (typeof effort !== "string" || !RUN_RUNTIME_REASONING_EFFORTS.includes(effort as never))) return;
   const value = effort === null ? undefined : effort as AppState["effortValue"];
-  const initial = payload?.reason === "initial";
-  setAppState(previous => previous.effortValue === value && (previous.effortFromInitialSettings === true) === initial
-    ? previous : { ...previous, effortValue: value, effortFromInitialSettings: initial });
+  setAppState(previous => previous.effortValue === value ? previous : { ...previous, effortValue: value });
 }

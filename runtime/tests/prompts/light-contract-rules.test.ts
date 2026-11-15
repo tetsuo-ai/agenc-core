@@ -21,7 +21,7 @@ function count(text: string, part: string): number {
 }
 
 async function head(profile: "light" | "standard", provider: string, model: string, env: Record<string, string> = {}, outputStyle?: { name: string; prompt: string }) {
-  const session = { services: { runtimeOptions: { lightMode: profile === "light", nonInteractive: true }, providerEnvironment: { AGENC_LIGHT_REQUEST: "full", ...env } } } as unknown as Session;
+  const session = { services: { runtimeOptions: { lightMode: profile === "light", nonInteractive: true }, providerEnvironment: env } } as unknown as Session;
   return (await assembleSystemPromptSnapshot({ profile, ctx: mkCtx(), session, provider, promptIdentity: { provider, model }, outputStyle })).staticPrefix;
 }
 
