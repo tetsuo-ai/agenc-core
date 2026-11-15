@@ -28,6 +28,14 @@ export interface OpenAIProviderConfig extends LLMProviderConfig {
   readonly store?: boolean;
   /** Fixed ChatGPT subscription transport, distinct from the platform API. */
   readonly chatgptBackend?: boolean;
+  /**
+   * How streamed Responses calls of the `openai` provider travel: `http`
+   * (SSE) or `websocket` (one socket per session that sends only new input
+   * items when it can, with HTTP as the fallback). Unset, the calls of a
+   * Light session use `websocket` and every other call `http`. Other
+   * providers built on this adapter ignore it.
+   */
+  readonly responsesTransport?: "http" | "websocket";
   readonly authMode?: "api_key" | "oauth";
   readonly oauth?: OpenAIOAuthConfig;
   readonly defaultHeaders?: Readonly<Record<string, string>>;

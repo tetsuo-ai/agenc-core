@@ -920,6 +920,64 @@ skips the incremental delta. Chaining an unstored id used to reject
 every later request of a subscription conversation once tools or
 history made it an extension.
 
+### Responses over WebSocket
+
+Light sessions of the `openai` provider, on the platform API and with ChatGPT
+sign-in, send their streamed Responses calls over one WebSocket per session
+instead of one HTTP request per call, using OpenAI's
+[WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode).
+The socket connects to the same `/responses` endpoint with the same
+credentials. Each call is a `response.create` message with the body an HTTP
+call would send, and the answer is the same stream of events. In the
+2026-11-15 measurements the wait for the first event of a call fell from 0.38
+to 0.11 s on the platform API and from 0.81 to 0.39 s with ChatGPT sign-in.
+
+`[providers.openai] transport = "http"` (or `AGENC_OPENAI_TRANSPORT=http`)
+turns the WebSocket off: every call goes over HTTP as before.
+`transport = "websocket"` uses it for every session of the provider, not only
+Light ones. Without a setting, calls outside a Light session's main loop
+(other modes, auxiliary calls) stay on HTTP.
+
+The socket is opened when the session starts, before the first model call, so
+that call does not wait for the connect. Nothing is sent on it until then. It
+is opened again ahead of the next call when it is lost: closed by the service
+while idle, at its age limit, or together with a call that was cut or
+cancelled. Two sockets in a row that go unused are not replaced until a call
+needs one.
+
+When a call continues the previous response on the same socket, AgenC sends
+`previous_response_id` and only the new input items (tool outputs, a user
+message). The service keeps the latest response of a connection in memory, so
+this also works with `store: false`, unlike the HTTP continuation above. AgenC sends the full input instead
+whenever the model, the instructions, the tools or another request field
+changed, the earlier history was rewritten (compaction, an edit), or the
+replayed part of the history differs from what the previous response returned.
+Instructions and tools travel on every call either way.
+
+The session returns to HTTP by itself: a call goes over HTTP when the socket
+cannot connect, when the service refuses the call before it starts, or when the
+socket is busy with another call. After two failed connects in a row the
+session stays on HTTP and shows one notice (`openai_websocket_unavailable`). If
+the service refuses a continuation, the session keeps the socket, sends the
+full input on every call from then on, and shows one notice
+(`openai_websocket_full_input`). A cancelled call closes the socket. A socket
+is replaced before OpenAI's 60 minute limit. A failed
+pre-connect is not one of the two failed connects.
+
+The default applies to OpenAI's own endpoints (`api.openai.com`, its regional
+hosts and the ChatGPT backend). Without a setting, a session stays on HTTP
+when `[providers.openai] base_url` points at another remote host (a gateway),
+or when an HTTP proxy is configured for the endpoint, because the socket does
+not use the proxy. A local endpoint (`localhost`, `127.0.0.1`) gets one quiet
+try: a failed start, with a 3 second connect limit, keeps the session on HTTP
+and shows no notice. `transport = "websocket"` forces the socket in all these
+cases and `transport = "http"` skips it.
+
+Other providers never open a socket, and the config rejects `transport` under
+any other provider table. OpenAI does not document WebSocket mode for ChatGPT
+sign-in; it was measured working there on 2026-11-15, and a sign-in session
+that is refused falls back to HTTP as described above.
+
 ### OpenAI prompt cache layout
 
 A Responses request on the platform API puts the static head of the system

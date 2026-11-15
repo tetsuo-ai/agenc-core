@@ -1390,10 +1390,22 @@ describe("Session.consumePendingProviderSwitch", () => {
       model: "gpt-5-mini",
     });
 
+    const releaseSpy = vi.spyOn(ProviderHttpClient.prototype, "releaseTransports");
+    const retired = (session.provider as unknown as { client: ProviderHttpClient }).client;
+
     await consumePendingProviderSwitch(session);
 
     expect(resetSpy).toHaveBeenCalled();
     expect(bindSpy).toHaveBeenCalledWith("conv-test");
+    // The provider that was switched away from closes what it kept open.
+    expect(releaseSpy.mock.contexts).toEqual([retired]);
+
+    // And the session's shutdown does the same for the provider it ends with.
+    const current = (session.provider as unknown as { client: ProviderHttpClient }).client;
+    expect(current).not.toBe(retired);
+    releaseSpy.mockClear();
+    await session.shutdown();
+    expect(releaseSpy.mock.contexts).toEqual([current]);
   });
 
   it("plans a switched session with its bound provider's model info, not a slug-only lookup", async () => {

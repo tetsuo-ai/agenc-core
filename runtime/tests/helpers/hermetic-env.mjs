@@ -251,6 +251,7 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_PROVIDER_MANAGED_BY_HOST',
   // opt-in provider wire changes (tests that need one set it explicitly)
   'AGENC_OPENAI_REASONING_REPLAY',
+  'AGENC_OPENAI_TRANSPORT',
   'AGENC_DEEPSEEK_REASONING_ONLY_REPLAY',
   // DeepSeek Search API behind WebSearch (a test that needs it sets it explicitly)
   'AGENC_DEEPSEEK_WEB_SEARCH',

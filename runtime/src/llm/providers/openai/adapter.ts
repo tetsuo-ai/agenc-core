@@ -16,6 +16,7 @@ import type {
   LLMChatOptions,
   LLMMessage,
   LLMProvider,
+  LLMProviderStartupPrewarmParams,
   LLMResponse,
   LLMStoredResponse,
   LLMStoredResponseDeleteResult,
@@ -101,6 +102,9 @@ import {
   assertProviderStructuredOutputCompatibility,
 } from "../../provider-capabilities.js";
 import type { OpenAIProviderConfig } from "./types.js";
+import type { ResponsesWebSocketSession, ResponsesWebSocketTurn } from "./responses-websocket.js";
+import { currentSessionWriteBehind } from "../../../session/write-behind.js";
+import { resolveStreamIdleTimeoutMs } from "../../stream-watchdog.js";
 import { OpenAIAuthSession } from "./auth.js";
 import { parseSSEFrames, type SSEFrame } from "../../_deps/sse.js";
 import {
@@ -128,6 +132,18 @@ import {
 const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
   "OpenAI Responses stream emitted invalid function_call";
 const OPENAI_STREAM_FAILED_MESSAGE = "OpenAI stream failed";
+/** Connect timeout of a WebSocket tried by default against a local endpoint. */
+const PROBE_WEBSOCKET_CONNECT_TIMEOUT_MS = 3_000;
+
+/** api.openai.com and its regional hosts, and the ChatGPT backend's host. */
+function isOpenAiHost(baseURL: string): boolean {
+  try {
+    const host = new URL(baseURL).hostname.toLowerCase();
+    return host === "api.openai.com" || host.endsWith(".api.openai.com") || host === "chatgpt.com";
+  } catch {
+    return false;
+  }
+}
 const OPENAI_STREAM_RATE_LIMIT_CODES: ReadonlySet<string> = new Set([
   "rate_limit_exceeded",
   "rate_limit",
@@ -1060,10 +1076,25 @@ export class OpenAIProvider implements LLMProvider {
    * dispatch; cleared once a request fits above the warning fraction again.
    */
   private lastSqueezeWarningOutputTokens: number | undefined;
+  /**
+   * The session's socket for streamed Responses calls, created when the
+   * session starts (`prewarmStartup`) or on the first such call that travels
+   * over WebSocket. Its module (and the `ws` package) loads only then.
+   */
+  private webSocket: {
+    readonly module: typeof import("./responses-websocket.js");
+    readonly session: ResponsesWebSocketSession;
+  } | undefined;
+  /** WebSocket transport notices already given to this session. */
+  private readonly webSocketNotices = new Set<string>();
+  private webSocketDisposed = false;
+  /** Set when the owner released the socket; a new session start clears it. */
+  private webSocketReleased = false;
 
   constructor(config: OpenAIProviderConfig) {
     this.config = resolveOpenAIProviderConfig(config);
     this.name = this.config.providerName;
+    if (this.name === "openai") this.prewarmStartup = (params) => this.preconnectAtStartup(params);
     this.auth = new OpenAIAuthSession(this.config);
     this.client = new ProviderHttpClient({
       providerName: this.name,
@@ -1077,6 +1108,7 @@ export class OpenAIProvider implements LLMProvider {
       emitWarning: this.config.emitWarning,
       onCapabilityDrift: this.config.onCapabilityDrift,
     });
+    if (this.name === "openai") this.client.registerTransportRelease(() => this.releaseWebSocket());
   }
 
   private evaluateConfiguredFallback(
@@ -1904,6 +1936,216 @@ export class OpenAIProvider implements LLMProvider {
     return undefined;
   }
 
+  /** Close the socket between uses; see `ResponsesWebSocketSession.standDown`. */
+  private releaseWebSocket(): void {
+    this.webSocketReleased = true;
+    this.webSocket?.session.standDown();
+  }
+
+  /** Release the session's socket, if it opened one. */
+  dispose(): void {
+    this.webSocketDisposed = true;
+    this.webSocket?.session.dispose();
+  }
+
+  /**
+   * How a streamed Responses call travels. Only the `openai` provider has the
+   * choice: a configured transport wins, and without one the calls of a Light
+   * session go over the session's WebSocket and every other call over HTTP.
+   * The default never applies where the socket would leave the path HTTP
+   * takes or reach a service not known to have the mode: an injected fetch
+   * or a remote host that is not OpenAI's. A local endpoint (a proxy or
+   * recorder in front of OpenAI, a local server) gets one quiet try. With an
+   * HTTP proxy for the endpoint, which the socket does not use, the session
+   * setup configures `http` (see `resolveProviderRuntimeRequest`).
+   */
+  private responsesTransportFor(lightSession: boolean): "http" | "websocket" {
+    if (this.name !== "openai") return "http";
+    if (this.config.responsesTransport !== undefined) return this.config.responsesTransport;
+    if (!lightSession || this.config.fetchImpl !== undefined) return "http";
+    return this.isChatGptBackend() || isOpenAiHost(this.config.baseURL) || isLocalBaseURL(this.config.baseURL)
+      ? "websocket" : "http";
+  }
+
+  /**
+   * True when the socket is tried by default against a local endpoint.
+   * Nobody asked for a WebSocket there, so one failed start settles it and
+   * the session says nothing.
+   */
+  private webSocketIsProbe(): boolean {
+    return this.config.responsesTransport === undefined && !this.isChatGptBackend() &&
+      !isOpenAiHost(this.config.baseURL);
+  }
+
+  private async ensureWebSocket(): Promise<NonNullable<OpenAIProvider["webSocket"]>> {
+    if (this.webSocket === undefined) {
+      const module = await import("./responses-websocket.js");
+      const probe = this.webSocketIsProbe();
+      this.webSocket ??= {
+        module,
+        session: new module.ResponsesWebSocketSession({
+          providerName: this.name,
+          ...(probe ? { failuresBeforeHttpOnly: 1, connectTimeoutMs: PROBE_WEBSOCKET_CONNECT_TIMEOUT_MS } : {}),
+        }),
+      };
+      if (this.webSocketDisposed) this.webSocket.session.dispose();
+    }
+    return this.webSocket;
+  }
+
+  /**
+   * Session start: open the Responses socket now, so the first model call
+   * does not wait for the connect, and have it reopened when it is lost
+   * between calls. Nothing is sent on it. No socket for another provider,
+   * for the `http` transport, or for a session that is not Light unless the
+   * WebSocket transport was configured. Returns no handle: the first turn
+   * uses this provider as usual and finds the socket open or opening.
+   * Only the `openai` provider has the hook (set in the constructor, bound:
+   * the session calls it detached), so no other provider built on this
+   * adapter gains a startup step.
+   */
+  readonly prewarmStartup?: (params: LLMProviderStartupPrewarmParams) => void;
+
+  private preconnectAtStartup(params: LLMProviderStartupPrewarmParams): void {
+    if (this.responsesTransportFor(params.lightSession === true) !== "websocket") return;
+    const model = this.config.model;
+    if (openAiModelRequiresBufferedResponse(model) ||
+      !this.usesResponsesApi(model, this.config.tools ?? [], undefined)) {
+      return;
+    }
+    this.webSocketReleased = false;
+    void this.preconnectWebSocket(params.conversationId).catch(() => undefined);
+  }
+
+  private async preconnectWebSocket(conversationId: string): Promise<void> {
+    const { session } = await this.ensureWebSocket();
+    // Released while the socket module loaded: the owner is gone.
+    if (this.webSocketReleased) return;
+    // The ChatGPT backend's upgrade carries the session header its requests carry.
+    const key = conversationId.trim();
+    const headers = withChatGptSessionHeader(
+      undefined,
+      this.isChatGptBackend(),
+      key.length > 0 ? { prompt_cache_key: normalizePromptCacheKey(key) } : {},
+    );
+    const outcome = await session.preconnect(() =>
+      this.auth.withAuthorizedOperation(() =>
+        this.client.createTurnSession({ wireApi: "responses" }).resolveWebSocketTarget({
+          api: "responses",
+          path: this.resolvePath("/responses"),
+          headers,
+        })));
+    if (outcome === "failed" && !this.webSocketDisposed) {
+      this.config.emitDiagnostic?.({
+        cause: "openai_websocket_preconnect_failed",
+        message: JSON.stringify({ provider: this.name, ...session.stats }),
+      });
+    }
+  }
+
+  /**
+   * Start a streamed Responses call on the session's socket (the WebSocket
+   * transport of the `openai` provider). Returns nothing when the
+   * call goes over HTTP instead, with the same body: the transport is off,
+   * the socket is carrying another response, or it could not connect or
+   * start this one. An `error` frame before the first response event is a
+   * refusal, so nothing was generated and HTTP is still the only attempt
+   * that can generate. A socket that died after the frame was sent may have
+   * run the request, so a single-attempt call reports that instead.
+   */
+  private async beginWebSocketResponse(
+    request: Record<string, unknown>,
+    headers: Readonly<Record<string, string>> | undefined,
+    timeoutMs: number | undefined,
+    options: LLMChatOptions | undefined,
+  ): Promise<ResponsesWebSocketTurn | undefined> {
+    if (this.responsesTransportFor(options?.lightSession === true) !== "websocket") return undefined;
+    // A header that belongs to one request (the managed idempotency key)
+    // cannot ride a socket whose upgrade request was sent earlier.
+    if (headers !== undefined && Object.keys(headers).length > 0) return undefined;
+    const { module, session } = await this.ensureWebSocket();
+    if (!session.available) return undefined;
+    const writeBehind = currentSessionWriteBehind();
+    writeBehind?.assertHealthy();
+    let turn: ResponsesWebSocketTurn;
+    try {
+      turn = await session.begin({
+        target: () => this.client.createTurnSession({ wireApi: "responses" }).resolveWebSocketTarget({
+          api: "responses",
+          path: this.resolvePath("/responses"),
+          headers: withChatGptSessionHeader(headers, this.isChatGptBackend(), request),
+        }),
+        body: request,
+        signal: options?.signal,
+        idleTimeoutMs: normalizeTimeoutMs(timeoutMs) ?? resolveStreamIdleTimeoutMs(),
+      });
+    } catch (error) {
+      if (!(error instanceof module.ResponsesWebSocketFallback)) {
+        writeBehind?.finish();
+        throw error;
+      }
+      if (error.refused && error.errorFrame !== undefined && forbidsStreamRetry(error.errorFrame)) {
+        // The service refused the request and forbade a retry. Resubmitting
+        // over HTTP would be that retry: hand the frame to the event loop,
+        // which ends the call as it does for the same event over SSE.
+        writeBehind?.finish();
+        const frame = error.errorFrame;
+        return {
+          incremental: false,
+          events: async function* () {
+            yield { data: frame };
+          },
+          cancel: () => undefined,
+        };
+      }
+      this.reportWebSocketFallback(session, error.message);
+      if (error.afterSend && !error.refused && options?.singleWireAttempt === true) {
+        writeBehind?.finish();
+        throw new LLMStreamTruncatedError(
+          this.name,
+          "WebSocket closed before the response started",
+        );
+      }
+      return undefined;
+    }
+    // As after an accepted HTTP request: the previous tool step is complete.
+    if (!(oneShotFastModeActive() && writeBehind?.oneShotBuffering)) {
+      try {
+        writeBehind?.finish();
+      } catch (error) {
+        // Nobody will read this response: stop it, as the HTTP path cancels its body.
+        turn.cancel();
+        throw error;
+      }
+    }
+    return turn;
+  }
+
+  /**
+   * Every call that left the socket for HTTP is a diagnostic. The two lasting
+   * changes are told once each: the session staying on HTTP, and the session
+   * sending the full input after a refused continuation.
+   */
+  private reportWebSocketFallback(session: ResponsesWebSocketSession, reason: string): void {
+    this.config.emitDiagnostic?.({
+      cause: "openai_websocket_fallback",
+      message: JSON.stringify({ provider: this.name, reason, ...session.stats }),
+    });
+    const notices: Array<[boolean, string, string]> = [
+      [session.httpOnlyForSession, "openai_websocket_unavailable",
+        `${this.name} WebSocket transport could not start twice in a row (${reason}); this session continues over HTTP`],
+      [session.fullInputOnly, "openai_websocket_full_input",
+        `${this.name} refused a continuation over the WebSocket; this session now sends the full input on every call`],
+    ];
+    for (const [active, cause, message] of notices) {
+      if (!active || this.webSocketNotices.has(cause)) continue;
+      // A default try against another host that has no WebSocket mode is not news.
+      if (cause === "openai_websocket_unavailable" && this.webSocketIsProbe()) continue;
+      this.webSocketNotices.add(cause);
+      this.config.emitWarning?.({ cause, message });
+    }
+  }
+
   private async streamResponses(
     messages: LLMMessage[],
     onChunk: StreamProgressCallback,
@@ -1937,21 +2179,29 @@ export class OpenAIProvider implements LLMProvider {
     };
     let consecutiveFallbackFailures = 0;
     responseStreamAttempts: while (true) {
-      let response: ProviderHttpStreamResponse;
+      let response: ProviderHttpStreamResponse | undefined;
+      let events: AsyncIterable<OpenAISseEvent>;
       try {
-        response = await this.requestStream({
-          api: "responses",
-          headers: withChatGptSessionHeader(headers, this.isChatGptBackend(), request),
-          path: this.resolvePath("/responses"),
-          body: request,
-          timeoutMs,
-          signal: options?.signal,
-          providerFallback: this.providerFallbackForModel(
-            model,
-            options?.singleWireAttempt,
-          ),
-          singleWireAttempt: options?.singleWireAttempt,
-        });
+        const webSocketTurn = await this.beginWebSocketResponse(request, headers, timeoutMs, options);
+        if (webSocketTurn !== undefined) {
+          // Socket frames are the SSE events, so one loop reads both.
+          events = webSocketTurn.events();
+        } else {
+          response = await this.requestStream({
+            api: "responses",
+            headers: withChatGptSessionHeader(headers, this.isChatGptBackend(), request),
+            path: this.resolvePath("/responses"),
+            body: request,
+            timeoutMs,
+            signal: options?.signal,
+            providerFallback: this.providerFallbackForModel(
+              model,
+              options?.singleWireAttempt,
+            ),
+            singleWireAttempt: options?.singleWireAttempt,
+          });
+          events = this.readSseEvents(response);
+        }
       } catch (error) {
         if (isFallbackTriggeredError(error)) throw error;
         const fallbackDecision = this.evaluateConfiguredFallback(
@@ -1984,13 +2234,13 @@ export class OpenAIProvider implements LLMProvider {
       const streamedReasoningItems: Record<string, unknown>[] = [];
       let completedResponse: Record<string, unknown> | null = null;
       let hasResponseOutput = false;
-      let retryDenied = response.headers.get("x-retry-metadata") === "NO_MORE_RETRY";
+      let retryDenied = response?.headers.get("x-retry-metadata") === "NO_MORE_RETRY";
       let overloadEvent: Record<string, unknown> | undefined;
 
       let reportedUsage: LLMResponse["usage"] | undefined;
       let reportedModel = model;
       try {
-        for await (const event of this.readSseEvents(response)) {
+        for await (const event of events) {
           const eventType = event.event ?? String(event.data.type ?? "");
           const responseSnapshot = event.data.response;
           if ((eventType === "response.failed" || eventType === "response.completed" ||

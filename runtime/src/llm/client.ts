@@ -57,6 +57,7 @@ function mergeQuery(
 export class ProviderHttpClient {
   private readonly config: ProviderHttpClientConfig;
   private readonly responsesContinuationState: ResponsesContinuationState = {};
+  private readonly transportReleases: Array<() => void> = [];
 
   constructor(config: ProviderHttpClientConfig) {
     this.config = config;
@@ -79,6 +80,27 @@ export class ProviderHttpClient {
 
   resetResponsesContinuation(): void {
     resetResponsesContinuationState(this.responsesContinuationState);
+  }
+
+  /**
+   * A provider that keeps a connection open between requests registers how to
+   * close it. The session calls `releaseTransports` when it shuts down and
+   * when another provider takes over, so nothing stays connected (or
+   * reconnects) for a provider nobody is using. A later request may connect
+   * again.
+   */
+  registerTransportRelease(release: () => void): void {
+    this.transportReleases.push(release);
+  }
+
+  releaseTransports(): void {
+    for (const release of this.transportReleases) {
+      try {
+        release();
+      } catch {
+        // Closing a connection is best-effort.
+      }
+    }
   }
 
   snapshotResponsesContinuation(): ProviderHttpContinuationSnapshot {

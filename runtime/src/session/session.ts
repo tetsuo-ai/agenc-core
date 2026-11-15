@@ -3539,6 +3539,8 @@ export class Session {
           prepared.provider.binding.instance,
         );
         previousClient?.resetResponsesContinuation();
+        // The retired provider keeps no connection open and opens none ahead.
+        if (previousClient !== nextClient) previousClient?.releaseTransports();
         nextClient?.bindConversationId(this.conversationId);
         nextClient?.resetResponsesContinuation();
         this.clearOwnedProviderSwitch(pending);
@@ -6681,6 +6683,13 @@ export class Session {
       await this.shutdownCore();
     } catch (error) {
       shutdownError = error;
+    }
+    // A provider that holds a connection between requests closes it with the
+    // session and opens none ahead afterwards.
+    try {
+      readProviderHttpClient(this.services.providerService?.current().instance)?.releaseTransports();
+    } catch {
+      /* best-effort */
     }
     let resourceReleaseError: unknown;
     try {

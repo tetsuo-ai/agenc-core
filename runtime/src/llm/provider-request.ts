@@ -12,6 +12,7 @@ import type {
 import type { ProviderEnvironment } from "./provider-options.js";
 import { resolveXaiCapabilityExtra } from "./xai-capability-config.js";
 import { openRouterZeroDataRetentionEnabled } from "./zero-data-retention.js";
+import { parseOpenAIResponsesTransport } from "./providers/openai/responses-transport.js";
 
 export interface ProviderRuntimeRequest {
   readonly requested: ProviderFactoryOptions;
@@ -203,6 +204,12 @@ export function resolveProviderRuntimeRequest(params: {
   const environmentTimeoutMs = parseTimeoutMs(
     params.environment.API_TIMEOUT_MS,
   );
+  // The HTTP proxy case of the default is decided after credential
+  // resolution, where the endpoint is final (resolveProviderCredentialAuthority).
+  const openAiResponsesTransport = params.provider !== "openai"
+    ? undefined
+    : parseOpenAIResponsesTransport(params.environment.AGENC_OPENAI_TRANSPORT) ??
+      params.config.providers?.openai?.transport;
   const extra = {
     ...(params.baseExtra ?? {}),
     ...providerTransportExtra(
@@ -239,6 +246,12 @@ export function resolveProviderRuntimeRequest(params: {
     ...(params.provider === "openrouter" &&
     openRouterZeroDataRetentionEnabled(params.config)
       ? { zeroDataRetention: true }
+      : {}),
+    // OpenAI Responses transport. Unset, the provider decides (WebSocket for
+    // Light sessions, HTTP otherwise); a configured value is passed on as it
+    // is, and the environment value wins over the config.
+    ...(params.provider === "openai" && openAiResponsesTransport !== undefined
+      ? { responsesTransport: openAiResponsesTransport }
       : {}),
     // Bedrock reads the configured profile mapping to apply the right
     // request contract to ids that name no model.

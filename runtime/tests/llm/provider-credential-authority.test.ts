@@ -1408,6 +1408,41 @@ describe("provider credential authority", () => {
     });
   });
 
+  test("keeps the Responses WebSocket default off when an HTTP proxy applies to the final OpenAI endpoint", async () => {
+    const { providerOptions, openAiCredentials } = await loadCredentialModules();
+    const transport = (
+      provider: "openai" | "deepseek",
+      requested: Record<string, unknown>,
+      env: Record<string, string>,
+    ) => providerOptions.resolveProviderCredentialAuthority(provider, { model: "m", ...requested }, env)
+      .factoryOptions.extra?.responsesTransport;
+    const proxy = { HTTPS_PROXY: "http://proxy.internal:3128" };
+    const key = { apiKey: "sk-test" };
+
+    // Platform API key: the endpoint is api.openai.com.
+    expect(transport("openai", key, {})).toBeUndefined();
+    expect(transport("openai", key, proxy)).toBe("http");
+    expect(transport("openai", key, { ...proxy, NO_PROXY: "api.openai.com" })).toBeUndefined();
+    expect(transport("openai", { ...key, baseURL: "http://127.0.0.1:8080/v1" }, { ...proxy, NO_PROXY: "127.0.0.1" })).toBeUndefined();
+    // A configured transport is the user's choice either way.
+    expect(transport("openai", { ...key, extra: { responsesTransport: "websocket" } }, proxy)).toBe("websocket");
+    expect(transport("deepseek", key, proxy)).toBeUndefined();
+
+    // ChatGPT sign-in moves the endpoint to chatgpt.com after the request was
+    // built: a bypass for api.openai.com does not cover it.
+    const home = await createHome("openai-chatgpt-proxy");
+    expect(
+      openAiCredentials.saveOpenAiOauthCredentials(home, {
+        accessToken: "chatgpt-access-token",
+        accountId: "chatgpt-account",
+      }).success,
+    ).toBe(true);
+    const signedIn = { credentialHome: home };
+    expect(transport("openai", signedIn, {})).toBeUndefined();
+    expect(transport("openai", signedIn, { ...proxy, NO_PROXY: "api.openai.com" })).toBe("http");
+    expect(transport("openai", signedIn, { ...proxy, NO_PROXY: "chatgpt.com" })).toBeUndefined();
+  });
+
   test("recognizes a stored OpenAI platform key", async () => {
     const home = await createHome("openai-platform");
     const { providerOptions, openAiCredentials } =
