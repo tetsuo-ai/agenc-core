@@ -541,7 +541,7 @@ autostart. Ordinary startup leaves it unset.
 
 ### AGENC_O*
 
-`AGENC_OAUTH_CLIENT_ID`, `AGENC_OAUTH_DEV_ENDPOINTS` (test-only switch that points the local OAuth flows at the development endpoints), `AGENC_OAUTH_TOKEN`, `AGENC_ONBOARDING`, `AGENC_ONE_SHOT_COMPACT_RETRIES`, `AGENC_OPENAI_CONTEXT_WINDOWS`, `AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW`, `AGENC_OPENAI_MAX_OUTPUT_TOKENS`, `AGENC_OPENAI_REASONING_REPLAY`, `AGENC_OPENAI_TOOL_FORMAT`, `AGENC_OPENAI_TRANSPORT`, `AGENC_ORGANIZATION_UUID`, `AGENC_OVERRIDE_DATE`.
+`AGENC_OAUTH_CLIENT_ID`, `AGENC_OAUTH_DEV_ENDPOINTS` (test-only switch that points the local OAuth flows at the development endpoints), `AGENC_OAUTH_TOKEN`, `AGENC_ONBOARDING`, `AGENC_ONE_SHOT_COMPACT_RETRIES`, `AGENC_OPENAI_CONTEXT_WINDOWS`, `AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW`, `AGENC_OPENAI_LIGHT_OUTPUT` (opt-in output savers for Light sessions on the `openai` provider, comma separated: `exec-args` presents exec_command with `cmd` and `timeoutMs` only, `no-summary` stops requesting a reasoning summary unless one is configured, `all` selects both; unset changes nothing), `AGENC_OPENAI_MAX_OUTPUT_TOKENS`, `AGENC_OPENAI_REASONING_REPLAY`, `AGENC_OPENAI_TOOL_FORMAT`, `AGENC_OPENAI_TRANSPORT`, `AGENC_ORGANIZATION_UUID`, `AGENC_OVERRIDE_DATE`.
 
 ### AGENC_P*
 
