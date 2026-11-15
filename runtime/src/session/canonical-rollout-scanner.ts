@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import type { BigIntStats } from "node:fs";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import { openSqliteDatabase } from "../state/sqlite-engine.js";
 import { timed } from "../utils/slow-store-op.js";
 import type BetterSqlite3 from "better-sqlite3";
 
@@ -119,7 +119,7 @@ class DiskCompactionPayloadSpool {
     const directory = mkdtempSync(join(temporaryRoot, "agenc-c2-payloads-"));
     let database: BetterSqlite3.Database | undefined;
     try {
-      database = new Database(join(directory, "payloads.sqlite"));
+      database = openSqliteDatabase(join(directory, "payloads.sqlite"));
       database.pragma("journal_mode = OFF");
       database.pragma("synchronous = OFF");
       database.pragma(

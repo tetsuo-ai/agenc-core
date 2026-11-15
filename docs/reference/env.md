@@ -444,6 +444,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_DISABLE_LANDLOCK_FALLBACK` | Do not use the Landlock helper when bubblewrap cannot run |
 | `AGENC_LINUX_SANDBOX_EXE` | Override the Linux sandbox helper path |
 | `AGENC_DISABLE_EXTRACT_MEMORIES` | Skip turn-end memory extraction |
+| `AGENC_SQLITE_BACKEND` | SQLite engine for the state, logs, memory and file-index databases. `node` uses Node's built-in `node:sqlite`; `native` uses the better-sqlite3 addon. Unset: `node` on Windows, where Smart App Control refuses the unsigned addon, and `native` elsewhere, falling back to `node` when the addon cannot load. Both read and write the same database files |
 | `AGENC_SKILL_CANDIDATES` | `0` stops the memory-extraction child from proposing draft skills under `$AGENC_HOME/skill-candidates/`. Drafts are never active until `agenc skills candidates accept <name>`; see [skills-plugins.md](skills-plugins.md#skill-candidates) |
 | `AGENC_POLICY_LIMITS_URL` | Override hosted policy-limits URL (default `https://id.agenc.ag/v1/policy-limits`) |
 | `AGENC_TOOL_TIMINGS_FILE` | Diagnostics only. Path of a JSONL file that receives one record per completed tool call: per-stage milliseconds (permission and policy, hooks, admission, sandbox and broker, execution, result sealing, persistence, UI fan-out) and whether the call took the read-only path. Records hold the call id and tool name, never arguments, paths, output or credentials. Unset (the default) records nothing |
@@ -537,7 +538,7 @@ autostart. Ordinary startup leaves it unset.
 
 ### AGENC_S*
 
-`AGENC_SANDBOX_DEVICE_BINDS`, `AGENC_SAVE_HOOK_ADDITIONAL_CONTEXT`, `AGENC_SESSIONEND_HOOKS_TIMEOUT_MS`, `AGENC_SESSION_ACCESS_TOKEN`, `AGENC_SESSION_KIND`, `AGENC_SESSION_LOG`, `AGENC_SESSION_NAME`, `AGENC_SHARED_PREFIX_TAIL`, `AGENC_SKILL_CANDIDATES`, `AGENC_SKIP_PROMPT_HISTORY`, `AGENC_SLACK_GROUP_ADDRESSING`, `AGENC_SLOW_OPERATION_THRESHOLD_MS`, `AGENC_SPARSE_LINE_NUMBERS`, `AGENC_SSE_PORT`, `AGENC_STALL_TIMEOUT_MS_FOR_TESTING`, `AGENC_SUBPROCESS_ENV_NO_SCRUB`, `AGENC_SYNTAX_HIGHLIGHT`.
+`AGENC_SANDBOX_DEVICE_BINDS`, `AGENC_SAVE_HOOK_ADDITIONAL_CONTEXT`, `AGENC_SESSIONEND_HOOKS_TIMEOUT_MS`, `AGENC_SESSION_ACCESS_TOKEN`, `AGENC_SESSION_KIND`, `AGENC_SESSION_LOG`, `AGENC_SESSION_NAME`, `AGENC_SHARED_PREFIX_TAIL`, `AGENC_SKILL_CANDIDATES`, `AGENC_SKIP_PROMPT_HISTORY`, `AGENC_SLACK_GROUP_ADDRESSING`, `AGENC_SLOW_OPERATION_THRESHOLD_MS`, `AGENC_SPARSE_LINE_NUMBERS`, `AGENC_SQLITE_BACKEND`, `AGENC_SSE_PORT`, `AGENC_STALL_TIMEOUT_MS_FOR_TESTING`, `AGENC_SUBPROCESS_ENV_NO_SCRUB`, `AGENC_SYNTAX_HIGHLIGHT`.`
 
 ### AGENC_T*
 

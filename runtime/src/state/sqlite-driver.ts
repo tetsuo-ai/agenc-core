@@ -12,7 +12,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { join, toNamespacedPath } from "node:path";
-import Database from "better-sqlite3";
+import { openSqliteDatabase } from "./sqlite-engine.js";
 import type BetterSqlite3 from "better-sqlite3";
 import {
   DEFAULT_SESSION_ROOT_MARKERS,
@@ -258,10 +258,10 @@ export class StateSqliteDriver {
     // SQLite also opens journal/WAL files, which can exceed Windows MAX_PATH
     // even when the database itself fits. Keep public paths unchanged and use
     // the extended path spelling only at the native SQLite boundary.
-    const state = new Database(toNamespacedPath(paths.stateDbPath));
+    const state = openSqliteDatabase(toNamespacedPath(paths.stateDbPath));
     let logs: SqliteDatabase | undefined;
     try {
-      if (options.deferLogs !== true) logs = new Database(toNamespacedPath(paths.logsDbPath));
+      if (options.deferLogs !== true) logs = openSqliteDatabase(toNamespacedPath(paths.logsDbPath));
       // Before the WAL pragma: switching the journal mode writes the file
       // header, and auto_vacuum can only be chosen while there is none.
       configureFreshDatabaseVacuum(state);
@@ -288,7 +288,7 @@ export class StateSqliteDriver {
   get logs(): SqliteDatabase {
     if (this.#logs !== undefined) return this.#logs;
     if (!this.state.open) throw new Error("cannot open logs on a closed state driver");
-    const logs = new Database(toNamespacedPath(this.logsDbPath));
+    const logs = openSqliteDatabase(toNamespacedPath(this.logsDbPath));
     try {
       this.#logsWal = configureDatabase(logs);
       applyLogsMigrations(logs);
@@ -426,7 +426,7 @@ export class StateSqliteReader {
     this.#writeBehindBarrier = projectWriteBehindBarrier(paths.projectDir);
     this.stateDbPath = paths.stateDbPath;
     this.logsDbPath = paths.logsDbPath;
-    this.state = new Database(toNamespacedPath(paths.stateDbPath), {
+    this.state = openSqliteDatabase(toNamespacedPath(paths.stateDbPath), {
       readonly: true,
       fileMustExist: true,
     });
@@ -446,7 +446,7 @@ export class StateSqliteReader {
   }
 
   private openLogs(): SqliteDatabase {
-    const logs = new Database(toNamespacedPath(this.logsDbPath), { readonly: true, fileMustExist: true });
+    const logs = openSqliteDatabase(toNamespacedPath(this.logsDbPath), { readonly: true, fileMustExist: true });
     try {
       configureReadOnlyDatabase(logs);
       return logs;
@@ -721,7 +721,7 @@ function createPreMigrationStateBackupLocked(
     // VACUUM INTO runs on a second connection because the primary connection
     // intentionally holds BEGIN IMMEDIATE. The lock prevents all source
     // writers while SQLite itself produces a transactionally consistent file.
-    snapshotSource = new Database(toNamespacedPath(paths.stateDbPath));
+    snapshotSource = openSqliteDatabase(toNamespacedPath(paths.stateDbPath));
     snapshotSource.pragma("busy_timeout = 5000");
     snapshotSource.exec(`VACUUM main INTO ${sqliteStringLiteral(toNamespacedPath(tempPath))}`);
     snapshotSource.close();
@@ -792,7 +792,7 @@ function validatePreMigrationStateBackup(
   targetVersion: number,
   label: string,
 ): void {
-  const backup = new Database(toNamespacedPath(path), { readonly: true, fileMustExist: true });
+  const backup = openSqliteDatabase(toNamespacedPath(path), { readonly: true, fileMustExist: true });
   try {
     const integrity = backup
       .prepare<[], { integrity_check: string }>("PRAGMA integrity_check")
