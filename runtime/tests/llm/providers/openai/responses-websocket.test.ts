@@ -5,6 +5,8 @@ import WebSocket, { WebSocketServer } from "ws";
 import { OpenAIProvider } from "../../../../src/llm/providers/openai/adapter.js";
 import {
   planResponsesWebSocketInput,
+  ResponsesWebSocketFallback,
+  ResponsesWebSocketSession,
   responsesWebSocketCreateFrame,
   responsesWebSocketFixedPart,
   type ResponsesWebSocketChain,
@@ -56,6 +58,8 @@ class MockResponsesEndpoint {
   readonly sockets: WebSocket[] = [];
   /** Refuse the upgrade with this HTTP status. */
   refuseUpgrade: number | undefined;
+  /** Cut the connection of an upgrade request without an answer. */
+  cutUpgrade = false;
   reply: Reply = (_frame, socket, index) => sendAll(socket, toolTurn(`resp_${index + 1}`));
   httpEvents: () => Frame[] = () => answerTurn("resp_http");
 
@@ -76,6 +80,10 @@ class MockResponsesEndpoint {
     });
     this.http.on("upgrade", (request, socket, head) => {
       this.upgrades.push(request);
+      if (this.cutUpgrade) {
+        socket.destroy();
+        return;
+      }
       if (this.refuseUpgrade !== undefined || request.url !== "/v1/responses") {
         socket.end(`HTTP/1.1 ${this.refuseUpgrade ?? 404} Refused\r\nConnection: close\r\n\r\n`);
         return;
@@ -341,7 +349,12 @@ describe("OpenAIProvider Responses over WebSocket", () => {
   test("falls back to HTTP with the unchanged body when the upgrade is refused, then stops trying", async () => {
     const { endpoint, baseURL } = await start();
     endpoint.refuseUpgrade = 404;
-    const provider = openai(baseURL);
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const diagnostics: string[] = [];
+    const provider = openai(baseURL, {
+      emitWarning: (warning) => warnings.push(warning),
+      emitDiagnostic: (diagnostic) => diagnostics.push(diagnostic.cause),
+    });
     const httpOnly = openai(baseURL, { responsesTransport: "http" });
 
     const viaFallback = await stream(provider, USER);
@@ -355,15 +368,108 @@ describe("OpenAIProvider Responses over WebSocket", () => {
     expect(endpoint.httpBodies).toHaveLength(4);
     expect(new Set(endpoint.httpBodies).size).toBe(1);
     expect(viaFallback).toEqual(direct);
+    // One diagnostic per failed start, one notice when the session stays on HTTP.
+    expect(diagnostics).toEqual(["openai_websocket_fallback", "openai_websocket_fallback"]);
+    expect(warnings.map((warning) => warning.cause)).toEqual(["openai_websocket_unavailable"]);
+    expect(warnings[0]!.message).toContain("continues over HTTP");
   });
 
-  test("falls back to HTTP when no server listens for the socket", async () => {
+  test("falls back to HTTP when the upgrade connection is cut without an answer", async () => {
     const { endpoint, baseURL } = await start();
-    const provider = openai(baseURL.replace("/v1", "/elsewhere/v1"));
-    // Neither transport exists there; the HTTP mock answers any path.
-    const response = await stream(provider, USER);
+    endpoint.cutUpgrade = true;
+    const response = await stream(openai(baseURL), USER);
     expect(response.content).toBe("done");
+    expect(endpoint.upgrades).toHaveLength(1);
     expect(endpoint.frames).toHaveLength(0);
+    expect(endpoint.httpBodies).toHaveLength(1);
+  });
+
+  test("a frame that stays unanswered goes to HTTP, and a single-attempt caller is told instead", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.reply = () => undefined;
+    // The stream idle timeout bounds the wait for the first event.
+    const response = await stream(openai(baseURL, { timeoutMs: 150 }), USER);
+    expect(response.content).toBe("done");
+    expect(endpoint.frames).toHaveLength(1);
+    expect(endpoint.httpBodies).toHaveLength(1);
+
+    await expect(stream(openai(baseURL, { timeoutMs: 150 }), USER, { ...OPTIONS, singleWireAttempt: true }))
+      .rejects.toBeInstanceOf(LLMStreamTruncatedError);
+    expect(endpoint.httpBodies).toHaveLength(1);
+  });
+
+  test("ignores a frame that trails a finished response", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.reply = (_frame, socket, index) => {
+      sendAll(socket, index === 0 ? toolTurn("resp_1") : answerTurn("resp_2"));
+      sendAll(socket, [{ type: "error", status: 400, error: { code: "late_noise", message: "after the end" } }]);
+    };
+    const provider = openai(baseURL);
+    const second = await stream(provider, historyAfter(await stream(provider, USER)));
+
+    expect(second.content).toBe("done");
+    expect(endpoint.frames[1]!.previous_response_id).toBe("resp_1");
+    expect(endpoint.httpBodies).toHaveLength(0);
+    expect(endpoint.upgrades).toHaveLength(1);
+  });
+
+  test("a refused request that is not about the continuation keeps later continuations", async () => {
+    const { endpoint, baseURL } = await start();
+    let refused = false;
+    endpoint.reply = (frame, socket, index) => {
+      if (frame.previous_response_id !== undefined && !refused) {
+        refused = true;
+        return sendAll(socket, [{
+          type: "error", status: 429,
+          error: { type: "rate_limit_error", code: "rate_limit_exceeded", message: "Rate limit reached." },
+        }]);
+      }
+      sendAll(socket, toolTurn(`resp_${index + 1}`));
+    };
+    const warnings: string[] = [];
+    const provider = openai(baseURL, { emitWarning: (warning) => warnings.push(warning.cause) });
+    const history = historyAfter(await stream(provider, USER));
+
+    await stream(provider, history);  // the refused continuation, answered over HTTP
+    const again = await stream(provider, USER);
+    await stream(provider, historyAfter(again));
+
+    expect(endpoint.httpBodies).toHaveLength(1);
+    expect(warnings).toEqual([]);
+    expect(endpoint.frames.map((frame) => frame.previous_response_id)).toEqual([undefined, "resp_1", undefined, "resp_3"]);
+  });
+
+  test("frees the socket when the consumer fails mid-response", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.reply = (_frame, socket, index) => sendAll(socket, answerTurn(`resp_${index + 1}`));
+    const provider = openai(baseURL);
+    await expect(inScope(() => provider.chatStream(USER, () => {
+      throw new Error("consumer failed");
+    }, OPTIONS))).rejects.toThrow("consumer failed");
+
+    const next = await stream(provider, USER);
+    expect(next.content).toBe("done");
+    expect(endpoint.upgrades).toHaveLength(2);
+    expect(endpoint.httpBodies).toHaveLength(0);
+  });
+
+  test("dispose during a response ends it at once", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.reply = (_frame, socket) =>
+      sendAll(socket, [{ type: "response.created", response: { id: "resp_open" } }]);
+    const provider = openai(baseURL);
+    const pending = stream(provider, USER);
+    await expect.poll(() => endpoint.frames.length).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    provider.dispose();
+    await expect(pending).rejects.toBeInstanceOf(LLMStreamTruncatedError);
+  });
+
+  test("sends a call with a per-request header over HTTP", async () => {
+    const { endpoint, baseURL } = await start();
+    const provider = openai(baseURL, { managedRequestId: true });
+    await stream(provider, USER, { ...OPTIONS, managedRequestId: "11111111-1111-4111-8111-111111111111" });
+    expect(endpoint.upgrades).toHaveLength(0);
     expect(endpoint.httpBodies).toHaveLength(1);
   });
 
@@ -381,12 +487,14 @@ describe("OpenAIProvider Responses over WebSocket", () => {
       }
       sendAll(socket, index === 0 ? toolTurn("resp_1") : toolTurn(`resp_${index + 1}`));
     };
-    const provider = openai(baseURL);
+    const warnings: string[] = [];
+    const provider = openai(baseURL, { emitWarning: (warning) => warnings.push(warning.cause) });
     const first = await stream(provider, USER);
     const history = historyAfter(first);
 
     const second = await stream(provider, history);
     expect(second.content).toBe("done");
+    expect(warnings).toEqual(["openai_websocket_full_input"]);
     expect(endpoint.httpBodies).toHaveLength(1);
     const httpBody = JSON.parse(endpoint.httpBodies[0]!) as Frame;
     expect(httpBody.previous_response_id).toBeUndefined();
@@ -481,6 +589,9 @@ describe("OpenAIProvider Responses over WebSocket", () => {
 
     await expect(pending).rejects.toThrow();
     await closed;
+    // An aborted signal sends nothing, on a new socket or a warm one.
+    await expect(stream(provider, USER, { ...OPTIONS, signal: controller.signal })).rejects.toThrow();
+    expect(endpoint.frames).toHaveLength(1);
     const next = await stream(provider, USER);
     expect(next.content).toBe("done");
     expect(endpoint.upgrades).toHaveLength(2);
@@ -493,8 +604,9 @@ describe("OpenAIProvider Responses over WebSocket", () => {
       sendAll(socket, [{ type: "response.created", response: { id: "resp_silent" } }]);
     const provider = openai(baseURL, { timeoutMs: 150 });
 
-    await expect(stream(provider, USER)).rejects.toThrow();
+    await expect(stream(provider, USER)).rejects.toThrow(/idle for 150ms|timed out after 150ms/u);
     expect(endpoint.httpBodies).toHaveLength(0);
+    expect(endpoint.frames).toHaveLength(1);
   });
 
   test("sends a call that arrives while the socket is busy over HTTP", async () => {
@@ -537,5 +649,69 @@ describe("OpenAIProvider Responses over WebSocket", () => {
     expect(endpoint.upgrades).toHaveLength(0);
     expect(endpoint.httpBodies).toHaveLength(4);
     expect(endpoint.httpBodies[3]).toBe(endpoint.httpBodies[2]);
+  });
+});
+
+describe("ResponsesWebSocketSession", () => {
+  const body = (input: unknown[]): Record<string, unknown> => ({ model: MODEL, input, stream: true, store: false });
+  const user = { type: "message", role: "user", content: [{ type: "input_text", text: "read a" }] };
+  const replay = [
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "Reading a." }] },
+    { type: "function_call", call_id: "call_1", name: "read", arguments: '{"path":"a"}' },
+  ];
+
+  async function drain(session: ResponsesWebSocketSession, baseURL: string, input: unknown[], signal?: AbortSignal): Promise<boolean> {
+    const turn = await session.begin({
+      target: async () => ({ url: `${baseURL.replace("http", "ws")}/responses`, headers: {} }),
+      body: body(input),
+      ...(signal !== undefined ? { signal } : {}),
+    });
+    for await (const _event of turn.events()) { /* read to the end */ }
+    return turn.incremental;
+  }
+
+  test("replaces a socket older than its age limit before the next send, with the full input", async () => {
+    const { endpoint, baseURL } = await start();
+    let now = 0;
+    const session = new ResponsesWebSocketSession({ providerName: "openai", maxConnectionAgeMs: 1000, now: () => now });
+    try {
+      expect(await drain(session, baseURL, [user])).toBe(false);
+      now = 999;
+      expect(await drain(session, baseURL, [user, ...replay, TOOL_OUTPUT])).toBe(true);
+      now = 1000;
+      expect(await drain(session, baseURL, [user, ...replay, TOOL_OUTPUT, ...replay, TOOL_OUTPUT])).toBe(false);
+      expect(endpoint.upgrades).toHaveLength(2);
+      expect(endpoint.frames[2]!.previous_response_id).toBeUndefined();
+      expect(session.stats).toMatchObject({ connects: 2, turns: 3, incrementalTurns: 1, fallbacks: 0 });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  test("a turn given up without being read frees the session", async () => {
+    const { endpoint, baseURL } = await start();
+    const session = new ResponsesWebSocketSession({ providerName: "openai" });
+    try {
+      const turn = await session.begin({
+        target: async () => ({ url: `${baseURL.replace("http", "ws")}/responses`, headers: {} }),
+        body: body([user]),
+      });
+      expect(session.available).toBe(false);
+      turn.cancel();
+      expect(session.available).toBe(true);
+      expect(await drain(session, baseURL, [user])).toBe(false);
+      expect(endpoint.upgrades).toHaveLength(2);
+    } finally {
+      session.dispose();
+    }
+  });
+
+  test("reports a busy or disposed session as a fallback that sent nothing", async () => {
+    const { baseURL } = await start();
+    const session = new ResponsesWebSocketSession({ providerName: "openai" });
+    session.dispose();
+    const failure = await drain(session, baseURL, [user]).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ResponsesWebSocketFallback);
+    expect((failure as ResponsesWebSocketFallback).afterSend).toBe(false);
   });
 });

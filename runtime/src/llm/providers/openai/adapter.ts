@@ -1072,6 +1072,8 @@ export class OpenAIProvider implements LLMProvider {
     readonly module: typeof import("./responses-websocket.js");
     readonly session: ResponsesWebSocketSession;
   } | undefined;
+  /** WebSocket transport notices already given to this session. */
+  private readonly webSocketNotices = new Set<string>();
 
   constructor(config: OpenAIProviderConfig) {
     this.config = resolveOpenAIProviderConfig(config);
@@ -1938,6 +1940,9 @@ export class OpenAIProvider implements LLMProvider {
     options: LLMChatOptions | undefined,
   ): Promise<ResponsesWebSocketTurn | undefined> {
     if (this.name !== "openai" || this.config.responsesTransport !== "websocket") return undefined;
+    // A header that belongs to one request (the managed idempotency key)
+    // cannot ride a socket whose upgrade request was sent earlier.
+    if (headers !== undefined && Object.keys(headers).length > 0) return undefined;
     if (this.webSocket === undefined) {
       const module = await import("./responses-websocket.js");
       this.webSocket ??= {
@@ -1966,6 +1971,7 @@ export class OpenAIProvider implements LLMProvider {
         writeBehind?.finish();
         throw error;
       }
+      this.reportWebSocketFallback(session, error.message);
       if (error.afterSend && !error.refused && options?.singleWireAttempt === true) {
         writeBehind?.finish();
         throw new LLMStreamTruncatedError(
@@ -1976,8 +1982,39 @@ export class OpenAIProvider implements LLMProvider {
       return undefined;
     }
     // As after an accepted HTTP request: the previous tool step is complete.
-    if (!(oneShotFastModeActive() && writeBehind?.oneShotBuffering)) writeBehind?.finish();
+    if (!(oneShotFastModeActive() && writeBehind?.oneShotBuffering)) {
+      try {
+        writeBehind?.finish();
+      } catch (error) {
+        // Nobody will read this response: stop it, as the HTTP path cancels its body.
+        turn.cancel();
+        throw error;
+      }
+    }
     return turn;
+  }
+
+  /**
+   * Every call that left the socket for HTTP is a diagnostic. The two lasting
+   * changes are told once each: the session staying on HTTP, and the session
+   * sending the full input after a refused continuation.
+   */
+  private reportWebSocketFallback(session: ResponsesWebSocketSession, reason: string): void {
+    this.config.emitDiagnostic?.({
+      cause: "openai_websocket_fallback",
+      message: JSON.stringify({ provider: this.name, reason, ...session.stats }),
+    });
+    const notices: Array<[boolean, string, string]> = [
+      [session.httpOnlyForSession, "openai_websocket_unavailable",
+        `${this.name} WebSocket transport could not start twice in a row (${reason}); this session continues over HTTP`],
+      [session.fullInputOnly, "openai_websocket_full_input",
+        `${this.name} refused a continuation over the WebSocket; this session now sends the full input on every call`],
+    ];
+    for (const [active, cause, message] of notices) {
+      if (!active || this.webSocketNotices.has(cause)) continue;
+      this.webSocketNotices.add(cause);
+      this.config.emitWarning?.({ cause, message });
+    }
   }
 
   private async streamResponses(

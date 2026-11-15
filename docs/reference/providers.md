@@ -943,8 +943,11 @@ Instructions and tools travel on every call either way.
 The session returns to HTTP by itself: a call goes over HTTP when the socket
 cannot connect, when the service refuses the call before it starts, or when the
 socket is busy with another call. After two failed connects in a row the
-session stays on HTTP. A cancelled call closes the socket, and the next call
-opens a new one. A socket is replaced before OpenAI's 60 minute limit. A proxy
+session stays on HTTP and shows one notice (`openai_websocket_unavailable`). If
+the service refuses a continuation, the session keeps the socket, sends the
+full input on every call from then on, and shows one notice
+(`openai_websocket_full_input`). A cancelled call closes the socket, and the
+next call opens a new one. A socket is replaced before OpenAI's 60 minute limit. A proxy
 configured for HTTP requests is not used by the socket, so behind such a proxy
 the session stays on HTTP.
 

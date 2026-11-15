@@ -34,6 +34,8 @@ export interface ResponsesWebSocketTurn {
   /** Whether the frame carried `previous_response_id` and only new input. */
   readonly incremental: boolean;
   events(): AsyncGenerator<ResponsesWebSocketEvent>;
+  /** Give the response up without reading it: closes the socket and frees the session. */
+  cancel(): void;
 }
 
 export interface ResponsesWebSocketStats {
@@ -89,6 +91,12 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 /** The service closes a connection at 60 minutes; replace it before that. */
 const DEFAULT_MAX_CONNECTION_AGE_MS = 55 * 60_000;
 const FAILURES_BEFORE_HTTP_ONLY = 2;
+/**
+ * How long a sent frame may stay unanswered. The first event of a response
+ * arrives within a second; a socket that stays silent is half open (no ping
+ * tells), and the stream idle timeout is off by default.
+ */
+const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 30_000;
 
 function isItem(value: unknown): value is Item {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -221,6 +229,16 @@ function keepProcessAlive(socket: WebSocket, alive: boolean): void {
   else raw?.unref?.();
 }
 
+/**
+ * Whether an error frame refuses the continuation itself (an unknown or
+ * unsupported `previous_response_id`), as opposed to the request (a rate
+ * limit, an overload), which says nothing about later continuations.
+ */
+function refusesContinuation(error: Item): boolean {
+  return error.code === "previous_response_not_found" || error.param === "previous_response_id" ||
+    (typeof error.message === "string" && error.message.includes("previous_response_id"));
+}
+
 function abortError(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("Operation aborted", "AbortError");
 }
@@ -247,6 +265,7 @@ export interface ResponsesWebSocketSessionOptions {
   readonly providerName: string;
   readonly connectTimeoutMs?: number;
   readonly maxConnectionAgeMs?: number;
+  readonly firstEventTimeoutMs?: number;
   readonly now?: () => number;
 }
 
@@ -285,6 +304,16 @@ export class ResponsesWebSocketSession {
     return !this.disposed && !this.httpOnly && !this.busy;
   }
 
+  /** Two failed starts in a row: the session stays on HTTP. */
+  get httpOnlyForSession(): boolean {
+    return this.httpOnly;
+  }
+
+  /** The service refused a continuation: every later frame carries the full input. */
+  get fullInputOnly(): boolean {
+    return this.incrementalRefused;
+  }
+
   dispose(): void {
     this.disposed = true;
     this.drop();
@@ -294,10 +323,11 @@ export class ResponsesWebSocketSession {
    * Send `body` and wait for the first frame of its response.
    *
    * @throws ResponsesWebSocketFallback when the request must go over HTTP.
-   * @throws the abort reason, or an idle error, as the HTTP path does.
+   * @throws the abort reason, as the HTTP path does.
    */
   async begin(options: ResponsesWebSocketBeginOptions): Promise<ResponsesWebSocketTurn> {
     if (!this.available) throw this.fallback("socket not available");
+    if (options.signal?.aborted) throw abortError(options.signal);
     this.busy = true;
     try {
       // One more round only when the service ends a connection at its age limit.
@@ -313,6 +343,8 @@ export class ResponsesWebSocketSession {
         const frame = responsesWebSocketCreateFrame(options.body, chain, incrementalInput);
         // The service forgets a response that a failed continuation named.
         this.chain = undefined;
+        // Anything that arrived after the previous response ended is not this one's.
+        connection.queue.length = 0;
         try {
           await new Promise<void>((resolve, reject) => {
             connection.socket.send(JSON.stringify(frame), (error) => error ? reject(error) : resolve());
@@ -321,19 +353,21 @@ export class ResponsesWebSocketSession {
           this.failed();
           throw this.fallback("send failed", { afterSend: true });
         }
-        const first = await this.next(connection, options);
+        const idle = options.idleTimeoutMs !== undefined && options.idleTimeoutMs > 0
+          ? options.idleTimeoutMs
+          : Number.POSITIVE_INFINITY;
+        const first = await this.next(connection, options.signal,
+          Math.min(idle, this.options.firstEventTimeoutMs ?? DEFAULT_FIRST_EVENT_TIMEOUT_MS));
         if (first.kind === "aborted") {
           this.drop();
           throw abortError(options.signal!);
         }
-        if (first.kind === "idle") {
-          this.drop();
-          throw new Error(`${this.options.providerName} stream idle for ${options.idleTimeoutMs}ms`);
-        }
         if (first.kind !== "frame") {
           this.failed();
           throw this.fallback(
-            first.kind === "closed" ? "socket closed before the first event" : "invalid frame",
+            first.kind === "closed" ? "socket closed before the first event"
+              : first.kind === "idle" ? "no event after the frame was sent"
+              : "invalid frame",
             { afterSend: true },
           );
         }
@@ -343,8 +377,8 @@ export class ResponsesWebSocketSession {
             this.drop();
             continue;
           }
-          if (incremental) this.incrementalRefused = true;
-          throw this.fallback("error frame before the first event", {
+          if (incremental && refusesContinuation(error)) this.incrementalRefused = true;
+          throw this.fallback(`error frame before the first event (${String(error.code ?? "no code")})`, {
             afterSend: true, refused: true, errorFrame: first.data,
           });
         }
@@ -354,6 +388,11 @@ export class ResponsesWebSocketSession {
         return {
           incremental,
           events: () => this.events(connection, options, first.data),
+          cancel: () => {
+            if (this.connection === connection) this.drop();
+            else connection.socket.terminate();
+            this.release();
+          },
         };
       }
     } catch (error) {
@@ -388,6 +427,9 @@ export class ResponsesWebSocketSession {
     this.chain = undefined;
     if (connection === undefined) return;
     connection.closed = true;
+    // A reader still waiting on this connection must see it end.
+    connection.queue.push({ kind: "closed" });
+    connection.wake?.();
     try {
       connection.socket.terminate();
     } catch {
@@ -484,12 +526,15 @@ export class ResponsesWebSocketSession {
     });
   }
 
-  private next(connection: Connection, options: ResponsesWebSocketBeginOptions): Promise<Waited> {
+  private next(
+    connection: Connection,
+    signal: AbortSignal | undefined,
+    timeoutMs: number | undefined,
+  ): Promise<Waited> {
+    if (signal?.aborted) return Promise.resolve({ kind: "aborted" });
     const queued = connection.queue.shift();
     if (queued !== undefined) return Promise.resolve(queued);
     if (connection.closed) return Promise.resolve({ kind: "closed" });
-    const signal = options.signal;
-    if (signal?.aborted) return Promise.resolve({ kind: "aborted" });
     return new Promise<Waited>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const settle = (result: Waited): void => {
@@ -501,8 +546,8 @@ export class ResponsesWebSocketSession {
       const onAbort = (): void => settle({ kind: "aborted" });
       connection.wake = () => settle(connection.queue.shift() ?? { kind: "closed" });
       signal?.addEventListener("abort", onAbort, { once: true });
-      if (options.idleTimeoutMs !== undefined && options.idleTimeoutMs > 0) {
-        timer = setTimeout(() => settle({ kind: "idle" }), options.idleTimeoutMs);
+      if (timeoutMs !== undefined && timeoutMs > 0 && Number.isFinite(timeoutMs)) {
+        timer = setTimeout(() => settle({ kind: "idle" }), timeoutMs);
       }
     });
   }
@@ -535,7 +580,7 @@ export class ResponsesWebSocketSession {
           return;
         }
         yield { data };
-        const arrival = await this.next(connection, options);
+        const arrival = await this.next(connection, options.signal, options.idleTimeoutMs);
         if (arrival.kind === "aborted") throw abortError(options.signal!);
         if (arrival.kind === "idle") {
           throw new Error(`${this.options.providerName} stream idle for ${options.idleTimeoutMs}ms`);
