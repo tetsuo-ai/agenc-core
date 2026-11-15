@@ -212,7 +212,8 @@ export function resolveProviderRuntimeRequest(params: {
       params.config.providers?.openai?.transport;
   const openAiResponsesToolFormat = params.provider !== "openai"
     ? undefined
-    : parseOpenAIResponsesToolFormat(params.environment.AGENC_OPENAI_TOOL_FORMAT);
+    : parseOpenAIResponsesToolFormat(params.environment.AGENC_OPENAI_TOOL_FORMAT) ??
+      params.config.providers?.openai?.tool_format;
   const extra = {
     ...(params.baseExtra ?? {}),
     ...providerTransportExtra(
@@ -256,8 +257,9 @@ export function resolveProviderRuntimeRequest(params: {
     ...(params.provider === "openai" && openAiResponsesTransport !== undefined
       ? { responsesTransport: openAiResponsesTransport }
       : {}),
-    // OpenAI tool format (AGENC_OPENAI_TOOL_FORMAT): `freeform` declares
-    // apply_patch as an OpenAI custom tool. Unset, the function tool stays.
+    // OpenAI tool format: `freeform` declares apply_patch as an OpenAI custom
+    // tool. Unset, the function tool stays; the environment value wins over
+    // the config.
     ...(params.provider === "openai" && openAiResponsesToolFormat !== undefined
       ? { responsesToolFormat: openAiResponsesToolFormat }
       : {}),

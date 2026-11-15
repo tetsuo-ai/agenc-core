@@ -10,7 +10,9 @@ import {
   parseOpenAIResponsesResponse,
   type OpenAIResponsesRequestOptions,
 } from "../../../../src/llm/wire/responses-openai.js";
+import { readProviderContextHistory } from "../../../../src/llm/wire/responses-openai-context.js";
 import { resolveProviderRuntimeRequest } from "../../../../src/llm/provider-request.js";
+import { validateProviderConfig } from "../../../../src/config/schema.js";
 import { APPLY_PATCH_LARK_GRAMMAR } from "../../../../src/tools/apply-patch/grammar.js";
 import type { LLMMessage, LLMTool, LLMToolCall } from "../../../../src/llm/types.js";
 import { runWithStartupProviderSelection } from "../../../../src/utils/model/providers.js";
@@ -168,6 +170,28 @@ describe("freeform apply_patch on the Responses wire", () => {
     expect(parsed.finishReason).toBe("tool_calls");
   });
 
+  test("records the custom declaration in the append-only context history, and reads it back", () => {
+    const request: OpenAIResponsesRequestOptions = {
+      model: MODEL, messages: [{ role: "user", content: "change a" }], tools: TOOLS,
+      freeformApplyPatch: true, appendOnlyContext: true,
+    };
+    const parsed = parseOpenAIResponsesResponse(MODEL, { id: "resp_1", status: "completed", output: [CUSTOM_ITEM] }, request);
+    const history = parsed.providerContextHistory;
+    expect(history?.initial?.tools.map((tool) => tool.type)).toEqual(["function", "custom"]);
+    expect(readProviderContextHistory(JSON.parse(JSON.stringify(history)))).toEqual(history);
+    expect(readProviderContextHistory({ ...history, initial: { tools: [{ type: "custom", name: "x", description: "d", format: { type: "text", extra: 1 } }] } }))
+      .toBeUndefined();
+    // The next request keeps the first request's tools: no additional_tools item and no new prefix.
+    const next = buildOpenAIResponsesRequest({ ...request, messages: [
+      { role: "user", content: "change a" },
+      { role: "assistant", content: "", toolCalls: [patchCall], providerContextHistory: history },
+      { role: "tool", toolCallId: "call_p", content: "done" },
+    ] });
+    expect(next.tools).toEqual(buildOpenAIResponsesRequest(request).tools);
+    expect((next.input as Array<Record<string, unknown>>).map((item) => item.type)).toEqual(
+      ["message", "custom_tool_call", "custom_tool_call_output"]);
+  });
+
   test("continues a socket chain over a custom call only when the replayed patch is the issued one", () => {
     const user = { type: "message", role: "user", content: [{ type: "input_text", text: "change a" }] };
     const body = (input: unknown[]): Record<string, unknown> => ({
@@ -258,10 +282,26 @@ describe("OpenAIProvider with responsesToolFormat freeform", () => {
   });
 });
 
-describe("AGENC_OPENAI_TOOL_FORMAT", () => {
-  const extra = (provider: "openai" | "deepseek" | "openrouter", environment: Record<string, string>) =>
-    resolveProviderRuntimeRequest({ provider, model: provider === "openai" ? MODEL : "deepseek-flash", config: {}, environment })
+describe("AGENC_OPENAI_TOOL_FORMAT and [providers.openai] tool_format", () => {
+  const extra = (
+    provider: "openai" | "deepseek" | "openrouter",
+    environment: Record<string, string>,
+    config: Parameters<typeof resolveProviderRuntimeRequest>[0]["config"] = {},
+  ) =>
+    resolveProviderRuntimeRequest({ provider, model: provider === "openai" ? MODEL : "deepseek-flash", config, environment })
       .requested.extra as Record<string, unknown> | undefined;
+
+  test("the config value reaches the openai provider and the environment wins over it", () => {
+    const freeform = { providers: { openai: { tool_format: "freeform" as const } } };
+    expect(extra("openai", {}, freeform)).toMatchObject({ responsesToolFormat: "freeform" });
+    expect(extra("openai", { AGENC_OPENAI_TOOL_FORMAT: "function" }, freeform)).toMatchObject({ responsesToolFormat: "function" });
+    expect(extra("deepseek", {}, freeform)).toEqual(extra("deepseek", {}));
+    expect(validateProviderConfig({ openai: { tool_format: "freeform" } })).toEqual({ openai: { tool_format: "freeform" } });
+    expect(() => validateProviderConfig({ openai: { tool_format: "xml" } })).toThrow(/must be function or freeform/u);
+    for (const provider of ["deepseek", "grok", "openrouter"]) {
+      expect(() => validateProviderConfig({ [provider]: { tool_format: "freeform" } })).toThrow(/applies only under providers\.openai/u);
+    }
+  });
 
   test("reaches only the openai provider, and only as a known value", () => {
     expect(extra("openai", { AGENC_OPENAI_TOOL_FORMAT: "freeform" })).toMatchObject({ responsesToolFormat: "freeform" });

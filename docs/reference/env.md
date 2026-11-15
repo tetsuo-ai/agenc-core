@@ -177,7 +177,8 @@ names that pass the local fetcher's own checks are sent. Each successful fetch
 costs $0.00075 ($0.75 per 1,000). See
 [Direct DeepSeek](../providers/deepseek-direct.md#web-fetch).
 
-`AGENC_OPENAI_TOOL_FORMAT=freeform` makes the `openai` provider declare
+`AGENC_OPENAI_TOOL_FORMAT` (`function` or `freeform`) overrides
+`[providers.openai] tool_format` for a session. `freeform` makes the `openai` provider declare
 `apply_patch` to GPT-5 and later models as an OpenAI custom (freeform) tool
 on the Responses API: the model writes the patch as plain text under a Lark
 grammar instead of a JSON string argument. The tool, its validation and its

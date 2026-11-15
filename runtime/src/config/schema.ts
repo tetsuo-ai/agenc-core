@@ -704,6 +704,13 @@ export interface ProviderConfig {
    * `http` (see docs/reference/providers.md).
    */
   readonly transport?: "http" | "websocket";
+  /**
+   * How apply_patch is declared on the Responses API. Accepted only under
+   * `providers.openai`: `freeform` sends OpenAI's custom tool form (plain
+   * patch text under a Lark grammar) to GPT-5 and later; `function`, the
+   * default, keeps the JSON function tool (see docs/reference/config.md).
+   */
+  readonly tool_format?: "function" | "freeform";
   readonly context_window_tokens?: number;
   readonly max_output_tokens?: number;
   /**
@@ -1774,6 +1781,7 @@ const PROVIDER_KEYS: ReadonlySet<string> = new Set([
   "incremental_continuation",
   "zero_data_retention",
   "transport",
+  "tool_format",
   "auth",
 ]);
 
@@ -2246,6 +2254,19 @@ function validateSingleProviderConfig(
       throw new InvalidProviderConfigError(field, "must be http or websocket");
     }
     out.transport = record.transport;
+  }
+  if (record.tool_format !== undefined) {
+    const field = fieldPath(providerId, "tool_format");
+    if (providerId !== "openai") {
+      throw new InvalidProviderConfigError(
+        field,
+        "tool_format applies only under providers.openai, whose Responses API has custom (freeform) tools",
+      );
+    }
+    if (record.tool_format !== "function" && record.tool_format !== "freeform") {
+      throw new InvalidProviderConfigError(field, "must be function or freeform");
+    }
+    out.tool_format = record.tool_format;
   }
   if (record.auth !== undefined) {
     const field = fieldPath(providerId, "auth");
