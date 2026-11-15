@@ -105,7 +105,6 @@ import type { OpenAIProviderConfig } from "./types.js";
 import type { ResponsesWebSocketSession, ResponsesWebSocketTurn } from "./responses-websocket.js";
 import { currentSessionWriteBehind } from "../../../session/write-behind.js";
 import { resolveStreamIdleTimeoutMs } from "../../stream-watchdog.js";
-import { getWebSocketProxyUrl } from "../../../utils/proxy.js";
 import { OpenAIAuthSession } from "./auth.js";
 import { parseSSEFrames, type SSEFrame } from "../../_deps/sse.js";
 import {
@@ -1089,8 +1088,6 @@ export class OpenAIProvider implements LLMProvider {
   /** WebSocket transport notices already given to this session. */
   private readonly webSocketNotices = new Set<string>();
   private webSocketDisposed = false;
-  /** Whether the WebSocket default applies to this provider's endpoint; resolved once. */
-  private webSocketDefaultAllowed: boolean | undefined;
 
   constructor(config: OpenAIProviderConfig) {
     this.config = resolveOpenAIProviderConfig(config);
@@ -1947,19 +1944,18 @@ export class OpenAIProvider implements LLMProvider {
    * choice: a configured transport wins, and without one the calls of a Light
    * session go over the session's WebSocket and every other call over HTTP.
    * The default never applies where the socket would leave the path HTTP
-   * takes or reach a service not known to have the mode: an injected fetch,
-   * an HTTP proxy for this endpoint (the socket does not use it), or a remote
-   * host that is not OpenAI's. A local endpoint (a proxy or recorder in front
-   * of OpenAI, a local server) gets one quiet try.
+   * takes or reach a service not known to have the mode: an injected fetch
+   * or a remote host that is not OpenAI's. A local endpoint (a proxy or
+   * recorder in front of OpenAI, a local server) gets one quiet try. With an
+   * HTTP proxy for the endpoint, which the socket does not use, the session
+   * setup configures `http` (see `resolveProviderRuntimeRequest`).
    */
   private responsesTransportFor(lightSession: boolean): "http" | "websocket" {
     if (this.name !== "openai") return "http";
     if (this.config.responsesTransport !== undefined) return this.config.responsesTransport;
     if (!lightSession || this.config.fetchImpl !== undefined) return "http";
-    this.webSocketDefaultAllowed ??=
-      (this.isChatGptBackend() || isOpenAiHost(this.config.baseURL) || isLocalBaseURL(this.config.baseURL)) &&
-      getWebSocketProxyUrl(this.config.baseURL, process.env) === undefined;
-    return this.webSocketDefaultAllowed ? "websocket" : "http";
+    return this.isChatGptBackend() || isOpenAiHost(this.config.baseURL) || isLocalBaseURL(this.config.baseURL)
+      ? "websocket" : "http";
   }
 
   /**

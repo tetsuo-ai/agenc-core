@@ -978,21 +978,20 @@ describe("OpenAIProvider WebSocket by default for Light sessions, with pre-conne
     expect(warnings).toEqual([]);
   });
 
-  test("opens no socket by default when an HTTP proxy applies to the endpoint or a fetch is injected", async () => {
+  test("opens no socket by default when a fetch is injected or the host is another remote one", async () => {
     const { endpoint, baseURL } = await start();
-    const before = process.env.HTTPS_PROXY;
-    process.env.HTTPS_PROXY = "http://127.0.0.1:9";
-    try {
-      const proxied = light(baseURL);
-      proxied.prewarmStartup!({ ...START, lightSession: true });
-      const injected = light(baseURL, { fetchImpl: (...args: Parameters<typeof fetch>) => fetch(...args) });
-      injected.prewarmStartup!({ ...START, lightSession: true });
-      await new Promise((resolve) => setTimeout(resolve, 80));
-      expect(endpoint.upgrades).toHaveLength(0);
-    } finally {
-      if (before === undefined) delete process.env.HTTPS_PROXY;
-      else process.env.HTTPS_PROXY = before;
-    }
+    const injected = light(baseURL, { fetchImpl: (...args: Parameters<typeof fetch>) => fetch(...args) });
+    injected.prewarmStartup!({ ...START, lightSession: true });
+    await stream(injected, USER, LIGHT);
+    expect(endpoint.upgrades).toHaveLength(0);
+    expect(endpoint.httpBodies).toHaveLength(1);
+
+    // A gateway: the call goes to the injected fetch-less HTTP path only, so no socket is tried there.
+    // (The hermetic runner fails the suite on any public connection attempt.)
+    const gateway = light("https://gateway.invalid/v1");
+    gateway.prewarmStartup!({ ...START, lightSession: true });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(endpoint.upgrades).toHaveLength(0);
   });
 
   test("dispose during the pre-connect leaves no socket behind", async () => {
