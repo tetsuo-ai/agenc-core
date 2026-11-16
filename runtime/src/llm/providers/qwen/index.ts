@@ -1,6 +1,7 @@
 import { OpenAIProvider } from "../openai/adapter.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
 import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
+import { QWEN4_MAX_MODEL } from "../../registry/qwen-current-models.js";
 import { isQwen4MaxPreviewModel, QWEN_TOKEN_PLAN_HOSTED_MODEL_IDS, QWEN_TOKEN_PLAN_PREVIEW_MODEL_IDS } from "../../registry/qwen-token-plan-models.js";
 import {
   createQwenOfficialDnsTransport,
@@ -14,6 +15,7 @@ export type QwenCloudProviderName = "qwen" | "qwen-token-plan";
 const NON_CHAT_QWEN_MODEL =
   /(?:^|[/:])(?:qwen-image|qwen-audio|qwen-tts|qwen-asr|wan\d|qwen.*(?:embedding|rerank))(?:$|[-_.:])/i;
 const TOKEN_PLAN_CHAT_MODELS = new Set([
+  QWEN4_MAX_MODEL.model,
   "qwen3.8-max",
   "qwen3.8-flash",
   "qwen3.7-max",
@@ -60,7 +62,11 @@ function knownEndpointMode(baseURL: string | undefined): QwenCloudProviderName |
   if (
     hostname === "dashscope-intl.aliyuncs.com" ||
     hostname === "dashscope.aliyuncs.com" ||
-    hostname.endsWith(".maas.aliyuncs.com")
+    hostname.endsWith(".maas.aliyuncs.com") ||
+    // QwenCloud's own domain: {region}.maas.qwencloudapi.com, and the bare
+    // host as Singapore (docs.qwencloud.com, regions, 2026-11-16).
+    hostname === "maas.qwencloudapi.com" ||
+    hostname.endsWith(".maas.qwencloudapi.com")
   ) {
     return "qwen";
   }

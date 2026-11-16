@@ -7,6 +7,9 @@ key was read, created or copied.
 Rechecked the public model card, Chat API, thinking and structured-output guides
 on 2026-11-14 for the release follow-up. No inference calls were made.
 
+The released model is `qwen4-max`, on Pay-As-You-Go and the Token Plan: see
+[Qwen4 Max](./qwen4-max-2026-11.md). This page covers only the preview.
+
 ## Model and access
 
 The [model card](https://www.alibabacloud.com/help/en/model-studio/qwen4-max-preview)

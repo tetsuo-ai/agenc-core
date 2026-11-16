@@ -9,11 +9,15 @@
  * the Token Plan endpoint. The plan's `auto` router publishes no limits or
  * controls and is not listed.
  * The separate Qwen4 preview contract below is documentation-only and has no
- * PAYG route. Sources: docs/models/qwen-token-plan-2026-10-31.md and
- * docs/models/qwen4-max-preview-2026-11.md.
+ * PAYG route; the released Qwen4 Max shares its PAYG contract. Sources:
+ * docs/models/qwen-token-plan-2026-10-31.md, docs/models/qwen4-max-preview-2026-11.md
+ * and docs/models/qwen4-max-2026-11.md.
  */
 import type { RegisteredModelCatalogEntry } from "./model-catalog.js";
 import {
+  isQwen4MaxModel,
+  QWEN4_MAX_MODEL,
+  QWEN4_MAX_PICKER_PRIORITY,
   qwenCurrentCatalogEntry,
   resolveQwenCurrentModel,
   type QwenCurrentModel,
@@ -58,6 +62,14 @@ export const QWEN_TOKEN_PLAN_PREVIEW_CATALOG: readonly RegisteredModelCatalogEnt
   )),
 );
 
+/**
+ * The released Qwen4 Max on the Token Plan: the same id and wire contract as Pay-As-You-Go (the plan's
+ * supported-models table and its live Models API list `qwen4-max`, 2026-11-16). Billed in Credits.
+ */
+export const QWEN_TOKEN_PLAN_QWEN4_MAX_CATALOG: readonly RegisteredModelCatalogEntry[] = Object.freeze([
+  qwenCurrentCatalogEntry("qwen-token-plan", QWEN4_MAX_MODEL, QWEN4_MAX_PICKER_PRIORITY, "list"),
+]);
+
 const TOKEN_PLAN_HOSTED_CONTRACTS: Readonly<Record<string, string>> = Object.freeze({
   "deepseek-v4.1-flash": "deepseek-v4.1-flash",
   "deepseek-v4.1-flash-1017": "deepseek-v4.1-flash",
@@ -79,6 +91,7 @@ export function resolveQwenTokenPlanHostedModel(
 ): QwenCurrentModel | undefined {
   const id = model?.trim().toLowerCase();
   if (id === undefined) return undefined;
+  if (isQwen4MaxModel(id)) return QWEN4_MAX_MODEL;
   if (isQwen4MaxPreviewModel(id)) {
     return id === QWEN4_MAX_PREVIEW_MODEL.model ? QWEN4_MAX_PREVIEW_MODEL
       : Object.freeze({ ...QWEN4_MAX_PREVIEW_MODEL, model: id });

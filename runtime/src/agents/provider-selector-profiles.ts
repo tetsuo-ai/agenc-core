@@ -22,7 +22,7 @@ const STRONG: ChildModelProfile = Object.freeze({
   quality: Object.freeze({ extraction: 0.98, review: 0.95, coding: 0.95, reasoning: 0.96, research: 0.94, general: 0.95 }),
   latencyMs: 40_000,
 });
-const QWEN = Object.freeze({ "qwen3.8-max": STRONG, "qwen3.8-flash": BALANCED,
+const QWEN = Object.freeze({ "qwen4-max": STRONG, "qwen3.8-max": STRONG, "qwen3.8-flash": BALANCED,
   "qwen3.7-max": STRONG, "qwen3.7-plus": BALANCED, "qwen3.7-flash": BALANCED,
   "qwen3-coder-plus": BALANCED, "qwen3-coder-next": BALANCED });
 const ZAI = Object.freeze({ "glm-5.3": STRONG, "glm-5.3-flash": BALANCED });

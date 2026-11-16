@@ -36,7 +36,7 @@ import { DEEPSEEK_MODELS, DEEPSEEK_MODEL_ALIASES } from "./deepseek-models.js";
 import { QWEN_FLASH_NEXT_MODEL } from "./qwen-flash-next.js";
 import { QWEN_CODER_30B_MODEL } from "./qwen-coder-30b.js";
 import { QWEN_CURRENT_MODEL_CATALOG } from "./qwen-current-models.js";
-import { QWEN_TOKEN_PLAN_HOSTED_CATALOG, QWEN_TOKEN_PLAN_PREVIEW_CATALOG, QWEN_TOKEN_PLAN_PREVIEW_MODEL_IDS } from "./qwen-token-plan-models.js";
+import { QWEN_TOKEN_PLAN_HOSTED_CATALOG, QWEN_TOKEN_PLAN_PREVIEW_CATALOG, QWEN_TOKEN_PLAN_PREVIEW_MODEL_IDS, QWEN_TOKEN_PLAN_QWEN4_MAX_CATALOG } from "./qwen-token-plan-models.js";
 import { AGENC_DEEPSEEK_MODELS, AGENC_DEEPSEEK_REASONING_LEVELS } from "./agenc-deepseek.js";
 import {
   GEMINI_THINKING_MODELS,
@@ -921,6 +921,7 @@ const NON_OPENROUTER_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
     ...QWEN_CURRENT_MODEL_CATALOG,
     ...QWEN_TOKEN_PLAN_HOSTED_CATALOG,
     ...QWEN_TOKEN_PLAN_PREVIEW_CATALOG,
+    ...QWEN_TOKEN_PLAN_QWEN4_MAX_CATALOG,
     ...[...DEEPSEEK_MODELS, ...DEEPSEEK_MODEL_ALIASES].map((entry, index): RegisteredModelCatalogEntry => ({
       provider: "deepseek",
       model: entry.model,

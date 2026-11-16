@@ -45,7 +45,7 @@ import {
 } from "../../errors.js";
 import { isProviderFundsFailure } from "../../funds.js";
 import { transportFailureOf } from "../../transport-failure.js";
-import { resolveQwenCurrentModel, type QwenCurrentModel } from "../../registry/qwen-current-models.js";
+import { isQwen4MaxModel, QWEN4_MAX_MODEL, resolveQwenCurrentModel, type QwenCurrentModel } from "../../registry/qwen-current-models.js";
 import { isQwen4MaxPreviewModel, QWEN4_MAX_PREVIEW_MODEL, resolveQwenTokenPlanHostedModel } from "../../registry/qwen-token-plan-models.js";
 import { ProviderHttpClient } from "../../client.js";
 import {
@@ -1611,6 +1611,14 @@ export class OpenAIProvider implements LLMProvider {
       // Unlike older Qwen, thinking shares this cap. The 32k chat fallback
       // can exhaust the whole answer budget before xhigh finishes thinking.
       const ceiling = QWEN4_MAX_PREVIEW_MODEL.maxOutputTokens;
+      return Math.min(requested ?? ceiling, ceiling);
+    }
+    if (
+      (this.name === "qwen" || this.name === "qwen-token-plan") &&
+      isQwen4MaxModel(options?.model?.trim() || this.config.model)
+    ) {
+      // Thinking and the answer share this cap (default thinking budget 131,072).
+      const ceiling = QWEN4_MAX_MODEL.maxOutputTokens;
       return Math.min(requested ?? ceiling, ceiling);
     }
     return requested;
