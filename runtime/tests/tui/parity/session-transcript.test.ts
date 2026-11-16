@@ -1763,7 +1763,7 @@ describe("AgenC TUI session transcript", () => {
       ]);
 
       const allText = JSON.stringify(transcript.messages);
-      expect(allText).toContain("Permission request denied by user.");
+      expect(allText).toContain("Permission denied.");
       expect(allText).not.toContain("arrived out of order and was recovered");
       expect(allText).not.toContain("{\\\"error\\\":\\\"rejected by user\\\"}");
     });
@@ -1784,7 +1784,7 @@ describe("AgenC TUI session transcript", () => {
       ]);
 
       const allText = JSON.stringify(transcript.messages);
-      expect(allText).toContain("Permission request denied by user.");
+      expect(allText).toContain("Permission denied.");
       expect(allText).not.toContain("arrived out of order and was recovered");
       expect(allText).not.toContain("rejected by user");
     });

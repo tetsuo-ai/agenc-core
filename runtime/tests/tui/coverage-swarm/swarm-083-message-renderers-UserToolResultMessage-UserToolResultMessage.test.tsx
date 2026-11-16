@@ -53,7 +53,7 @@ function createLookups(toolUse?: {
 describe('UserToolResultMessage swarm-083 coverage', () => {
   test('formats orphan tool result content from denials, arrays, nullish, and scalar values', () => {
     expect(formatOrphanToolResultContent({ error: 'rejected by user' })).toBe(
-      'Permission request denied by user.',
+      'Permission denied.',
     )
     expect(formatOrphanToolResultContent('plain recovered output')).toBe(
       'plain recovered output',
@@ -66,7 +66,7 @@ describe('UserToolResultMessage swarm-083 coverage', () => {
         { text: 123 },
       ]),
     ).toBe(
-      'first line\nsecond line\n{"type":"image","source":{"media_type":"image/png","data":"abc"}}\n{"text":123}',
+      'first line\nsecond line\nImage received.\nContent received.',
     )
     expect(formatOrphanToolResultContent(null)).toBe('')
     expect(formatOrphanToolResultContent(42 as never)).toBe('42')
@@ -93,9 +93,11 @@ describe('UserToolResultMessage swarm-083 coverage', () => {
       { columns: 100, rows: 10 },
     )
 
-    expect(output).toContain('Tool result recovered without matching tool call:')
+    expect(output).toContain('Recovered a tool result:')
     expect(output).toContain('restored text')
-    expect(output).toContain('{"type":"json","value":7}')
+    // A non-text block is named, never dumped as JSON.
+    expect(output).toContain('Content received.')
+    expect(output).not.toContain('{"type":"json"')
   })
 
   test('routes orphan error results through the fallback error renderer', async () => {

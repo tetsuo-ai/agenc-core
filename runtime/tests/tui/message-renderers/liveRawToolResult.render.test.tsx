@@ -192,7 +192,7 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
       isError: true,
     })
     const row = await renderCallRow(c.param, c.lookups)
-    expect(row).toContain('Permission request denied by user.')
+    expect(row).toContain('Permission denied.')
     expect(row).not.toContain('exec_command')
     expect(row).not.toContain('Do not retry')
     expect(row).not.toContain('resolver')

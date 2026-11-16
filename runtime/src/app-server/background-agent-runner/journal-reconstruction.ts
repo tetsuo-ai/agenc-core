@@ -1,3 +1,4 @@
+import { attachmentCaption } from "../../tui/user-facing-tool-text.js";
 import { hasRuntimeHistoryWrapper, userFacingHistoryText } from "../../session/user-facing-history-text.js";
 import { PendingEffectReviews } from "../../session/pending-effect-reviews.js";
 /**
@@ -537,7 +538,9 @@ export function sessionTranscriptV2FromRollout(
         payload: {
           callId: event.msg.payload.callId,
           ...(event.msg.payload.toolName ? { toolName: event.msg.payload.toolName } : {}),
-          result: captions ?? event.msg.payload.displayAttachments.map(item => `[Shown to the user: ${item.kind} "${item.title}"]`).join("\n"),
+          // The stored caption ("[Shown to the user: file "report"]") is the
+          // model's receipt; a client shows the attachment's own caption.
+          result: attachmentCaption(captions ?? event.msg.payload.displayAttachments.map(item => `[Shown to the user: ${item.kind} "${item.title}"]`).join("\n")),
           isError: event.msg.payload.isError,
           displayAttachments: event.msg.payload.displayAttachments.map(item =>
             item.data !== undefined && Buffer.byteLength(JSON.stringify(item.data), "utf8") > 8 * 1024

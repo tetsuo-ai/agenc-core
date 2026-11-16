@@ -1,10 +1,11 @@
+import { userFacingResultContent } from '../../user-facing-tool-text.js';
 import * as React from 'react';
 import { Text } from '../../ink.js';
 import type { Tools } from '../../../tools/Tool.js';
 import type { NormalizedUserMessage, ProgressMessage } from '../../../types/message.js';
 import type { AgenCToolResultBlockParam } from '../../../types/message.js';
 import { type buildMessageLookups, CANCEL_MESSAGE, INTERRUPT_MESSAGE_FOR_TOOL_USE, REJECT_MESSAGE } from '../../../utils/messages.js';
-import { isPermissionDeniedToolResult, PERMISSION_DENIED_TOOL_RESULT_MESSAGE } from '../../tool-result-denial.js';
+import { isPermissionDeniedToolResult, PERMISSION_DENIED_DISPLAY_TEXT } from '../../tool-result-denial.js';
 import { UserToolCanceledMessage } from '../../components/v2/messagePrimitives.js';
 import { UserToolErrorMessage } from './UserToolErrorMessage.js';
 import { UserToolRejectMessage } from './UserToolRejectMessage.js';
@@ -23,20 +24,10 @@ type Props = {
 };
 
 export function formatOrphanToolResultContent(content: AgenCToolResultBlockParam["content"]): string {
-  if (isPermissionDeniedToolResult(content)) return PERMISSION_DENIED_TOOL_RESULT_MESSAGE;
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((block) => {
-        if (typeof block === "string") return block;
-        if (block && typeof block === "object" && "text" in block && typeof block.text === "string") {
-          return block.text;
-        }
-        return JSON.stringify(block);
-      })
-      .join("\n");
-  }
-  return content == null ? "" : String(content);
+  if (isPermissionDeniedToolResult(content)) return PERMISSION_DENIED_DISPLAY_TEXT;
+  // No call row names the tool, so the runtime's own texts are recognized
+  // by their wording; non-text blocks are named, never dumped as JSON.
+  return userFacingResultContent(content) ?? "";
 }
 
 export function UserToolResultMessage({
@@ -55,7 +46,7 @@ export function UserToolResultMessage({
     if (param.is_error) {
       return <UserToolErrorMessage progressMessagesForMessage={progressMessagesForMessage} tool={undefined} tools={tools} param={param} verbose={verbose} isTranscriptMode={isTranscriptMode} />;
     }
-    return <Text dimColor={true}>Tool result recovered without matching tool call: {formatOrphanToolResultContent(param.content)}</Text>;
+    return <Text dimColor={true}>Recovered a tool result: {formatOrphanToolResultContent(param.content)}</Text>;
   }
 
   const textContent = getTextToolResultContent(param.content);

@@ -1,3 +1,4 @@
+import { emptyReadNotice, userFacingResultText, withoutCallIds } from "./user-facing-tool-text.js";
 import { randomUUID } from "node:crypto";
 import { EMPTY_TURN_EFFICIENCY, advanceTurnEfficiency, type TurnEfficiency, type TurnEfficiencyState } from "./turn-efficiency.js";
 import { selectableUserMessagesFilter } from "./components/message-selector-filter.js";
@@ -30,7 +31,7 @@ import { modelToolAliasTarget } from "../tools/model-tool-aliases.js";
 import { formatRealtimeItemSummary } from "./realtime/state.js";
 import {
   isPermissionDeniedToolResult,
-  PERMISSION_DENIED_TOOL_RESULT_MESSAGE,
+  PERMISSION_DENIED_DISPLAY_TEXT,
 } from "./tool-result-denial.js";
 import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 import { escapeXml } from "../utils/xml.js";
@@ -862,7 +863,7 @@ function pushToolResult(
   if (!openTools.has(callId)) {
     settledToolCallIds.add(callId);
     if (isPermissionDeniedToolResult(rawResult) || isPermissionDeniedToolResult(result)) {
-      out.push(makeSystemMessage(PERMISSION_DENIED_TOOL_RESULT_MESSAGE, "warning", nextUuid()));
+      out.push(makeSystemMessage(PERMISSION_DENIED_DISPLAY_TEXT, "warning", nextUuid()));
       return;
     }
     if (!isError && isLineNumberedFileReadResult(rawResult)) {
@@ -894,7 +895,7 @@ function pushToolResult(
     // "without matching start" phrasing from the user-facing lead-in.
     out.push(
       makeSystemMessage(
-        `A tool result arrived out of order and was recovered: ${isError ? summarizeToolError(stringResult(rawResult)) : stringResult(rawResult)}`,
+        `A tool result arrived out of order and was recovered: ${isError ? summarizeToolError(stringResult(rawResult)) : userFacingResultText(stringResult(rawResult))}`,
         isError ? "error" : "warning",
         nextUuid(),
       ),
@@ -1783,7 +1784,10 @@ export function formatStructuredToolResult(
         return [{ type: "text", text: `<read-lines>1-${lineCount}</read-lines>` }];
       }
       if (count === 0 || result.length === 0) {
-        return [{ type: "text", text: "<read-content></read-content>" }];
+        const note = emptyReadNotice(result);
+        return [{ type: "text", text: note === undefined || note === "Empty file"
+          ? "<read-content></read-content>"
+          : `<read-note>${escapeXml(note)}</read-note>` }];
       }
     }
     if (
@@ -3233,7 +3237,9 @@ export function adaptTranscriptEvents(
             out.push(makeSystemMessage("Tool execution cancelled: interrupted.", "error", admissionCancellationNoticeUuid));
           }
         } else {
-          out.push(makeSystemMessage(message, "error", nextUuid()));
+          // Correlation ids ("streamed tool Write (call_abc) reached ...")
+          // mean nothing to a user; the tool name stays.
+          out.push(makeSystemMessage(withoutCallIds(message), "error", nextUuid()));
         }
         break;
       }

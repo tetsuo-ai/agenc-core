@@ -1,7 +1,14 @@
 import { isRecord } from "../utils/record.js";
 
+/**
+ * Marker text stored in histories by earlier builds; trajectory curation
+ * matches it. It is data, not wording for the screen.
+ */
 export const PERMISSION_DENIED_TOOL_RESULT_MESSAGE =
   "Permission request denied by user.";
+
+/** What a denied permission request reads as on screen. */
+export const PERMISSION_DENIED_DISPLAY_TEXT = "Permission denied.";
 
 const USER_REJECTION_TEXT = "rejected by user";
 // Prefix of the orchestrator's resolver-denial message.

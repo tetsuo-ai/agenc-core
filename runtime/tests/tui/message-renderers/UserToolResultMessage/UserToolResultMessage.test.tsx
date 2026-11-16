@@ -22,7 +22,7 @@ describe("UserToolResultMessage orphan fallback", () => {
       formatOrphanToolResultContent([
         { type: "text", text: "{\"error\":\"rejected by user\"}" },
       ]),
-    ).toBe("Permission request denied by user.");
+    ).toBe("Permission denied.");
   });
 });
 
