@@ -2763,15 +2763,42 @@ export function adaptTranscriptEvents(
           raw.toolCall &&
           typeof raw.toolCall === "object"
         ) {
-          const toolCall = raw.toolCall as { readonly id?: string };
+          const toolCall = raw.toolCall as { readonly id?: string; readonly name?: string };
+          // A phase result carries its own error flag and metadata. It used
+          // to be recorded as a success whatever it said, and its text
+          // skipped the user-facing projection the canonical event gets.
+          const phaseResult = payloadRecord("result" in raw ? raw.result : undefined);
+          const phaseIsError = phaseResult.isError === true;
+          const phaseCallId = toolCall.id ?? randomUUID();
+          const phaseToolName = typeof toolCall.name === "string"
+            ? modelToolAliasTarget(toolCall.name) ?? toolCall.name
+            : undefined;
+          const phaseRaw = "result" in raw ? raw.result : "";
+          const phaseQuestionRow = phaseToolName === "AskUserQuestion"
+            ? askUserQuestionRowDisplay(out, phaseCallId, {
+                result: stringResult(phaseRaw),
+                metadata: phaseResult.metadata,
+              }, phaseIsError)
+            : null;
+          const phaseUserFacing = phaseQuestionRow?.text ?? (phaseToolName === "AskUserQuestion"
+            ? undefined
+            : userFacingToolResultText({
+                toolName: phaseToolName,
+                result: stringResult(phaseRaw),
+                metadata: phaseResult.metadata,
+                isError: phaseIsError,
+              }));
           pushToolResult(
             out,
             openTools,
             settledToolCallIds,
-            toolCall.id ?? randomUUID(),
-            "result" in raw ? raw.result : "",
+            phaseCallId,
+            phaseUserFacing ?? phaseRaw,
             nextUuid,
-            false,
+            phaseIsError,
+            phaseRaw,
+            undefined,
+            phaseQuestionRow?.display,
           );
         }
         break;

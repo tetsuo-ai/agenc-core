@@ -17,6 +17,7 @@ import {
 } from "./ask-user-question/display.js";
 
 export const ENTERED_PLAN_MODE_TEXT = "Entered plan mode";
+export const PLAN_MODE_ALREADY_ACTIVE_TEXT = "Plan mode is already active";
 
 /** One-line receipt for a Skill load (the result is the whole skill prompt). */
 export function skillLoadReceipt(raw: string): string | undefined {
@@ -125,7 +126,11 @@ export function userFacingToolResultText(input: {
       : undefined;
   }
   if (input.isError === true) return undefined;
-  if (toolName === "EnterPlanMode") return ENTERED_PLAN_MODE_TEXT;
+  if (toolName === "EnterPlanMode") {
+    return typeof result === "string" && result.trimStart().startsWith("Already in plan mode")
+      ? PLAN_MODE_ALREADY_ACTIVE_TEXT
+      : ENTERED_PLAN_MODE_TEXT;
+  }
   if (toolName === "ExitPlanMode" && typeof result === "string") return exitPlanModeReceipt(result);
   if (toolName === "Skill" && typeof result === "string") return skillLoadReceipt(result);
   if (toolName === "request_user_input" && typeof result === "string") return requestUserInputReceipt(result);
