@@ -107,7 +107,11 @@ describe('P1 display boundary', () => {
       { type: 'response_item', payload: { role: 'user', content: '<system-reminder>queued prompt context</system-reminder>' } },
       { type: 'response_item', payload: { role: 'assistant', content: 'ok' } },
     ] as never, 's', 'r');
-    expect(snapshot.messages.map((message) => message.text)).toEqual(['also add a test', 'ok']);
+    expect(snapshot.messages.map((message) => message.text)).toEqual([
+      'also add a test',
+      'Runtime note for the model (hidden)',
+      'ok',
+    ]);
     const rows = adaptTranscriptEvents(daemonTranscriptSnapshotEvents(snapshot, 's') as never).messages as any[];
     expect(JSON.stringify(rows.map((row) => row.message?.content))).not.toContain('system-reminder');
   });

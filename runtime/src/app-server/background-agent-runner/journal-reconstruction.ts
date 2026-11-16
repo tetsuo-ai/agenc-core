@@ -1,5 +1,5 @@
 import { attachmentCaption } from "../../tui/user-facing-tool-text.js";
-import { hasRuntimeHistoryWrapper, userFacingHistoryText } from "../../session/user-facing-history-text.js";
+import { hasRuntimeHistoryWrapper, RUNTIME_NOTE_PLACEHOLDER, userFacingHistoryText } from "../../session/user-facing-history-text.js";
 import { PendingEffectReviews } from "../../session/pending-effect-reviews.js";
 /**
  * Rollout journal scans: transcript reconstruction, transcript boundaries,
@@ -823,10 +823,16 @@ function maxEventSequence(items: readonly RolloutItem[]): number {
   return max;
 }
 
-/** Display text of a history item; user items lose runtime-written wrappers. */
+/**
+ * Display text of a history item; user items lose runtime-written wrappers.
+ * An item that holds runtime text only keeps its row (clients count rows for
+ * rewind) and shows a short placeholder.
+ */
 function historyItemDisplayText(role: string, content: unknown): string {
   const text = responseItemDisplayText(content);
-  return role === "user" && hasRuntimeHistoryWrapper(text) ? userFacingHistoryText(text) : text;
+  if (role !== "user" || !hasRuntimeHistoryWrapper(text)) return text;
+  const shown = userFacingHistoryText(text);
+  return shown.length > 0 ? shown : RUNTIME_NOTE_PLACEHOLDER;
 }
 
 function responseItemDisplayText(content: unknown): string {

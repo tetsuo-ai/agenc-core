@@ -212,26 +212,37 @@ function scopeDirectShellDaemonEvent(
 }
 
 /**
- * Clients print a completed tool's `result`. For the few tools whose result
- * text is written for the model (AskUserQuestion's "User has answered your
- * questions ... You can now continue", EnterPlanMode's instructions, a Skill
- * load's whole prompt) the live event carries the user-facing line instead.
- * The journal and the model keep the original text; `metadata` is unchanged.
+ * The copy of a session event that goes to attached CLIENTS (TUI, desktop
+ * app, SDK subscribers). Clients print a completed tool's `result`. For the
+ * few tools whose result text is written for the model (AskUserQuestion's
+ * "User has answered your questions ... You can now continue", plan mode
+ * texts, a Skill load's whole prompt) that copy carries the user-facing line
+ * instead; `metadata` is unchanged.
+ *
+ * Only the client fan-out may use this. The daemon's own observers
+ * (snapshot policy, routines, recovery) and the journal keep the original
+ * event: a snapshot's tool result can be replayed to the model after a
+ * restart, so it must stay the text the model was given.
  */
-function clientToolResultPayload(
-  event: BackgroundAgentDaemonEvent,
-): BackgroundAgentDaemonEvent["payload"] {
+export function clientFacingSessionEvent<T extends JsonObject>(notification: T): T {
+  if (notification.method !== "event.session_event") return notification;
+  const params = notification.params;
+  if (!isJsonObject(params)) return notification;
+  const event = params.event;
+  if (!isJsonObject(event) || event.type !== "tool_call_completed") return notification;
   const payload = event.payload;
-  if (event.type !== "tool_call_completed" || !isJsonObject(payload)) {
-    return payload;
-  }
+  if (!isJsonObject(payload)) return notification;
   const text = userFacingToolResultText({
     toolName: typeof payload.toolName === "string" ? payload.toolName : undefined,
     result: payload.result,
     metadata: payload.metadata,
     isError: payload.isError === true,
   });
-  return text === undefined || text === payload.result ? payload : { ...payload, result: text };
+  if (text === undefined || text === payload.result) return notification;
+  return {
+    ...notification,
+    params: { ...params, event: { ...event, payload: { ...payload, result: text } } },
+  };
 }
 
 export function notificationFromDaemonEvent(
@@ -240,7 +251,7 @@ export function notificationFromDaemonEvent(
   event: BackgroundAgentDaemonEvent,
 ): AgenCDaemonSessionNotification {
   const base = eventBaseParams(sessionId, agentId, event);
-  const payload = clientToolResultPayload(event);
+  const payload = event.payload;
   if (
     event.type === "mcp_status_changed" &&
     isJsonObject(payload) &&

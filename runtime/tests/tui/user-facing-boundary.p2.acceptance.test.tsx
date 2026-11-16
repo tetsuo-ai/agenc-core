@@ -112,6 +112,14 @@ describe('P2 and P3 display boundary', () => {
     // A file whose text mentions the tag is content and stays whole.
     const body = 'line one\n<system-reminder>quoted in a document</system-reminder>\nline three';
     expect(fallback(body)).toBe(body);
+    // Real output that only resembles runtime text is left alone.
+    const yaml = 'agentId: 42\nname: demo\nUse this value in production.';
+    expect(fallback(yaml)).toBe(yaml);
+    const source = 'const tag = "<command-name>x</command-name>";';
+    expect(fallback(source)).toBe(source);
+    // An external (MCP) tool's output is never rewritten.
+    const external = '<system-reminder>from the server</system-reminder>';
+    expect(fallback(external, 'mcp.files.read')).toBe(external);
   });
 
   test('13 a legacy Agent result hides the internal id and the next-step instructions', () => {
@@ -140,7 +148,10 @@ describe('P2 and P3 display boundary', () => {
     expect(generic('system.searchTools', raw, true)).toBe('Loaded mcp.files.read');
     const found = JSON.stringify({ results: [{ name: 'a', description: 'd' }, { name: 'b', description: 'd' }], hint: 'To use one, load it with select' });
     expect(generic('system.searchTools', found, true)).toBe('Found 2 tools');
-    expect(fallback(raw)).toBe('Loaded mcp.files.read');
+    expect(fallback(raw, 'system.searchTools')).toBe('Loaded mcp.files.read');
+    // JSON receipts are never guessed for a result whose tool is unknown.
+    expect(fallback(raw)).toBe(raw);
+    expect(fallback(JSON.stringify({ results: [] }))).toBe(JSON.stringify({ results: [] }));
   });
 
   test('17 process inventory and stop results read as text', () => {
@@ -183,6 +194,7 @@ describe('P2 and P3 display boundary', () => {
     for (const [raw, shown] of cases) expect(summarizeToolError(raw)).toBe(shown);
     // A tool's own error text is not rewritten.
     expect(summarizeToolError('ENOENT: no such file or directory, open /x')).toBe('ENOENT: no such file or directory, open /x');
+    expect(summarizeToolError('TypeError: call_user_func_array failed (tool_registry)')).toBe('TypeError: call_user_func_array failed (tool_registry)');
   });
 
   test('21 a stream-recovery error names the tool, not its call id', () => {

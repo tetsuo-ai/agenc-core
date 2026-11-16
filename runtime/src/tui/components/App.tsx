@@ -4578,15 +4578,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   });
   useStartupNotices();
   const titleModel = useAppState((state) => state.mainLoopModelForSession ?? state.mainLoopModel);
-  const title = useMemo(
-    () => terminalTitle({
-      session: props.session,
-      startupModel: startupModel(props),
-      startupProvider: props.session.sessionConfiguration?.provider?.slug,
-      liveModel: titleModel,
-    }),
-    [props, titleModel],
-  );
+  // Not memoized: the provider is read from the session's current selection,
+  // which can change without the model id changing.
+  const title = terminalTitle({
+    session: props.session,
+    startupModel: startupModel(props),
+    startupProvider: props.session.sessionConfiguration?.provider?.slug,
+    liveModel: titleModel,
+  });
   const titleIsAnimating =
     transcript.isStreaming &&
     permissionRequests.length === 0 &&

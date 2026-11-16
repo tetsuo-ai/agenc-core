@@ -14,6 +14,7 @@
  * @module
  */
 
+import { userFacingHistoryText } from "../session/user-facing-history-text.js";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import { FileThreadStore } from "../thread-store/store.js";
@@ -128,16 +129,17 @@ function previewFromLine(line: string): string | null {
 export function userFacingPreviewText(message: string): string {
   const bash = /^\s*<bash-input>([\s\S]*?)<\/bash-input>/u.exec(message);
   if (bash !== null) return `!${bash[1]!.trim()}`;
-  const command = /<command-name>([^<]{1,120})<\/command-name>/u.exec(message);
+  const command = /^\s*<command-(?:name|message)>/u.test(message)
+    ? /<command-name>([^<]{1,120})<\/command-name>/u.exec(message)
+    : null;
   if (command !== null) {
     const args = /<command-args>([\s\S]*?)<\/command-args>/u.exec(message)?.[1]?.trim() ?? "";
     const name = command[1]!.trim();
     return `${name.startsWith("/") ? name : `/${name}`}${args.length > 0 ? ` ${args}` : ""}`;
   }
-  return message
-    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gu, " ")
-    .replace(/<\/?(?:bash-stdout|bash-stderr|local-command-stdout|local-command-stderr|command-message|command-args|user-prompt-submit-hook)>/gu, " ")
-    .trim();
+  // Runtime wrappers sit at the start or end of the stored message; a tag
+  // the user typed in the middle of a prompt is their text.
+  return userFacingHistoryText(message);
 }
 
 /**

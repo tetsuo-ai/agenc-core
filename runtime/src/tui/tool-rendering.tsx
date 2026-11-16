@@ -199,8 +199,10 @@ export function FileReadView({
   // the lines in `<read-content>`.
   // A read that returned nothing for a stated reason (offset past the end,
   // a PDF without text) says so; "empty file" is only for an empty file.
-  const note = extractToolTag(content, "read-note") ?? emptyReadNotice(content);
-  if (note !== null && note !== undefined && note.length > 0) {
+  // Only the envelope the transcript builds counts; a file body that merely
+  // contains the tag is content.
+  const note = /^<read-note>([^<]{1,300})<\/read-note>$/u.exec(content.trim())?.[1] ?? emptyReadNotice(content);
+  if (note !== undefined && note.length > 0) {
     return <ResultLine>{note === "Empty file" ? "empty file" : note}</ResultLine>;
   }
   const range = extractToolTag(content, "read-lines") ?? "";

@@ -14,6 +14,9 @@ describe("user-role history shown to the user", () => {
     )).toBe("");
     expect(userFacingHistoryText("fix the parser\n<system-reminder>\nhook context\n</system-reminder>")).toBe("fix the parser");
     expect(userFacingHistoryText("plain prompt")).toBe("plain prompt");
+    // A tag typed inside a prompt is the user's text.
+    const typed = "why does my log show <system-reminder>x</system-reminder> here?";
+    expect(userFacingHistoryText(typed)).toBe(typed);
   });
 
   // A rewind, partial compact or compaction rollback rebuilds the TUI rows
@@ -30,13 +33,15 @@ describe("user-role history shown to the user", () => {
       reason: "compaction_rollback",
     });
     const rows = event.payload.messages.filter((row) => row.type === "user");
+    // One row per history item (rewind ordinals count them); an item with
+    // runtime text only shows a short placeholder.
     expect(rows.map((row) => row.message.content)).toEqual([
       "first prompt",
       "also add a test",
-      "(empty)",
+      "Runtime note for the model (hidden)",
       [{ type: "text", text: "also add a test" }],
     ]);
-    expect(rows.map((row) => row.isMeta === true)).toEqual([false, false, true, false]);
+    expect(rows.map((row) => row.isMeta === true)).toEqual([false, false, false, false]);
     expect(JSON.stringify(event.payload.messages)).not.toContain("system-reminder");
     expect(JSON.stringify(event.payload.messages)).not.toContain("completion_gate");
   });

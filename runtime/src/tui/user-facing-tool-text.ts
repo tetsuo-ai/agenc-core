@@ -23,13 +23,13 @@ import {
   ENTERED_PLAN_MODE_TEXT,
   PLAN_MODE_ALREADY_ACTIVE_TEXT,
   exitPlanModeReceipt,
-  requestUserInputReceipt,
   skillLoadReceipt,
   userFacingToolResultText,
 } from "../tools/user-facing-result.js";
 
 const LEADING_REMINDER = /^\s*<system-reminder>((?:(?!<system-reminder>)[\s\S])*?)<\/system-reminder>\s*/u;
-const TRAILING_REMINDER = /\s*<system-reminder>((?:(?!<system-reminder>)[\s\S])*?)<\/system-reminder>\s*$/u;
+const REMINDER_OPEN = "<system-reminder>";
+const REMINDER_CLOSE = "</system-reminder>";
 
 /** A file-read warning (the only reminders a tool result carries for display). */
 function fileReadWarningText(inner: string): string | undefined {
@@ -56,7 +56,7 @@ export function emptyReadNotice(result: string): string | undefined {
  * its plain line; any other block is removed.
  */
 export function stripSystemReminders(text: string): string {
-  if (!text.includes("<system-reminder>")) return text;
+  if (!text.includes(REMINDER_OPEN)) return text;
   // The runtime puts its reminders at the start or the end of a result. A
   // tag in the middle of the text is content (a file or command output that
   // mentions it) and stays.
@@ -68,10 +68,14 @@ export function stripSystemReminders(text: string): string {
     if (shown !== undefined) lead.push(shown);
     rest = rest.slice(match[0].length);
   }
-  for (let match = TRAILING_REMINDER.exec(rest); match !== null; match = TRAILING_REMINDER.exec(rest)) {
-    const shown = fileReadWarningText(match[1]!);
+  for (;;) {
+    const trimmed = rest.trimEnd();
+    if (!trimmed.endsWith(REMINDER_CLOSE)) break;
+    const open = trimmed.lastIndexOf(REMINDER_OPEN);
+    if (open < 0) break;
+    const shown = fileReadWarningText(trimmed.slice(open + REMINDER_OPEN.length, -REMINDER_CLOSE.length));
     if (shown !== undefined) tail.unshift(shown);
-    rest = rest.slice(0, match.index);
+    rest = trimmed.slice(0, open);
   }
   return [...lead, rest.trim(), ...tail].filter((part) => part.length > 0).join("\n");
 }
@@ -139,8 +143,9 @@ function processReceipt(record: Record<string, unknown>): string | undefined {
   }
   // kill_process: { ...result, owned_live_sessions, owned_live_sessions_note, stopping_sessions... }
   const isKill = "owned_live_sessions" in record || "terminated" in record ||
-    (Array.isArray(record.results) && record.results.every((item) =>
-      typeof item === "object" && item !== null && "terminated" in item));
+    (Array.isArray(record.results) && record.results.length > 0 && record.results.every((item) =>
+      typeof item === "object" && item !== null && "terminated" in item)) ||
+    (typeof record.note === "string" && record.note.startsWith("no live background session"));
   if (!isKill) return undefined;
   const stopped = Array.isArray(record.results)
     ? record.results.length
@@ -175,7 +180,7 @@ function resourceReceipt(record: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
-const CODE_MODE_FOOTER = /\[code_mode status=([a-z_]+)(?: wall_time=([0-9.]+)s)?[^\]]*\]/u;
+const CODE_MODE_FOOTER = /^\[code_mode status=([a-z_]+)(?: wall_time=([0-9.]+)s)?[^\]\n]*\]$/mu;
 
 /** Code-mode results: `Script running with cell ID ...` and the `[code_mode ...]` footer. */
 function codeModeText(text: string): string | undefined {
@@ -192,23 +197,25 @@ function codeModeText(text: string): string | undefined {
         ? `Script ${status.replaceAll("_", " ")}${seconds !== undefined ? ` after ${seconds}s` : ""}.`
         : "Script running.";
   const body = text
-    .replace(/\[code_mode [^\]]*\]/gu, "")
+    .replace(/^\[code_mode [^\]\n]*\]$/gmu, "")
     .replace(/^Script running with cell ID \S+.*$/gmu, "")
     .replace(/data:[a-z]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gu, "[image]")
     .trim();
   return body.length > 0 ? `${body}\n${line}` : line;
 }
 
-/** Legacy Agent tool results carry an id "internal ID - do not mention to user" and next-step instructions. */
+/**
+ * Legacy Agent tool results carry an id marked "internal ID - do not mention
+ * to user" followed by next-step instructions for the model.
+ */
 function legacyAgentText(text: string): string | undefined {
-  if (!/\(internal ID - do not mention to user/u.test(text) && !/^agentId: /mu.test(text)) return undefined;
-  const kept = text.split("\n").filter((line) =>
-    !/^agentId: /u.test(line) &&
-    !/internal ID - do not mention/u.test(line) &&
-    !/^(?:teammate_id|agent_id|name|team_name): /u.test(line) &&
-    !/^(?:The agent is|You can|Use |Do not |Briefly tell the user|Continue |To )/u.test(line.trim()));
-  const body = kept.join("\n").trim();
-  return body.length > 0 && body.length <= 200 ? body : "Agent started";
+  const lines = text.split("\n");
+  const idLine = lines.findIndex((line) => /\(internal ID - do not mention to user/u.test(line));
+  if (idLine < 0) return undefined;
+  // What precedes the id line is the receipt; the id and what follows it
+  // are for the model.
+  const body = lines.slice(0, idLine).join("\n").trim();
+  return body.length > 0 ? body : "Agent started";
 }
 
 /** Legacy WebSearch text ends with a citation instruction for the model. */
@@ -218,49 +225,71 @@ function withoutSearchReminder(text: string): string {
 
 const TODO_BOILERPLATE = /^Todos have been modified successfully\./u;
 
+const CODE_MODE_TOOLS = /^(?:exec|wait|code_mode|code-mode)$/u;
+const DISCOVERY_TOOLS = /^(?:system\.searchTools|system_searchTools)$/u;
+const PROCESS_TOOLS = /^(?:list_processes|kill_process)$/u;
+const RESOURCE_TOOLS = /^(?:ListMcpResourcesTool|ReadMcpResourceTool)$/u;
+const AGENT_TOOLS = /^(?:Agent|Task|AgentTool)$/u;
+const SEARCH_TOOLS = /^(?:WebSearch|web_search)$/u;
+
+/** A tool served by an external MCP server: its output is its own and is never rewritten. */
+function isExternalTool(toolName: string | undefined): boolean {
+  return toolName !== undefined && /^mcp(?:\.|__)/u.test(toolName);
+}
+
 /**
  * User-facing form of a tool RESULT text that a fallback or generic path is
- * about to print. `toolName` is used when the caller knows it; without it the
- * runtime's own texts are recognized by their wording.
+ * about to print.
+ *
+ * With a known `toolName` only that tool's rules apply. Without one (a
+ * result that lost its call) only texts the runtime writes word for word
+ * are recognized, each anchored at the start of the result, so file, shell
+ * or external output that merely contains similar text is left alone; the
+ * JSON receipts are never guessed for an unknown tool.
  */
 export function userFacingResultText(text: string, toolName?: string): string {
-  if (text.length === 0) return text;
+  if (text.length === 0 || isExternalTool(toolName)) return text;
   const byTool = toolName === undefined
     ? undefined
     : userFacingToolResultText({ toolName, result: text });
   if (byTool !== undefined) return byTool;
 
+  const unknown = toolName === undefined;
   const lead = text.trimStart();
-  const question = askUserQuestionDisplayFromModelText(lead);
-  if (question !== null) return formatAskUserQuestionDisplay(question);
-  const plan = exitPlanModeReceipt(lead);
-  if (plan !== undefined) return plan;
-  if (/^Entered plan mode\.\s+In plan mode, you should:/u.test(lead)) return ENTERED_PLAN_MODE_TEXT;
-  if (/^Already in plan mode\.\s+In plan mode, you should:/u.test(lead)) return PLAN_MODE_ALREADY_ACTIVE_TEXT;
-  const skill = skillLoadReceipt(lead);
-  if (skill !== undefined) return skill;
-  if (TODO_BOILERPLATE.test(lead)) return "Todo list updated";
-  if (toolName === "request_user_input") {
-    const answered = requestUserInputReceipt(lead);
-    if (answered !== undefined) return answered;
+  if (unknown) {
+    const question = askUserQuestionDisplayFromModelText(lead);
+    if (question !== null) return formatAskUserQuestionDisplay(question);
+    const plan = exitPlanModeReceipt(lead);
+    if (plan !== undefined) return plan;
+    if (/^Entered plan mode\.\s+In plan mode, you should:/u.test(lead)) return ENTERED_PLAN_MODE_TEXT;
+    if (/^Already in plan mode\.\s+In plan mode, you should:/u.test(lead)) return PLAN_MODE_ALREADY_ACTIVE_TEXT;
+    if (lead.startsWith("<command-name>")) {
+      const skill = skillLoadReceipt(lead);
+      if (skill !== undefined) return skill;
+    }
   }
-  const agent = legacyAgentText(text);
-  if (agent !== undefined) return agent;
-  const code = codeModeText(text);
-  if (code !== undefined) return code;
-
-  const record = parseJsonObject(text);
-  if (record !== undefined) {
-    // Runtime tools only: an external (MCP) tool's own JSON is its output.
-    const named = (pattern: RegExp): boolean => toolName === undefined || pattern.test(toolName);
-    const receipt =
-      (named(/^(?:system\.searchTools|system_searchTools|tool_search|ToolSearch)$/u) ? toolDiscoveryReceipt(record) : undefined) ??
-      (named(/^(?:list_processes|kill_process)$/u) ? processReceipt(record) : undefined) ??
-      (named(/^web_fetch$/u) ? fetchReceipt(record) : undefined) ??
-      (named(/^(?:ListMcpResourcesTool|ReadMcpResourceTool)$/u) ? resourceReceipt(record) : undefined);
-    if (receipt !== undefined) return receipt;
+  if ((unknown || toolName === "TodoWrite") && TODO_BOILERPLATE.test(lead)) return "Todo list updated";
+  if (unknown || AGENT_TOOLS.test(toolName)) {
+    const agent = legacyAgentText(text);
+    if (agent !== undefined) return agent;
   }
-  return attachmentCaption(withoutSearchReminder(stripSystemReminders(text)));
+  if (!unknown && CODE_MODE_TOOLS.test(toolName)) {
+    const code = codeModeText(text);
+    if (code !== undefined) return code;
+  }
+  if (!unknown) {
+    const record = parseJsonObject(text);
+    if (record !== undefined) {
+      const receipt =
+        (DISCOVERY_TOOLS.test(toolName) ? toolDiscoveryReceipt(record) : undefined) ??
+        (PROCESS_TOOLS.test(toolName) ? processReceipt(record) : undefined) ??
+        (toolName === "web_fetch" ? fetchReceipt(record) : undefined) ??
+        (RESOURCE_TOOLS.test(toolName) ? resourceReceipt(record) : undefined);
+      if (receipt !== undefined) return receipt;
+    }
+  }
+  const cleaned = stripSystemReminders(text);
+  return attachmentCaption(unknown || SEARCH_TOOLS.test(toolName) ? withoutSearchReminder(cleaned) : cleaned);
 }
 
 /** A non-text result block is named, never printed as JSON (it can hold base64 media). */
@@ -402,12 +431,10 @@ export function userFacingErrorText(text: string): string {
     .replace(MODEL_DIRECTED_SENTENCE, "")
     .replace(/\s{2,}/gu, " ")
     .trim();
-  return cleaned.length > 0 ? cleaned : trimmed.length > 0 ? "Action was not allowed." : trimmed;
+  return cleaned.length > 0 ? cleaned : trimmed.length > 0 ? "failed" : trimmed;
 }
 
-/** Correlation ids inside a notice: `streamed tool Write (call_abc123) reached ...`. */
+/** Correlation ids inside a runtime notice: `streamed tool Write (call_abc123) reached ...`. */
 export function withoutCallIds(text: string): string {
-  return text
-    .replace(/\s*\((?:call|toolu|fc|tool)_[A-Za-z0-9_-]{4,}\)/gu, "")
-    .replace(/\b(?:call|toolu)_[A-Za-z0-9_-]{8,}\b/gu, "the tool call");
+  return text.replace(/(streamed tool \S+) \((?:call|toolu)_[A-Za-z0-9_-]{4,}\)/gu, "$1");
 }

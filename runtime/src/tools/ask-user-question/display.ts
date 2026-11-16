@@ -169,7 +169,7 @@ export function askUserQuestionDisplayFromModelText(
     cursor = at + marker.length;
   }
   if (markers.length === 0) {
-    const pattern = /(?:^|, |\n)"([^"\n]+)"="/gu;
+    const pattern = /(?:^|, |\n)"([^\n]+?)"="/gu;
     for (let match = pattern.exec(body); match !== null; match = pattern.exec(body)) {
       markers.push({
         question: match[1]!,

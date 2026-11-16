@@ -127,6 +127,8 @@ export function userFacingToolResultText(input: {
   }
   if (input.isError === true) return undefined;
   if (toolName === "EnterPlanMode") {
+    // The daemon may already have sent the display line; it is final.
+    if (result === PLAN_MODE_ALREADY_ACTIVE_TEXT) return PLAN_MODE_ALREADY_ACTIVE_TEXT;
     return typeof result === "string" && result.trimStart().startsWith("Already in plan mode")
       ? PLAN_MODE_ALREADY_ACTIVE_TEXT
       : ENTERED_PLAN_MODE_TEXT;

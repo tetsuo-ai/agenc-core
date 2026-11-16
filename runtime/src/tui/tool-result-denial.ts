@@ -22,6 +22,31 @@ function parseJsonText(value: string): unknown {
   }
 }
 
+/**
+ * True for the approval flow's own denial of a call ("Permission denied:
+ * exec_command. denied", "... was denied by this session's approval
+ * resolver", "rejected by user"). A tool's own error that happens to start
+ * with "Permission denied: /path" (EACCES, a remote refusal) is not one and
+ * keeps its detail.
+ */
+export function isApprovalDenialToolResult(value: unknown): boolean {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.toLowerCase() === USER_REJECTION_TEXT) return true;
+    if (/^Permission denied: [A-Za-z_][\w.-]*(?:\. \S| was denied by this session's approval resolver)/u.test(trimmed)) {
+      return true;
+    }
+    const parsed = trimmed.startsWith("{") || trimmed.startsWith("[") ? parseJsonText(trimmed) : undefined;
+    return parsed !== undefined && isApprovalDenialToolResult(parsed);
+  }
+  if (Array.isArray(value)) return value.some((item) => isApprovalDenialToolResult(item));
+  if (!isRecord(value)) return false;
+  for (const key of ["error", "text", "content", "message", "reason"]) {
+    if (isApprovalDenialToolResult(value[key])) return true;
+  }
+  return false;
+}
+
 export function isPermissionDeniedToolResult(value: unknown): boolean {
   if (typeof value === "string") {
     const trimmed = value.trim();

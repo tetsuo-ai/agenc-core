@@ -72,7 +72,8 @@ describe('UserToolSuccessMessage swarm-044 coverage', () => {
         },
       ]),
     ).toBe(
-      'plain output\ntext output\n{"type":"image","source":{"type":"base64","data":"abc"}}',
+      // A non-text block is named; media bytes never reach a text row.
+      'plain output\ntext output\nImage received.',
     )
   })
 

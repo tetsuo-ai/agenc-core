@@ -859,6 +859,7 @@ function pushToolResult(
   rawResult: unknown = result,
   metadata?: Record<string, unknown>,
   toolUseResult?: unknown,
+  toolName?: string,
 ): void {
   if (!openTools.has(callId)) {
     settledToolCallIds.add(callId);
@@ -895,7 +896,7 @@ function pushToolResult(
     // "without matching start" phrasing from the user-facing lead-in.
     out.push(
       makeSystemMessage(
-        `A tool result arrived out of order and was recovered: ${isError ? summarizeToolError(stringResult(rawResult)) : userFacingResultText(stringResult(rawResult))}`,
+        `A tool result arrived out of order and was recovered: ${isError ? summarizeToolError(stringResult(rawResult)) : userFacingResultText(stringResult(rawResult), toolName)}`,
         isError ? "error" : "warning",
         nextUuid(),
       ),
@@ -3102,6 +3103,9 @@ export function adaptTranscriptEvents(
           interruptedAdmission ? result : payload.result,
           metadataRecord(payload),
           questionRow?.display,
+          // The event's own tool name, when it has one: a result that lost
+          // its call row still gets that tool's user-facing text.
+          typeof payload.toolName === "string" ? modelToolAliasTarget(payload.toolName) ?? payload.toolName : undefined,
         );
         runningToolNames.delete(callId);
         // Remove the matching streaming-tool-use element so the

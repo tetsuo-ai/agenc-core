@@ -198,6 +198,18 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
     expect(row).not.toContain('resolver')
   })
 
+  it('exec_command: a real OS permission error keeps its detail', async () => {
+    const c = buildRawCase({
+      id: 'tu_eacces',
+      toolName: 'FileRead',
+      input: { file_path: '/root/secret.txt' },
+      rawResult: 'Permission denied: /root/secret.txt',
+      isError: true,
+    })
+    const row = await renderCallRow(c.param, c.lookups)
+    expect(row).toContain('/root/secret.txt')
+  })
+
   it('exec_command: strips [exec ...] trailer, summarizes stdout as one "└ N lines" receipt', async () => {
     // RAW shape: stdout, then blank lines, then the exec trailer line.
     const stdout = Array.from({ length: 9 }, (_, i) => `out ${i}`).join('\n')

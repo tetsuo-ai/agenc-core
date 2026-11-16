@@ -1,15 +1,24 @@
 import { describe, expect, test } from "vitest";
-import { notificationFromDaemonEvent } from "../../src/app-server/background-agent-runner/daemon-events.js";
+import {
+  clientFacingSessionEvent,
+  notificationFromDaemonEvent,
+} from "../../src/app-server/background-agent-runner/daemon-events.js";
 
 const SUFFIX = ". You can now continue with the user's answers in mind.";
 
-function resultOf(payload: Record<string, unknown>): { result: unknown; metadata?: unknown } {
-  const notification = notificationFromDaemonEvent("session-1", "agent-1", {
+type Sent = { params: { event: { payload: { result: unknown; metadata?: unknown } } } };
+
+function recorded(payload: Record<string, unknown>): Sent {
+  return notificationFromDaemonEvent("session-1", "agent-1", {
     id: "event-1",
     type: "tool_call_completed",
     payload: { callId: "call-1", isError: false, ...payload },
-  } as never) as { params: { event: { payload: { result: unknown; metadata?: unknown } } } };
-  return notification.params.event.payload;
+  } as never) as never;
+}
+
+/** What an attached client receives. */
+function resultOf(payload: Record<string, unknown>): { result: unknown; metadata?: unknown } {
+  return (clientFacingSessionEvent(recorded(payload) as never) as unknown as Sent).params.event.payload;
 }
 
 // Clients such as the desktop app print the live event's `result` as the
@@ -83,5 +92,31 @@ describe("live request_user_input results sent to clients", () => {
       toolName: "request_user_input",
       result: JSON.stringify({ answers: { q1: { answers: ["yes"] }, q2: { answers: ["blue", "green"] } } }),
     }).result).toBe("Answered: yes; blue; green");
+  });
+});
+
+// The daemon's own observers (snapshot policy, routines, recovery) receive
+// the notification before the client fan-out. A snapshot's tool result can
+// be replayed to the model after a restart, so that copy must stay the text
+// the model was given.
+describe("the recorded notification keeps the model-facing result", () => {
+  test.each([
+    ["AskUserQuestion", `User has answered your questions: "A?"="One"${SUFFIX}`],
+    ["EnterPlanMode", "Entered plan mode.\n\nIn plan mode, you should:\n1. Thoroughly explore"],
+    ["ExitPlanMode", "User has approved exiting plan mode. You can now proceed."],
+    ["Skill", "<command-name>x</command-name>\nbody"],
+    ["request_user_input", JSON.stringify({ answers: { q1: { answers: ["yes"] } } })],
+  ])("%s", (toolName, result) => {
+    const notification = recorded({ toolName, result });
+    expect(notification.params.event.payload.result).toBe(result);
+    // The client copy is a new object; the recorded one is not mutated.
+    const client = clientFacingSessionEvent(notification as never) as unknown as Sent;
+    expect(client.params.event.payload.result).not.toBe(result);
+    expect(notification.params.event.payload.result).toBe(result);
+  });
+
+  test("other notifications pass through as the same object", () => {
+    const other = { jsonrpc: "2.0", method: "event.message_chunk", params: { delta: "x" } };
+    expect(clientFacingSessionEvent(other as never)).toBe(other);
   });
 });
