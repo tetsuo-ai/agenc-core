@@ -121,7 +121,7 @@ it("crosses the publication barrier again after preflight", async () => {
 it("never returns fallback when the admission reply is lost", async () => {
   const f = await fixture(); f.behavior.beforeReply = (method, socket) => { if (method === "print.admit") socket.destroy(); };
   expect(await f.run()).toBe(1); expect(f.messages.filter(m => m.method === "print.invoke")).toHaveLength(1);
-  expect(f.stderr()).toBe("agenc: Daemon print connection failed\n");
+  expect(f.stderr()).toBe("agenc: Daemon print connection failed: daemon socket disconnected\n");
 });
 it("returns definite unsupported fallback without output", async () => {
   const f = await fixture(); f.behavior.invoke = socket => f.result(socket, { kind: "fallback" });
@@ -168,4 +168,77 @@ it("bounds pending RPCs and closes all waiters", async () => {
   const pending = Array.from({ length: 8 }, () => client.request("health.ping", {}).catch(() => "closed"));
   expect(() => client.request("health.ping", {})).toThrow(); client.close();
   expect(await Promise.all(pending)).toEqual(Array(8).fill("closed"));
+});
+
+it("survives a short output acknowledgement stall and probes the same connection", async () => {
+  const f = await fixture();
+  f.behavior.beforeReply = async method => {
+    if (method === "print.ack") await new Promise(resolve => setTimeout(resolve, 350));
+  };
+  expect(await f.run()).toBe(0);
+  expect(f.stdout()).toBe("hello π\n");
+  expect(f.messages.filter(m => m.method === "health.ping").length).toBeGreaterThan(1);
+  expect(new Set(f.messages.map(m => m.connection)).size).toBe(1);
+});
+
+it("keeps the legacy acknowledgement deadline when recovery is disabled", async () => {
+  const f = await fixture(); f.invocation.env.AGENC_PRINT_STALL_RECOVERY = "off";
+  f.behavior.beforeReply = async method => {
+    if (method === "print.ack") await new Promise(resolve => setTimeout(resolve, 350));
+  };
+  expect(await f.run()).toBe(1);
+  expect(f.stderr()).toContain("daemon response deadline exceeded");
+  expect(f.messages.filter(m => m.method === "print.invoke")).toHaveLength(1);
+});
+
+it("bounds acknowledgement wait even while heartbeat replies keep arriving", async () => {
+  const f = await fixture();
+  const realSetTimeout = globalThis.setTimeout;
+  const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: any[]) => void, delay?: number, ...args: any[]) =>
+    realSetTimeout(callback, delay === 30_000 ? 450 : delay, ...args)) as typeof setTimeout);
+  f.behavior.beforeReply = async method => {
+    if (method === "print.ack") await new Promise(() => {});
+  };
+  try {
+    expect(await f.run()).toBe(1);
+    expect(f.stderr()).toContain("daemon response deadline exceeded");
+    expect(f.messages.filter(m => m.method === "health.ping").length).toBeGreaterThan(1);
+    expect(f.messages.filter(m => m.method === "print.invoke")).toHaveLength(1);
+  } finally { timer.mockRestore(); }
+});
+
+it("reports an actual disconnect during the recovery wait immediately", async () => {
+  const f = await fixture();
+  f.behavior.beforeReply = async (method, socket) => {
+    if (method === "print.ack") { await new Promise(resolve => setTimeout(resolve, 200)); socket.destroy(); }
+  };
+  expect(await f.run()).toBe(1);
+  expect(f.stderr()).toContain("daemon socket disconnected");
+  expect(f.messages.filter(m => m.method === "print.invoke")).toHaveLength(1);
+});
+
+it("checks daemon liveness while an admitted invocation has no output", async () => {
+  const f = await fixture(); f.behavior.admit = () => {};
+  const run = f.run();
+  try {
+    await vi.waitFor(() => expect(f.messages.filter(m => m.method === "health.ping").length).toBeGreaterThan(1), { timeout: 600 });
+  } finally {
+    f.io.signals.emit("SIGTERM");
+    await run;
+  }
+});
+
+it("fails an unresponsive daemon during an admitted invocation without output", async () => {
+  const f = await fixture(); f.behavior.admit = () => {};
+  const realSetTimeout = globalThis.setTimeout;
+  const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: any[]) => void, delay?: number, ...args: any[]) =>
+    realSetTimeout(callback, delay === 30_000 ? 450 : delay, ...args)) as typeof setTimeout);
+  f.behavior.beforeReply = async method => {
+    if (method === "health.ping" && f.messages.filter(m => m.method === "health.ping").length > 1) await new Promise(() => {});
+  };
+  try {
+    expect(await f.run()).toBe(1);
+    expect(f.stderr()).toContain("daemon response deadline exceeded");
+    expect(f.messages.filter(m => m.method === "print.invoke")).toHaveLength(1);
+  } finally { timer.mockRestore(); }
 });

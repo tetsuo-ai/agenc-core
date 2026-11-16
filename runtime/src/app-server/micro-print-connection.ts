@@ -82,8 +82,8 @@ export async function openResidentPrintConnection(
       const pid = await readAgenCDaemonPid(pidPath);
       if (pid === null) throw microTransportError();
       const result = await proveRecordedResidentInstance({ expectedPid: pid, runtimeInfoPath: infoPath, platform: process.platform,
-        captureProcess: target => captureResidentProcessIdentity(target, processHost, microTransportError),
-        proofError: microTransportError,
+        captureProcess: target => captureResidentProcessIdentity(target, processHost, () => microTransportError()),
+        proofError: () => microTransportError(),
         requestIdentity: async () => {
           const before = await readEndpoint(env, userHome);
           if (initial) {
