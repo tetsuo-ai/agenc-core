@@ -205,6 +205,12 @@ Responses calls of the `openai` provider over one WebSocket per session and
 all other calls HTTP, so `http` is the opt-out. Any other value is ignored. See
 [providers.md](providers.md#responses-over-websocket).
 
+`AGENC_OPENAI_PRINT_PRECONNECT` set to `1` starts the OpenAI Responses socket as soon as
+the print-mode provider is constructed, overlapping model metadata and session
+setup. Unset or any other value preserves the existing session-ready pre-connect.
+The HTTP transport opt-out and all transport fallbacks still apply. No other
+provider uses this switch. Failed or cancelled startup closes the early socket.
+
 `AGENC_OPENAI_REASONING_REPLAY` (boolean-like, on by default) controls whether
 the `openai` provider keeps encrypted reasoning from Responses reasoning calls
 and sends it back. Set it to `0`, `false`, `no` or `off` to disable retention

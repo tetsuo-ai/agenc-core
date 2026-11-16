@@ -15,6 +15,9 @@ import { LLMStreamRetryDeniedError, LLMStreamTruncatedError } from "../../../../
 import type { LLMChatOptions, LLMMessage, LLMResponse, LLMTool } from "../../../../src/llm/types.js";
 import { runWithStartupProviderSelection } from "../../../../src/utils/model/providers.js";
 
+import { withPrintProviderPreconnect } from "../../../../src/session/print-provider-preconnect.js";
+import { resolveAgentRuntimeOptions } from "../../../../src/session/runtime-options.js";
+
 const MODEL = "gpt-6-luna";
 // Synthetic items in the shape OpenAI streams; never real ciphertext.
 const REASONING = {
@@ -698,6 +701,26 @@ describe("OpenAIProvider WebSocket by default for Light sessions, with pre-conne
     return provider;
   }
   const upgrades = (count: number): Promise<void> => expect.poll(() => endpoint!.sockets.length).toBe(count);
+
+  test("print startup opens the same socket before session setup completes", async () => {
+    const { endpoint, baseURL } = await start();
+    endpoint.reply = (_frame, socket) => sendAll(socket, answerTurn("resp_print"));
+    const provider = light(baseURL);
+    await withPrintProviderPreconnect({
+      provider, conversationId: START.conversationId,
+      runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true, nonInteractive: true }),
+      environment: { AGENC_OPENAI_PRINT_PRECONNECT: "1" },
+    }, async () => {
+      await upgrades(1);
+      expect(endpoint.frames).toHaveLength(0);
+      expect(endpoint.httpBodies).toHaveLength(0);
+    });
+    const first = await stream(provider, USER, LIGHT);
+    expect(first.content).toBe("done");
+    expect(endpoint.upgrades).toHaveLength(1);
+    expect(endpoint.frames).toHaveLength(1);
+    expect(endpoint.httpBodies).toHaveLength(0);
+  });
 
   test("opens the socket when a Light session starts and sends the first call on it", async () => {
     const { endpoint, baseURL } = await start();
