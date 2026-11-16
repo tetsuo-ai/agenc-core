@@ -146,6 +146,8 @@ describe("Anthropic cache tokens in admitted usage (#2772)", () => {
         inputTokens: PROCESSED_INPUT_TOKENS,
         outputTokens: OUTPUT_TOKENS,
         costUsd: expect.closeTo(0.0100344, 12),
+        // Display annotation of the plan accounting (0.19.37); not budget authority.
+        billingDetails: { billingMode: "metered", cachedInputTokens: 2048 },
       });
       expect(state.holdUnknown).not.toHaveBeenCalled();
     },
