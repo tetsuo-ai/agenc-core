@@ -27,8 +27,8 @@ describe("Qwen current native and hosted chat models", () => {
       const config = hidden ? { providers: { qwen: { default_model: model } } } : {};
       if (hidden) expect(catalog.qwen).not.toContain(model);
       else expect(catalog.qwen).toContain(model);
-      // The Token Plan lists only the hosted deployments it serves itself.
-      if (QWEN_TOKEN_PLAN_HOSTED_MODEL_IDS.includes(model)) expect(catalog["qwen-token-plan"]).toContain(model);
+      // The Token Plan lists only the deployments it serves itself: its hosted ones and Qwen4 Max.
+      if (QWEN_TOKEN_PLAN_HOSTED_MODEL_IDS.includes(model) || model === "qwen4-max") expect(catalog["qwen-token-plan"]).toContain(model);
       else expect(catalog["qwen-token-plan"]).not.toContain(model);
       expect(resolveProviderModelInput(config, "qwen", model)).toEqual({ provider: "qwen", model });
       expect(resolveProviderRuntimeRequest({ provider: "qwen", model, config, environment: {} }).requested)

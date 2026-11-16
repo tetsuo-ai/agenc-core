@@ -33,7 +33,7 @@ import {
 import type { ProviderReasoningProvenance } from "../types.js";
 import { isQwenFlashNextModel } from "../registry/qwen-flash-next.js";
 import { isQwenCoder30BModel } from "../registry/qwen-coder-30b.js";
-import { resolveQwenCurrentModel } from "../registry/qwen-current-models.js";
+import { isQwen4MaxModel, QWEN4_MAX_EFFORT_ALIASES, resolveQwenCurrentModel } from "../registry/qwen-current-models.js";
 import { isQwen4MaxPreviewModel, resolveQwenTokenPlanHostedModel } from "../registry/qwen-token-plan-models.js";
 import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_V41_MODEL } from "../registry/agenc-deepseek.js";
 import { isNativeDeepSeekModel } from "../registry/deepseek-models.js";
@@ -477,7 +477,9 @@ export function chatCompletionsCapabilityHintsForProvider(
   // 0% without markers (live, 2026-10-31). Qwen3.7/3.8 cache implicitly.
   const usesRollingCacheMarkers = slug === "qwen-token-plan" &&
     /(?:^|[/:])qwen3\.6-(?:flash|plus)(?:$|[-_.:])/i.test(model ?? "");
+  const isQwen4Max = isQwenCloud && isQwen4MaxModel(model);
   const preservesThinkingHistory =
+    isQwen4Max ||
     (slug === "qwen-token-plan" && isQwen4MaxPreviewModel(model)) ||
     (slug === "qwen" &&
       /(?:^|[/:])qwen3\.(?:7-(?:max|plus|flash)|6-(?:max-preview|plus|flash))(?:$|[-_.:])/i.test(
@@ -705,6 +707,8 @@ export function chatCompletionsCapabilityHintsForProvider(
       : {}),
     ...(slug === "qwen-token-plan" && isQwen4MaxPreviewModel(model)
       ? { reasoningEffortAliases: { minimal: "low" } }
+      : isQwen4Max
+      ? { reasoningEffortAliases: QWEN4_MAX_EFFORT_ALIASES }
       : {}),
     ...(slug === "meta" || isZai
       ? { toolChoicePolicy: "auto_only" as const }

@@ -329,7 +329,16 @@ both an access-key ID and secret access key. The optional session token is used
 when present. AgenC's one-field BYOK paste/store path does not accept or persist
 a partial Bedrock credential set.
 
-`qwen-token-plan` serves the plan's Qwen chat models (`qwen3.8-max`,
+Qwen4 Max (`qwen4-max`) is listed first on both QwenCloud routes: 1M context,
+images, tools, and one 262,144-token output cap shared by thinking and the
+answer. Its efforts are `none`, `low`, `high` (default) and `xhigh`; `minimal`,
+`medium` and `max` are sent as `low`, `high` and `xhigh`. Pay-As-You-Go costs
+$1.5 input, $4.5 output and $0.075 cached input per million tokens; the Token
+Plan bills Credits. Qwen3.8 Max remains the default model. `qwen4-max-preview`
+stays a Token Plan model until its retirement. Sources:
+[Qwen4 Max, 2026-11-16](../models/qwen4-max-2026-11.md).
+
+`qwen-token-plan` serves the plan's Qwen chat models (`qwen4-max`, `qwen3.8-max`,
 `qwen3.8-flash`, `qwen3.7-max`, `qwen3.7-plus`, `qwen3.6-flash`) and the
 DeepSeek and GLM deployments the plan hosts (`deepseek-v4.1-flash`,
 `deepseek-v4.1-flash-1017`, `deepseek-v4-pro`, `deepseek-v4-pro-0813`,

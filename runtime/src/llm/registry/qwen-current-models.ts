@@ -39,6 +39,35 @@ export interface QwenCurrentRate {
 // pages. The DeepSeek rows bill by time of day: these are the busy-hour rates
 // (UTC+8 08:00-22:00), idle hours cost half. qwen-plus carries its non-thinking
 // output rate, since thinking is off by default on commercial Qwen3 models.
+/**
+ * Qwen4-Max, released on Pay-As-You-Go and the Token Plan under one id (docs.qwencloud.com and live calls,
+ * 2026-11-16; docs/models/qwen4-max-2026-11.md). `max_completion_tokens` covers thinking and the answer together,
+ * at most 262,144. Canonical efforts are low, high and xhigh; `none` turns thinking off. Singapore rates, no
+ * input-length tiers; explicit and implicit cache reads share one rate.
+ */
+export const QWEN4_MAX_MODEL = Object.freeze({
+  model: "qwen4-max",
+  displayName: "Qwen4 Max",
+  contextWindow: 1_000_000,
+  maxOutputTokens: 262_144,
+  vision: true,
+  thinking: "hybrid",
+  totalOutputCap: true,
+  reasoningLevels: Object.freeze(["none", "low", "high", "xhigh"] as const),
+  defaultReasoningLevel: "high",
+  rates: Object.freeze([Object.freeze({ aboveInputTokens: 0, input: 1.5, output: 4.5, cached: 0.075 })]),
+} satisfies QwenCurrentModel);
+
+/** The API's documented compatibility values, sent as their canonical effort. */
+export const QWEN4_MAX_EFFORT_ALIASES = Object.freeze({ minimal: "low", medium: "high", max: "xhigh" } as const);
+
+/** Picker rank of Qwen4 Max on both QwenCloud routes: above the preview (-1) and Qwen3.8 Max (0). */
+export const QWEN4_MAX_PICKER_PRIORITY = -2;
+
+export function isQwen4MaxModel(model: string | undefined): boolean {
+  return model?.trim().toLowerCase() === QWEN4_MAX_MODEL.model;
+}
+
 export const QWEN_CURRENT_MODELS: readonly QwenCurrentModel[] = Object.freeze([
   {"model": "qwen3-coder-plus-2025-09-23", "displayName": "Qwen3 Coder Plus (2025-09-23 snapshot)", "contextWindow": 1000000, "maxOutputTokens": 65536, "vision": false, "thinking": "none", "totalOutputCap": false, "rates": [{"aboveInputTokens": 0, "input": 1, "output": 5}, {"aboveInputTokens": 32000, "input": 1.8, "output": 9}, {"aboveInputTokens": 128000, "input": 3, "output": 15}, {"aboveInputTokens": 256000, "input": 6, "output": 60}]},
   {"model": "qwen3.5-plus-2026-04-20", "displayName": "Qwen3.5 Plus (2026-04-20 snapshot)", "contextWindow": 1000000, "maxOutputTokens": 65536, "vision": true, "thinking": "hybrid", "totalOutputCap": true, "bufferedChat": true, "rates": [{"aboveInputTokens": 0, "input": 0.4, "output": 2.4}, {"aboveInputTokens": 256000, "input": 0.5, "output": 3}]},
@@ -95,6 +124,8 @@ export const QWEN_CURRENT_MODELS: readonly QwenCurrentModel[] = Object.freeze([
   {"model": "qwen-turbo", "displayName": "Qwen-turbo", "contextWindow": 131072, "maxOutputTokens": 16384, "vision": false, "thinking": "hybrid", "totalOutputCap": false, "bufferedChat": false},
   {"model": "ZHIPU/GLM-5.3", "displayName": "GLM-5.3 (Zhipu)", "vision": false, "thinking": "always", "totalOutputCap": false, "reasoningLevels": ["low", "high", "max"], "defaultReasoningLevel": "max", "rates": [{"aboveInputTokens": 0, "input": 1.4, "output": 4.4, "cached": 0.26}]},
   {"model": "kimi/kimi-k3", "displayName": "Kimi K3 (Moonshot, Beijing)", "vision": true, "thinking": "always", "totalOutputCap": false, "reasoningLevels": ["max"], "defaultReasoningLevel": "max"},
+  // Last, so every earlier row keeps its picker priority; its own rank is QWEN4_MAX_PICKER_PRIORITY.
+  QWEN4_MAX_MODEL,
 ]);
 
 export function resolveQwenCurrentModel(model: string | undefined): QwenCurrentModel | undefined {
@@ -139,7 +170,7 @@ export function qwenCurrentCatalogEntry(
 
 export const QWEN_CURRENT_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] = Object.freeze(
   QWEN_CURRENT_MODELS.map((entry, priority) => qwenCurrentCatalogEntry(
-    "qwen", entry, priority + 12,
+    "qwen", entry, entry === QWEN4_MAX_MODEL ? QWEN4_MAX_PICKER_PRIORITY : priority + 12,
     entry.model === "kimi/kimi-k3" || QWEN_RETIRED_MODELS.has(entry.model) ? "none" : "list",
   )),
 );
