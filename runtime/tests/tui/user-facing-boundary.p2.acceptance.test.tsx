@@ -98,10 +98,11 @@ describe('P2 and P3 display boundary', () => {
     expect(fallback([image])).toBe('Image received.');
     expect(fallback([{ type: 'text', text: 'kept text' }, { type: 'resource', resource: { uri: 'file:///x' } }]))
       .toBe('kept text\nFile received.');
-    expect(fallback('<system-reminder>model-only instruction</system-reminder>')).toBe('');
+    // Not one of AgenC's file-read warnings: real output, shown as produced (UPDATE-4 U1).
+    expect(fallback('<system-reminder>model-only instruction</system-reminder>')).toBe('<system-reminder>model-only instruction</system-reminder>');
     expect(getToolResultFallbackContent(
       makeToolResultMessage('a', '<system-reminder>model-only instruction</system-reminder>').message.content, 'a',
-    )).toBe('');
+    )).toBe('<system-reminder>model-only instruction</system-reminder>');
   });
 
   test('12 file-read reminder tags never render, with or without metadata', () => {

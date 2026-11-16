@@ -27,9 +27,6 @@ import {
   userFacingToolResultText,
 } from "../tools/user-facing-result.js";
 
-const LEADING_REMINDER = /^\s*<system-reminder>((?:(?!<system-reminder>)[\s\S])*?)<\/system-reminder>\s*/u;
-const REMINDER_OPEN = "<system-reminder>";
-const REMINDER_CLOSE = "</system-reminder>";
 
 /** A file-read warning (the only reminders a tool result carries for display). */
 function fileReadWarningText(inner: string): string | undefined {
@@ -52,32 +49,14 @@ export function emptyReadNotice(result: string): string | undefined {
 }
 
 /**
- * `<system-reminder>` blocks are for the model. A file-read warning becomes
- * its plain line; any other block is removed.
+ * The only `<system-reminder>` blocks a tool result carries from AgenC are
+ * the file-read warnings, and the runtime returns each as the WHOLE result.
+ * Such a result becomes its plain line. Anything else is the tool's real
+ * output (a shell command or a file may print the tag) and is shown exactly
+ * as produced.
  */
 export function stripSystemReminders(text: string): string {
-  if (!text.includes(REMINDER_OPEN)) return text;
-  // The runtime puts its reminders at the start or the end of a result. A
-  // tag in the middle of the text is content (a file or command output that
-  // mentions it) and stays.
-  let rest = text;
-  const lead: string[] = [];
-  const tail: string[] = [];
-  for (let match = LEADING_REMINDER.exec(rest); match !== null; match = LEADING_REMINDER.exec(rest)) {
-    const shown = fileReadWarningText(match[1]!);
-    if (shown !== undefined) lead.push(shown);
-    rest = rest.slice(match[0].length);
-  }
-  for (;;) {
-    const trimmed = rest.trimEnd();
-    if (!trimmed.endsWith(REMINDER_CLOSE)) break;
-    const open = trimmed.lastIndexOf(REMINDER_OPEN);
-    if (open < 0) break;
-    const shown = fileReadWarningText(trimmed.slice(open + REMINDER_OPEN.length, -REMINDER_CLOSE.length));
-    if (shown !== undefined) tail.unshift(shown);
-    rest = trimmed.slice(0, open);
-  }
-  return [...lead, rest.trim(), ...tail].filter((part) => part.length > 0).join("\n");
+  return emptyReadNotice(text) ?? text;
 }
 
 const ATTACHMENT_RECEIPT = /\[Shown to the user: ([a-z]+) "([^"\]\r\n]{0,500})"\]/gu;

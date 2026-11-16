@@ -11,9 +11,15 @@ function readableReason(message: string): string | undefined {
   if (/^[[{]/u.test(text)) return undefined;
   if (/<\/?[a-z][a-z0-9_-]*>/iu.test(text)) return undefined;
   if (/\n\s+at\s/u.test(text)) return undefined;
-  if (/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/iu.test(text)) return undefined;
   if (/\b(?:call|toolu|run)_[A-Za-z0-9]{6,}\b/u.test(text)) return undefined;
-  return text.replace(/\s+/gu, " ");
+  // A session id means nothing in a notice, but the sentence around it can
+  // carry the only way out ("... continue in a new session."): drop the id,
+  // keep the sentence.
+  return text
+    .replace(/\bsession [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu, "this session")
+    .replace(/\s*\(?\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b\)?/giu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
 export function promptSubmissionErrorText(error: unknown, sent = false): string {

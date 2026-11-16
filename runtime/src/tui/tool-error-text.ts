@@ -72,7 +72,10 @@ export function summarizeToolError(raw: string): string {
   }
   // Refusals the runtime writes address the model ("Do not retry the same
   // call...", "STOP and explain to the user..."); the user reads the fact.
-  const message = userFacingErrorText(lines.join(" ").replace(/\s+/g, " "));
+  // Decide on the lines as written: a rejection carries the person's own
+  // reason after "the user said:" on its next line, which flattening first
+  // would lose. Flatten the result for the one-line row afterwards.
+  const message = userFacingErrorText(lines.join("\n")).replace(/\s+/g, " ").trim();
   return message.length > 0 ? message : "failed";
 }
 

@@ -107,13 +107,15 @@ describe('P1 display boundary', () => {
       { type: 'response_item', payload: { role: 'user', content: '<system-reminder>queued prompt context</system-reminder>' } },
       { type: 'response_item', payload: { role: 'assistant', content: 'ok' } },
     ] as never, 's', 'r');
+    // The queued prompt is AgenC's envelope and shows the user's words; the
+    // second item is not one of AgenC's envelopes, so it is the user's text.
     expect(snapshot.messages.map((message) => message.text)).toEqual([
       'also add a test',
-      'Runtime note for the model (hidden)',
+      '<system-reminder>queued prompt context</system-reminder>',
       'ok',
     ]);
     const rows = adaptTranscriptEvents(daemonTranscriptSnapshotEvents(snapshot, 's') as never).messages as any[];
-    expect(JSON.stringify(rows.map((row) => row.message?.content))).not.toContain('system-reminder');
+    expect(JSON.stringify(rows.map((row) => row.message?.content))).not.toContain('IMPORTANT: After completing');
   });
 
   test('06 control: a canonical queued prompt keeps showing its display text', () => {
