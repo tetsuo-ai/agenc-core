@@ -230,6 +230,7 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_EXEC_HARD_TIMEOUT',
   // waiting past the yield while a command is busy (a test that needs it sets it explicitly)
   'AGENC_EXEC_WAIT_WHILE_BUSY',
+  'AGENC_DEEPSEEK_SUBSHELL_BACKGROUND_GUARD',
   // a check that runs right after an edit (a test that needs it sets it explicitly)
   'AGENC_EDIT_THEN_RUN',
   // read and command output shaping switches (a test that needs one sets it explicitly)

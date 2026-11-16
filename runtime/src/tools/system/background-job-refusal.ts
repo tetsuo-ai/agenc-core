@@ -18,8 +18,9 @@
  * `:`, `sleep` or `disown`. Everything else runs: a job followed by real work
  * (`server & sleep 1; curl ...`, a test run, a `wait`) serves that work, and
  * the cleanup stops whatever is left afterwards and the result says so.
- * Nested forms are never refused, even when their job is trailing; that is the
- * price of a rule with no false refusals. `nohup`, `setsid` and `disown` only
+ * By default nested forms are never refused, even when their job is trailing.
+ * An opt-in additionally checks one literal subshell containing a flat trailing
+ * job, when the outer command has no pipes or redirects. `nohup`, `setsid` and `disown` only
  * name the form in the refusal.
  *
  * Quotes, comments, here-document bodies, here-strings (`<<<`), `${...}` and
@@ -445,13 +446,32 @@ const DETACH_WORD =
  * the last command doing real work in a flat list of simple commands, when it
  * is a background job.
  */
-export function findUnwaitedBackgroundJob(cmd: string): UnwaitedBackgroundJob | undefined {
+export function findUnwaitedBackgroundJob(
+  cmd: string,
+  options: { readonly includeSubshell?: boolean } = {},
+): UnwaitedBackgroundJob | undefined {
   if (!cmd.includes("&")) return undefined;
   const structure = parseShellStructure(cmd);
   if (structure === undefined) return undefined;
-  const { masked, groups } = structure;
+  let { masked } = structure;
+  const { groups } = structure;
+  let flattenedSubshell = false;
+  if (options.includeSubshell === true && groups.length === 1) {
+    const group = groups[0]!;
+    // Only one literal subshell, with no pipes or redirects outside it.
+    // Removing its delimiters lets the existing conservative flat-list rule
+    // decide whether any subsequent work needs the job. In particular, a
+    // readiness check, wait, input producer or client still prevents refusal.
+    // Functions, substitutions and nested control flow are never flattened.
+    const outside = masked.slice(0, group.open) + masked.slice(group.end + 1);
+    if (group.kind === "subshell" && group.parent === undefined && !/[|<>]/u.test(outside) &&
+        findUnwaitedBackgroundJob(cmd.slice(group.start, group.end)) !== undefined) {
+      masked = masked.slice(0, group.open) + " " + masked.slice(group.start, group.end) + " " + masked.slice(group.end + 1);
+      flattenedSubshell = true;
+    }
+  }
   // Only a flat list is judged: no group, substitution, function or array anywhere.
-  if (groups.length > 0 || /[(){}`]/u.test(masked)) return undefined;
+  if ((groups.length > 0 && !flattenedSubshell) || /[(){}`]/u.test(masked)) return undefined;
   const items = listItems(masked);
   let last: number | undefined;
   let disowned = false;
