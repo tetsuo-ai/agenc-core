@@ -122,6 +122,16 @@ export interface LightHeadEditors {
 
 const ALL_LIGHT_HEAD_EDITORS: LightHeadEditors = { write: true, applyPatch: true };
 
+/**
+ * Native Gemini models take one small step per response with the short sentence: gemini-3.1-pro-preview sent no
+ * response with two calls in 28 recorded Light requests, and Light needed 14% (3.8 Flash) and 42% (3.1 Pro) more
+ * model calls than Gemini CLI on the same tasks. This is the lean head's sentence (prompts/lean-system-prompt.ts).
+ * Replayed on 64 recorded early gemini-3.8-flash requests it raised the actions per response from 1.81 to 2.36
+ * (2026-11-15).
+ */
+export const LIGHT_GEMINI_BATCHING =
+  "Put independent tool calls in one response: read every file you already know you need in one turn, sources and tests together, and run independent commands together. Each response is a full model round trip, so a call that does not need an earlier result should not wait for one;";
+
 export const LIGHT_GLM_BATCHED_STEPS =
   "A file listing or grep match does not count as reading a file. Read all files you intend to modify in a single response before editing. Submit source changes, tests and any requested documentation together in one response. If checks show multiple failures, fix each one you can diagnose before running the checks again.";
 
@@ -137,7 +147,7 @@ export const LIGHT_GLM_BATCHED_STEPS =
  * about them (prompts/attachments/product-help.ts). `editors` says which of Write and apply_patch the
  * session's tool policy leaves; the head never tells the model to use one the policy removed.
  */
-export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false, deepseekModel = false, deepseekWorkRules = false, writesWithApplyPatch = false, editors: LightHeadEditors = ALL_LIGHT_HEAD_EDITORS): string {
+export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false, statesTaskLimits = false, glmBatchedSteps = false, nonInteractive = false, limitedComputesFromData = false, deepseekModel = false, deepseekWorkRules = false, writesWithApplyPatch = false, editors: LightHeadEditors = ALL_LIGHT_HEAD_EDITORS, geminiBatching = false): string {
   // Interactive sessions without the task limits get the working rules above; the others and every DeepSeek model
   // keep the 0.19.26 prompt, interactive DeepSeek with one more sentence on probes (LIGHT_DEEPSEEK_PROBES).
   const interactiveRules = !nonInteractive && !statesTaskLimits && !deepseekModel;
@@ -167,6 +177,7 @@ export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = 
   // read/search wording shorter to fit its existing prefix budget.
   const batching = writesWithApplyPatch
     ? "Read all needed files and screenshots in the same response, with multiple FileRead calls. Group independent checks likewise;"
+    : geminiBatching ? LIGHT_GEMINI_BATCHING
     : "Put independent tool calls in one response;";
   return [
     "You are AgenC. Follow user scope; answer without tools when no workspace facts are needed, including greetings and questions about AgenC. Use workspace-relative paths and listed tools. " + batching + " omit default arguments." + reading + editing + " Do not weaken tests or requirements, conceal failures or claim unverified work. Leave files the user asks to preserve unchanged. If existing tests must be preserved, add new cases in separate files. Write secure code; protect secrets.",

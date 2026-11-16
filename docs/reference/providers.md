@@ -198,6 +198,38 @@ Google's count would ask. Google's counter is still used for a larger request,
 for explicit cached content, for file references and thought parts, and for
 the summary size check of a compaction.
 
+### Gemini tool results, steps and the prefix cache
+
+A workspace tool result reaches Gemini as `{"AGENC_DATA": "<output>"}` in the
+function response. Other providers get the output between two `AGENC_DATA`
+marker lines; on `gemini-3.8-flash` those lines led to empty answers after a
+step of several small parallel reads. The key keeps the boundary the system
+text names, and the data inside a JSON string cannot close it.
+
+The Light head of the native Gemini provider asks for fuller steps: every
+file the task needs in one response, and independent commands together.
+`gemini-3.1-pro-preview` and `gemini-3.1-pro-preview-customtools` keep the
+short sentence: with the fuller one Pro made fewer calls but solved 12 of 14
+tasks against 14 of 14, which 14 runs do not settle.
+
+`gemini-3.1-pro-preview` does not apply Google's implicit cache to a request
+under about 8,200 prompt tokens (measured 2026-11-15: no cached token at
+6,450, a cached part of 6,180 at 8,230). AgenC therefore keeps the system
+instruction and the function declarations of a session in an explicit cache
+(`cachedContents`, 10 minutes, renewed after 7): it is created beside the
+second request with the same head and named from the third on, so about
+1,500 tokens per call are billed at the cached rate. A request larger than
+40 kB carries its head again and leaves the history to the implicit cache,
+which Google turns off for a request that names an explicit cache. Google
+bills storage for the cache (about $0.001 per 10 minutes). Set
+`GEMINI_CACHED_CONTENT=off` to turn this off; a cache of your own named there
+is used instead. The cache is used on Google's own endpoint only, not on
+Vertex or a custom `GEMINI_BASE_URL`. Creating it is billed as input (about
+1,500 tokens every 7 minutes of a running session) and is not part of the
+session's token accounting. If Google refuses a request that names the
+cache, AgenC sends it again with its head and stops caching that head. Gemini 4 models reject explicit caches, and
+`gemini-3.8-flash` gains more from its implicit cache, so neither uses one.
+
 ### New Gemini models
 
 A Gemini chat model that Google lists in `GET /v1beta/models` works before
