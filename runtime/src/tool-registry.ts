@@ -34,6 +34,7 @@ import type { LLMTool, LLMToolCall } from "./llm/types.js";
 import { lightPresentation, standardPresentation, withHardTimeoutWording } from "./tools/light-presentation.js";
 import { execHardTimeoutEnabled } from "./tools/system/exec-timeout-mode.js";
 import { execWaitWhileBusyEnabled } from "./tools/system/exec-wait-mode.js";
+import { deepSeekSubshellBackgroundGuardEnabled } from "./tools/system/subshell-background-mode.js";
 import { WEB_SEARCH_INITIAL_TOOLS } from "./tools/web-search-mode.js";
 import { COMPACT_CORE_SWITCH_DISCOVERIES, COMPACT_CORE_TOOL_NAMES, LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch, lightUsesBatchEdit, lightUsesDeepSeekWrite, lightUsesGlmTuning } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
@@ -859,6 +860,10 @@ export function buildToolRegistry(
         return session != null && resolveLightRequest(session, session.services.provider?.name)?.process_tools === false;
       },
       waitWhileBusy: () => execWaitWhileBusy(),
+      subshellBackgroundGuard: () => {
+        const services = options.getSession?.()?.services;
+        return deepSeekSubshellBackgroundGuardEnabled(services?.provider?.name, services?.providerEnvironment ?? {});
+      },
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),

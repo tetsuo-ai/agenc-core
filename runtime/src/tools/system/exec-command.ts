@@ -70,6 +70,7 @@ import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import { nonEmptyString as asString } from "../../utils/stringUtils.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { readInvokingSession, readToolRuntimeContext } from "../runtimes/context.js";
+import { deepSeekSubshellBackgroundGuardEnabled } from "./subshell-background-mode.js";
 import { busyWaitWakeFor } from "./exec-wait-wake.js";
 import { localServerGuidance } from "./local-server-guidance.js";
 import { execProcessNamespaceNotice } from "./exec-process-namespace.js";
@@ -131,6 +132,8 @@ export interface ExecCommandToolConfig extends BashToolConfig {
    * the call waiting (`AGENC_EXEC_WAIT_WHILE_BUSY`, tools/system/exec-wait-mode.ts).
    */
   readonly waitWhileBusy?: () => boolean;
+  /** Opt-in DeepSeek guard for a literal subshell whose background job would be lost. */
+  readonly subshellBackgroundGuard?: () => boolean;
 }
 
 /**
@@ -212,13 +215,21 @@ export const BACKGROUND_START_YIELD_TIME_MS = 1_000;
 function unwaitedBackgroundJobFailure(
   args: Readonly<Record<string, unknown>>,
   defaultShell: string,
+  config?: ExecCommandToolConfig,
 ): ToolPreflightFailure | null {
   if (args.detach === true || args.tty === true) return null;
   const cmd = asString(args.cmd);
   if (cmd === undefined) return null;
   const shell = asString(args.shell)?.trim() || defaultShell;
   if (!isPosixShell(shell)) return null;
-  const job = findUnwaitedBackgroundJob(cmd);
+  const invokingSession = readInvokingSession(args);
+  const includeSubshell = invokingSession === undefined
+    ? config?.subshellBackgroundGuard?.() === true
+    : deepSeekSubshellBackgroundGuardEnabled(
+        invokingSession.services.provider?.name,
+        invokingSession.services.providerEnvironment ?? {},
+      );
+  const job = findUnwaitedBackgroundJob(cmd, { includeSubshell });
   return job === undefined ? null : { code: "background-job", message: unwaitedBackgroundJobMessage(job) };
 }
 
@@ -1126,7 +1137,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
     },
     preflight(args) {
       const failure = validateExecCommandInput(args, config) ??
-        unwaitedBackgroundJobFailure(args, defaultShell);
+        unwaitedBackgroundJobFailure(args, defaultShell, config);
       if (failure !== null) return failure;
       const cmd = asString(args.cmd)!;
       if (args.tty === true && isPlainInteractiveShellCommand(cmd)) return null;
@@ -1210,7 +1221,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as Record<string, unknown> & ToolExecutionInjectedArgs;
       const failure = validateExecCommandInput(args, config) ??
-        unwaitedBackgroundJobFailure(args, defaultShell) ?? preflightSelfTermination(args);
+        unwaitedBackgroundJobFailure(args, defaultShell, config) ?? preflightSelfTermination(args);
       if (failure !== null) {
         return {
           content: safeStringify({ error: failure.message }),
