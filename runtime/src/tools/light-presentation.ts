@@ -91,7 +91,7 @@ export function lightPresentation(
     readonly glmServerChecks?: boolean;
     readonly writeWithApplyPatch?: boolean;
     readonly compactCore?: boolean;
-    /** OpenAI Light's `exec-args` switch: the lean exec_command without workdir and background. */
+    /** OpenAI Light's `exec-args` (on by default): the lean exec_command without workdir and background. */
     readonly shortExecArgs?: boolean;
   } = {},
 ): LLMTool {
@@ -280,7 +280,7 @@ const LEAN_EXEC_POINTER =
   " Advanced fields (yield_time_ms, tty, login, shell, detach, max_output_tokens): system.searchTools select:exec_command loads them.";
 
 /**
- * The lean exec_command of a Light session on OpenAI with the `exec-args` switch (llm/openai-light-output.ts).
+ * The lean exec_command of a Light session on OpenAI unless `exec-args` is turned off (llm/openai-light-output.ts).
  * GPT-6.1 Terra and Sol write every listed field on every call: in the rollouts of round 4 job oaiout each call
  * carried `"workdir":"<absolute workspace path>"` and `"background":false`, more than half of the characters of
  * exec_command's arguments. A command runs in the workspace root without workdir, and background stays accepted

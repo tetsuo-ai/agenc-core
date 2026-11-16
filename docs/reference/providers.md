@@ -970,6 +970,28 @@ skips the incremental delta. Chaining an unstored id used to reject
 every later request of a subscription conversation once tools or
 history made it an extension.
 
+### Shorter exec_command arguments in Light sessions
+
+Light sessions of the `openai` provider, on the platform API and with ChatGPT
+sign-in, show `exec_command` to the model with two fields, `cmd` and
+`timeoutMs`. GPT models write every field they are shown on every call, so
+with `workdir` and `background` listed each command carried the absolute
+workspace path and `background: false`, about half of the characters of its
+arguments. A command runs in the workspace root, and `workdir`, `background`
+and the other fields are named in the tool's description and still accepted;
+the model loads them with `system.searchTools` when a command needs one. In
+the 2026-11-15 measurements on GPT-6.1 Terra and Sol this cut the output
+tokens by 11.8% and the task time by 6.9%, with the same number of tasks
+solved.
+
+`AGENC_OPENAI_LIGHT_OUTPUT=off` turns it off and shows `exec_command` with
+`cmd`, `workdir`, `timeoutMs` and `background` as in 0.19.35. The variable
+also has one opt-in name: `AGENC_OPENAI_LIGHT_OUTPUT=no-summary` stops asking
+for a reasoning summary unless `reasoning_summary` is configured (the
+encrypted reasoning is still replayed), and `off,no-summary` gives that
+without the shorter arguments. Other modes and other providers are unchanged;
+see [env.md](env.md).
+
 ### Responses over WebSocket
 
 Light sessions of the `openai` provider, on the platform API and with ChatGPT
