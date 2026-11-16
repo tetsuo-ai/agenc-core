@@ -216,3 +216,29 @@ it("reports an actual disconnect during the recovery wait immediately", async ()
   expect(f.stderr()).toContain("daemon socket disconnected");
   expect(f.messages.filter(m => m.method === "print.invoke")).toHaveLength(1);
 });
+
+it("checks daemon liveness while an admitted invocation has no output", async () => {
+  const f = await fixture(); f.behavior.admit = () => {};
+  const run = f.run();
+  try {
+    await vi.waitFor(() => expect(f.messages.filter(m => m.method === "health.ping").length).toBeGreaterThan(1), { timeout: 600 });
+  } finally {
+    f.io.signals.emit("SIGTERM");
+    await run;
+  }
+});
+
+it("fails an unresponsive daemon during an admitted invocation without output", async () => {
+  const f = await fixture(); f.behavior.admit = () => {};
+  const realSetTimeout = globalThis.setTimeout;
+  const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: any[]) => void, delay?: number, ...args: any[]) =>
+    realSetTimeout(callback, delay === 30_000 ? 450 : delay, ...args)) as typeof setTimeout);
+  f.behavior.beforeReply = async method => {
+    if (method === "health.ping" && f.messages.filter(m => m.method === "health.ping").length > 1) await new Promise(() => {});
+  };
+  try {
+    expect(await f.run()).toBe(1);
+    expect(f.stderr()).toContain("daemon response deadline exceeded");
+    expect(f.messages.filter(m => m.method === "print.invoke")).toHaveLength(1);
+  } finally { timer.mockRestore(); }
+});

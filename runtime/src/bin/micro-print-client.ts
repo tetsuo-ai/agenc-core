@@ -32,6 +32,7 @@ export async function tryMicroPrint(
   let admitted = false, challengeSeen = false, outputSeen = false;
   let lastSequence = 0;
   let cancelledCode: number | undefined;
+  let stopHeartbeat = (): void => {};
   let cancelTimer: ReturnType<typeof setTimeout> | undefined;
   const cancel = (reason: "signal" | "broken_pipe", signal?: "SIGINT" | "SIGTERM" | "SIGHUP", stream?: "stdout" | "stderr"): void => {
     if (cancelledCode !== undefined) return;
@@ -54,32 +55,34 @@ export async function tryMicroPrint(
     if (cancelledCode !== undefined) return cancelledCode;
     if (connection === null) return null;
     const resident = connection;
-    // An admitted operation cannot be replayed. Keep its original request on
-    // the pinned socket while probing liveness, with one absolute deadline.
-    const requestDuringRun = async (method: string, params: Record<string, unknown>): Promise<unknown> => {
-      if (invocation.env.AGENC_PRINT_STALL_RECOVERY === "off") {
-        return resident.transport.request(method, params, resident.timeoutMs);
-      }
-      const budgetMs = Math.max(resident.timeoutMs, 30_000);
-      const deadline = Date.now() + budgetMs;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let finished = false;
-      const probe = async (): Promise<void> => {
-        try {
-          const reply = await resident.transport.request("health.ping", {}, Math.max(1, deadline - Date.now()));
-          if (!isRecord(reply) || reply.ok !== true || typeof reply.now !== "string" || !reply.now) {
-            resident.transport.close(microTransportError());
-            return;
-          }
-          if (!finished) timer = setTimeout(() => { void probe(); }, resident.timeoutMs);
-        } catch (error) {
-          if (!finished) resident.transport.close(error instanceof MicroPrintError ? error : microTransportError());
+    const recovery = invocation.env.AGENC_PRINT_STALL_RECOVERY !== "off";
+    const budgetMs = recovery ? Math.max(resident.timeoutMs, 30_000) : resident.timeoutMs;
+    let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+    let heartbeatStarted = false, heartbeatStopped = false;
+    stopHeartbeat = () => { heartbeatStopped = true; clearTimeout(heartbeatTimer); };
+    const probe = async (): Promise<void> => {
+      try {
+        const reply = await resident.transport.request("health.ping", {}, budgetMs);
+        if (!isRecord(reply) || reply.ok !== true || typeof reply.now !== "string" || !reply.now) {
+          resident.transport.close(microTransportError());
+          return;
         }
-      };
-      timer = setTimeout(() => { void probe(); }, resident.timeoutMs);
-      try { return await resident.transport.request(method, params, budgetMs); }
-      finally { finished = true; clearTimeout(timer); }
+        if (!heartbeatStopped && cancelledCode === undefined) {
+          heartbeatTimer = setTimeout(() => { void probe(); }, resident.timeoutMs);
+        }
+      } catch (error) {
+        if (!heartbeatStopped) resident.transport.close(error instanceof MicroPrintError ? error : microTransportError());
+      }
     };
+    const startHeartbeat = (): void => {
+      if (!recovery || heartbeatStarted) return;
+      heartbeatStarted = true;
+      heartbeatTimer = setTimeout(() => { void probe(); }, resident.timeoutMs);
+    };
+    // Keep each original request on the pinned socket. Successful heartbeats
+    // cannot extend an admission or output acknowledgement's fixed deadline.
+    const requestDuringRun = (method: string, params: Record<string, unknown>): Promise<unknown> =>
+      resident.transport.request(method, params, budgetMs);
     resident.transport.setNotificationHandler(async ({ method, params: notice }) => {
       if (notice.invocationId !== invocationId) throw microTransportError();
       if (method === "print.admission") {
@@ -91,12 +94,14 @@ export async function tryMicroPrint(
         if (cancelledCode !== undefined) throw microTransportError();
         // Synchronous, before the send: lost acknowledgement cannot authorize replay.
         admitted = true;
+        startHeartbeat();
         await requestDuringRun("print.admit", { invocationId, challenge: notice.challenge });
       } else if (method === "print.output") {
         if (cancelledCode !== undefined || (notice.stream !== "stdout" && notice.stream !== "stderr") ||
             !Number.isSafeInteger(notice.sequence) || notice.sequence !== lastSequence + 1 || typeof notice.data !== "string") throw microTransportError();
         lastSequence++;
         outputSeen = true;
+        startHeartbeat();
         await writeMicroOutput(io[notice.stream], notice.data, resident.transport.signal);
         await requestDuringRun("print.ack", { invocationId, sequence: notice.sequence });
       } else throw microTransportError();
@@ -117,7 +122,7 @@ export async function tryMicroPrint(
     try { await writeMicroOutput(io.stderr, `agenc: ${diagnostic}\n`, AbortSignal.timeout(connection?.timeoutMs ?? 2000)); } catch { /* broken sink */ }
     return 1;
   } finally {
-    clearTimeout(cancelTimer); connection?.transport.close();
+    stopHeartbeat(); clearTimeout(cancelTimer); connection?.transport.close();
     io.signals.off("SIGINT", onInt); io.signals.off("SIGTERM", onTerm); io.signals.off("SIGHUP", onHup);
     io.stdout.off("error", onStdout); io.stderr.off("error", onStderr);
   }

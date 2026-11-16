@@ -743,6 +743,8 @@ It does not change provider request serialization.
 `AGENC_PRINT_STALL_RECOVERY=off` restores the ordinary RPC timeout for resident
 print admission and output acknowledgements. By default these requests wait up
 to 30 seconds (or the configured daemon RPC timeout if longer), while sending
-`health.ping` on the same socket. A heartbeat never extends that deadline. A
+`health.ping` on the same socket. Checks continue during admitted invocations
+with no output, with at most one heartbeat pending and the same response budget.
+A heartbeat never extends an admission or output acknowledgement deadline. A
 socket disconnect fails immediately, without replaying the invocation. Timeout,
 disconnect and protocol errors have distinct diagnostics on stderr.
