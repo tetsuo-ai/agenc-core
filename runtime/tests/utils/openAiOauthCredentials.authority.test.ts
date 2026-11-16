@@ -27,6 +27,8 @@ async function loadRepository(asyncRead?: (bound: HomeContext) => Promise<Secure
       structuredClone(secureStorageByIdentity.get(bound.identityKey) ?? {}),
     readNativeSecureStorageAsync: asyncRead ?? (async (bound: HomeContext) =>
       structuredClone(secureStorageByIdentity.get(bound.identityKey) ?? {})),
+    readNativeSecureStorageFresh: (bound: HomeContext) =>
+      structuredClone(secureStorageByIdentity.get(bound.identityKey) ?? {}),
     updateNativeSecureStorage: (
       bound: HomeContext,
       updater: (current: Readonly<SecureStorageData>) => SecureStorageData,
@@ -52,6 +54,19 @@ describe('OpenAI OAuth credential authority', () => {
     vi.doUnmock(nativeModulePath)
     vi.clearAllMocks()
     vi.resetModules()
+  })
+
+  test('auth recovery bypasses both the OAuth cache and the native keychain cache', async () => {
+    const bound = home('/tmp/agenc-openai-fresh-login')
+    const stale = { openAiOauth: { accessToken: 'old', accountId: 'old-account' } }
+    secureStorageByIdentity.set(bound.identityKey, stale)
+    const repository = await loadRepository(async () => stale)
+    expect(repository.readOpenAiOauthCredentials(bound)?.accessToken).toBe('old')
+    secureStorageByIdentity.set(bound.identityKey, {
+      openAiOauth: { accessToken: 'new', accountId: 'new-account' },
+    })
+    expect((await repository.readOpenAiOauthCredentialsAsync(bound, true))?.accessToken).toBe('new')
+    expect(repository.readOpenAiOauthCredentials(bound)?.accessToken).toBe('new')
   })
 
   test('isolates secure-storage identities and preserves unrelated namespaces', async () => {

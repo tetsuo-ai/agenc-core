@@ -11,6 +11,7 @@ const boundHome = resolveHomeContext(
 )
 let stored: Record<string, unknown> | undefined
 const refresh = vi.fn()
+const readAsync = vi.fn(async () => stored)
 
 async function loadModules() {
   vi.resetModules()
@@ -19,6 +20,7 @@ async function loadModules() {
       typeof import('../../src/utils/openAiOauthCredentials.js')
     >()),
     readOpenAiOauthCredentials: () => stored,
+    readOpenAiOauthCredentialsAsync: readAsync,
     refreshOpenAiSubscriptionIfNeeded: refresh,
   }))
   const [options, provider] = await Promise.all([
@@ -31,6 +33,7 @@ async function loadModules() {
 afterEach(() => {
   stored = undefined
   refresh.mockReset()
+  readAsync.mockClear()
   vi.doUnmock(credentialsModulePath)
   vi.clearAllMocks()
   vi.resetModules()
@@ -122,6 +125,26 @@ test('OAuth binding rejects a custom OpenAI endpoint', async () => {
     model: 'gpt-5',
     baseURL: 'https://attacker.example/v1',
   }, {})).toThrow(/bound to the first-party OpenAI endpoint/)
+})
+
+test('a bound subscription reloads the fresh native record and carries its account', async () => {
+  stored = { accessToken: 'old', refreshToken: 'old-refresh', accountId: 'old-account' }
+  const { resolveProviderFactoryOptions } = await loadModules()
+  const resolved = resolveProviderFactoryOptions('openai', {
+    credentialHome: boundHome, model: 'gpt-6.1-sol',
+  }, {})
+  const oauth = resolved.extra?.oauth as {
+    reloadCredentials: () => Promise<unknown>
+    refreshAccessToken: () => Promise<unknown>
+  }
+  stored = { accessToken: 'new', refreshToken: 'new-refresh', accountId: 'new-account' }
+  await expect(oauth.reloadCredentials()).resolves.toEqual(stored)
+  expect(readAsync).toHaveBeenCalledWith(boundHome, true)
+  refresh.mockResolvedValue({ refreshed: false, credentials: stored })
+  await oauth.refreshAccessToken()
+  expect(refresh).toHaveBeenCalledWith(boundHome, {}, { force: true, rejectedAccessToken: 'new' })
+  stored = { apiKey: 'platform-key', accessToken: 'ignored', accountId: 'ignored' }
+  await expect(oauth.reloadCredentials()).resolves.toBeUndefined()
 })
 
 test('factory and adapter contain no native secure-storage reads', () => {

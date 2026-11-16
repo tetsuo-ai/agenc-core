@@ -11,6 +11,13 @@ export interface OpenAIOAuthConfig extends OAuthRefreshCallbacks {
   readonly accessToken: string;
   readonly refreshToken?: string;
   readonly maxRefreshAttempts?: number;
+  readonly accountId?: string;
+  /** Fresh native storage read after a rejected ChatGPT credential. */
+  readonly reloadCredentials?: () => Promise<{
+    readonly accessToken: string;
+    readonly refreshToken?: string;
+    readonly accountId?: string;
+  } | undefined>;
 }
 
 export type OpenAIProviderAuthStrategy =

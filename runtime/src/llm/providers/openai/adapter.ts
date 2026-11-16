@@ -1333,7 +1333,7 @@ export class OpenAIProvider implements LLMProvider {
           providerCapabilityHints,
           toolCallIdNamespace: headers?.["Idempotency-Key"],
         }, { responseHeaders: response.headers });
-      }, { singleWireAttempt: options?.singleWireAttempt, signal: options?.signal });
+      }, { singleWireAttempt: options?.singleWireAttempt, openAiAuthRetryAttempt: options?.openAiAuthRetryAttempt, signal: options?.signal });
     } catch (error) {
       if (isFallbackTriggeredError(error)) {
         throw error;
@@ -1399,7 +1399,7 @@ export class OpenAIProvider implements LLMProvider {
           timeoutMs,
           headers,
         );
-      }, { singleWireAttempt: options?.singleWireAttempt, signal: options?.signal });
+      }, { singleWireAttempt: options?.singleWireAttempt, openAiAuthRetryAttempt: options?.openAiAuthRetryAttempt, signal: options?.signal });
     } catch (error) {
       // Structured provider failures are already classified; their prose is
       // not evidence of a second, transport-level failure.
@@ -2004,6 +2004,7 @@ export class OpenAIProvider implements LLMProvider {
         module,
         session: new module.ResponsesWebSocketSession({
           providerName: this.name,
+          captureAuthFailures: this.config.authMode === "oauth" && this.isChatGptBackend(),
           ...(probe ? { failuresBeforeHttpOnly: 1, connectTimeoutMs: PROBE_WEBSOCKET_CONNECT_TIMEOUT_MS } : {}),
         }),
       };
@@ -2102,6 +2103,17 @@ export class OpenAIProvider implements LLMProvider {
       if (!(error instanceof module.ResponsesWebSocketFallback)) {
         writeBehind?.finish();
         throw error;
+      }
+      if (this.name === "openai" && this.config.authMode === "oauth" && this.isChatGptBackend() &&
+          (error.statusCode === 401 || (error.refused && inferErrorStatus(error.errorFrame) === 401))) {
+        writeBehind?.finish();
+        // The upgrade authenticated the entire socket with the rejected token.
+        // The next admitted attempt must connect with the recovered credential.
+        session.standDown();
+        const failure = Object.assign(new Error(
+          readNestedProviderMessage(error.errorFrame) ?? error.message,
+        ), { status: 401, body: error.errorFrame });
+        throw markLLMPreGenerationRejection(failure, this.name);
       }
       if (error.refused && error.errorFrame !== undefined && forbidsStreamRetry(error.errorFrame)) {
         // The service refused the request and forbade a retry. Resubmitting

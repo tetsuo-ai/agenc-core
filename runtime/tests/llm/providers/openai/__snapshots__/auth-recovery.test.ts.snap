@@ -1,0 +1,125 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`successful wire snapshot: DeepSeek ignores http selection 1`] = `
+[
+  {
+    "body": "{"model":"deepseek-v4-pro","stream":false,"messages":[{"role":"user","content":"hello"}],"max_tokens":128,"thinking":{"type":"enabled"}}",
+    "headers": {
+      "authorization": "Bearer fixture-api-key",
+      "content-type": "application/json",
+    },
+    "method": "POST",
+    "url": "https://api.deepseek.com/v1/chat/completions",
+  },
+]
+`;
+
+exports[`successful wire snapshot: DeepSeek ignores websocket selection 1`] = `
+[
+  {
+    "body": "{"model":"deepseek-v4-pro","stream":false,"messages":[{"role":"user","content":"hello"}],"max_tokens":128,"thinking":{"type":"enabled"}}",
+    "headers": {
+      "authorization": "Bearer fixture-api-key",
+      "content-type": "application/json",
+    },
+    "method": "POST",
+    "url": "https://api.deepseek.com/v1/chat/completions",
+  },
+]
+`;
+
+exports[`successful wire snapshot: http, ChatGPT=false 1`] = `
+{
+  "frames": [
+    "{"model":"gpt-6.1-sol","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":true,"store":false,"prompt_cache_key":"auth-fixture","max_output_tokens":128,"include":["reasoning.encrypted_content"],"reasoning":{"summary":"auto"}}",
+  ],
+  "targets": [
+    {
+      "headers": {
+        "accept": "text/event-stream",
+        "accept-encoding": "gzip, deflate",
+        "accept-language": "*",
+        "authorization": "Bearer stale",
+        "connection": "keep-alive",
+        "content-length": "274",
+        "content-type": "application/json",
+        "sec-fetch-mode": "cors",
+        "user-agent": "node",
+      },
+      "method": "POST",
+      "path": "/v1/responses",
+    },
+  ],
+}
+`;
+
+exports[`successful wire snapshot: http, ChatGPT=true 1`] = `
+{
+  "frames": [
+    "{"model":"gpt-6.1-sol","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":true,"store":false,"prompt_cache_key":"auth-fixture","include":["reasoning.encrypted_content"],"reasoning":{"summary":"auto"}}",
+  ],
+  "targets": [
+    {
+      "headers": {
+        "accept": "text/event-stream",
+        "accept-encoding": "gzip, deflate",
+        "accept-language": "*",
+        "authorization": "Bearer stale",
+        "chatgpt-account-id": "fixture-account",
+        "connection": "keep-alive",
+        "content-length": "250",
+        "content-type": "application/json",
+        "originator": "agenc",
+        "sec-fetch-mode": "cors",
+        "session_id": "auth-fixture",
+        "user-agent": "node",
+      },
+      "method": "POST",
+      "path": "/v1/responses",
+    },
+  ],
+}
+`;
+
+exports[`successful wire snapshot: websocket, ChatGPT=false 1`] = `
+{
+  "frames": [
+    "{"type":"response.create","model":"gpt-6.1-sol","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"store":false,"prompt_cache_key":"auth-fixture","max_output_tokens":128,"include":["reasoning.encrypted_content"],"reasoning":{"summary":"auto"}}",
+  ],
+  "targets": [
+    {
+      "headers": {
+        "authorization": "Bearer stale",
+        "connection": "Upgrade",
+        "sec-websocket-version": "13",
+        "upgrade": "websocket",
+      },
+      "method": "GET",
+      "path": "/v1/responses",
+    },
+  ],
+}
+`;
+
+exports[`successful wire snapshot: websocket, ChatGPT=true 1`] = `
+{
+  "frames": [
+    "{"type":"response.create","model":"gpt-6.1-sol","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"store":false,"prompt_cache_key":"auth-fixture","include":["reasoning.encrypted_content"],"reasoning":{"summary":"auto"}}",
+  ],
+  "targets": [
+    {
+      "headers": {
+        "authorization": "Bearer stale",
+        "chatgpt-account-id": "fixture-account",
+        "connection": "Upgrade",
+        "originator": "agenc",
+        "sec-websocket-version": "13",
+        "session_id": "auth-fixture",
+        "upgrade": "websocket",
+      },
+      "method": "GET",
+      "path": "/v1/responses",
+    },
+  ],
+}
+`;

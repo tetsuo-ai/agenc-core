@@ -17,6 +17,7 @@
  */
 
 import { isDeepStrictEqual } from "node:util";
+import type { IncomingMessage } from "node:http";
 import WebSocket, { type RawData } from "ws";
 
 /** The shape the adapter's SSE reader yields, so both transports share a loop. */
@@ -58,16 +59,18 @@ export class ResponsesWebSocketFallback extends Error {
   readonly afterSend: boolean;
   readonly refused: boolean;
   readonly errorFrame?: Record<string, unknown>;
+  readonly statusCode?: number;
 
   constructor(
     reason: string,
-    details: { afterSend?: boolean; refused?: boolean; errorFrame?: Record<string, unknown> } = {},
+    details: { afterSend?: boolean; refused?: boolean; errorFrame?: Record<string, unknown>; statusCode?: number } = {},
   ) {
     super(reason);
     this.name = "ResponsesWebSocketFallback";
     this.afterSend = details.afterSend === true;
     this.refused = details.refused === true;
     if (details.errorFrame !== undefined) this.errorFrame = details.errorFrame;
+    if (details.statusCode !== undefined) this.statusCode = details.statusCode;
   }
 }
 
@@ -289,6 +292,8 @@ type TargetResolver = () => Promise<ResponsesWebSocketTarget>;
 
 export interface ResponsesWebSocketSessionOptions {
   readonly providerName: string;
+  /** ChatGPT sign-in recovery needs the upgrade's 401 status and explanation. */
+  readonly captureAuthFailures?: boolean;
   readonly connectTimeoutMs?: number;
   readonly maxConnectionAgeMs?: number;
   readonly firstEventTimeoutMs?: number;
@@ -597,6 +602,12 @@ export class ResponsesWebSocketSession {
     }
     if (result instanceof Error) {
       this.failed();
+      const refusal = result as Error & { statusCode?: number; body?: string };
+      if (refusal.statusCode === 401) {
+        let errorFrame: Record<string, unknown> | undefined;
+        try { errorFrame = JSON.parse(refusal.body ?? ""); } catch { /* Plain-text upgrade refusal. */ }
+        throw this.fallback(refusal.body || result.message, { statusCode: 401, errorFrame });
+      }
       throw this.fallback(`connect failed: ${result.message}`);
     }
     if (this.connection !== result || !this.usable(result)) {
@@ -636,7 +647,7 @@ export class ResponsesWebSocketSession {
         // A socket given up during the handshake still reports its error.
         socket.on("error", () => undefined);
         if (!forRequest) unrefHandshake(socket);
-        await this.opened(socket, undefined);
+        await this.opened(socket, undefined, timeoutMs);
       } catch (error) {
         try {
           socket?.terminate();
@@ -710,9 +721,11 @@ export class ResponsesWebSocketSession {
     void this.openAhead();
   }
 
-  private opened(socket: WebSocket, signal: AbortSignal | undefined): Promise<void> {
+  private opened(socket: WebSocket, signal: AbortSignal | undefined, timeoutMs: number): Promise<void> {
     return new Promise<void>((resolve, reject) => {
+      let refusalTimer: ReturnType<typeof setTimeout> | undefined;
       const settle = (error?: unknown): void => {
+        if (refusalTimer !== undefined) clearTimeout(refusalTimer);
         socket.off("open", onOpen);
         socket.off("error", onError);
         socket.off("close", onClose);
@@ -724,8 +737,25 @@ export class ResponsesWebSocketSession {
       const onOpen = (): void => settle();
       const onError = (error: Error): void => settle(error);
       const onClose = (): void => settle(new Error("closed during the handshake"));
-      const onRefused = (_request: unknown, response: { statusCode?: number }): void =>
-        settle(new Error(`upgrade refused with HTTP ${response.statusCode ?? "?"}`));
+      const onRefused = (_request: unknown, response: IncomingMessage): void => {
+        const error = Object.assign(new Error(`upgrade refused with HTTP ${response.statusCode ?? "?"}`), {
+          statusCode: response.statusCode, body: "",
+        });
+        if (response.statusCode !== 401 || !this.options.captureAuthFailures) {
+          settle(new Error(error.message));
+          return;
+        }
+        // Keep the server's sign-in explanation, bounded even for a broken peer.
+        refusalTimer = setTimeout(() => { settle(error); response.destroy(); }, timeoutMs);
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          error.body += chunk;
+          if (error.body.length > 65_536) { error.body = ""; settle(error); response.destroy(); }
+        });
+        response.once("end", () => settle(error));
+        response.once("error", () => settle(error));
+        response.once("aborted", () => settle(error));
+      };
       const onAbort = (): void => settle(abortError(signal!));
       socket.on("open", onOpen);
       socket.on("error", onError);

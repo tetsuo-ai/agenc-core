@@ -18,6 +18,7 @@ import {
 } from "../utils/geminiAuth.js";
 import {
   readOpenAiOauthCredentials,
+  readOpenAiOauthCredentialsAsync,
   refreshOpenAiSubscriptionIfNeeded,
 } from "../utils/openAiOauthCredentials.js";
 import {
@@ -592,9 +593,22 @@ function resolveProviderCredentialAuthorityCore(
           forcedExtra.authMode = "oauth";
           forcedExtra.oauth = {
             accessToken: initialAccessToken,
+            accountId: subscription.accountId,
             ...(stored?.refreshToken !== undefined
               ? { refreshToken: stored.refreshToken }
               : {}),
+            reloadCredentials: async () => {
+              const current = await readOpenAiOauthCredentialsAsync(home, true);
+              if (current?.apiKey !== undefined) return undefined;
+              const subscription = resolveStoredChatGptSubscriptionCredentials(current);
+              if (!subscription) return undefined;
+              activeAccessToken = subscription.bearerToken;
+              return {
+                accessToken: subscription.bearerToken,
+                refreshToken: current?.refreshToken,
+                accountId: subscription.accountId,
+              };
+            },
             refreshAccessToken: async () => {
               try {
                 const refreshed = await refreshOpenAiSubscriptionIfNeeded(
@@ -617,6 +631,7 @@ function resolveProviderCredentialAuthorityCore(
                 return {
                   kind: "refreshed" as const,
                   accessToken: credentials.accessToken,
+                  accountId: credentials.accountId,
                   ...(credentials.refreshToken !== undefined
                     ? { refreshToken: credentials.refreshToken }
                     : {}),
