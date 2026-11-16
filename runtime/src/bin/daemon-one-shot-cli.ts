@@ -1207,7 +1207,9 @@ export async function awaitDaemonOneShotRun(params: {
               ...(params.deadlineAt !== undefined ? { remainingDeadlineMs: Math.max(0, params.deadlineAt - Date.now()) } : {}),
               daemonEvidence: evidence };
             if (outputFormat !== "text") writeOneShotJsonLine(diagnostic, io);
-            io.stderr.write(`agenc: daemon disconnect evidence ${JSON.stringify(evidence)}\n`);
+            io.stderr.write(outputFormat === "text"
+              ? "Connection to AgenC closed before the answer finished.\n"
+              : `agenc: daemon disconnect evidence ${JSON.stringify(evidence)}\n`);
             settle({
               error: new Error(state.message ?? "daemon connection closed"),
             });

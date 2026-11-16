@@ -314,3 +314,23 @@ it("sends only an explicit mode flag when continuing, so the session keeps its r
   expect(await oneShotCLI("next", [], undefined, { kind: "latest" })).toBe(23);
   expect(mocks.continuation.mock.calls[1]?.[0].runtimeOptions).toMatchObject({ lightMode: false });
 });
+
+it.each(["text", "json", "stream-json"])("keeps disconnect evidence out of human %s output", async format => {
+  process.argv = ["node", "agenc", "-p", "--light", "--output-format", format, "hello"];
+  mocks.connect.mockResolvedValue({ request, close,
+    subscribeToConnectionState: (callback: (state: unknown) => void) => {
+      queueMicrotask(() => callback({ status: "disconnected", message: "daemon connection closed" }));
+      return () => {};
+    },
+    subscribeToSessionEvents: () => () => {},
+  });
+  expect(await oneShotCLI("hello")).toBe(1);
+  const stderr = vi.mocked(process.stderr.write).mock.calls.map(call => String(call[0])).join("");
+  if (format === "text") {
+    expect(stderr).toContain("Connection to AgenC closed before the answer finished.");
+    expect(stderr).not.toContain("daemon disconnect evidence {");
+  } else {
+    expect(stderr).toContain("daemon disconnect evidence {");
+    expect(writes.map(line => JSON.parse(line)).find(line => line.daemonEvidence)).toMatchObject({ failureCode: "daemon_disconnected", sessionId: "session" });
+  }
+});
