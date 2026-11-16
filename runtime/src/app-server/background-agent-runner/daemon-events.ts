@@ -3,6 +3,7 @@
  * Split out of background-agent-runner.ts as a pure move.
  */
 
+import { userFacingToolResultText } from "../../tools/user-facing-result.js";
 import type { LLMContentPart } from "../../llm/types.js";
 import type { AgentStatus as ThreadAgentStatus } from "../../agents/status.js";
 import type { Event } from "../../session/event-log.js";
@@ -208,6 +209,40 @@ function scopeDirectShellDaemonEvent(
     return event;
   }
   return { ...event, statusProjection: "session_only" };
+}
+
+/**
+ * The copy of a session event that goes to attached CLIENTS (TUI, desktop
+ * app, SDK subscribers). Clients print a completed tool's `result`. For the
+ * few tools whose result text is written for the model (AskUserQuestion's
+ * "User has answered your questions ... You can now continue", plan mode
+ * texts, a Skill load's whole prompt) that copy carries the user-facing line
+ * instead; `metadata` is unchanged.
+ *
+ * Only the client fan-out may use this. The daemon's own observers
+ * (snapshot policy, routines, recovery) and the journal keep the original
+ * event: a snapshot's tool result can be replayed to the model after a
+ * restart, so it must stay the text the model was given.
+ */
+export function clientFacingSessionEvent<T extends JsonObject>(notification: T): T {
+  if (notification.method !== "event.session_event") return notification;
+  const params = notification.params;
+  if (!isJsonObject(params)) return notification;
+  const event = params.event;
+  if (!isJsonObject(event) || event.type !== "tool_call_completed") return notification;
+  const payload = event.payload;
+  if (!isJsonObject(payload)) return notification;
+  const text = userFacingToolResultText({
+    toolName: typeof payload.toolName === "string" ? payload.toolName : undefined,
+    result: payload.result,
+    metadata: payload.metadata,
+    isError: payload.isError === true,
+  });
+  if (text === undefined || text === payload.result) return notification;
+  return {
+    ...notification,
+    params: { ...params, event: { ...event, payload: { ...payload, result: text } } },
+  };
 }
 
 export function notificationFromDaemonEvent(

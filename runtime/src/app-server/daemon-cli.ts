@@ -1,3 +1,4 @@
+import { clientFacingSessionEvent } from "./background-agent-runner/daemon-events.js";
 import { StartupResumeCwdPermissionError } from "../state/startup-resume-cwd.js";
 import { armDaemonExitWatchdog } from "./daemon-exit-watchdog.js";
 import { refreshEndpointMetadata } from "../llm/endpoint-metadata-cache.js";
@@ -1124,7 +1125,9 @@ async function runAgenCDaemonForegroundLocked(
         // request that nobody received and nobody will list is denied.
         return await sessionEventDelivery(
           event,
-          await clientMultiplexer.broadcastSessionEvent(sessionId, event),
+          // Clients alone get the user-facing copy of a tool result; the
+          // observers above keep the event as recorded.
+          await clientMultiplexer.broadcastSessionEvent(sessionId, clientFacingSessionEvent(event)),
           async () =>
             (await clientMultiplexer.hasClientWithCapability(
               AGENC_PENDING_APPROVALS_LIST_CAPABILITY,

@@ -1,3 +1,4 @@
+import { hasRuntimeHistoryWrapper, userFacingHistoryText } from "../session/user-facing-history-text.js";
 import { promoteOneShotRun, selectRelaxedOneShot } from "../durability/one-shot-durability.js";
 /**
  * In-memory daemon lifecycle for user-started background agents.
@@ -6821,7 +6822,12 @@ function transcriptMessagesFromRolloutItems(
     }
   }
   const messages: { role: string; text: string }[] = [];
-  const push = (role: string, text: string): void => {
+  const push = (role: string, rawText: string): void => {
+    // A user-role history item can be a prompt wrapped in <system-reminder>
+    // or a runtime-written message; show the user's own words only.
+    const text = role === "user" && hasRuntimeHistoryWrapper(rawText)
+      ? userFacingHistoryText(rawText)
+      : rawText;
     if ((role === "user" || role === "assistant") && text.length > 0) {
       messages.push({ role, text });
     }

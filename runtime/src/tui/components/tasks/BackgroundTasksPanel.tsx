@@ -1,4 +1,5 @@
 import * as React from "react";
+import { toolDisplayName } from "../../tool-display-name.js";
 
 import {
   isBackgroundTask,
@@ -61,7 +62,7 @@ function formatLocalAgentIdentity(
   const displayName =
     nameByAgentId.get(task.id) ??
     nameByAgentId.get(task.agentId) ??
-    task.agentId;
+    "Background agent";
   return `${displayName} · ${formatBackgroundAgentRole(task.agentType)}`;
 }
 
@@ -93,7 +94,7 @@ function taskTitle(task: TaskState): string {
     return task.prompt;
   }
   const description = task.description.trim();
-  return description || task.id;
+  return description || "Background task";
 }
 
 function taskStatusColor(status: TaskState["status"]): "success" | "error" | "agenc" {
@@ -214,7 +215,20 @@ function formatProgressActivity(activity: {
   readonly toolName?: string;
   readonly input?: unknown;
 }): string {
-  return activity.activityDescription ?? [activity.toolName, stringifyUnknown(activity.input)].filter(Boolean).join(" ");
+  if (activity.activityDescription?.trim()) return activity.activityDescription;
+  const input = activity.input;
+  const args: Record<string, unknown> = input !== null && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown> : {};
+  const name = activity.toolName ?? "Tool";
+  const path = args.file_path ?? args.path;
+  if (["Read", "read_file", "system.read_file"].includes(name) && typeof path === "string") {
+    return `Reading ${path}`;
+  }
+  if (["Run", "Bash", "exec_command", "system.bash"].includes(name)) {
+    const command = args.command ?? args.cmd;
+    if (typeof command === "string") return `Running ${command}`;
+  }
+  return `Using ${toolDisplayName(name)}`;
 }
 
 function taskDetail(task: TaskState): string | null {

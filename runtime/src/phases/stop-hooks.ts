@@ -139,7 +139,7 @@ export async function evaluateStopHooks(
   if (state.stopHookBlockingCount >= MAX_STOP_HOOK_BLOCKS) {
     emitError(session.eventLog, session.nextInternalSubId(), {
       cause: "stop_hook_loop",
-      message: `stop-hook blocked ${state.stopHookBlockingCount} times in a row: forcing terminal (I-17)`,
+      message: `A stop hook blocked the turn ${state.stopHookBlockingCount} times in a row, so the turn was ended.`,
     });
     return {
       allowStop: true,

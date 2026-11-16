@@ -1,6 +1,7 @@
+import { hasRuntimeHistoryWrapper, RUNTIME_NOTE_PLACEHOLDER, userFacingHistoryText } from "./user-facing-history-text.js";
 import { randomUUID } from "node:crypto";
 
-import type { LLMMessage } from "../llm/types.js";
+import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { isHiddenGoalContinuation } from "./hidden-goal-history.js";
 import { isAuthenticatedCompactionBoundary } from "./compaction-history-marker.js";
 
@@ -115,11 +116,16 @@ function makeUserMessage(
   const marker = source.runtimeOnly?.compactionHistory;
   const isCompactSummary = marker?.version === 1 && marker.kind === "summary";
   const isCompactBoundary = marker?.version === 1 && marker.kind === "boundary";
+  // Runtime-written wrappers and injected user-role messages (a prompt
+  // queued mid-turn inside <system-reminder>, the completion gate, nudges)
+  // show as the user's own words, or as a short placeholder when there are
+  // none. The row stays: rewind ordinals count one row per history item.
+  const display = marker === undefined ? userFacingContent(content) : { content };
   return {
     type: "user",
     message: {
       role: "user",
-      content: contentForRuntime(content),
+      content: contentForRuntime(display.content),
     },
     ...(isCompactBoundary ? { isMeta: true } : {}),
     ...(isCompactSummary ? { isCompactSummary: true } : {}),
@@ -183,6 +189,38 @@ function assistantContent(
 ): readonly Record<string, unknown>[] {
   const text = contentToText(message.content);
   return text.trim().length > 0 ? [{ type: "text", text }] : [];
+}
+
+function userFacingContent(content: LLMMessage["content"]): {
+  readonly content: LLMMessage["content"];
+} {
+  if (typeof content === "string") {
+    if (!hasRuntimeHistoryWrapper(content)) return { content };
+    const text = userFacingHistoryText(content);
+    return { content: text.length > 0 ? text : RUNTIME_NOTE_PLACEHOLDER };
+  }
+  let changed = false;
+  let visible = false;
+  const parts: LLMContentPart[] = [];
+  for (const part of content) {
+    if (part.type !== "text") {
+      visible = true;
+      parts.push(part);
+      continue;
+    }
+    if (!hasRuntimeHistoryWrapper(part.text)) {
+      if (part.text.trim().length > 0) visible = true;
+      parts.push(part);
+      continue;
+    }
+    changed = true;
+    const text = userFacingHistoryText(part.text);
+    if (text.length === 0) continue;
+    visible = true;
+    parts.push({ ...part, text });
+  }
+  if (!changed) return { content };
+  return { content: visible ? parts : [{ type: "text", text: RUNTIME_NOTE_PLACEHOLDER }] };
 }
 
 function contentForRuntime(content: LLMMessage["content"]): unknown {

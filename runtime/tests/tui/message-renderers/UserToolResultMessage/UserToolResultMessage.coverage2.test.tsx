@@ -27,14 +27,12 @@ describe("UserToolResultMessage additional coverage", () => {
       { columns: 100, rows: 24 },
     );
 
-    expect(output).toContain(
-      "Tool result recovered without matching tool call:",
-    );
+    expect(output).toContain("Recovered a tool result:");
     expect(output).toContain("plain output");
     expect(output).toContain("text block output");
-    expect(output).toContain(
-      '{"type":"image","source":{"type":"base64","data":"abc"}}',
-    );
+    // Media bytes are never serialized into a text row.
+    expect(output).toContain("Image received.");
+    expect(output).not.toContain("base64");
   });
 });
 

@@ -185,6 +185,31 @@ describe("AskUserQuestion tool", () => {
     });
   });
 
+  test("attaches the user-facing display as metadata and keeps the model text unchanged", async () => {
+    const tool = createAskUserQuestionTool();
+    const question = "Which implementation path should AgenC take?";
+    recordAskUserQuestionResponse("call-display", {
+      ...BASE_INPUT,
+      answers: { [question]: "Use AgenC picker (Recommended)" },
+      annotations: { [question]: { notes: "keep it small" } },
+    });
+    const answered = await tool.execute({ ...BASE_INPUT, __callId: "call-display" });
+    expect(answered.content).toBe(
+      `User has answered your questions: "${question}"="Use AgenC picker (Recommended)" user notes: keep it small. You can now continue with the user's answers in mind.`,
+    );
+    expect(answered.metadata).toEqual({
+      askUserQuestion: {
+        outcome: "answered",
+        entries: [{ question, answer: "Use AgenC picker (Recommended)", note: "keep it small" }],
+      },
+    });
+
+    recordAskUserQuestionResponse("call-skip", { ...BASE_INPUT, metadata: { skipped: true } });
+    const skipped = await tool.execute({ ...BASE_INPUT, __callId: "call-skip" });
+    expect(skipped.content).toMatch(/^User skipped these questions\./u);
+    expect(skipped.metadata).toEqual({ askUserQuestion: { outcome: "skipped", entries: [] } });
+  });
+
   test("recorded answers are consumed once", async () => {
     const tool = createAskUserQuestionTool();
     recordAskUserQuestionResponse("call-once", {

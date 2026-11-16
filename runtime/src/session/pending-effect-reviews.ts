@@ -20,7 +20,7 @@ export class PendingEffectReviews {
       this.refusals.add(callId);
       const call = this.calls.get(callId);
       this.pending.set(callId, { callId, toolName: call?.toolName ?? "Tool",
-        description: call?.description ?? "Interrupted call", error: call?.error ?? message.slice(0, 2000) });
+        description: call?.description ?? "Interrupted call", error: call?.error ?? "Review the interrupted action before continuing." });
     }
   }
 

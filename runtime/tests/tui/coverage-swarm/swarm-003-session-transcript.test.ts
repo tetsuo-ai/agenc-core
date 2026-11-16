@@ -540,7 +540,7 @@ describe("session transcript coverage swarm row 003", () => {
       },
       {
         subtype: "collab_agent",
-        title: "Sent input to shortid",
+        title: "Sent input to agent 2",
         state: "info",
         details: ["status: unavailable"],
       },
@@ -548,7 +548,7 @@ describe("session transcript coverage swarm row 003", () => {
         subtype: "collab_agent",
         title: "Finished waiting",
         state: "error",
-        details: ["agent-a: Error - failed check", "agent-b: Shutdown"],
+        details: ["agent 3: Error - failed check", "agent 4: Shutdown"],
       },
     ]);
   });

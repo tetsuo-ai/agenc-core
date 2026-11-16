@@ -11,10 +11,13 @@ export function EffectReviewCard({ review, resolve, active = true }: {
   readonly active?: boolean;
 }) {
   const submitting = useRef(false);
+  const [showDetails, setShowDetails] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useInputCapture((input, key) => {
-    if (!active || key.ctrl || key.meta || !["1", "2", "3"].includes(input)) return false;
+    if (!active || key.ctrl || key.meta) return false;
+    if (input === "d") { setShowDetails(value => !value); return true; }
+    if (!["1", "2", "3"].includes(input)) return false;
     if (!submitting.current) {
       submitting.current = true;
       setBusy(true);
@@ -36,7 +39,14 @@ export function EffectReviewCard({ review, resolve, active = true }: {
   return <Box flexDirection="column" borderStyle="single" borderColor="warning" paddingX={1}>
     <Text color="warning" bold wrap="truncate">Review needed: {review.toolName} {review.description.replace(/\s+/gu, " ")}</Text>
     <Text wrap="truncate">{summarizeToolError(review.error)}</Text>
-    {review.sessionId !== undefined ? <Text wrap="truncate">Owning session: {review.sessionId}</Text> : null}
+    {review.sessionId !== undefined ? <Text>{review.blocksSession === false
+      ? "From a background session" : "From the session running this tool"}</Text> : null}
+    <Text dimColor>d details</Text>
+    {showDetails ? <Box flexDirection="column">
+      <Text bold>Recovery details</Text>
+      {review.sessionId !== undefined ? <Text>Session ID: {review.sessionId}</Text> : null}
+      <Text>Tool call ID: {review.callId}</Text>
+    </Box> : null}
     <Text>1 It had no effect · 2 It took effect · 3 Keep blocked</Text>
     <Text dimColor>{busy ? "Recording review..." : review.blocksSession === false
       ? "Child mutations stay blocked. Press 1, 2, or 3 with an empty prompt."

@@ -21,7 +21,8 @@ import { makeToolUseMessage } from "./synthetic-assistant-message.js";
 import type { AgenCBridgeSession } from "./session-types.js";
 import { createSessionAppStateBridge } from "./session-app-state.js";
 import type { AppState } from "./state/AppState.js";
-import { approvalInputIsShell, approvalInputText } from "./approval-input-text.js";
+import { toolDisplayName } from "./tool-display-name.js";
+import { approvalInputDisplayText, approvalInputIsShell, approvalInputText } from "./approval-input-text.js";
 import { abbreviateHomePaths } from "../utils/home-path-display.js";
 import { sessionGrantScope } from "../permissions/session-grant-scope.js";
 import { Box, Text, useInput, type Key } from "./ink.js";
@@ -521,8 +522,8 @@ function PlanApprovalContainer({
 
 function toolLabel(toolUseConfirm: ProjectedToolUseConfirm): string {
   const fromTool = toolUseConfirm.tool.userFacingName?.(toolUseConfirm.input);
-  if (fromTool && fromTool.trim().length > 0) return fromTool;
-  return toolUseConfirm.tool.name;
+  if (fromTool && fromTool.trim().length > 0 && fromTool !== toolUseConfirm.tool.name) return fromTool;
+  return toolDisplayName(toolUseConfirm.tool.name);
 }
 
 /** The question of the separate approval asked before a refused call runs without the sandbox. */
@@ -560,7 +561,8 @@ function AgenCApprovalOverlay({
   readonly composerDraft?: ApprovalComposerDraft;
 }) {
   const command = approvalInputText(toolUseConfirm.input, { prettyJson: true, toolName: toolUseConfirm.tool.name });
-  const shownCommand = command.length > 0 ? command : toolUseConfirm.description;
+  const displayInput = approvalInputDisplayText(toolUseConfirm.input, { toolName: toolUseConfirm.tool.name });
+  const shownCommand = displayInput.length > 0 ? displayInput : "No arguments.";
   // A `$ ` prompt glyph marks a real shell command, never a file tool's path,
   // where it would misread as runnable and repeat the diff header's path.
   const commandIsShell = approvalInputIsShell(toolUseConfirm.tool.name, toolUseConfirm.input);
@@ -610,10 +612,12 @@ function AgenCApprovalOverlay({
   // ctrl+w d shows the whole input in a pager: a file change's diff, or else
   // the whole shell command, which the card may show only part of.
   const fullCommandRows = useMemo(
-    () => diffPreview === undefined && commandIsShell
-      ? approvalCommandRows(shownCommand, viewport.columns - FULL_COMMAND_VIEW_CHROME_COLS - APPROVAL_COMMAND_SPARE_COLS)
+    () => diffPreview === undefined
+      ? approvalCommandRows(commandIsShell ? shownCommand :
+        `Tool: ${toolUseConfirm.tool.name}\nRequest ID: ${request.id}\nExact arguments (JSON):\n${JSON.stringify(toolUseConfirm.input, null, 2)}`,
+        viewport.columns - FULL_COMMAND_VIEW_CHROME_COLS - APPROVAL_COMMAND_SPARE_COLS)
       : undefined,
-    [diffPreview, commandIsShell, shownCommand, viewport.columns],
+    [diffPreview, commandIsShell, shownCommand, toolUseConfirm.tool.name, toolUseConfirm.input, request.id, viewport.columns],
   );
   const diffPageRows = Math.max(1, viewport.rows - 16);
   const maxDiffOffset = Math.max(0, (diffPreview?.lines.length ?? fullCommandRows?.length ?? 0) - diffPageRows);
@@ -823,7 +827,7 @@ function AgenCApprovalOverlay({
   if (fullDiffVisible && fullCommandRows !== undefined) {
     // Every character of the command, as the shell gets it; the pager's keys
     // never answer the request.
-    return <Popup title="FULL APPROVAL COMMAND" status={`${diffOffset + 1}-${Math.min(diffOffset + diffPageRows, fullCommandRows.length)} of ${fullCommandRows.length}`} footer={[{ keyName: "↑↓", label: "scroll" }, { keyName: "PgUp/PgDn", label: "page" }, { keyName: "esc / ↵", label: "back to approval" }]}>
+    return <Popup title={commandIsShell ? "FULL APPROVAL COMMAND" : "EXACT APPROVAL ARGUMENTS"} status={`${diffOffset + 1}-${Math.min(diffOffset + diffPageRows, fullCommandRows.length)} of ${fullCommandRows.length}`} footer={[{ keyName: "↑↓", label: "scroll" }, { keyName: "PgUp/PgDn", label: "page" }, { keyName: "esc / ↵", label: "back to approval" }]}>
       <Box flexDirection="column">
         {fullCommandRows.slice(diffOffset, diffOffset + diffPageRows).map((row, index) => (
           <Text key={diffOffset + index} color="text2" wrap="truncate-end">{row}</Text>
@@ -866,7 +870,7 @@ function AgenCApprovalOverlay({
         // =, so a shortened command could read as a different command.
         command={commandIsShell ? shownCommand : abbreviateHomePaths(shownCommand)}
         commandIsShell={commandIsShell}
-        commandFullView={fullCommandRows !== undefined}
+        commandFullView={commandIsShell && fullCommandRows !== undefined}
         confirmLabel={draftFocused ? "tab to review" : destructive ? `type ${requiredWord}` : "enter"}
         facts={[
           { label: "tool", value: name },
@@ -881,21 +885,19 @@ function AgenCApprovalOverlay({
                     ? "warning"
                     : "text2",
               },
-          { label: "request", value: request.id },
           {
             label: "confirmation",
             value: draftFocused ? "tab to review" : destructive ? `type ${requiredWord}` : "enter",
           },
         ]}
         note={abbreviateHomePaths(approvalNote({
-          question: toolUseConfirm.description,
+          question: toolUseConfirm.description.replaceAll(toolUseConfirm.tool.name, name),
           runsWithoutSandbox,
           writePreviewWarning: writePreviewUnavailable
             ? `Existing content unavailable; this write may overwrite a file. ${fileWritePreview?.kind === "unavailable" ? fileWritePreview.reason : ""}`.trim()
             : undefined,
         }))}
         {...(diffPreview !== undefined ? { diffPreview } : {})}
-        requestId={request.id}
         requireTypedConfirmation={destructive}
         typedConfirmationValue={typed}
         typedConfirmationTarget={requiredWord}
@@ -907,6 +909,7 @@ function AgenCApprovalOverlay({
         sessionScope={sessionScope.long}
         sessionScopeShort={sessionScope.short}
       />
+      {!commandIsShell && fullCommandRows !== undefined ? <Text dimColor>ctrl+w d exact arguments and request details</Text> : null}
     </Box>
   );
 }

@@ -6,7 +6,7 @@ import { filterToolProgressMessages, type Tool, type Tools } from '../../../tool
 import type { ProgressMessage } from '../../../types/message.js';
 import type { AgenCToolResultBlockParam } from '../../../types/message.js';
 import { INTERRUPT_MESSAGE_FOR_TOOL_USE, isClassifierDenial, PLAN_REJECTION_PREFIX, REJECT_MESSAGE_WITH_REASON_PREFIX } from '../../../utils/messages.js';
-import { isPermissionDeniedToolResult, PERMISSION_DENIED_TOOL_RESULT_MESSAGE } from '../../tool-result-denial.js';
+import { isPermissionDeniedToolResult, PERMISSION_DENIED_DISPLAY_TEXT } from '../../tool-result-denial.js';
 import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
 import { InterruptedByUser } from '../../components/InterruptedByUser.js';
 import { MessageResponse } from '../../components/MessageResponse.js';
@@ -32,7 +32,7 @@ export function UserToolErrorMessage({
 }: Props): React.ReactNode {
   const fullscreen = useFullscreenMode();
   if (isPermissionDeniedToolResult(param.content)) {
-    return <MessageResponse height={1}><Text dimColor={true}>{PERMISSION_DENIED_TOOL_RESULT_MESSAGE}</Text></MessageResponse>;
+    return <MessageResponse height={1}><Text dimColor={true}>{PERMISSION_DENIED_DISPLAY_TEXT}</Text></MessageResponse>;
   }
 
   const textContent = getTextToolResultContent(param.content);

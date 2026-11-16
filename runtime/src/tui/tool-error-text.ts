@@ -1,3 +1,4 @@
+import { userFacingErrorText } from "./user-facing-tool-text.js";
 import stripAnsi from "strip-ansi";
 import { readableToolError } from "../utils/readable-tool-error.js";
 export { readableToolError } from "../utils/readable-tool-error.js";
@@ -69,7 +70,12 @@ export function summarizeToolError(raw: string): string {
     const reason = shellFailureReason(lines.join("\n")) ?? "";
     return reason.length > 0 ? `exit ${exit[1]}, ${reason}` : `exit ${exit[1]}`;
   }
-  const message = lines.join(" ").replace(/\s+/g, " ");
+  // Refusals the runtime writes address the model ("Do not retry the same
+  // call...", "STOP and explain to the user..."); the user reads the fact.
+  // Decide on the lines as written: a rejection carries the person's own
+  // reason after "the user said:" on its next line, which flattening first
+  // would lose. Flatten the result for the one-line row afterwards.
+  const message = userFacingErrorText(lines.join("\n")).replace(/\s+/g, " ").trim();
   return message.length > 0 ? message : "failed";
 }
 

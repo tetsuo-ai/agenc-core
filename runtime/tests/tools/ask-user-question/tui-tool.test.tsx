@@ -85,7 +85,7 @@ describe('AskUserQuestion TUI tool adapter', () => {
 
     expect(AskUserQuestionTool.renderToolResultMessage(output)).not.toBeNull()
     expect(AskUserQuestionTool.renderToolUseRejectedMessage()).toMatchObject({
-      props: { children: 'User declined to answer questions' },
+      props: { children: 'Questions declined' },
     })
   })
 

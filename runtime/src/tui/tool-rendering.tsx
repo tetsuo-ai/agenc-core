@@ -1,4 +1,5 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
+import { emptyReadNotice, userFacingExecNotes, userFacingResultText } from "./user-facing-tool-text.js";
 import React from "react";
 import stripAnsi from "strip-ansi";
 
@@ -196,6 +197,14 @@ export function FileReadView({
   // "Read N lines" instead of dumping the whole file body under the call row.
   // Prefer an explicit `<read-lines>start-end>` range when present, else count
   // the lines in `<read-content>`.
+  // A read that returned nothing for a stated reason (offset past the end,
+  // a PDF without text) says so; "empty file" is only for an empty file.
+  // Only the envelope the transcript builds counts; a file body that merely
+  // contains the tag is content.
+  const note = /^<read-note>([^<]{1,300})<\/read-note>$/u.exec(content.trim())?.[1] ?? emptyReadNotice(content);
+  if (note !== undefined && note.length > 0) {
+    return <ResultLine>{note === "Empty file" ? "empty file" : note}</ResultLine>;
+  }
   const range = extractToolTag(content, "read-lines") ?? "";
   const body = extractToolTag(content, "read-content") ?? "";
   let lineCount: number | null = null;
@@ -724,7 +733,7 @@ export function BashOutputView({
           <Text dimColor>{verboseStateLine.text}</Text>
         ) : null}
         {plain !== null && plain.notes.length > 0
-          ? plain.notes.split("\n").map((line, idx) => (
+          ? userFacingExecNotes(plain.notes).split("\n").map((line, idx) => (
               <Text key={`n${idx}`} dimColor>
                 {line}
               </Text>
@@ -1178,14 +1187,19 @@ export function createTuiTool(name: string): any {
             <WebFetchResultView content={joined} verbose={options?.verbose ?? false} />
           );
         case "generic":
-        default:
+        default: {
+          // No tool-specific view: the text passes the presentation boundary
+          // (model instructions, reminder tags, protocol footers) before it
+          // is summarized or printed whole in the expanded view.
+          const shown = userFacingResultText(joined, presentationName);
           return options?.verbose === true ? (
             <Box flexDirection="column">
-              <Text>{joined}</Text>
+              <Text>{shown}</Text>
             </Box>
           ) : (
-            <ResultLine>{summarizeResultText(joined)}</ResultLine>
+            <ResultLine>{summarizeResultText(shown)}</ResultLine>
           );
+        }
       }
     },
     renderToolUseErrorMessage(

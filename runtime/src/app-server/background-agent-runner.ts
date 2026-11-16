@@ -1,3 +1,4 @@
+import { hasRuntimeHistoryWrapper, userFacingHistoryText } from "../session/user-facing-history-text.js";
 import { setSessionTaskTokenBudget } from "../session/task-budget.js";
 import { TASK_BUDGET_LEVELS, isTaskBudgetLevel, taskBudgetLabel } from "../config/task-budget.js";
 import { promoteOneShotRun, selectRelaxedOneShot } from "../durability/one-shot-durability.js";
@@ -3494,6 +3495,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           .filter((s) => s.length > 0)
           .join("");
       }
+      // History holds what the model read. A user item can be a prompt
+      // wrapped in <system-reminder> or a runtime-written message; clients
+      // show these rows as the user's own words.
+      if (item.role === "user" && hasRuntimeHistoryWrapper(text)) text = userFacingHistoryText(text);
       if (text.length > 0) messages.push({ role: item.role, text });
     }
     return { sessionId: params.sessionId, messages };

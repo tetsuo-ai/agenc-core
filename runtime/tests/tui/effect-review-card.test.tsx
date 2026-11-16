@@ -3,6 +3,7 @@ import React from "react";
 import stripAnsi from "strip-ansi";
 import { expect, it, vi } from "vitest";
 import { ConfigStore } from "../../src/config/store.js";
+import instances from "../../src/tui/ink/instances.js";
 import { createRoot } from "../../src/tui/ink.js";
 import { KeybindingSetup } from "../../src/tui/keybindings/KeybindingProviderSetup.js";
 import { AppStateProvider, getDefaultAppState } from "../../src/tui/state/AppState.js";
@@ -32,4 +33,29 @@ it.each([
   } finally {
     root.unmount(); stdin.end(); stdout.end();
   }
+});
+
+it("keeps session handles in details and resolves the exact owner", async () => {
+  const stdin = Object.assign(new PassThrough(), { isTTY: true, ref() {}, unref() {}, setRawMode() {} });
+  const stdout = Object.assign(new PassThrough(), { columns: 120, rows: 40, isTTY: true });
+  let output = "";
+  stdout.on("data", chunk => { output += chunk.toString(); });
+  const root = await createRoot({ stdin: stdin as unknown as NodeJS.ReadStream, stdout: stdout as unknown as NodeJS.WriteStream, patchConsole: false, exitOnCtrlC: false });
+  const resolve = vi.fn(async () => {});
+  try {
+    root.render(<AppStateProvider initialState={getDefaultAppState()}><KeybindingSetup configStore={new ConfigStore({ env: {} })}>
+      <EffectReviewCard review={{ sessionId: "opaque-session-id", callId: "call-browser", toolName: "Browser", description: "Open preview", error: "Connection closed", blocksSession: false }} resolve={resolve} />
+    </KeybindingSetup></AppStateProvider>);
+    await vi.waitFor(() => expect(stripAnsi(output).replace(/\s/gu, "")).toContain("Fromabackgroundsession"));
+    expect(output).not.toContain("opaque-session-id");
+    expect(stripAnsi(output).replace(/\s/gu, "")).toContain("ddetails");
+    stdin.write("d");
+    await vi.waitFor(() => expect(stripAnsi(output).replace(/\s/gu, "")).toContain("Recoverydetails"));
+    instances.get(stdout as unknown as NodeJS.WriteStream)?.forceRedraw();
+    await vi.waitFor(() => expect(stripAnsi(output).replace(/\s/gu, "")).toContain("SessionID:opaque-session-id"));
+    expect(stripAnsi(output).replace(/\s/gu, "")).toContain("ToolcallID:call-browser");
+    expect(resolve).not.toHaveBeenCalled();
+    stdin.write("1");
+    await vi.waitFor(() => expect(resolve).toHaveBeenCalledWith({ toolCallId: "call-browser", effectSessionId: "opaque-session-id", disposition: "confirmed_no_effect", attestation: "operator" }));
+  } finally { root.unmount(); stdin.end(); stdout.end(); }
 });

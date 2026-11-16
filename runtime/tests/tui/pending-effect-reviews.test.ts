@@ -59,3 +59,10 @@ it("retains a canonical owner's error when a tool completion has no run id", () 
   expect(state.reviews).toEqual([{ sessionId: "child-owner", callId: "browser-call", toolName: "Browser",
     description: "new_tab", error: "Browser CDP pipe closed" }]);
 });
+
+it("does not copy model-facing refusal instructions into the review error", () => {
+  const state = new PendingEffectReviews();
+  state.recordRefusal("run internal-run requires effect review before model execution. Run /resolve call-secret <disposition>.");
+  expect(state.reviews[0]?.error).toBe("Review the interrupted action before continuing.");
+  expect(state.reviews[0]?.callId).toBe("call-secret");
+});

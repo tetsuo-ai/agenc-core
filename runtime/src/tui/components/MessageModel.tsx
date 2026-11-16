@@ -12,7 +12,7 @@ export function MessageModel(t0: Props) {
     message,
     isTranscriptMode
   } = t0;
-  const shouldShowModel = isTranscriptMode && message.type === "assistant" && message.message.model && message.message.content.some(_temp);
+  const shouldShowModel = isTranscriptMode && message.type === "assistant" && message.message.model && message.message.model !== "agenc" && message.message.content.some(_temp);
   if (!shouldShowModel) {
     return null;
   }

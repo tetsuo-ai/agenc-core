@@ -1,3 +1,5 @@
+import { attachmentCaption } from "../../tui/user-facing-tool-text.js";
+import { hasRuntimeHistoryWrapper, RUNTIME_NOTE_PLACEHOLDER, userFacingHistoryText } from "../../session/user-facing-history-text.js";
 import { PendingEffectReviews } from "../../session/pending-effect-reviews.js";
 /**
  * Rollout journal scans: transcript reconstruction, transcript boundaries,
@@ -466,7 +468,7 @@ export function sessionTranscriptV2FromRollout(
       // prompts. Keep snapshot ordinals aligned with the daemon history.
       if (item.compactionHistory !== undefined) continue;
       if (isHiddenGoalContinuation(item)) continue;
-      const text = responseItemDisplayText(item.content);
+      const text = historyItemDisplayText(item.role, item.content);
       if (text.length === 0) continue;
       const messageId = `replacement:${boundary.id}:${ordinal}`;
       messages.push({
@@ -502,7 +504,7 @@ export function sessionTranscriptV2FromRollout(
     if (item.payload.role !== "user" && item.payload.role !== "assistant") {
       continue;
     }
-    const text = responseItemDisplayText(item.payload.content);
+    const text = historyItemDisplayText(item.payload.role, item.payload.content);
     if (text.length === 0) continue;
     const messageId = `legacy:${boundaryId}:${legacyOrdinal}`;
     messages.push({
@@ -536,7 +538,9 @@ export function sessionTranscriptV2FromRollout(
         payload: {
           callId: event.msg.payload.callId,
           ...(event.msg.payload.toolName ? { toolName: event.msg.payload.toolName } : {}),
-          result: captions ?? event.msg.payload.displayAttachments.map(item => `[Shown to the user: ${item.kind} "${item.title}"]`).join("\n"),
+          // The stored caption ("[Shown to the user: file "report"]") is the
+          // model's receipt; a client shows the attachment's own caption.
+          result: attachmentCaption(captions ?? event.msg.payload.displayAttachments.map(item => `[Shown to the user: ${item.kind} "${item.title}"]`).join("\n")),
           isError: event.msg.payload.isError,
           displayAttachments: event.msg.payload.displayAttachments.map(item =>
             item.data !== undefined && Buffer.byteLength(JSON.stringify(item.data), "utf8") > 8 * 1024
@@ -817,6 +821,18 @@ function maxEventSequence(items: readonly RolloutItem[]): number {
     if (sequence !== undefined) max = Math.max(max, sequence);
   }
   return max;
+}
+
+/**
+ * Display text of a history item; user items lose runtime-written wrappers.
+ * An item that holds runtime text only keeps its row (clients count rows for
+ * rewind) and shows a short placeholder.
+ */
+function historyItemDisplayText(role: string, content: unknown): string {
+  const text = responseItemDisplayText(content);
+  if (role !== "user" || !hasRuntimeHistoryWrapper(text)) return text;
+  const shown = userFacingHistoryText(text);
+  return shown.length > 0 ? shown : RUNTIME_NOTE_PLACEHOLDER;
 }
 
 function responseItemDisplayText(content: unknown): string {

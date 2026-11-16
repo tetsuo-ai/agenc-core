@@ -888,7 +888,7 @@ describe("AgenC TUI session transcript", () => {
         subtype: "collab_agent",
         title: "Wait call timed out",
         state: "info",
-        details: ["thread-1: Running"],
+        details: ["agent 1: Running"],
       },
     ]);
   });
@@ -1675,9 +1675,9 @@ describe("AgenC TUI session transcript", () => {
       expect(transcript.inProgressToolUseIDs.size).toBe(0);
       expect(transcript.messages.filter((m) => m.type === "user")).toHaveLength(0);
       expect(transcript.messages).toMatchObject([
-        { type: "system", subtype: "collab_agent", title: "Spawned thread-1" },
-        { type: "system", subtype: "collab_agent", title: "Sent input to thread-1" },
-        { type: "system", subtype: "collab_agent", title: "Closed thread-1" },
+        { type: "system", subtype: "collab_agent", title: "Spawned agent 1" },
+        { type: "system", subtype: "collab_agent", title: "Sent input to agent 1" },
+        { type: "system", subtype: "collab_agent", title: "Closed agent 1" },
       ]);
     });
 
@@ -1763,7 +1763,7 @@ describe("AgenC TUI session transcript", () => {
       ]);
 
       const allText = JSON.stringify(transcript.messages);
-      expect(allText).toContain("Permission request denied by user.");
+      expect(allText).toContain("Permission denied.");
       expect(allText).not.toContain("arrived out of order and was recovered");
       expect(allText).not.toContain("{\\\"error\\\":\\\"rejected by user\\\"}");
     });
@@ -1784,7 +1784,7 @@ describe("AgenC TUI session transcript", () => {
       ]);
 
       const allText = JSON.stringify(transcript.messages);
-      expect(allText).toContain("Permission request denied by user.");
+      expect(allText).toContain("Permission denied.");
       expect(allText).not.toContain("arrived out of order and was recovered");
       expect(allText).not.toContain("rejected by user");
     });

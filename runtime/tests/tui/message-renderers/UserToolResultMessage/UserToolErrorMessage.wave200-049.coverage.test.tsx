@@ -129,7 +129,7 @@ describe('UserToolErrorMessage wave200-049 coverage', () => {
       { columns: 120, rows: 24 },
     )
 
-    expect(output).toContain('Permission request denied by user.')
+    expect(output).toContain('Permission denied.')
     expect(output).toContain('Interrupted')
     expect(output).toContain('What should AgenC do instead?')
     expect(output).toContain("User rejected AgenC's plan:")

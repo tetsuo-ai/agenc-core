@@ -53,10 +53,10 @@ export const RETRY_TRUNCATED_TOOL_CONTENT =
   "Retry with complete valid JSON, not a continuation of the partial string. " +
   "Keep arguments short and within the configured output budget. Do not claim that a child spawned without a successful spawn result.";
 
-const RETRY_REFERENCED_HANDOFF_CONTENT =
+export const RETRY_REFERENCED_HANDOFF_CONTENT =
   " For spawn_agent use message_ref to copy the current user message or a delimited excerpt without regenerating it.";
 
-const RESUME_META_CONTENT =
+export const RESUME_META_CONTENT =
   "Continue generating directly from where you left off. Do not apologize, do not restart, do not add preamble. Pick up at the next token.";
 
 export const RETRY_REASONING_ONLY_CONTENT =

@@ -103,6 +103,7 @@ import { StatusEffortContext, StatusContextUsageContext, StatusTurnBusyContext, 
 import { resolveZeroDataRetentionStatus } from "../../llm/zero-data-retention.js";
 import { readVeniceMenuModels } from "../../commands/venice-menu-models.js";
 import { readSessionSelection } from "../../session/provider-model-selection.js";
+import { terminalTitle } from "../terminal-title.js";
 import { offPeakScheduleFor } from "../../session/off-peak-pricing.js";
 import {
   getSessionEffortLabelForContext,
@@ -230,6 +231,7 @@ import { updateRuntimeState } from "../../utils/config.js";
 import { registerCleanup } from "../../utils/cleanupRegistry.js";
 import { AgenCConfigEditsBuilder } from "../../config/edit.js";
 import { logError } from "../../utils/log.js";
+import { promptSubmissionErrorText } from "../prompt-submission-error-text.js";
 import {
   createFileStateCacheWithSizeLimit,
   READ_FILE_STATE_CACHE_SIZE,
@@ -2293,13 +2295,6 @@ function AnimatedTerminalTitle(t0) {
 function _temp6(current) {
   return (current + 1) % TITLE_ANIMATION_FRAME_COUNT;
 }
-function terminalTitle(props: Parameters<typeof startupModel>[0]): string {
-  const provider = props.session.sessionConfiguration?.provider?.slug?.trim();
-  const model = startupModel(props)?.trim();
-  if (provider && model) return `AgenC ${provider}/${model}`;
-  if (model) return `AgenC ${model}`;
-  return "AgenC";
-}
 type AgenCTuiShellProps = AgenCTuiProps & {
   readonly roleWorkspaceCwd: string;
 };
@@ -2725,9 +2720,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     const pluginStorageRoot =
       props.session.services.runtimeOptions?.pluginStorageRoot;
     if (pluginStorageRoot === undefined) {
+      logError(new Error("Session is missing captured plugin storage authority"));
       addNotification({
         key: "agent-catalog-load-error",
-        text: "Session is missing captured plugin storage authority",
+        text: "Session configuration is incomplete. Reopen the session.",
         color: "error",
         priority: "high",
       });
@@ -2752,10 +2748,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         }));
       })
       .catch((error) => {
+        logError(error);
         if (!cancelled) {
           addNotification({
             key: "agent-catalog-load-error",
-            text: error instanceof Error ? error.message : String(error),
+            text: "Could not load agents for this workspace.",
             color: "error",
             priority: "high",
           });
@@ -4002,13 +3999,12 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             setPendingEcho(null);
             return;
           }
-          const message = error instanceof Error ? error.message : String(error);
+          logError(error);
+          const message = promptSubmissionErrorText(error, submitted);
           showTransientResult(message, { display: "error" });
           addNotification({
             key: "prompt-submit-failed",
-            text: submitted
-              ? `Message sent, but cleanup failed: ${message}`
-              : `Submission failed: ${message}`,
+            text: message,
             color: "error",
             priority: "immediate",
             timeoutMs: 10_000,
@@ -4280,8 +4276,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         // catch here. Surface in the UI so the operator can see what
         // happened — most commonly the agent was evicted after a
         // mid-turn compact failure or daemon restart.
-        const message_0 =
-          err_1 instanceof Error ? err_1.message : String(err_1);
+        logError(err_1);
+        const message_0 = promptSubmissionErrorText(err_1);
         showTransientResult(message_0, {
           display: "error",
           // Keep a rejected submission actionable until the next user action.
@@ -4292,13 +4288,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         // owns the main tool surface.
         addNotification({
           key: "prompt-submit-failed",
-          text: `Submission failed: ${message_0}`,
+          text: message_0,
           color: "error",
           priority: "immediate",
           timeoutMs: 10_000,
-          // The remediation lives at the tail of these messages (sandbox
-          // setup commands, failing paths); truncating to one line hides
-          // exactly the part the user needs.
+          // Keep the suggested next step visible on narrow terminals.
           wrap: true,
         });
         if (pendingSubmissionIdRef.current === clientMessageId) setPendingSubmission(false);
@@ -4583,7 +4577,15 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     mcpServers: mcpSurface.servers,
   });
   useStartupNotices();
-  const title = useMemo(() => terminalTitle(props), [props]);
+  const titleModel = useAppState((state) => state.mainLoopModelForSession ?? state.mainLoopModel);
+  // Not memoized: the provider is read from the session's current selection,
+  // which can change without the model id changing.
+  const title = terminalTitle({
+    session: props.session,
+    startupModel: startupModel(props),
+    startupProvider: props.session.sessionConfiguration?.provider?.slug,
+    liveModel: titleModel,
+  });
   const titleIsAnimating =
     transcript.isStreaming &&
     permissionRequests.length === 0 &&

@@ -1,3 +1,4 @@
+import { userFacingResultContent } from '../../user-facing-tool-text.js';
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { TuiErrorBoundary } from '../../components/TuiErrorBoundary.js';
@@ -27,26 +28,18 @@ export function isToolUseResultMissing(toolUseResult: unknown): boolean {
   return toolUseResult === undefined || toolUseResult === null;
 }
 
-function formatRecoveredToolResultContent(content: unknown): string | null {
+// A row whose typed output is missing or invalid (an old session, a tool the
+// client does not know) prints the stored text. That text was written for
+// the model, so it goes through the presentation boundary first; non-text
+// blocks are named, never dumped as JSON.
+function formatRecoveredToolResultContent(content: unknown, toolName?: string): string | null {
   if (typeof content === 'string') {
-    return extractTag(content, 'persisted-output') ?? content;
+    return userFacingResultContent(extractTag(content, 'persisted-output') ?? content, toolName);
   }
-  if (Array.isArray(content)) {
-    return content.map(block => {
-      if (typeof block === 'string') return block;
-      if (block && typeof block === 'object' && 'text' in block && typeof block.text === 'string') {
-        return block.text;
-      }
-      return JSON.stringify(block);
-    }).join('\n');
-  }
-  if (content === undefined || content === null) {
-    return null;
-  }
-  return String(content);
+  return userFacingResultContent(content, toolName);
 }
 
-export function getToolResultFallbackContent(messageContent: unknown, toolUseID?: string): string | null {
+export function getToolResultFallbackContent(messageContent: unknown, toolUseID?: string, toolName?: string): string | null {
   if (!Array.isArray(messageContent)) return null;
   const toolResultBlock = messageContent.find(block => {
     if (!block || typeof block !== 'object' || !('type' in block) || block.type !== 'tool_result') {
@@ -57,7 +50,7 @@ export function getToolResultFallbackContent(messageContent: unknown, toolUseID?
   if (!toolResultBlock || !('content' in toolResultBlock)) {
     return null;
   }
-  return formatRecoveredToolResultContent(toolResultBlock.content);
+  return formatRecoveredToolResultContent(toolResultBlock.content, toolName);
 }
 
 export function UserToolSuccessMessage({
@@ -89,7 +82,7 @@ export function UserToolSuccessMessage({
     deleteClassifierApproval(toolUseID);
   }, [toolUseID]);
 
-  const fallbackContent = React.useMemo(() => getToolResultFallbackContent(message.message.content, toolUseID), [message.message.content, toolUseID]);
+  const fallbackContent = React.useMemo(() => getToolResultFallbackContent(message.message.content, toolUseID, tool?.name), [message.message.content, toolUseID, tool?.name]);
   if (isToolUseResultMissing(message.toolUseResult) || !tool) {
     return fallbackContent !== null ? <Box flexDirection="column">
           <Box flexDirection="column" width={width}>
