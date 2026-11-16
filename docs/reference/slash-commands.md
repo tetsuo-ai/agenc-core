@@ -100,6 +100,8 @@ usage appear in the unpriced list. In-flight calls enter totals when their
 usage arrives. `≥` means those calls are excluded from the
 known cost, and `est.` means fallback pricing was used.
 
+The modal's SESSION headline is the billed estimate, the same figure as the
+status line; the accounting total follows as `at peak rates`.
 The accounting total keeps peak rates for metered calls. The billed estimate
 uses each call's dispatch time and the recorded off-peak schedule. DeepSeek
 tool fees are not halved, and provider-reported charges are kept as reported.

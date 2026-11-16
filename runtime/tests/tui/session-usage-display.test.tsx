@@ -17,7 +17,7 @@ describe("canonical session usage display", () => {
     };
     const output = await renderToString(<CostUsageModal report={report} onDone={() => {}} active={false} />, 120);
     expect(output).toContain("$0.045 est.");
-    expect(output).toContain("$0.030 est.");
+    expect(output).toContain("$0.030 billed est.");
     expect(output).toContain("$0.015 est.");
   });
 

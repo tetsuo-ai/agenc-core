@@ -57,20 +57,26 @@ export function CostUsageModal({
     report.totalCostUsd !== undefined
       ? `${report.hasUnknownCost ? '≥' : ''}${formatUsdCost(report.totalCostUsd)}${report.totalIsEstimated ? ' est.' : ''}`
       : 'unknown'
-  const tokenDetail =
+  // The value column is 16 cells wide: the input count goes there and the rest in the detail column.
+  const [tokenValue, tokenRest] =
     report.inputTokens !== undefined || report.outputTokens !== undefined
-      ? `${formatTokenCount(report.inputTokens ?? 0)} in · ${formatTokenCount(report.outputTokens ?? 0)} out` +
-        (report.turns !== undefined ? ` · ${report.turns} turns` : '')
+      ? [`${formatTokenCount(report.inputTokens ?? 0)} in`,
+        `${formatTokenCount(report.outputTokens ?? 0)} out` + (report.turns !== undefined ? ` · ${report.turns} turns` : '')]
       : report.totalTokens !== undefined
-        ? `${formatTokenCount(report.totalTokens)} total${report.totalIsEstimated ? ' est.' : ''}`
-        : 'unknown'
+        ? [`${formatTokenCount(report.totalTokens)} total${report.totalIsEstimated ? ' est.' : ''}`, '']
+        : ['unknown', '']
+  // The headline is the figure the status line shows: the billed estimate when one exists.
+  const billed = report.totalCostUsd !== undefined && report.billedEstimateUsd !== undefined && !report.totalIsEstimated
+    ? `${report.hasUnknownCost ? '≥' : ''}${formatUsdCost(report.billedEstimateUsd)} billed`
+    : undefined
+  const headline = billed ?? totalCost
 
   return (
     <Popup
       title="cost"
       status={
         report.totalCostUsd !== undefined
-          ? `session ${totalCost}`
+          ? `session ${headline}`
           : 'cost tracking unavailable'
       }
       minHeight={18}
@@ -79,17 +85,20 @@ export function CostUsageModal({
       <Box flexDirection="column" gap={1}>
         <Box flexDirection="row" gap={2}>
           <ThemedText color="agenc">SESSION</ThemedText>
-          <ThemedText color="text2">{totalCost}</ThemedText>
+          <ThemedText color="text2">{headline}</ThemedText>
         </Box>
-        <ThemedText color="muted3">Accounting total: metered calls at peak rates before off-peak discounts.</ThemedText>
+        {billed !== undefined ? (
+          <ThemedText color="muted3">Billed estimate: metered calls, with recorded per-call off-peak hours applied.</ThemedText>
+        ) : (
+          <ThemedText color="muted3">Accounting total: metered calls at peak rates before off-peak discounts.</ThemedText>
+        )}
         {(report.planCalls ?? 0) > 0 ? <ThemedText color="text2">{`Plan: ${report.planCalls} calls, no per-token charge`}</ThemedText> : null}
         {(report.apiEquivalentUsd ?? 0) > 0 ? <ThemedText color="text2">{`API-equivalent: ${report.apiEquivalentUnknown ? '≥' : ''}${formatUsdCost(report.apiEquivalentUsd!)} (reference only; not billed)`}</ThemedText> : null}
-        {report.billedEstimateUsd !== undefined && !report.totalIsEstimated ? (
-          <Row label="billed estimate" value={`${report.hasUnknownCost ? '≥' : ''}${formatUsdCost(report.billedEstimateUsd)}`}
-            detail="recorded per-call off-peak hours" />
+        {billed !== undefined ? (
+          <Row label="at peak rates" value={totalCost} detail="accounting total before off-peak discounts; budgets use it" />
         ) : null}
         {report.apiEquivalentUnknown ? <ThemedText color="text2">Some plan calls have unknown API-equivalent pricing.</ThemedText> : null}
-        <Row label="tokens" value={tokenDetail} labelColor="inactive" />
+        <Row label="tokens" value={tokenValue} detail={tokenRest} labelColor="inactive" />
         {report.hasUnknownCost ? (
           <Box flexDirection="column">
             <ThemedText color="text2">Unpriced calls (excluded from the known cost):</ThemedText>
@@ -129,7 +138,7 @@ export function CostUsageModal({
             <ThemedText color="muted3">{costModelDetail(row)}</ThemedText>
           </Box>
         )) : null}
-        <ThemedText color="muted3">Agent accounting totals include separate tool charges:</ThemedText>
+        <ThemedText color="muted3">Sub-agent totals at peak rates, separate tool charges included:</ThemedText>
         {report.agents.length === 0 ? (
           <ThemedText color="muted3">no fan-out agents active</ThemedText>
         ) : (

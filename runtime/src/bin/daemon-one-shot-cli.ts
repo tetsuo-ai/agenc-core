@@ -605,7 +605,20 @@ function oneShotSessionUsage(
     costUsd,
     costKnown: !hasUnknownCost,
     ...(costEstimated === true ? { costEstimated: true } : {}),
+    // What the status line and /cost show next to the accounting cost: the
+    // billed estimate (off-peak hours applied) and the plan calls, which
+    // costUsd leaves out, with their API-equivalent reference value.
+    ...(isUsageAmount(nested.payload.billedEstimateUsd) ? { billedEstimateUsd: nested.payload.billedEstimateUsd } : {}),
+    ...(Number.isSafeInteger(nested.payload.planCalls) && (nested.payload.planCalls as number) > 0
+      ? { planCalls: nested.payload.planCalls,
+        ...(isUsageAmount(nested.payload.apiEquivalentUsd) && nested.payload.apiEquivalentUsd > 0 ? { apiEquivalentUsd: nested.payload.apiEquivalentUsd } : {}),
+        ...(nested.payload.apiEquivalentUnknown === true ? { apiEquivalentUnknown: true } : {}) }
+      : {}),
   } as JsonObject;
+}
+
+function isUsageAmount(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
 function oneShotSnapshotFields(

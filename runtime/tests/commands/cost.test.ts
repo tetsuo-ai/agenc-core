@@ -30,10 +30,10 @@ it("shows billed and peak accounting estimates in both /cost surfaces with the u
   expect(text).toContain("Billed estimate: ≥$0.750");
   const modal = await renderToString(createElement(CostUsageModal, { report, onDone: () => {}, active: false }),
     { columns: 120, rows: 40 });
-  expect(modal).toContain("≥$1.00");
-  expect(modal).toContain("peak rates before off-peak discounts");
-  expect(modal).toContain("billed estimate");
-  expect(modal).toContain("≥$0.750");
+  expect(modal).toMatch(/SESSION\s+≥\$0\.750 billed/);
+  expect(modal).toMatch(/at peak rates\s+≥\$1\.00/);
+  expect(modal).toContain("before off-peak discounts");
+  expect(modal).toContain("Billed estimate");
 });
 
 /**

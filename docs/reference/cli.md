@@ -244,9 +244,17 @@ API-equivalent values are not subscription invoices.
   OpenRouter and Venice), media generation, and the model calls a tool makes
   (`web_fetch`'s `prompt` extraction, Grok's native web search, `XSearch`).
   A tool call that reports no price (a local tool, or a configured search
-  endpoint) adds nothing. Sub-agents keep their own accounting and are not
-  included. `costKnown` is `false` when the model part is incomplete (for
-  example after a resume) or the tool charges could not be read.
+  endpoint) adds nothing. When the run's ledger records sub-agents, their
+  calls are in these totals too, as in `/cost`. `costUsd` is the accounting
+  total: metered calls at peak rates, with plan calls (ChatGPT sign-in) at
+  zero. Next to it, when the ledger has them: `billedEstimateUsd` is the
+  figure the status line shows as `billed` (recorded off-peak hours
+  applied), `planCalls` counts the calls a subscription covers, and
+  `apiEquivalentUsd` is what those plan calls would cost at API rates
+  (reference only, not billed; `apiEquivalentUnknown` marks a plan call
+  without a known price). `costKnown` is `false` when the model part is
+  incomplete (for example after a resume) or the tool charges could not be
+  read.
 
 ### Examples
 

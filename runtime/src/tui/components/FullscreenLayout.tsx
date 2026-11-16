@@ -1,4 +1,5 @@
 import { sessionSpendLabel, usageCachePercent } from "../../session/usage-display.js";
+import type { AdmissionUsageSummary } from "../../budget/admission-types.js";
 import { c as _c } from "react-compiler-runtime";
 import { homedir } from 'node:os';
 import { basename, resolve, sep } from 'node:path';
@@ -672,6 +673,26 @@ const PEAK_ESTIMATE_NOTE = ' peak est.';
 const PRICE_UNKNOWN_SHORT_LABEL = 'no price';
 
 /** Qualify discounts and missing dispatch times, independent of the current clock. */
+/**
+ * What the status line's ctx and cache figures cover, for a session whose
+ * ledger records billing routes. `swarm` is true once sub-agents have usage
+ * or are running, so ctx reads "ctx lead" from the first spawn on, not only
+ * after the first sub-agent call returns. Undefined for older summaries.
+ */
+export function statusUsageScope(
+  usage: Pick<AdmissionUsageSummary, 'planCalls' | 'includesSubagents' | 'cacheInputTokens' | 'cacheUnreportedCalls'> | null | undefined,
+  runningAgents: number,
+): { readonly swarm: boolean; readonly cache: 'swarm' | 'lead' | 'known' } | undefined {
+  if (usage === null || usage === undefined) return undefined;
+  if (usage.planCalls === undefined && usage.includesSubagents !== true) return undefined;
+  return {
+    swarm: usage.includesSubagents === true || runningAgents > 0,
+    cache: usage.cacheInputTokens === undefined ? 'lead'
+      : (usage.cacheUnreportedCalls ?? 0) > 0 ? 'known'
+        : usage.includesSubagents ? 'swarm' : 'lead',
+  };
+}
+
 export function statusLineUsageItems(
   contextPercent: number | null,
   cachePercent: number | null,
@@ -856,11 +877,8 @@ function StatusLineChrome({ columns, onRowsChange }: {
   const leadCachePercent = useStatusPromptCache();
   const usage = useSessionUsage();
   const cachePercent = usage?.cacheInputTokens !== undefined ? usageCachePercent(usage) : leadCachePercent;
-  const detailedUsage = usage?.planCalls !== undefined || usage?.includesSubagents === true;
-  const usageScope = detailedUsage ? { swarm: usage?.includesSubagents === true,
-    cache: usage?.cacheInputTokens === undefined ? 'lead' as const
-      : (usage.cacheUnreportedCalls ?? 0) > 0 ? 'known' as const
-        : usage.includesSubagents ? 'swarm' as const : 'lead' as const } : undefined;
+  const usageScope = statusUsageScope(usage, runningAgents);
+  const detailedUsage = usageScope !== undefined;
   const costBasis = detailedUsage ? null : usage?.hasMissingDispatchTime ? 'peak-estimate'
     : usage?.billedEstimateUsd !== undefined && usage.hasOffPeakDiscount ? 'off-peak' : null;
   const zdr = useStatusZdr();
