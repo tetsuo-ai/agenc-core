@@ -213,6 +213,7 @@ export function compactExecExitFooter(content: string): string {
 export function formatUnifiedExecToolContent(
   output: ExecCommandToolOutput,
   lightMode = false,
+  compactResults = false,
 ): string {
   // Output FIRST, metadata after. The previous order put a multi-line
   // "Wall time: ... / Process exited with code 0 / Original token count: N
@@ -263,7 +264,7 @@ export function formatUnifiedExecToolContent(
     output.session_id === undefined && output.detached !== true &&
     output.residual_processes_terminated !== true && output.residual_processes_observed !== true &&
     output.command_outcome === undefined;
-  if (!routineLightSuccess) {
+  if (!routineLightSuccess && !(lightMode && compactResults)) {
     footerLines.push(`wall_time=${output.wall_time_seconds.toFixed(4)}s`);
     footerLines.push(`tokens=${output.original_token_count}`);
   }
@@ -278,7 +279,7 @@ export function formatUnifiedExecToolContent(
   }
   // Compact one-line footer separated from output by a blank line so the
   // model sees the two sections distinctly.
-  sections.push("");
+  if (!(lightMode && compactResults)) sections.push("");
   sections.push(`[exec ${footerLines.join(" ")}]`);
   // Notes about a running session come before the residue note, which
   // residualNoteOncePerSession and compactExecExitFooter expect last.

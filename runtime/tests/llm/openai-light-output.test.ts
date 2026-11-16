@@ -114,7 +114,7 @@ describe("exec-args", () => {
     const { tool } = execCommand("openai", {});
     expect(execCommand("openai", env("exec-args")).tool()).toEqual(tool());
     expect(execCommand("openai", env("no-summary")).tool()).toEqual(tool());
-    expect(execCommand("openai", env("all")).tool()).toEqual(tool());
+    expect(execCommand("openai", env("all")).tool()).toEqual(execCommand("openai", env("exec-timeout")).tool());
     expect(Object.keys(tool().function.parameters.properties as object).sort()).toEqual(["cmd", "timeoutMs"]);
     expect(tool().function.parameters.required).toEqual(["cmd"]);
     expect(tool().function.description).toContain("Runs in the workspace root.");
@@ -165,5 +165,31 @@ describe("exec-args", () => {
         expect(execCommand(provider, value === undefined ? {} : env(value)).registry.toLLMTools(), `${provider} ${value}`).toEqual(base);
       }
     }
+  });
+});
+
+
+describe("exec-timeout", () => {
+  test("is opt-in and hides only timeoutMs from the lean exec declaration", () => {
+    const baseline = execCommand("openai", {}).tool();
+    const trimmed = execCommand("openai", env("exec-timeout")).tool();
+    expect(Object.keys(trimmed.function.parameters.properties as object)).toEqual(["cmd"]);
+    expect(trimmed.function.description).toContain("timeoutMs");
+    expect(trimmed.function.parameters.required).toEqual(["cmd"]);
+    expect(trimmed.function.parameters).toEqual({ ...baseline.function.parameters,
+      properties: { cmd: (baseline.function.parameters.properties as Record<string, unknown>).cmd } });
+    expect(openAiLightOutputSwitches({}, "openai").has("exec-timeout")).toBe(false);
+    expect(openAiLightOutputSwitches(env("exec-timeout"), "openai").has("exec-timeout")).toBe(true);
+  });
+
+  test("works independently of exec-args and discovery restores timeoutMs", () => {
+    const { registry, tool } = execCommand("openai", env("off,exec-timeout"));
+    expect(Object.keys(tool().function.parameters.properties as object).sort()).toEqual(["background", "cmd", "workdir"]);
+    const canonical = registry.tools.find(t => t.name === "exec_command")!;
+    expect(canonical.inputSchema.properties).toHaveProperty("timeoutMs");
+    registry.discoverToolNames?.(["exec_command"]);
+    const baseline = execCommand("openai", env("off"));
+    baseline.registry.discoverToolNames?.(["exec_command"]);
+    expect(tool()).toEqual(baseline.tool());
   });
 });

@@ -338,3 +338,30 @@ test("residue notes do not steer Linux sandbox servers into an unreachable backg
     expect(note).not.toContain("a server too:");
   }
 });
+
+
+describe("opt-in compact OpenAI Light exec results", () => {
+  test.each([
+    { exitCode: 0 }, { exitCode: 1 }, { exitCode: 143, timedOut: true },
+    { exitCode: null, timedOut: true }, { exitCode: null },
+    { exitCode: null, process_id: 7, timedOut: true, timeout_backgrounded_ms: 1000 },
+    { exitCode: null, detached: true, pid: 42, log_path: "/tmp/service.log" },
+    { exitCode: 0, truncated: true },
+    { exitCode: 0, residual_processes_terminated: true },
+    { exitCode: 1, timeout_stopped_at_session_limit: 3 },
+    { exitCode: 0, command_outcome: "aborted" },
+  ] as Partial<ExecCommandToolOutput>[])("preserves payload, states and notes: %j", overrides => {
+    // An apparent footer inside stdout must remain byte-for-byte intact.
+    const raw = "hello\n[exec exit_code=1 wall_time=99s tokens=50]\n\n";
+    const result = output({ ...overrides, output: raw });
+    const baseline = formatUnifiedExecToolContent(result, true);
+    const compact = formatUnifiedExecToolContent(result, true, true);
+    const expected = raw + baseline.slice(raw.length).replace(/^\n\n/, "\n")
+      .replace(/ wall_time=0\.0120s tokens=1/, "");
+    expect(compact).toBe(expected);
+    expect(compact.length).toBeLessThan(baseline.length);
+    expect(result.output).toBe(raw);
+    expect(unifiedExecCodeModeResult(result)).toHaveProperty("wall_time_seconds", 0.012);
+    expect(formatUnifiedExecToolContent(result, false, true)).toBe(formatUnifiedExecToolContent(result, false));
+  });
+});

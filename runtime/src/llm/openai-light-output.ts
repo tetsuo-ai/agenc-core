@@ -9,6 +9,9 @@
  * - `no-summary` (opt-in): the ChatGPT backend is asked for `reasoning.summary: "auto"` so a reasoning item can be
  *   replayed, and writes a summary line before the visible output of a call. With the switch the summary is not
  *   requested unless the user chose one.
+ * - `exec-timeout` (opt-in): omit timeoutMs from the lean declaration too. It stays accepted and discoverable.
+ * - `exec-results` (opt-in): omit model-facing exec footer telemetry and its extra blank line. Output, status,
+ *   handles, warnings and structured telemetry stay intact.
  *
  * The value adds to the defaults: unset is `exec-args`, `no-summary` is both, `all` is every switch. `off` (also
  * `none`, `0`, `false`, `no`) drops the defaults, so `off` alone restores the 0.19.35 requests and
@@ -21,7 +24,7 @@
  */
 export const OPENAI_LIGHT_OUTPUT_ENV = "AGENC_OPENAI_LIGHT_OUTPUT";
 
-export const OPENAI_LIGHT_OUTPUT_SWITCHES = ["exec-args", "no-summary"] as const;
+export const OPENAI_LIGHT_OUTPUT_SWITCHES = ["exec-args", "no-summary", "exec-timeout", "exec-results"] as const;
 export type OpenAiLightOutputSwitch = (typeof OPENAI_LIGHT_OUTPUT_SWITCHES)[number];
 
 /** The switches that are on without the variable. */

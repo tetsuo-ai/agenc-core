@@ -838,9 +838,12 @@ export function buildToolRegistry(
   // loads exec_command's full schema for the next request: the lean schema
   // Light and deferred standard sessions present hides that field.
   const onEscalationAdvised = (): void => markDiscovered(["exec_command"]);
+  const compactOpenAiExecResults = (): boolean => options.lightMode === true && openAiLightOutputEnabled(
+    options.getSession?.()?.services?.providerEnvironment, sessionModelIdentity().provider, "exec-results");
   const shellTools = [
     createExecCommandTool({
       lightMode: options.lightMode,
+      compactResults: compactOpenAiExecResults,
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
@@ -865,6 +868,7 @@ export function buildToolRegistry(
     }),
     createWriteStdinTool({
       lightMode: options.lightMode,
+      compactResults: compactOpenAiExecResults,
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
@@ -1658,6 +1662,8 @@ export function buildToolRegistry(
       const leanExec = !stableCore && searchVisible && !discoveredToolNames.has("exec_command");
       const shortExecArgs = leanExec && openAiLightOutputEnabled(
         options.getSession?.()?.services?.providerEnvironment, identity.provider, "exec-args");
+      const omitExecTimeout = leanExec && openAiLightOutputEnabled(
+        options.getSession?.()?.services?.providerEnvironment, identity.provider, "exec-timeout");
       const leanGrep = searchVisible && !discoveredToolNames.has("Grep");
       const leanSearch = (compactCore || !stableCore) && !discoveredToolNames.has(SYSTEM_SEARCH_TOOLS_NAME);
       const leanRead = (compactCore || (!stableCore && searchVisible)) && !discoveredToolNames.has("FileRead");
@@ -1670,7 +1676,7 @@ export function buildToolRegistry(
         if (spec.tool.metadata?.source !== "builtin") return tool;
         if (options.lightMode === true) {
           return lightPresentation(tool, { leanExec, leanSearch, leanRead, compactCore, lightSession: true,
-            writeWithApplyPatch, shortExecArgs,
+            writeWithApplyPatch, shortExecArgs, omitExecTimeout,
             glmServerChecks: describesServerChecks() });
         }
         // Standard sessions with the default deferral send compact wording for
