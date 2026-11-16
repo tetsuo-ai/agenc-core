@@ -7,7 +7,15 @@ import { isRecord } from "../utils/record.js";
 export const MICRO_PRINT_MAX_FRAME_BYTES = 1024 * 1024;
 const MAX_PENDING_REQUESTS = 8;
 const MAX_QUEUED_NOTIFICATIONS = 256;
-export const microTransportError = (): Error => new Error("Daemon print connection failed");
+export type MicroPrintFailure = "disconnected" | "timeout" | "protocol" | "remote";
+export class MicroPrintError extends Error {
+  constructor(readonly reason: MicroPrintFailure = "protocol") {
+    super(`Daemon print connection failed: ${reason === "timeout" ? "daemon response deadline exceeded" :
+      reason === "disconnected" ? "daemon socket disconnected" :
+      reason === "remote" ? "daemon rejected a print request" : "invalid print protocol or delivery limit"}`);
+  }
+}
+export const microTransportError = (reason: MicroPrintFailure = "protocol"): Error => new MicroPrintError(reason);
 
 /** Completion AND drain are required; a watermark by itself is not delivery. */
 export function writeMicroOutput(output: Writable, data: string, signal: AbortSignal): Promise<void> {
@@ -57,9 +65,9 @@ export class MicroPrintTransport {
   readonly #notificationIdle: Array<() => void> = [];
   private constructor(socket: Socket) {
     this.#socket = socket;
-    socket.on("error", () => this.close());
+    socket.on("error", () => this.close(microTransportError("disconnected")));
     this.#reader = new BoundedJsonLineReader({ input: socket, maxLineBytes: MICRO_PRINT_MAX_FRAME_BYTES,
-      onLine: line => this.#receive(line), onError: () => this.close(), onClose: () => this.close() });
+      onLine: line => this.#receive(line), onError: () => this.close(), onClose: () => this.close(microTransportError("disconnected")) });
     this.#reader.start();
   }
   static async connect(socketPath: string, timeoutMs: number): Promise<MicroPrintTransport> {
@@ -90,7 +98,7 @@ export class MicroPrintTransport {
     const bytes = Buffer.byteLength(data);
     if (bytes > MICRO_PRINT_MAX_FRAME_BYTES || this.#writingBytes + bytes > 2 * MICRO_PRINT_MAX_FRAME_BYTES) throw microTransportError();
     return new Promise((resolve, reject) => {
-      const timer = timeoutMs === undefined ? undefined : setTimeout(() => this.close(), timeoutMs);
+      const timer = timeoutMs === undefined ? undefined : setTimeout(() => this.close(microTransportError("timeout")), timeoutMs);
       this.#pending.set(id, { resolve, reject, timer });
       // Responses can arrive before write callbacks. Account for both lifetimes.
       this.#writing++; this.#writingBytes += bytes;
@@ -103,11 +111,11 @@ export class MicroPrintTransport {
     if (this.#pumping) await new Promise<void>(resolve => this.#notificationIdle.push(resolve));
     this.assertLive();
   }
-  close(): void {
+  close(error: Error = microTransportError()): void {
     if (this.signal.aborted) return;
-    this.#abort.abort();
+    this.#abort.abort(error);
     this.#reader.close(); this.#socket.destroy();
-    for (const pending of this.#pending.values()) { clearTimeout(pending.timer); pending.reject(microTransportError()); }
+    for (const pending of this.#pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.#pending.clear(); this.#notifications.length = 0;
     for (const resolve of this.#notificationIdle.splice(0)) resolve();
   }
@@ -121,7 +129,7 @@ export class MicroPrintTransport {
         const pending = this.#pending.get(message.id);
         if (pending === undefined || Object.hasOwn(message, "error") === Object.hasOwn(message, "result")) throw microTransportError();
         this.#pending.delete(message.id); clearTimeout(pending.timer);
-        if (Object.hasOwn(message, "error")) pending.reject(microTransportError()); else pending.resolve(message.result);
+        if (Object.hasOwn(message, "error")) pending.reject(microTransportError("remote")); else pending.resolve(message.result);
       } else {
         if (typeof message.method !== "string" || !isRecord(message.params) || this.#handler === undefined) throw microTransportError();
         const bytes = Buffer.byteLength(line);
@@ -142,7 +150,7 @@ export class MicroPrintTransport {
         await this.#handler!(entry.notification);
         this.#notificationCount--; this.#notificationBytes -= entry.bytes;
       }
-    } catch { this.close(); }
+    } catch (error) { this.close(error instanceof MicroPrintError ? error : microTransportError()); }
     finally {
       this.#pumping = false;
       for (const resolve of this.#notificationIdle.splice(0)) resolve();

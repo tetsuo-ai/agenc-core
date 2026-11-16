@@ -1256,3 +1256,8 @@ This includes loss of complete JSONL rows: uncertain effects are never silently
 replayed as new work. A killed process can therefore require review even when
 its page-cache bytes survived. A verified clean run can be continued with full
 syncing.
+
+Local built-in slash commands such as `/cost`, `/stats`, `/status`, and `/model`
+are only available in the TUI. Print mode rejects them with an explanatory
+stderr message and exit status 1, including `--continue` and stream-json input.
+They are never submitted to the model. `/goal` keeps its supported print route.

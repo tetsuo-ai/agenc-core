@@ -314,3 +314,10 @@ it("sends only an explicit mode flag when continuing, so the session keeps its r
   expect(await oneShotCLI("next", [], undefined, { kind: "latest" })).toBe(23);
   expect(mocks.continuation.mock.calls[1]?.[0].runtimeOptions).toMatchObject({ lightMode: false });
 });
+
+it.each(["/cost", " /status ", "/model openai:gpt-6.1-sol"])("never submits local command %s as a model prompt", async prompt => {
+  expect(await oneShotCLI(prompt, [], undefined, { kind: "latest" })).toBe(1);
+  expect(mocks.continuation).not.toHaveBeenCalled();
+  expect(mocks.connect).not.toHaveBeenCalled();
+  expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining("only available in the TUI"));
+});

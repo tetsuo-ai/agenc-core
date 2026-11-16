@@ -731,3 +731,18 @@ select one adapter and fail on errors. `custom` enables the `WEB_*` endpoint and
 preset settings; those presets never join the auto chain. API keys stay in env.
 See [Web Search Providers](../../runtime/src/tools/WebSearchTool/README_SEARCH_PROVIDERS.md#live-agent-websearch)
 for endpoint overrides, legacy differences, billing limitations and examples.
+
+### Spawn and resident print responsiveness
+
+`AGENC_SPAWN_RESPONSIVENESS=off` restores the old repeated OpenRouter keychain
+reads during model picker construction. By default an existing catalog reuses
+its captured credential, avoiding hundreds of redundant synchronous reads at
+sub-agent spawn. Set this in the daemon environment for diagnostic comparisons.
+It does not change provider request serialization.
+
+`AGENC_PRINT_STALL_RECOVERY=off` restores the ordinary RPC timeout for resident
+print admission and output acknowledgements. By default these requests wait up
+to 30 seconds (or the configured daemon RPC timeout if longer), while sending
+`health.ping` on the same socket. A heartbeat never extends that deadline. A
+socket disconnect fails immediately, without replaying the invocation. Timeout,
+disconnect and protocol errors have distinct diagnostics on stderr.

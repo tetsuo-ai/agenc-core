@@ -1,3 +1,4 @@
+import { isBuiltInCommandName } from "../commands/builtin-command-names.js";
 import "../bootstrap/node-env.js";
 import { readDaemonDisconnectEvidence } from "../app-server/daemon-disconnect-evidence.js";
 import { readLocalByokCredential } from "../auth/native-credentials.js";
@@ -1756,6 +1757,13 @@ export async function oneShotCLI(
         ? userMessage
         : await resolveUserMessage(signal, oneShotArgv, invocation?.stdin ?? process.stdin);
     throwIfAborted("resolveUserMessage");
+    // Built-in UI commands must never become paid model prompts, including
+    // continued sessions and stream-json stdin. /goal has its own print route.
+    const slashName = /^\s*\/([a-zA-Z][a-zA-Z0-9:_-]*)(?:\s|$)/u.exec(resolvedUserMessage)?.[1];
+    if (slashName !== undefined && slashName !== "goal" && isBuiltInCommandName(slashName)) {
+      io.stderr.write(`agenc: /${slashName} is only available in the TUI; open agenc interactively to run it.\n`);
+      return 1;
+    }
 
     const cliCwd = resolveCliCwdForStartup(sessionEnv, { cwdFn: cwd });
     if (!cliCwd.ok) {
