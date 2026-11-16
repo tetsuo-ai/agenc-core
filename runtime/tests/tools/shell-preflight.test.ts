@@ -1,4 +1,4 @@
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -54,6 +54,25 @@ function dispatchFixture(tool: Tool, args: Record<string, unknown>) {
 }
 
 describe("shell policy before approval", () => {
+  test("full bypass carries a whole Git relocation through model preflight and execution", async () => {
+    workspace = await realpath(workspace);
+    await mkdir(join(workspace, "api_bridge_snapshot/.git"), { recursive: true });
+    await mkdir(join(workspace, "api"));
+    await writeFile(join(workspace, "api_bridge_snapshot/.git/HEAD"), "ref: refs/heads/main\n");
+    const { tool, args } = shellTool("exec_command", "mv api_bridge_snapshot/.git api/.git");
+    const fixture = dispatchFixture(tool, args);
+    const result = await fixture.router.dispatchModelToolCall({
+      id: "restore-git", name: tool.name, arguments: fixture.rawArgs,
+    }, {
+      ...fixture.options, approvalPolicy: "never", sandboxMode: "danger_full_access",
+      canUseTool: async () => ({ behavior: "allow" as const, updatedInput: args }),
+    });
+    expect(result.isError, result.content).not.toBe(true);
+    expect(fixture.execute).toHaveBeenCalledOnce();
+    expect(fixture.resolver.request).not.toHaveBeenCalled();
+    expect(await readFile(join(workspace, "api/.git/HEAD"), "utf8")).toBe("ref: refs/heads/main\n");
+  });
+
   const blockedCommands = [
     "rm -rf .git",
   ];
