@@ -1,6 +1,7 @@
+import { hasRuntimeHistoryWrapper, userFacingHistoryText } from "./user-facing-history-text.js";
 import { randomUUID } from "node:crypto";
 
-import type { LLMMessage } from "../llm/types.js";
+import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { isHiddenGoalContinuation } from "./hidden-goal-history.js";
 import { isAuthenticatedCompactionBoundary } from "./compaction-history-marker.js";
 
@@ -115,13 +116,17 @@ function makeUserMessage(
   const marker = source.runtimeOnly?.compactionHistory;
   const isCompactSummary = marker?.version === 1 && marker.kind === "summary";
   const isCompactBoundary = marker?.version === 1 && marker.kind === "boundary";
+  // Runtime-written wrappers and injected user-role messages (a prompt
+  // queued mid-turn inside <system-reminder>, the completion gate, nudges)
+  // show as the user's own words, or not at all when there are none.
+  const display = marker === undefined ? userFacingContent(content) : { content, runtimeOnly: false };
   return {
     type: "user",
     message: {
       role: "user",
-      content: contentForRuntime(content),
+      content: contentForRuntime(display.content),
     },
-    ...(isCompactBoundary ? { isMeta: true } : {}),
+    ...(isCompactBoundary || display.runtimeOnly ? { isMeta: true } : {}),
     ...(isCompactSummary ? { isCompactSummary: true } : {}),
     ...(marker === undefined ? {} : { compactionHistory: marker }),
     uuid: `history-user-${index}`,
@@ -183,6 +188,39 @@ function assistantContent(
 ): readonly Record<string, unknown>[] {
   const text = contentToText(message.content);
   return text.trim().length > 0 ? [{ type: "text", text }] : [];
+}
+
+function userFacingContent(content: LLMMessage["content"]): {
+  readonly content: LLMMessage["content"];
+  readonly runtimeOnly: boolean;
+} {
+  if (typeof content === "string") {
+    if (!hasRuntimeHistoryWrapper(content)) return { content, runtimeOnly: false };
+    const text = userFacingHistoryText(content);
+    return { content: text, runtimeOnly: text.length === 0 };
+  }
+  let changed = false;
+  let visible = false;
+  const parts: LLMContentPart[] = [];
+  for (const part of content) {
+    if (part.type !== "text") {
+      visible = true;
+      parts.push(part);
+      continue;
+    }
+    if (!hasRuntimeHistoryWrapper(part.text)) {
+      if (part.text.trim().length > 0) visible = true;
+      parts.push(part);
+      continue;
+    }
+    changed = true;
+    const text = userFacingHistoryText(part.text);
+    if (text.length === 0) continue;
+    visible = true;
+    parts.push({ ...part, text });
+  }
+  if (!changed) return { content, runtimeOnly: false };
+  return { content: parts, runtimeOnly: !visible };
 }
 
 function contentForRuntime(content: LLMMessage["content"]): unknown {

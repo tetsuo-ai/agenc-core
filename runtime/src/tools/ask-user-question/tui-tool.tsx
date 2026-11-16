@@ -10,15 +10,28 @@ import {
   type AskUserQuestionAnnotation,
   type AskUserQuestionOption,
 } from './tool.js'
+import {
+  askUserQuestionDisplayFromModelText,
+  buildAskUserQuestionDisplay,
+  formatAskUserQuestionDisplay,
+  parseAskUserQuestionDisplay,
+  QUESTIONS_ANSWERED_TEXT,
+  resolveAskUserQuestionDisplay,
+  type AskUserQuestionDisplay,
+} from './display.js'
 
 export type Question = AskUserQuestion
 export type QuestionOption = AskUserQuestionOption
 
-export type Output = {
-  questions: readonly Question[]
-  answers: Readonly<Record<string, string>>
-  annotations?: Readonly<Record<string, AskUserQuestionAnnotation>>
-}
+/**
+ * What the result row needs. Rows come in several shapes: the daemon
+ * transcript passes the display built from the tool's result metadata, the
+ * in-process path passes `{questions, answers, annotations}` or the runtime
+ * result `{content, metadata}`, and sessions recorded by older builds pass
+ * the model-facing result string. All normalize to one display here, so the
+ * renderer never falls back to printing the text written for the model.
+ */
+export type Output = AskUserQuestionDisplay
 
 const inputSchema = {
   safeParse(input: unknown):
@@ -32,27 +45,51 @@ const inputSchema = {
   },
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export function normalizeAskUserQuestionOutput(input: unknown): Output | null {
+  if (typeof input === 'string') {
+    return askUserQuestionDisplayFromModelText(input)
+  }
+  if (!isRecord(input)) return null
+  const direct = parseAskUserQuestionDisplay(input)
+  if (direct !== null) return direct
+  if (isRecord(input.metadata) || typeof input.content === 'string') {
+    const resolved = resolveAskUserQuestionDisplay({
+      result: input.content,
+      metadata: input.metadata,
+    })
+    if (resolved !== null) return resolved
+  }
+  if (input.skipped === true) return { outcome: 'skipped', entries: [] }
+  if (
+    input.planInterviewAction === 'chat_about_this' ||
+    input.planInterviewAction === 'skip_plan_interview'
+  ) {
+    return { outcome: input.planInterviewAction, entries: [] }
+  }
+  if (isRecord(input.answers)) {
+    return buildAskUserQuestionDisplay({
+      outcome: 'answered',
+      questions: input.questions,
+      answers: input.answers,
+      annotations: isRecord(input.annotations) ? input.annotations : undefined,
+    })
+  }
+  return null
+}
+
+// Validation only: the row value passes through unchanged (the in-process
+// call output still feeds mapToolResultToToolResultBlockParam), and
+// renderToolResultMessage normalizes whatever shape it receives.
 function parseOutput(input: unknown):
-  | { success: true; data: Output }
+  | { success: true; data: unknown }
   | { success: false; error: Error } {
-  const parsed = parseAskUserQuestionInput(input)
-  if (!parsed.ok) {
-    return { success: false, error: new Error(parsed.error) }
-  }
-  const answers = parsed.input.answers
-  if (answers === undefined) {
-    return { success: false, error: new Error('answers are required') }
-  }
-  return {
-    success: true,
-    data: {
-      questions: parsed.input.questions,
-      answers,
-      ...(parsed.input.annotations !== undefined
-        ? { annotations: parsed.input.annotations }
-        : {}),
-    },
-  }
+  return normalizeAskUserQuestionOutput(input) === null
+    ? { success: false, error: new Error('not an AskUserQuestion result') }
+    : { success: true, data: input }
 }
 
 function formatAnswers(
@@ -72,6 +109,12 @@ function formatAnswers(
       return parts.join(' ')
     })
     .join('\n')
+}
+
+type CallOutput = {
+  questions: readonly Question[]
+  answers: Readonly<Record<string, string>>
+  annotations?: Readonly<Record<string, AskUserQuestionAnnotation>>
 }
 
 export const AskUserQuestionTool = {
@@ -137,16 +180,32 @@ export const AskUserQuestionTool = {
   renderToolUseProgressMessage() {
     return null
   },
-  renderToolResultMessage(output: Output) {
+  renderToolResultMessage(output: unknown) {
+    const display = normalizeAskUserQuestionOutput(output)
+    if (display === null || display.outcome !== 'answered' || display.entries.length === 0) {
+      return (
+        <Text dimColor>
+          {display === null ? QUESTIONS_ANSWERED_TEXT : formatAskUserQuestionDisplay(display)}
+        </Text>
+      )
+    }
     return (
       <Box flexDirection="column">
-        <Text>User answered AgenC's questions:</Text>
-        <Text>{formatAnswers(output.answers, output.annotations)}</Text>
+        {display.entries.map((entry, index) => (
+          <Box key={index} flexDirection="column">
+            <Text>
+              <Text dimColor>{entry.question}</Text>
+              {'  '}
+              <Text bold>{entry.answer}</Text>
+            </Text>
+            {entry.note !== undefined ? <Text dimColor>{`  Note: ${entry.note}`}</Text> : null}
+          </Box>
+        ))}
       </Box>
     )
   },
   renderToolUseRejectedMessage() {
-    return <Text>User declined to answer questions</Text>
+    return <Text dimColor>Questions declined</Text>
   },
   renderToolUseErrorMessage() {
     return null
@@ -160,7 +219,7 @@ export const AskUserQuestionTool = {
       },
     }
   },
-  mapToolResultToToolResultBlockParam(output: Output, toolUseID: string) {
+  mapToolResultToToolResultBlockParam(output: CallOutput, toolUseID: string) {
     return {
       type: 'tool_result',
       tool_use_id: toolUseID,

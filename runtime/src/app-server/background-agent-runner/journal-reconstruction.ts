@@ -1,3 +1,4 @@
+import { hasRuntimeHistoryWrapper, userFacingHistoryText } from "../../session/user-facing-history-text.js";
 import { PendingEffectReviews } from "../../session/pending-effect-reviews.js";
 /**
  * Rollout journal scans: transcript reconstruction, transcript boundaries,
@@ -466,7 +467,7 @@ export function sessionTranscriptV2FromRollout(
       // prompts. Keep snapshot ordinals aligned with the daemon history.
       if (item.compactionHistory !== undefined) continue;
       if (isHiddenGoalContinuation(item)) continue;
-      const text = responseItemDisplayText(item.content);
+      const text = historyItemDisplayText(item.role, item.content);
       if (text.length === 0) continue;
       const messageId = `replacement:${boundary.id}:${ordinal}`;
       messages.push({
@@ -502,7 +503,7 @@ export function sessionTranscriptV2FromRollout(
     if (item.payload.role !== "user" && item.payload.role !== "assistant") {
       continue;
     }
-    const text = responseItemDisplayText(item.payload.content);
+    const text = historyItemDisplayText(item.payload.role, item.payload.content);
     if (text.length === 0) continue;
     const messageId = `legacy:${boundaryId}:${legacyOrdinal}`;
     messages.push({
@@ -817,6 +818,12 @@ function maxEventSequence(items: readonly RolloutItem[]): number {
     if (sequence !== undefined) max = Math.max(max, sequence);
   }
   return max;
+}
+
+/** Display text of a history item; user items lose runtime-written wrappers. */
+function historyItemDisplayText(role: string, content: unknown): string {
+  const text = responseItemDisplayText(content);
+  return role === "user" && hasRuntimeHistoryWrapper(text) ? userFacingHistoryText(text) : text;
 }
 
 function responseItemDisplayText(content: unknown): string {

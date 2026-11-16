@@ -1,3 +1,4 @@
+import { isPermissionDeniedToolResult, PERMISSION_DENIED_TOOL_RESULT_MESSAGE } from '../tool-result-denial.js';
 import { abbreviateHomePaths } from "../../utils/home-path-display.js";
 import React from 'react';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
@@ -490,6 +491,10 @@ function failedToolRowReason(
   toolName?: string,
 ): string | undefined {
   if (rawResult === null) return undefined;
+  // A denied permission request reads as the user's decision, not as the
+  // resolver text written for the model ("Permission denied: exec_command.
+  // denied", "... Do not retry the same call; choose a different approach").
+  if (isPermissionDeniedToolResult(rawResult)) return PERMISSION_DENIED_TOOL_RESULT_MESSAGE;
   rawResult = abbreviateHomePaths(rawResult);
   // A failed web_fetch that went through DeepSeek's fetch says which fetch
   // failed and why DeepSeek's fell back, as its success row does.

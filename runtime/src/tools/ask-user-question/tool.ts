@@ -8,6 +8,10 @@ import type { PermissionResult } from "../../permissions/types.js";
 import { asRecord } from "../../utils/record.js";
 import { validationErrorToolResult } from "../results.js";
 import type { Tool } from "../types.js";
+import {
+  ASK_USER_QUESTION_DISPLAY_KEY,
+  buildAskUserQuestionDisplay,
+} from "./display.js";
 
 export const ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion";
 const CALL_ID_ARG = "__callId";
@@ -260,6 +264,16 @@ export function clearAskUserQuestionResponsesForTest(): void {
   answeredInputs.clear();
 }
 
+/**
+ * Result metadata (never sent to a model) that tells every client what to
+ * show the user in place of the model-facing result text.
+ */
+function displayMetadata(
+  input: Parameters<typeof buildAskUserQuestionDisplay>[0],
+): Record<string, unknown> {
+  return { [ASK_USER_QUESTION_DISPLAY_KEY]: buildAskUserQuestionDisplay(input) };
+}
+
 function consumeAnsweredInput(
   args: Record<string, unknown>,
 ): AskUserQuestionInput | null {
@@ -401,6 +415,7 @@ export function createAskUserQuestionTool(): Tool {
               questions: answered.questions,
               planInterviewAction: specialAction,
             },
+            metadata: displayMetadata({ outcome: "chat_about_this" }),
           };
         }
         if (specialAction === "skip_plan_interview") {
@@ -411,6 +426,7 @@ export function createAskUserQuestionTool(): Tool {
               questions: answered.questions,
               planInterviewAction: specialAction,
             },
+            metadata: displayMetadata({ outcome: "skip_plan_interview" }),
           };
         }
       }
@@ -426,6 +442,7 @@ export function createAskUserQuestionTool(): Tool {
               questions: answered.questions,
               skipped: true,
             },
+            metadata: displayMetadata({ outcome: "skipped" }),
           };
         }
         return validationErrorToolResult(
@@ -446,6 +463,12 @@ export function createAskUserQuestionTool(): Tool {
             ? { annotations: answered.annotations }
             : {}),
         },
+        metadata: displayMetadata({
+          outcome: "answered",
+          questions: answered.questions,
+          answers,
+          annotations: answered.annotations,
+        }),
       };
     },
   };

@@ -3,6 +3,7 @@
  * Split out of background-agent-runner.ts as a pure move.
  */
 
+import { userFacingToolResultText } from "../../tools/user-facing-result.js";
 import type { LLMContentPart } from "../../llm/types.js";
 import type { AgentStatus as ThreadAgentStatus } from "../../agents/status.js";
 import type { Event } from "../../session/event-log.js";
@@ -210,13 +211,36 @@ function scopeDirectShellDaemonEvent(
   return { ...event, statusProjection: "session_only" };
 }
 
+/**
+ * Clients print a completed tool's `result`. For the few tools whose result
+ * text is written for the model (AskUserQuestion's "User has answered your
+ * questions ... You can now continue", EnterPlanMode's instructions, a Skill
+ * load's whole prompt) the live event carries the user-facing line instead.
+ * The journal and the model keep the original text; `metadata` is unchanged.
+ */
+function clientToolResultPayload(
+  event: BackgroundAgentDaemonEvent,
+): BackgroundAgentDaemonEvent["payload"] {
+  const payload = event.payload;
+  if (event.type !== "tool_call_completed" || !isJsonObject(payload)) {
+    return payload;
+  }
+  const text = userFacingToolResultText({
+    toolName: typeof payload.toolName === "string" ? payload.toolName : undefined,
+    result: payload.result,
+    metadata: payload.metadata,
+    isError: payload.isError === true,
+  });
+  return text === undefined || text === payload.result ? payload : { ...payload, result: text };
+}
+
 export function notificationFromDaemonEvent(
   sessionId: string,
   agentId: string,
   event: BackgroundAgentDaemonEvent,
 ): AgenCDaemonSessionNotification {
   const base = eventBaseParams(sessionId, agentId, event);
-  const payload = event.payload;
+  const payload = clientToolResultPayload(event);
   if (
     event.type === "mcp_status_changed" &&
     isJsonObject(payload) &&

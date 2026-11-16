@@ -35,6 +35,14 @@ import {
 import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 import { escapeXml } from "../utils/xml.js";
 import { makeAssistantTextMessage, makeToolUseMessage } from "./synthetic-assistant-message.js";
+import {
+  askUserQuestionErrorDisplay,
+  formatAskUserQuestionDisplay,
+  QUESTIONS_ANSWERED_TEXT,
+  resolveAskUserQuestionDisplay,
+  type AskUserQuestionDisplay,
+} from "../tools/ask-user-question/display.js";
+import { skillLoadReceipt, unfinishedToolCallNotice, userFacingToolResultText } from "../tools/user-facing-result.js";
 export { makeAssistantTextMessage, makeToolUseMessage } from "./synthetic-assistant-message.js";
 
 /**
@@ -836,7 +844,7 @@ function isInterruptedAdmissionResult(value: unknown): boolean {
 function truncatedToolArgumentsError(value: unknown): string | null {
   const parsed = payloadRecord(typeof value === "string" ? safeJson(value) : value);
   return parsed.code === "tool_arguments_truncated" && parsed.executed === false &&
-    typeof parsed.error === "string" ? parsed.error : null;
+    typeof parsed.error === "string" ? unfinishedToolCallNotice(parsed) ?? parsed.error : null;
 }
 
 function pushToolResult(
@@ -849,6 +857,7 @@ function pushToolResult(
   isError = false,
   rawResult: unknown = result,
   metadata?: Record<string, unknown>,
+  toolUseResult?: unknown,
 ): void {
   if (!openTools.has(callId)) {
     settledToolCallIds.add(callId);
@@ -875,6 +884,11 @@ function pushToolResult(
       );
       return;
     }
+    const unfinished = isError ? unfinishedToolCallNotice(rawResult) : undefined;
+    if (unfinished !== undefined) {
+      out.push(makeSystemMessage(unfinished, "warning", nextUuid()));
+      return;
+    }
     // Keep the recovered RESULT payload visible (that's what the operator needs)
     // but drop the opaque call_… correlation id and the framework-internal
     // "without matching start" phrasing from the user-facing lead-in.
@@ -891,7 +905,55 @@ function pushToolResult(
   settledToolCallIds.add(callId);
   const message = makeToolResultMessage(callId, result, isError, nextUuid());
   if (!isError && metadata?.ui !== undefined) message.fileMutation = metadata.ui;
+  if (toolUseResult !== undefined) message.toolUseResult = toolUseResult;
   out.push(message);
+}
+
+/** A turn abort names its cause in words, not as the protocol's reason code. */
+function turnAbortReasonText(reason: string): string {
+  if (reason === "approval_denied") return "permission request denied";
+  return /^[a-z]+(?:_[a-z]+)+$/u.test(reason) ? reason.replaceAll("_", " ") : reason;
+}
+
+/** Input of the open tool call `callId`, read back from its transcript row. */
+function toolUseInputForCall(out: readonly any[], callId: string): unknown {
+  for (let index = out.length - 1; index >= 0; index -= 1) {
+    const content = out[index]?.message?.content;
+    if (out[index]?.type !== "assistant" || !Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block?.type === "tool_use" && block.id === callId) return block.input;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The AskUserQuestion result text is written for the model ("User has
+ * answered your questions: ... You can now continue with the user's answers
+ * in mind."). The row shows each question with its chosen answer instead,
+ * from the result metadata or, for sessions recorded before the metadata
+ * existed, parsed from that text. The model's own copy is untouched.
+ */
+function askUserQuestionRowDisplay(
+  out: readonly any[],
+  callId: string,
+  payload: Record<string, unknown>,
+  isError: boolean,
+): { readonly text: string; readonly display?: AskUserQuestionDisplay } | null {
+  const raw = stringResult(payload.result);
+  if (isError) {
+    const text = askUserQuestionErrorDisplay(raw);
+    return text === null ? null : { text };
+  }
+  const input = payloadRecord(toolUseInputForCall(out, callId));
+  const display = resolveAskUserQuestionDisplay({
+    result: raw,
+    metadata: payload.metadata,
+    questions: input.questions,
+  });
+  return display === null
+    ? { text: QUESTIONS_ANSWERED_TEXT }
+    : { text: formatAskUserQuestionDisplay(display), display };
 }
 
 function streamedToolInput(entry: StreamingToolUse): unknown {
@@ -1647,16 +1709,8 @@ export function formatStructuredToolResult(
   // not model-invocable) are short JSON errors with no <command-name> tag and
   // still render verbatim.
   if (toolName === "Skill") {
-    const raw = stringResult(payload.result);
-    const name = /<command-name>([^<]{1,120})<\/command-name>/.exec(raw)?.[1];
-    if (name !== undefined) {
-      return [
-        {
-          type: "text",
-          text: `Loaded skill ${name} (${raw.length} chars of instructions, hidden from chat)`,
-        },
-      ];
-    }
+    const receipt = skillLoadReceipt(stringResult(payload.result));
+    if (receipt !== undefined) return [{ type: "text", text: receipt }];
   }
   if (eventType === "exec_command_end") {
     const stdout = typeof payload.stdout === "string" ? payload.stdout : "";
@@ -2465,7 +2519,7 @@ export function adaptTranscriptEvents(
         } else {
           out.push(event.type === "turn_failed"
             ? makeSystemMessage(stringResult(payload.message), "error", nextUuid())
-            : makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning", nextUuid()));
+            : makeSystemMessage(`Turn aborted: ${turnAbortReasonText(stringResult(payload.reason))}`, "warning", nextUuid()));
         }
         appendTurnFooter(payload, nextUuid, timestampFromUnixMillis(payload.completedAt) ?? "", finishedTurnEfficiency, finishedTurnId);
         break;
@@ -2991,8 +3045,21 @@ export function adaptTranscriptEvents(
         // system prompt — show the state change instead. The model still
         // receives the full text on its own result channel; this only
         // changes what the transcript displays.
-        const displayResult =
-          toolName === "EnterPlanMode" ? "Entered plan mode" : result;
+        const questionRow = toolName === "AskUserQuestion" && !interruptedAdmission
+          ? askUserQuestionRowDisplay(out, callId, payload, isError)
+          : null;
+        // Other tools whose result text is written for the model (plan mode
+        // instructions, "User has approved your plan. You can now start
+        // coding...") show the user-facing line from the shared table.
+        const userFacing = questionRow?.text ?? (interruptedAdmission || toolName === "AskUserQuestion"
+          ? undefined
+          : userFacingToolResultText({
+              toolName: modelToolAliasTarget(toolName) ?? toolName,
+              result: typeof payload.result === "string" ? payload.result : undefined,
+              metadata: payload.metadata,
+              isError,
+            }));
+        const displayResult = userFacing ?? result;
         pushToolResult(
           out,
           openTools,
@@ -3003,6 +3070,7 @@ export function adaptTranscriptEvents(
           isError,
           interruptedAdmission ? result : payload.result,
           metadataRecord(payload),
+          questionRow?.display,
         );
         runningToolNames.delete(callId);
         // Remove the matching streaming-tool-use element so the

@@ -114,7 +114,53 @@ function previewFromLine(line: string): string | null {
     return null;
   }
   const previewFromItem = extractUserText(parsed);
-  return previewFromItem ? truncate(previewFromItem, 80) : null;
+  if (!previewFromItem) return null;
+  const display = userFacingPreviewText(previewFromItem);
+  return display.length > 0 ? truncate(display, 80) : null;
+}
+
+/**
+ * A stored user message can carry protocol wrappers the user never typed:
+ * `<bash-input>ls</bash-input>` for `!ls`, `<command-name>/x</command-name>`
+ * for a slash command, `<system-reminder>` blocks added for the model. The
+ * picker shows what the user typed.
+ */
+export function userFacingPreviewText(message: string): string {
+  const bash = /^\s*<bash-input>([\s\S]*?)<\/bash-input>/u.exec(message);
+  if (bash !== null) return `!${bash[1]!.trim()}`;
+  const command = /<command-name>([^<]{1,120})<\/command-name>/u.exec(message);
+  if (command !== null) {
+    const args = /<command-args>([\s\S]*?)<\/command-args>/u.exec(message)?.[1]?.trim() ?? "";
+    const name = command[1]!.trim();
+    return `${name.startsWith("/") ? name : `/${name}`}${args.length > 0 ? ` ${args}` : ""}`;
+  }
+  return message
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gu, " ")
+    .replace(/<\/?(?:bash-stdout|bash-stderr|local-command-stdout|local-command-stderr|command-message|command-args|user-prompt-submit-hook)>/gu, " ")
+    .trim();
+}
+
+/**
+ * True for a sub-agent's own rollout (memory extraction, spawned workers).
+ * Its first "user" message is the prompt the runtime wrote for that agent
+ * ("You are a subagent spawned to complete a specific task..."), not a
+ * conversation the user can pick up.
+ */
+export function isSubagentRollout(path: string): boolean {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const buffer = Buffer.allocUnsafe(16 * 1024);
+    const bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
+    const head = buffer.toString("utf8", 0, bytesRead);
+    const firstLine = head.split(/\r?\n/u, 1)[0] ?? "";
+    if (!firstLine.includes('"session_meta"')) return false;
+    return /"originator"\s*:\s*"agenc-subagent[^"]*"/u.test(firstLine);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function extractUserText(item: unknown): string | null {
@@ -190,6 +236,7 @@ export function listResumableSessions(
         // Never load the thread history here: `readThread({includeHistory})`
         // parses the ENTIRE transcript per row and re-reads the registry per
         // call — the /resume freeze (audit finding #1).
+        if (isSubagentRollout(thread.rolloutPath)) continue;
         const firstUserPreview = readFirstUserPreview(thread.rolloutPath);
         // Skip rollouts that never recorded a user message — those
         // sessions were opened and closed before the user typed

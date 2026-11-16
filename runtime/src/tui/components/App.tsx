@@ -103,6 +103,7 @@ import { StatusEffortContext, StatusContextUsageContext, StatusTurnBusyContext, 
 import { resolveZeroDataRetentionStatus } from "../../llm/zero-data-retention.js";
 import { readVeniceMenuModels } from "../../commands/venice-menu-models.js";
 import { readSessionSelection } from "../../session/provider-model-selection.js";
+import { terminalTitle } from "../terminal-title.js";
 import { offPeakScheduleFor } from "../../session/off-peak-pricing.js";
 import {
   getSessionEffortLabelForContext,
@@ -2292,13 +2293,6 @@ function AnimatedTerminalTitle(t0) {
 }
 function _temp6(current) {
   return (current + 1) % TITLE_ANIMATION_FRAME_COUNT;
-}
-function terminalTitle(props: Parameters<typeof startupModel>[0]): string {
-  const provider = props.session.sessionConfiguration?.provider?.slug?.trim();
-  const model = startupModel(props)?.trim();
-  if (provider && model) return `AgenC ${provider}/${model}`;
-  if (model) return `AgenC ${model}`;
-  return "AgenC";
 }
 type AgenCTuiShellProps = AgenCTuiProps & {
   readonly roleWorkspaceCwd: string;
@@ -4583,7 +4577,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     mcpServers: mcpSurface.servers,
   });
   useStartupNotices();
-  const title = useMemo(() => terminalTitle(props), [props]);
+  const titleModel = useAppState((state) => state.mainLoopModelForSession ?? state.mainLoopModel);
+  const title = useMemo(
+    () => terminalTitle({
+      session: props.session,
+      startupModel: startupModel(props),
+      startupProvider: props.session.sessionConfiguration?.provider?.slug,
+      liveModel: titleModel,
+    }),
+    [props, titleModel],
+  );
   const titleIsAnimating =
     transcript.isStreaming &&
     permissionRequests.length === 0 &&
