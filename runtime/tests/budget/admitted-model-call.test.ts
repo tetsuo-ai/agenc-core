@@ -1659,8 +1659,8 @@ describe('accounting-only plan route and request invariance', () => {
     ['grok', 'grok-composer-2.5-fast', 'api_key', false],
   ])('%s %s %s chatgpt=%s preserves dispatch bytes', async (providerName, model, authMode, chatgptBackend) => {
     const captured: string[] = [];
-    for (const enabled of ['0', '1']) {
-      vi.stubEnv('AGENC_HONEST_USAGE', enabled);
+    for (const enabled of ['off', 'on']) {
+      vi.stubEnv('AGENC_PLAN_ACCOUNTING', enabled);
       tokenAccountingService.clear();
       try {
         const state = harness({});
@@ -1676,7 +1676,7 @@ describe('accounting-only plan route and request invariance', () => {
         });
         const details = state.reconcile.mock.calls.at(-1)?.[1].billingDetails;
         const signIn = providerName === 'openai' && authMode === 'oauth' && chatgptBackend;
-        if (enabled === '0') {
+        if (enabled === 'off') {
           expect(details).toBeUndefined();
           expect(result.usage.billingMode).toBeUndefined();
         } else {
@@ -1698,8 +1698,8 @@ describe('accounting-only plan route and request invariance', () => {
 
 test.each(['deepseek', 'openai-api', 'openai-plan'] as const)('captures identical HTTP bytes with accounting on/off: %s', async route => {
   const captured: string[] = [];
-  for (const enabled of ['0', '1']) {
-    vi.stubEnv('AGENC_HONEST_USAGE', enabled);
+  for (const enabled of ['off', 'on']) {
+    vi.stubEnv('AGENC_PLAN_ACCOUNTING', enabled);
     tokenAccountingService.clear();
     try {
       const deepseek = route === 'deepseek';

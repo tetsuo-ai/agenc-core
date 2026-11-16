@@ -1,6 +1,6 @@
 /** Shared M3 boundary for logical model calls. */
 
-import { honestUsageEnabled, isChatGptPlan } from "../session/usage-billing.js";
+import { planAccountingEnabled, isChatGptPlan } from "../session/usage-billing.js";
 
 import type { Session } from "../session/session.js";
 import { billableTokenUsage as reconciledTokenUsage } from "../llm/usage.js";
@@ -1142,7 +1142,7 @@ async function runAdmittedModelAttempt(
       inputTokens: reconciled.inputTokens,
       outputTokens: reconciled.outputTokens,
       costUsd: actualPrice.costUsd,
-      ...(honestUsageEnabled() ? { billingDetails: {
+      ...(planAccountingEnabled() ? { billingDetails: {
         billingMode: isChatGptPlan(requestedProvider, providerFactoryOptions) ||
           resolveModelCostEntry({ model: actualModel, provider: pricingProvider }, DEFAULT_MODEL_COSTS)?.entry.label === "plan"
           ? "plan" as const : "metered" as const,

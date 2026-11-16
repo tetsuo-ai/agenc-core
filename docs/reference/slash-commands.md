@@ -110,7 +110,7 @@ Older records can lack billing-route and cache details. AgenC does not guess
 whether an old OpenAI call used sign-in. Without the shared admission ledger,
 sub-agent costs remain explicitly estimated or unknown rather than being added
 to a supposedly exact total. The accounting annotation switch is
-`AGENC_HONEST_USAGE=0`; it affects new calls only and leaves wire requests intact.
+`AGENC_PLAN_ACCOUNTING=off`; it affects new calls only and leaves wire requests intact.
 
 ## Bridge command policy
 

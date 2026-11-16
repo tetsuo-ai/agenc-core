@@ -142,7 +142,7 @@ unrecorded discounts can still make the estimate differ from the provider's
 charge. Historical calls without a recorded billing route cannot be reclassified
 as plan usage safely.
 
-`AGENC_HONEST_USAGE=0` disables recording the new accounting annotations for
+`AGENC_PLAN_ACCOUNTING=off` disables recording the new accounting annotations for
 new calls. The default is enabled. This switch never changes provider requests.
 Budget reservations and enforcement retain their conservative accounting basis;
 API-equivalent values are not subscription invoices.
