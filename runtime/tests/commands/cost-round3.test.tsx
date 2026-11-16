@@ -136,6 +136,16 @@ describe("C4: calls without reported usage show the agent, the model and a plain
     }
   });
 
+  it("numbers sub-agents it has no name for, in ledger order, instead of showing their ids", () => {
+    const usage = { runId: "conv-mwjixu6l", sequence: 3, costUsd: 0.01, heldCostUsd: 0, inputTokens: 10, outputTokens: 5,
+      totalTokens: 15, modelCalls: 1, hasUnknownCost: true, unpricedCallCount: 2, models: [], agents: [],
+      unpricedCalls: [{ ...cancelled, runId: "5b30eb0e-0f2d-4c1e-9d55-1d2c0f9a1111" }, { ...cancelled, reservationId: "r3", runId: "f8fe9e83-77aa-4b2d-8e01-3f4a5b6c2222" }] };
+    const out = formatCostReport(buildCostReport(context(usage, {})));
+    expect(out).toContain("sub-agent 1 · deepseek/deepseek-flash model call · cancelled after it was sent (interrupted), no usage reported");
+    expect(out).toContain("sub-agent 2 · deepseek/deepseek-flash model call");
+    for (const id of ["5b30eb0e", "f8fe9e83", "agent 5b", "agent f8"]) expect(out).not.toContain(id);
+  });
+
   it("has a plain wording for an agent it cannot name", () => {
     expect(unpricedCallDescription({ ...failed, plan: undefined })).toBe("an agent · openai/gpt-6.1-sol model call · failed after it was sent, no usage reported");
   });

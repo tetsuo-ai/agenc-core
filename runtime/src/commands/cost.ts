@@ -241,9 +241,17 @@ function agentModelRows(
  * id (its first 8 characters) is added only where two agents share a name.
  */
 function agentNamer(runIds: readonly string[], leadRunId: string, agents: readonly CostAgentRow[]): (runId: string) => string {
-  // The task label is "name · role"; the report names the agent only.
+  // The task label is "name · role"; the report names the agent only. A
+  // sub-agent the session has no name for any more (a cancelled one leaves
+  // the task list) is numbered in ledger order, never shown by its id.
+  const unnamed = new Map<string, string>();
+  for (const runId of runIds) {
+    if (runId !== leadRunId && !agents.some(agent => agent.runId === runId) && !unnamed.has(runId)) {
+      unnamed.set(runId, `sub-agent ${unnamed.size + 1}`);
+    }
+  }
   const nameOf = (runId: string): string =>
-    runId === leadRunId ? "lead" : agents.find(agent => agent.runId === runId)?.label.split(" · ")[0] ?? `agent ${runId.slice(0, 8)}`;
+    runId === leadRunId ? "lead" : agents.find(agent => agent.runId === runId)?.label.split(" · ")[0] ?? unnamed.get(runId) ?? "a sub-agent";
   const runsByName = new Map<string, Set<string>>();
   for (const runId of runIds) runsByName.set(nameOf(runId), (runsByName.get(nameOf(runId)) ?? new Set()).add(runId));
   return runId => {

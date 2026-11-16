@@ -132,7 +132,7 @@ describe("/cost", () => {
     const out = formatCostReport(report);
     expect(out).toContain("Session cost: ≥$0.551");
     // The agent's name, the model and a plain reason; no step or run ids (coste2e37 C4).
-    expect(out).toContain("agent worker-1 · deepseek/deepseek-flash model call · cancelled after it was sent (interrupted), no usage reported");
+    expect(out).toContain("sub-agent 1 · deepseek/deepseek-flash model call · cancelled after it was sent (interrupted), no usage reported");
     expect(out).not.toContain("turn-2");
     expect(out).not.toContain("run worker-1");
     expect(out).not.toContain("+?");
@@ -276,7 +276,7 @@ it('shows plan API-equivalent separately and lists lead and child provider/model
   expect(plain).toContain('ChatGPT plan: 1 call, covered by your subscription');
   expect(plain).toContain('Same calls on an API key: $0.010 (for comparison, not billed)');
   expect(plain).toContain('lead · openai/gpt-6.1-sol: 1 calls');
-  expect(plain).toContain('agent worker-1 · deepseek/deepseek-flash: 1 calls');
+  expect(plain).toContain('sub-agent 1 · deepseek/deepseek-flash: 1 calls');
   expect(plain).toContain('90% cached · 100 out · $0.0010 billed');
   const modal = await renderToString(createElement(CostUsageModal, { report, onDone: () => {}, active: false }),
     { columns: 120, rows: 60 });
