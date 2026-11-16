@@ -28,5 +28,12 @@ it.each([
   expect(promptSubmissionErrorText(error)).toBe(text);
 });
 it('does not invite resending a message whose cleanup failed', () => {
-  expect(promptSubmissionErrorText(new Error('internal'), true)).toBe('Your message was sent, but cleanup failed. Reopen the session.');
+  expect(promptSubmissionErrorText(new Error('{"cleanup":"internal"}'), true)).toBe('Your message was sent, but cleanup failed. Reopen the session.');
+});
+
+it('keeps a readable reason that tells the person how to repair the failure', () => {
+  const failure = 'Cannot start daemon session: protected directory chain permits untrusted mutation: /private/home. Fix the cause, run agenc daemon start in another shell, then press Enter to retry.';
+  expect(promptSubmissionErrorText(new Error(failure))).toBe(`Could not send your message: ${failure}`);
+  expect(promptSubmissionErrorText(new Error('commit failure'), true)).toBe('Your message was sent, but cleanup failed: commit failure');
+  expect(promptSubmissionErrorText(new Error('lookup failed for call_abcdef123456'))).toBe('Could not send your message. Try again or reopen the session.');
 });
