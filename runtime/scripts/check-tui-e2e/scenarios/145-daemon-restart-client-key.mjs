@@ -22,7 +22,7 @@ export const meta = {
 };
 
 const HINT =
-  /Submission failed: the daemon restarted and could not bring this session back; quit and run agenc --continue to pick it up/u;
+  /Could not send your message: the daemon restarted and could not bring this session back; quit and run agenc --continue to pick it up/u;
 
 export default async function (session) {
   await restartDaemonAfterFirstTurn(session);

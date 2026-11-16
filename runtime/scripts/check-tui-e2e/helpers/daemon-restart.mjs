@@ -29,7 +29,8 @@ export async function restartDaemonAfterFirstTurn(session) {
 
 /**
  * Submit `text` and wait until it settles: a rendered reply or the
- * "Submission failed" notice, then a frame that stays out of the busy state.
+ * "Could not send your message" notice (0.19.37; "Submission failed" before),
+ * then a frame that stays out of the busy state.
  * Bytes-stopped idle detection alone cannot prove this: before the busy
  * byline ("esc to interrupt") appears, a stuck working line looks idle.
  */
@@ -47,7 +48,7 @@ export async function submitAndWaitForOutcome(session, text) {
     }
     const frame = session.latestFrame;
     if (outcome === null) {
-      if (/Submission failed:/u.test(frame)) {
+      if (/Could not send your message|Submission failed:/u.test(frame)) {
         outcome = "failed";
       } else if (
         hasRenderedAssistantReply(
@@ -78,7 +79,7 @@ export async function submitAndWaitForOutcome(session, text) {
   }
   throw new Error(
     outcome === null
-      ? `"${text}" showed neither a reply nor a "Submission failed" notice within ${OUTCOME_TIMEOUT_MS}ms`
+      ? `"${text}" showed neither a reply nor a "Could not send your message" notice within ${OUTCOME_TIMEOUT_MS}ms`
       : `"${text}" (${outcome}) left the TUI busy ("esc to interrupt") within ${OUTCOME_TIMEOUT_MS}ms`,
   );
 }
