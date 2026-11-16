@@ -853,6 +853,15 @@ Only the combined approvals-and-sandbox bypass lifts the existing guards for
 undeterminable targets and outside removals. `exec_command`'s `workdir` keeps
 its existing workspace/additional-directory checks.
 
+Under that combined bypass, the shell policy also permits moving an existing
+whole `.git` directory to an absent `.git` path inside the same workspace.
+This lets an application directory replacement restore its repository metadata
+from the backup directory. Both paths must be concrete and resolve without
+symlinks, and neither may sit under another protected directory or explicit
+protected root. Existing destinations, worktree pointer files, deletion of
+`.git`, and direct writes to its contents remain protected. Approval bypass
+with an active sandbox does not enable this exception.
+
 Calls in a model tool batch settle independently. A failed shell call does not
 cancel other calls; the model receives every result before deciding what to do
 next. Compact TUI errors appear once on the failed tool row, with protocol

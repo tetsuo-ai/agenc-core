@@ -177,7 +177,8 @@ export interface ShellWorkspaceWritePolicyInput {
    * write targets cannot be determined runs, and removals outside the
    * workspace are allowed. Workspace content writes still belong to Edit and
    * Write, and the protected roots (`/`, the home, `.git`, `.agenc`, the
-   * AgenC home, shell and git config files) stay refused.
+   * AgenC home, shell and git config files) stay refused, except a whole
+   * .git directory may be relocated to an absent .git path in the workspace.
    */
   readonly bypassesApprovalsAndSandbox?: boolean;
   /**
@@ -2690,6 +2691,45 @@ export function collectShellMutationTargets(params: {
   return { targets, indeterminate: collected.indeterminate };
 }
 
+/**
+ * Replacing an application's directory can leave its Git metadata in the
+ * backup directory. Moving that metadata back preserves the repository; it
+ * is not a deletion of its contents. Only full bypass permits this narrow
+ * exception, with concrete, non-symlink paths and no existing destination.
+ */
+function isWorkspaceGitRelocation(
+  move: ShellMove,
+  workspaceRoot: string,
+  protectedRoots: readonly string[],
+): boolean {
+  if (move.sources.length !== 1) return false;
+  const source = move.sources[0]!;
+  const destination = move.destination;
+  if (basename(source) !== ".git" || basename(destination) !== ".git") return false;
+  if ([source, destination].some((path) =>
+    workspaceRelation(workspaceRoot, path) !== "inside" ||
+    isProtectedWriteTarget(dirname(path), workspaceRoot, protectedRoots) ||
+    protectedRoots.some((root) => path === root || isStrictlyUnder(root, path))
+  )) return false;
+  try {
+    if (!lstatSync(source).isDirectory() || realpathSync(source) !== source) return false;
+    if (realpathSync(dirname(destination)) !== dirname(destination)) return false;
+    // lstat also refuses dangling symlinks: they are existing destinations.
+    lstatSync(destination);
+    return false;
+  } catch (error) {
+    // Only an absent final destination qualifies. Missing/unreadable source
+    // or parent paths must not accidentally authorize a guessed relocation.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    try {
+      return lstatSync(source).isDirectory() && realpathSync(source) === source &&
+        realpathSync(dirname(destination)) === dirname(destination);
+    } catch {
+      return false;
+    }
+  }
+}
+
 export function classifyShellWorkspaceWritePolicy(
   params: ShellWorkspaceWritePolicyInput,
 ): ShellWorkspaceWritePolicyDecision {
@@ -2723,12 +2763,23 @@ export function classifyShellWorkspaceWritePolicy(
     bsdSed: BSD_SED_PLATFORMS.has(params.platform ?? process.platform),
     workspaceRoot,
   });
+  const hasMutationTargets = collected.targets.length > 0 || collected.deletions.length > 0 ||
+    collected.moves.length > 0 || collected.expandingTargets.length > 0 ||
+    collected.expandingDeletions.length > 0;
+  const protectedRoots = params.protectedRoots ??
+    (hasMutationTargets ? params.resolveProtectedRoots?.() : undefined) ?? [];
+  const gitRelocationTargets: string[] = [];
 
   // A move keeps workspace content in the workspace when every source is a
   // workspace path; then its destination is a rename, not a content write.
   const writes = [...collected.targets];
   const removals = [...collected.deletions];
   for (const move of collected.moves) {
+    if (params.bypassesApprovalsAndSandbox === true &&
+      isWorkspaceGitRelocation(move, workspaceRoot, protectedRoots)) {
+      for (const path of [...move.sources, move.destination]) pushUnique(gitRelocationTargets, path);
+      continue;
+    }
     const sourcesInWorkspace =
       move.sources.length > 0 &&
       move.sources.every(
@@ -2745,10 +2796,6 @@ export function classifyShellWorkspaceWritePolicy(
     }
   }
 
-  const hasMutationTargets = writes.length > 0 || removals.length > 0 ||
-    collected.expandingTargets.length > 0 || collected.expandingDeletions.length > 0;
-  const protectedRoots = params.protectedRoots ??
-    (hasMutationTargets ? params.resolveProtectedRoots?.() : undefined) ?? [];
   // A protected path stays refused under a generated root and outside the workspace.
   const protectedTargets = writes.filter((target) =>
     isProtectedWriteTarget(target, workspaceRoot, protectedRoots),
@@ -2808,6 +2855,7 @@ export function classifyShellWorkspaceWritePolicy(
   }
 
   const observedTargets = [...writes];
+  for (const target of gitRelocationTargets) pushUnique(observedTargets, target);
   for (const target of removals) pushUnique(observedTargets, target);
   for (const target of [...protectedTargets, ...protectedExpandingDeletions]) {
     pushUnique(observedTargets, target);
