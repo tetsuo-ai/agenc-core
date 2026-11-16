@@ -77,7 +77,7 @@ describe("live tool results sent to clients", () => {
 describe("live ExitPlanMode results sent to clients", () => {
   test.each([
     ["User has approved your plan. You can now start coding. Start with updating your todo list if applicable\n\nYour plan has been saved to: /p.md\nYou can refer back to it if needed during implementation.\n\n## Approved Plan:\n# Plan", "Plan approved"],
-    ["User has approved your plan. You can now start coding. Start with updating your todo list if applicable\n\n## Approved Plan (edited by user):\n# Plan", "Plan approved with your edits"],
+    ["User has approved your plan. You can now start coding. Start with updating your todo list if applicable\n\n## Approved Plan (edited by user):\n# Plan", "Plan approved"],
     ["User has approved exiting plan mode. You can now proceed.", "Left plan mode"],
     ["User wants you to keep planning. Remain in plan mode, revise the plan file, then call ExitPlanMode again.", "Keep planning"],
     ["User wants changes before approving the plan:\n\nadd tests first\n\nRemain in plan mode, revise the plan file, then call ExitPlanMode again.", "Changes requested: add tests first"],

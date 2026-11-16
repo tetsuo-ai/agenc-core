@@ -35,9 +35,10 @@ export function skillLoadReceipt(raw: string): string | undefined {
 export function exitPlanModeReceipt(raw: string): string | undefined {
   const text = raw.trimStart();
   if (text.startsWith("User has approved your plan.")) {
-    return text.includes("## Approved Plan (edited by user):")
-      ? "Plan approved with your edits"
-      : "Plan approved";
+    // The TUI returns the plan text with every approval, so the runtime
+    // labels it "edited by user" even when nothing changed; do not repeat
+    // that claim to the user.
+    return "Plan approved";
   }
   if (text.startsWith("User has approved exiting plan mode.")) return "Left plan mode";
   if (text.startsWith("User wants you to keep planning.")) return "Keep planning";

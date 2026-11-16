@@ -1323,12 +1323,16 @@ function collabAgentLabel(
   const id = nonEmptyString(threadId);
   if (!id) return "agent";
   const metadata = agents.get(id);
-  return (
-    metadata?.agentNickname ??
-    metadata?.agentRoleDisplayName ??
-    metadata?.agentRole ??
-    shortThreadId(id)
-  );
+  const pathName = metadata?.agentPath?.split("/").filter((part) => part.length > 0).at(-1);
+  const named = metadata?.agentNickname ?? metadata?.agentRoleDisplayName ?? metadata?.agentRole ??
+    (pathName !== undefined && pathName !== "root" ? pathName.replaceAll("_", " ") : undefined);
+  if (named !== undefined) return named;
+  // No nickname or role arrived with the events (a resumed session before
+  // the names are rebuilt). A thread id means nothing to the user: name the
+  // agent by a stable local number, in the order agents first appear.
+  if (metadata === undefined) updateCollabAgent(agents, id);
+  const ordinal = [...agents.keys()].indexOf(id) + 1;
+  return ordinal > 0 ? `agent ${ordinal}` : "agent";
 }
 
 function promptDetail(prompt: unknown): string | null {
