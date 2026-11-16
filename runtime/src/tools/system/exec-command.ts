@@ -101,6 +101,8 @@ import {
 
 export interface ExecCommandToolConfig extends BashToolConfig {
   readonly lightMode?: boolean;
+  /** Provider-scoped opt-in for smaller model-facing footers; structured results stay intact. */
+  readonly compactResults?: () => boolean;
   readonly allowedPaths?: readonly string[];
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
   /** Advertise the continuation tool before a yielded handle reaches the model. */
@@ -1453,7 +1455,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         const noteSessionId = resolveSessionId(args as Record<string, unknown>);
         const serverChecksDescribed = config?.serverChecksDescribed?.() === true;
         const execContent = residualNoteOncePerSession(
-          formatUnifiedExecToolContent(output, config?.lightMode === true),
+          formatUnifiedExecToolContent(output, config?.lightMode === true, config?.compactResults?.() === true),
           noteSessionId,
           serverChecksDescribed,
         );

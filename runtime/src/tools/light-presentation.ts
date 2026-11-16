@@ -93,6 +93,8 @@ export function lightPresentation(
     readonly compactCore?: boolean;
     /** OpenAI Light's `exec-args` (on by default): the lean exec_command without workdir and background. */
     readonly shortExecArgs?: boolean;
+    /** OpenAI Light's opt-in omission of timeoutMs from the lean declaration. */
+    readonly omitExecTimeout?: boolean;
   } = {},
 ): LLMTool {
   const canonical = tool.function.name === "Edit" && (tool.function.parameters.properties as Record<string, unknown> | undefined)?.edits !== undefined
@@ -106,6 +108,12 @@ export function lightPresentation(
     ? { ...sessionTool, function: { ...sessionTool.function, description: `${sessionTool.function.description} ${LIGHT_GLM_SERVER_CHECKS}` } }
     : described;
   if (options.leanExec === true && tool.function.name === "exec_command") {
+    if (options.omitExecTimeout === true) {
+      const fields = options.shortExecArgs === true ? SHORT_EXEC_FIELDS : LEAN_EXEC_FIELDS;
+      const pointer = options.shortExecArgs === true ? SHORT_EXEC_POINTER : LEAN_EXEC_POINTER;
+      return withOnlyFields(presented, new Set([...fields].filter(name => name !== "timeoutMs")),
+        pointer.replace("Advanced fields (", "Advanced fields (timeoutMs, "));
+    }
     return options.shortExecArgs === true
       ? withOnlyFields(presented, SHORT_EXEC_FIELDS, SHORT_EXEC_POINTER)
       : withOnlyFields(presented, LEAN_EXEC_FIELDS, LEAN_EXEC_POINTER);

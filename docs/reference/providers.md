@@ -1027,10 +1027,16 @@ solved.
 
 `AGENC_OPENAI_LIGHT_OUTPUT=off` turns it off and shows `exec_command` with
 `cmd`, `workdir`, `timeoutMs` and `background` as in 0.19.35. The variable
-also has one opt-in name: `AGENC_OPENAI_LIGHT_OUTPUT=no-summary` stops asking
+also has opt-in names: `AGENC_OPENAI_LIGHT_OUTPUT=no-summary` stops asking
 for a reasoning summary unless `reasoning_summary` is configured (the
 encrypted reasoning is still replayed), and `off,no-summary` gives that
-without the shorter arguments. Other modes and other providers are unchanged;
+without the shorter arguments. `exec-timeout` additionally hides `timeoutMs`
+from the lean declaration; execution still accepts it and discovery restores
+its schema. `exec-results` removes footer timing/token telemetry and one added
+blank line from command and poll results, preserving command output, status,
+handles, warnings and structured telemetry. Neither experiment is on by
+default. Use `AGENC_OPENAI_LIGHT_OUTPUT=exec-timeout,exec-results` to try both
+alongside the default shorter arguments. Other modes and other providers are unchanged;
 see [env.md](env.md).
 
 ### Responses over WebSocket

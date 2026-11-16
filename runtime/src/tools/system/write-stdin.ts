@@ -36,6 +36,8 @@ import { notifyExecEscalationDiscovery } from "../exec-session-discovery.js";
 
 export interface WriteStdinToolConfig {
   readonly lightMode?: boolean;
+  /** Provider-scoped opt-in for smaller model-facing footers; structured results stay intact. */
+  readonly compactResults?: () => boolean;
   readonly cwd?: string;
   readonly allowedPaths?: readonly string[];
   readonly env?: Record<string, string>;
@@ -306,7 +308,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           output.command_outcome !== undefined ||
           (output.exitCode !== null && output.exitCode !== 0) ||
           (output.exitCode === null && !stillAlive);
-        const execContent = formatUnifiedExecToolContent(output, config?.lightMode === true);
+        const execContent = formatUnifiedExecToolContent(output, config?.lightMode === true, config?.compactResults?.() === true);
         const runtimeContext = readToolRuntimeContext(args);
         const denial = execSandboxDenialNotice({
           output: execContent,

@@ -192,7 +192,13 @@ model with `cmd` and `timeoutMs` only, so the model stops writing the
 workspace path and `background: false` on every call; the command runs in the
 workspace root and the other fields still work. `no-summary` is opt-in: no
 reasoning summary is requested unless one is configured. Names add to the
-default, so `no-summary` gives both and `all` gives every saver. `off` turns
+default, so `no-summary` gives both. Two further names are opt-in:
+`exec-timeout` hides `timeoutMs` from the lean `exec_command` declaration
+(it stays accepted and loads with the full schema); `exec-results` removes
+timing/token telemetry and one added blank line from Light `exec_command`
+and `write_stdin` text results. Command output, status, session handles,
+truncation indicators, warnings and data boundaries stay intact, as does
+structured telemetry. `all` gives every saver, including these experiments. `off` turns
 the default off: `AGENC_OPENAI_LIGHT_OUTPUT=off` sends the 0.19.35 requests,
 and `off,no-summary` gives `no-summary` alone. Unknown names are ignored, and
 other modes and other providers never read the variable. See
