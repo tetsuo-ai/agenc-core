@@ -228,8 +228,8 @@ function unwaitedBackgroundJobFailure(
   const includeSubshell = invokingSession === undefined
     ? config?.subshellBackgroundGuard?.() === true
     : deepSeekSubshellBackgroundGuardEnabled(
-        invokingSession.services.provider?.name,
-        invokingSession.services.providerEnvironment ?? {},
+        invokingSession.services?.provider?.name,
+        invokingSession.services?.providerEnvironment ?? {},
       );
   const job = findUnwaitedBackgroundJob(cmd, { includeSubshell });
   return job === undefined ? null : { code: "background-job", message: unwaitedBackgroundJobMessage(job) };
