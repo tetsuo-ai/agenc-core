@@ -710,6 +710,12 @@ export class ModelMetadataResolver {
   }
 
   private openRouterCatalogForSession(): OpenRouterCatalog {
+    // Picker construction resolves every catalog entry. The catalog captures
+    // its credential on creation, so later reads cannot change its authority.
+    // Avoid a blocking keychain subprocess for each entry during agent spawn.
+    if (this.openRouterCatalog !== undefined && process.env.AGENC_SPAWN_RESPONSIVENESS !== "off") {
+      return this.openRouterCatalog;
+    }
     const apiKey = resolveProviderApiKeyEnvironment("openrouter", this.credentialEnvironment("openrouter"))?.value;
     if (this.openRouterCatalog === undefined) {
       const options = { home: this.catalogHome, apiKey, fetchImpl: this.fetchImpl, timeoutMs: this.liveModelListTimeoutMs() };
