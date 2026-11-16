@@ -24,7 +24,7 @@ const report: CostReport = {
 };
 
 it("heads the /cost modal with the billed figure of the status line and keeps the peak total apart", async () => {
-  expect(sessionSpendLabel(swarm)).toBe("$0.011 billed off-peak · plan · swarm");
+  expect(sessionSpendLabel(swarm)).toBe("swarm $0.011 billed off-peak");
   const modal = await renderToString(createElement(CostUsageModal, { report, onDone: () => {}, active: false }),
     { columns: 120, rows: 40 });
   expect(modal).toMatch(/SESSION\s+\$0\.011 billed/);
@@ -47,10 +47,10 @@ it("keeps the accounting headline when no billed estimate exists", async () => {
 
 test("the status line names the lead as soon as sub-agents run, before their first usage arrives", () => {
   const leadOnly = { costUsd: 0, hasUnknownCost: false, planCalls: 3, meteredCalls: 0, cachedInputTokens: 0, cacheInputTokens: 5409 };
-  expect(statusUsageScope(leadOnly, 0)).toEqual({ swarm: false, cache: "lead" });
-  expect(statusUsageScope(leadOnly, 3)).toEqual({ swarm: true, cache: "lead" });
-  expect(statusUsageScope(swarm, 0)).toEqual({ swarm: true, cache: "swarm" });
-  expect(statusUsageScope({ ...swarm, cacheUnreportedCalls: 1 }, 0)).toEqual({ swarm: true, cache: "known" });
+  expect(statusUsageScope(leadOnly, 0)).toEqual({ swarm: false, cache: "lead", unknownCalls: 0 });
+  expect(statusUsageScope(leadOnly, 3)).toEqual({ swarm: true, cache: "lead", unknownCalls: 0 });
+  expect(statusUsageScope(swarm, 0)).toEqual({ swarm: true, cache: "swarm", unknownCalls: 0 });
+  expect(statusUsageScope({ ...swarm, cacheUnreportedCalls: 1 }, 0)).toEqual({ swarm: true, cache: "swarm", unknownCalls: 1 });
   expect(statusUsageScope({ costUsd: 1, hasUnknownCost: false }, 3)).toBeUndefined();
   expect(statusUsageScope(undefined, 3)).toBeUndefined();
 });

@@ -118,25 +118,37 @@ provider and model keep no data, red when data may be kept, and a dim `ZDR?`
 when AgenC cannot tell; `/status` says why
 ([providers.md](providers.md#zero-data-retention)).
 
-Spend reads `$1.12 billed off-peak · plan · swarm` when a session combines
-metered calls, plan calls and sub-agents. `billed` is an estimate of token and
-tool charges, not an invoice. `plan` means calls included in a subscription,
-with no per-token charge. ChatGPT sign-in uses plan accounting; an OpenAI API
-key uses API pricing. `swarm` says the figure includes the lead and recorded
-sub-agents, including finished agents. `/cost` has the breakdown.
+A swarm on ChatGPT sign-in reads
+`ctx lead 3% · swarm cache 90% · swarm $1.12 billed off-peak · ChatGPT plan`.
+`billed` is an estimate of token and tool charges, not an invoice, and it is
+always shown: a sign-in session with no metered call reads
+`$0.00 billed · ChatGPT plan`. `ChatGPT plan` means the session has calls that
+the subscription covers, with no per-token charge (`subscription plan` for
+another provider's plan). ChatGPT sign-in uses plan accounting; an OpenAI API
+key uses API pricing and shows no plan. `swarm` in front of a figure says it
+includes the lead and its recorded sub-agents, finished ones too. `/cost` has
+the breakdown.
 
-`ctx lead` is the lead's resident context, never the sum of agent contexts.
-`cache swarm` is cached input divided by input across the lead and sub-agents.
-It counts tokens, not calls; input already includes cached tokens. `cache known`
-means some calls did not report cache counts and are excluded from this share.
-Older sessions without these ledger details keep the legacy `cache` label,
-from the lead's transcript. A missing cache count is not treated as a cache miss. These shares
-say nothing about how much space remains in a sub-agent's context.
+`ctx` is the lead's resident context, never the sum of agent contexts; it
+reads `ctx lead` from the first sub-agent on. `swarm cache` is cached input
+divided by input across the lead and sub-agents; plain `cache` is the lead's
+own. It counts tokens, not calls; input already includes cached tokens.
+`(1 call unknown)` after the share means that many calls reported no cache
+count and are left out of it. Sessions recorded before these ledger details
+keep the plain `cache` figure from the lead's transcript. A missing cache
+count is not treated as a cache miss. These shares say nothing about how much
+space remains in a sub-agent's context.
+
+When this block is too wide for the second row, its money facts (billed
+amount, plan, badges) move to a third row, so a plan or swarm line keeps
+whole words down to about 60 columns.
 
 `off-peak` stays next to billed money. Each call uses its dispatch time and the
 recorded DeepSeek or QwenCloud schedule. DeepSeek web-tool fees keep their full
 price; provider-reported charges are not discounted again. `≥` means unpriced
-calls are excluded. `price unknown` means fallback pricing was needed.
+calls are excluded; a plan call that failed or was cancelled before it
+reported usage never adds `≥`, because its billing route is recorded when it
+is sent. `price unknown` means fallback pricing was needed.
 `peak est.` means an eligible call lacks its dispatch time. Holidays and other
 unrecorded discounts can still make the estimate differ from the provider's
 charge. Historical calls without a recorded billing route cannot be reclassified

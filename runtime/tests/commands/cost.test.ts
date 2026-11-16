@@ -272,13 +272,13 @@ it('shows plan API-equivalent separately and lists lead and child provider/model
     models: [lead, child], agents: [child], agentModels: [lead, child], includesSubagents: true,
   }) } });
   const plain = formatCostReport(report);
-  expect(plain).toContain('Plan: 1 calls, no per-token charge');
-  expect(plain).toContain('API-equivalent: $0.010 (reference only; not billed)');
-  expect(plain).toContain('lead [session-1] · openai/gpt-6.1-sol: 1 calls');
-  expect(plain).toContain('worker-1 [worker-1] · deepseek/deepseek-flash: 1 calls');
+  expect(plain).toContain('ChatGPT plan: 1 call, covered by your subscription');
+  expect(plain).toContain('Same calls on an API key: $0.010 (for comparison, not billed)');
+  expect(plain).toContain('lead · openai/gpt-6.1-sol: 1 calls');
+  expect(plain).toContain('agent worker-1 · deepseek/deepseek-flash: 1 calls');
   expect(plain).toContain('90% cached · 100 out · $0.0010 billed');
   const modal = await renderToString(createElement(CostUsageModal, { report, onDone: () => {}, active: false }),
     { columns: 120, rows: 60 });
-  for (const text of ['API-equivalent', 'no per-token charge', 'openai/gpt-6.1-sol',
+  for (const text of ['on an API key', 'covered by your subscription', 'ChatGPT plan', 'openai/gpt-6.1-sol',
     'deepseek/deepseek-flash', '50% cached', '90% cached', '$0.0010 billed']) expect(modal).toContain(text);
 });

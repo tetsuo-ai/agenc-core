@@ -1676,6 +1676,10 @@ describe('accounting-only plan route and request invariance', () => {
         });
         const details = state.reconcile.mock.calls.at(-1)?.[1].billingDetails;
         const signIn = providerName === 'openai' && authMode === 'oauth' && chatgptBackend;
+        // The billing route is recorded at dispatch too, for calls that never report usage.
+        const dispatchedRoute = state.admission.markDispatched.mock.calls.at(-1)?.[1].details.billingMode;
+        expect(dispatchedRoute).toBe(enabled !== 'off' && (signIn ||
+          ['qwen-token-plan', 'zai-coding-plan'].includes(providerName) || model === 'grok-composer-2.5-fast') ? 'plan' : undefined);
         if (enabled === 'off') {
           expect(details).toBeUndefined();
           expect(result.usage.billingMode).toBeUndefined();

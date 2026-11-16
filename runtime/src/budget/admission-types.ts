@@ -116,6 +116,8 @@ export type UnpricedUsageCall = {
   readonly model?: string;
   readonly provider?: string;
   readonly reason: string;
+  /** The call ran on a subscription plan: it has no usage, and no charge either. */
+  readonly plan?: true;
 };
 
 export interface AdmissionUsageSummary extends AdmissionUsageTotals {

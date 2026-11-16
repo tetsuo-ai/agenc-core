@@ -107,6 +107,12 @@ export interface ClaimAdmissionOptions {
   readonly now?: string;
 }
 
+/**
+ * What a dispatched plan call keeps in its job row until usage arrives. The
+ * usage summary reads it as billing details without usage (display only).
+ */
+const PLAN_ROUTE_RESULT_JSON = '{"billingMode":"plan"}';
+
 export interface MarkAdmissionDispatchedOptions {
   readonly dispatchedAt?: string;
   readonly providerRequestId?: string;
@@ -1156,13 +1162,16 @@ export class ExecutionAdmissionRepository {
              WHERE reservation_id = ? AND status = 'reserved'`,
             )
             .run(at, at, options.providerRequestId ?? null, reservationId);
+          // A call on a subscription plan (ChatGPT sign-in) records its
+          // billing route here, so a failure or cancellation that never
+          // reports usage is still known not to cost money. Display only.
           this.#driver
             .prepareState(
               `UPDATE agent_jobs
-             SET admission_dispatched_at = ?, updated_at = ?
+             SET admission_dispatched_at = ?, updated_at = ?, result_json = COALESCE(?, result_json)
              WHERE id = ? AND admission_reservation_id = ?`,
             )
-            .run(at, at, job.id, reservationId);
+            .run(at, at, options.details?.billingMode === "plan" ? PLAN_ROUTE_RESULT_JSON : null, job.id, reservationId);
           this.#appendJournalLocked({
             timestamp: at,
             jobId: job.id,
@@ -2709,7 +2718,7 @@ export class ExecutionAdmissionRepository {
       .run(
         finalStatus,
         actualTokens === null
-          ? null
+          ? (job.result_json === PLAN_ROUTE_RESULT_JSON ? PLAN_ROUTE_RESULT_JSON : null)
           : JSON.stringify({
               ...((input.kind === "reported" || input.kind === "provider_overrun") ? normalizeUsage(input.usage).billingDetails : {}),
               inputTokens: actualInputTokens,
@@ -2983,7 +2992,7 @@ export class ExecutionAdmissionRepository {
                  WHEN 'dispatched' THEN 'held_unknown'
                  ELSE 'cancelled'
                END,
-               result_json = NULL,
+               result_json = CASE WHEN job.result_json = '${PLAN_ROUTE_RESULT_JSON}' THEN job.result_json ELSE NULL END,
                error = CASE (
                  SELECT reservation.status
                  FROM execution_admission_reservations AS reservation

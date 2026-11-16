@@ -8,7 +8,9 @@
  * own name), then the folder and the model are shortened in the middle down to a
  * readable floor. When one row still cannot hold everything, the usage block
  * moves to a second row, where both rows start again from the full forms and
- * compact only as far as each needs, down to a lower floor if they must.
+ * compact only as far as each needs, down to a lower floor if they must. A
+ * usage block that names a plan or a swarm puts its money facts on a third
+ * row before any of its words is abbreviated.
  *
  * @module
  */
@@ -55,10 +57,15 @@ export type PlacedStatusLineFact = {
 };
 
 export type StatusLineLayout = {
-  /** One row holds both blocks; two rows put the usage block on the second. */
-  readonly rows: 1 | 2;
+  /**
+   * One row holds both blocks; two rows put the usage block on the second;
+   * three rows also move its money facts (spend, plan, badges) to a third.
+   */
+  readonly rows: 1 | 2 | 3;
   readonly left: readonly PlacedStatusLineFact[];
   readonly right: readonly PlacedStatusLineFact[];
+  /** The third row: the usage block from the spend fact on. Empty unless `rows` is 3. */
+  readonly rightSecond?: readonly PlacedStatusLineFact[];
   /** False only when even the shortest forms are wider than the terminal. */
   readonly fits: boolean;
 };
@@ -172,6 +179,14 @@ export function layoutStatusLine(
   columns: number,
   left: readonly StatusLineFact[],
   right: readonly StatusLineFact[],
+  options: {
+    /**
+     * The usage block names a plan or a swarm: its words carry the meaning
+     * ("swarm cache", "ChatGPT plan"), so it takes a third row before any of
+     * them is abbreviated. Other sessions keep the two-row short forms.
+     */
+    readonly wholeWords?: boolean;
+  } = {},
 ): StatusLineLayout {
   const width = Number.isFinite(columns) ? Math.trunc(columns) : 0;
   const available = Math.max(1, width - 2 * STATUS_LINE_PADDING);
@@ -183,6 +198,19 @@ export function layoutStatusLine(
     return { rows: 1, left: oneRow.placed[0] ?? [], right: oneRow.placed[1] ?? [], fits: oneRow.fits };
   }
   const top = compactGroups([left], ([placed = []]) => statusLineGroupWidth(placed) - available, true);
+  // Whole words before abbreviations, for a block that names a plan or a
+  // swarm: when its full forms are too wide for one row, context and cache
+  // keep the second row and the money facts take a third. Short forms
+  // ("c 82%", "op") are the step after.
+  const full = right.map(fact => ({ key: fact.key, spans: fact.forms[0] ?? [] }));
+  const split = right.findIndex(fact => fact.key === 'spend');
+  if (options.wholeWords === true && statusLineGroupWidth(full) > available && split > 0) {
+    const second = compactGroups([right.slice(0, split)], ([placed = []]) => statusLineGroupWidth(placed) - available, true);
+    const third = compactGroups([right.slice(split)], ([placed = []]) => statusLineGroupWidth(placed) - available, true);
+    if (second.fits && third.fits) {
+      return { rows: 3, left: top.placed[0] ?? [], right: second.placed[0] ?? [], rightSecond: third.placed[0] ?? [], fits: top.fits };
+    }
+  }
   const bottom = compactGroups([right], ([placed = []]) => statusLineGroupWidth(placed) - available, true);
   return {
     rows: 2,

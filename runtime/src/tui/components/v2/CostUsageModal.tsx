@@ -1,7 +1,7 @@
 import React from 'react'
 
 import type { CostReport } from '../../../commands/cost.js'
-import { costModelDetail, unpricedCallDescription } from '../../../commands/cost.js'
+import { COST_FOOTNOTE, costApiKeyLine, costModelDetail, costPlanLine, unpricedCallDescription, unpricedCallsHeading } from '../../../commands/cost.js'
 import { formatTokenCount, formatUsdCost } from '../../../session/cost.js'
 import { Box, useInput } from '../../ink.js'
 import ThemedText from '../design-system/ThemedText.js'
@@ -70,6 +70,9 @@ export function CostUsageModal({
     ? `${report.hasUnknownCost ? '≥' : ''}${formatUsdCost(report.billedEstimateUsd)} billed`
     : undefined
   const headline = billed ?? totalCost
+  const planLine = costPlanLine(report)
+  const apiKeyLine = costApiKeyLine(report)
+  const unpriced = report.unpricedCalls ?? []
 
   return (
     <Popup
@@ -92,17 +95,17 @@ export function CostUsageModal({
         ) : (
           <ThemedText color="muted3">Accounting total: metered calls at peak rates before off-peak discounts.</ThemedText>
         )}
-        {(report.planCalls ?? 0) > 0 ? <ThemedText color="text2">{`Plan: ${report.planCalls} calls, no per-token charge`}</ThemedText> : null}
-        {(report.apiEquivalentUsd ?? 0) > 0 ? <ThemedText color="text2">{`API-equivalent: ${report.apiEquivalentUnknown ? '≥' : ''}${formatUsdCost(report.apiEquivalentUsd!)} (reference only; not billed)`}</ThemedText> : null}
+        {planLine !== null ? <ThemedText color="text2">{planLine}</ThemedText> : null}
+        {apiKeyLine !== null ? <ThemedText color="text2">{apiKeyLine}</ThemedText> : null}
         {billed !== undefined ? (
           <Row label="at peak rates" value={totalCost} detail="accounting total before off-peak discounts; budgets use it" />
         ) : null}
-        {report.apiEquivalentUnknown ? <ThemedText color="text2">Some plan calls have unknown API-equivalent pricing.</ThemedText> : null}
+        {report.apiEquivalentUnknown ? <ThemedText color="text2">Some plan calls have no known API price.</ThemedText> : null}
         <Row label="tokens" value={tokenValue} detail={tokenRest} labelColor="inactive" />
-        {report.hasUnknownCost ? (
+        {report.hasUnknownCost || unpriced.length > 0 ? (
           <Box flexDirection="column">
-            <ThemedText color="text2">Unpriced calls (excluded from the known cost):</ThemedText>
-            {(report.unpricedCalls ?? []).map(call => (
+            <ThemedText color="text2">{unpricedCallsHeading(report)}</ThemedText>
+            {unpriced.map(call => (
               <ThemedText key={call.reservationId} color="text2">
                 {`${unpricedCallDescription(call)} · run ${call.runId}`}
               </ThemedText>
@@ -134,12 +137,10 @@ export function CostUsageModal({
         <Box minHeight={1} />
         {report.agentModels !== undefined ? report.agentModels.map((row, i) => (
           <Box key={`agent-model-${i}`} flexDirection="column">
-            <ThemedText color="text2">{`${row.agentLabel} [${row.runId}] · ${row.label}`}</ThemedText>
+            <ThemedText color="text2">{`${row.agentLabel} · ${row.label}`}</ThemedText>
             <ThemedText color="muted3">{costModelDetail(row)}</ThemedText>
           </Box>
-        )) : null}
-        <ThemedText color="muted3">Sub-agent totals at peak rates, separate tool charges included:</ThemedText>
-        {report.agents.length === 0 ? (
+        )) : report.agents.length === 0 ? (
           <ThemedText color="muted3">no fan-out agents active</ThemedText>
         ) : (
           report.agents.map((a, i) => (
@@ -158,12 +159,7 @@ export function CostUsageModal({
           ))
         )}
       </Box>
-      <ThemedText color="muted3">
-        Billed USD is an estimate. API-equivalent is reference only. Input includes cached tokens.
-        Cached shares use reported counts. Missing counts stay unknown.
-        Retries with usage count as calls; failures without usage are unpriced.
-        Old calls may lack billing-route details. Discounts may be missing.
-      </ThemedText>
+      <ThemedText color="muted3">{COST_FOOTNOTE}</ThemedText>
     </Popup>
   )
 }

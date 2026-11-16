@@ -140,7 +140,7 @@ describe("session usage projection", () => {
     expect(report.hasUnknownCost).toBe(true);
     const output = formatCostReport(report);
     expect(output).toContain("Session cost: ≥$0.400");
-    expect(output).toContain("Unpriced calls (excluded from the known cost):");
+    expect(output).toContain("Calls without reported usage (their cost is not in the totals):");
     expect(output).not.toContain("Session cost: ≥$2.00");
   });
 

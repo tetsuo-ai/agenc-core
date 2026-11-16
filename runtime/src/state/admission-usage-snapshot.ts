@@ -48,6 +48,7 @@ export function unpricedUsageCall(row: UsageReservation): UnpricedUsageCall | un
     ...(row.model === null ? {} : { model: row.model }),
     ...(row.provider === null ? {} : { provider: row.provider }),
     reason: row.resolution_reason ?? "reported_usage_cost_unknown",
+    ...(readBillingDetails(row.usage_details_json)?.billingMode === "plan" ? { plan: true } : {}),
   };
 }
 
@@ -95,14 +96,15 @@ function contribution(row: UsageReservation): Counts {
     reported ? row.actual_output_tokens ?? 0 : 0,
     reported ? row.actual_tokens ?? 0 : 0,
     row.kind === "model_turn" && reported && row.actual_tokens !== null ? 1 : 0,
-    row.status === "held_unknown" || (priced && row.actual_cost_nanos === null) ? 1 : 0,
+    // A plan call has no per-token charge: without usage it is unpriced, never unknown money.
+    !plan && (row.status === "held_unknown" || (priced && row.actual_cost_nanos === null)) ? 1 : 0,
     !plan && row.resolution_reason === "estimated_model_price" ? 1 : 0,
     savings ?? 0,
     savings === null ? 1 : 0,
     reported ? Math.min(details?.cachedInputTokens ?? 0, row.actual_input_tokens ?? 0) : 0,
     reported && details?.cachedInputTokens !== undefined ? row.actual_input_tokens ?? 0 : 0,
     reported && row.kind === "model_turn" && details?.cachedInputTokens === undefined ? 1 : 0,
-    reported && plan ? 1 : 0,
+    reported && plan && row.actual_tokens !== null ? 1 : 0,
     priced && plan ? Math.round((details?.apiEquivalentUsd ?? 0) * 1_000_000_000) : 0,
     reported && row.kind === "model_turn" && !plan ? 1 : 0,
     reported && details !== undefined ? 1 : 0,

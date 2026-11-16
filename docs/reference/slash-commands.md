@@ -85,20 +85,25 @@ Sources: `runtime/src/commands/*.ts(x)` modules imported by
 ### `/cost` and `/stats`
 
 `/cost` shows billed estimates separately from subscription usage. ChatGPT
-sign-in calls, Qwen Token Plan, Z.ai Coding Plan and Grok Build calls are marked
-`plan`, with no per-token charge. For ChatGPT sign-in, **API-equivalent** is what
-the same reported tokens would cost at API rates. It is reference information,
-not money charged to the subscription. API-key calls keep their API pricing.
+sign-in calls are listed as `ChatGPT plan: N calls, covered by your
+subscription`; Qwen Token Plan, Z.ai Coding Plan and Grok Build calls read
+`subscription plan`. Plan calls have no per-token charge. For ChatGPT sign-in,
+`Same calls on an API key: $X (for comparison, not billed)` is what the same
+reported tokens would cost at API rates; it is not money charged to the
+subscription. API-key calls keep their API pricing.
 
-The report lists totals by provider and model, then by agent, provider and
-model, including the lead and finished sub-agents. Each new row shows calls,
-input, cached share, output, billed USD and plan or API-equivalent information.
-Input includes cached tokens. The cached share uses only calls with reported
-cache counts; missing counts remain unknown. Calls count attempts with reported
-usage, so retries with usage count too. Failed or cancelled attempts without
-usage appear in the unpriced list. In-flight calls enter totals when their
-usage arrives. `≥` means those calls are excluded from the
-known cost, and `est.` means fallback pricing was used.
+The report lists totals by provider and model, then one row per agent and
+model: the lead first, then its sub-agents by name, finished ones included (a
+short id is added only where two agents share a name). Each row shows calls,
+input, cached share, output, billed USD, and for plan calls the plan and the
+API-key price. Input includes cached tokens. The cached share uses only calls
+with reported cache counts; `(1 call unknown)` names the ones left out. Calls
+count attempts with reported usage, so retries with usage count too. Failed or
+cancelled attempts without usage are listed under "Calls without reported
+usage". For a metered call that makes the money read `≥`; a plan call is
+listed with "nothing billed" and leaves the money exact. In-flight calls
+enter totals when their usage arrives. `est.` means fallback pricing was
+used.
 
 The modal's SESSION headline is the billed estimate, the same figure as the
 status line; the accounting total follows as `at peak rates`.

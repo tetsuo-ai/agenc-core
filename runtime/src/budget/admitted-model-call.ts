@@ -1021,6 +1021,10 @@ async function runAdmittedModelAttempt(
         tokenAccountingSource: accountingResult?.source,
         tokenAccountingConfidence: accountingResult?.confidence,
         tokenAccountingCoverageComplete: accountingResult?.coverage.complete,
+        // The billing route, so a call that never reports usage is still known as a plan call.
+        ...(planAccountingEnabled() && (isChatGptPlan(requestedProvider, providerFactoryOptions) ||
+          resolveModelCostEntry({ model: effectiveModel, provider: effectiveProvider }, DEFAULT_MODEL_COSTS)?.entry.label === "plan")
+          ? { billingMode: "plan" } : {}),
       },
     });
     dispatched = true;

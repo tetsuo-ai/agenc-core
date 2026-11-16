@@ -73,7 +73,8 @@ test.each([80, 120])("scopes context, cache and mixed billed/plan spend at %s co
     <AppStateProvider initialState={getDefaultAppState()}>
       <SessionUsageContext value={{ costUsd: 2.24, billedEstimateUsd: 1.12, hasUnknownCost: false,
         planCalls: 1, meteredCalls: 6, includesSubagents: true, hasOffPeakDiscount: true,
-        cachedInputTokens: 970, cacheInputTokens: 1000, cacheUnreportedCalls: 0 }}>
+        cachedInputTokens: 970, cacheInputTokens: 1000, cacheUnreportedCalls: 0,
+        models: [{ provider: 'openai', planCalls: 1 }] }}>
         <StatusContextUsageContext value={33}>
           <StatusPromptCacheContext value={50}>
             <FullscreenModeProvider enabled>
@@ -84,9 +85,9 @@ test.each([80, 120])("scopes context, cache and mixed billed/plan spend at %s co
       </SessionUsageContext>
     </AppStateProvider>, { columns, rows: 24 });
   expect(output).toContain('ctx lead 33%');
-  expect(output).toMatch(/(?:cache|c) swarm 97%/);
-  expect(output).toContain('$1.12 billed off-peak');
-  expect(output).toContain('plan');
-  expect(output).toContain('swarm');
+  // Whole words at both widths: the money facts take a third row before anything is abbreviated.
+  expect(output).toContain('swarm cache 97%');
+  expect(output).toContain('swarm $1.12 billed off-peak');
+  expect(output).toContain('ChatGPT plan');
   expect(output).not.toContain('50%');
 });
