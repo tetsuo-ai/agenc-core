@@ -3684,7 +3684,7 @@ async function* runTurnKernelInner(
     }
 
     const maxBudgetUsd = ctx.config.maxBudgetUsd;
-    const totalCostUsd = session.services.costSidecar?.getTotalCostUsd();
+    const totalCostUsd = session.services.costSidecar?.getTotalAccountingCostUsd?.() ?? session.services.costSidecar?.getTotalCostUsd();
     if (
       typeof maxBudgetUsd === "number" &&
       Number.isFinite(maxBudgetUsd) &&

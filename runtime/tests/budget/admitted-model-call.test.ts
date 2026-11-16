@@ -15,7 +15,7 @@ import type { AuthBackend } from "../../src/auth/backend.js";
 import { OllamaProvider } from "../../src/llm/providers/ollama/adapter.js";
 import { GeminiProvider } from "../../src/llm/providers/gemini/index.js";
 import { createGeminiEndpointPlan } from "../../src/llm/providers/gemini/endpoint-plan.js";
-import { FACTORY_PROVIDER_STATE } from "../../src/llm/provider.js";
+import { createProvider, FACTORY_PROVIDER_STATE } from "../../src/llm/provider.js";
 import type { ProviderTokenCountCapability, TokenAccountingRequest } from "../../src/llm/token-accounting.js";
 import type {
   LLMChatOptions,
@@ -775,6 +775,7 @@ describe("runAdmittedModelCall", () => {
     );
     expect(request?.maxCostUsd).toBeGreaterThan(0);
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      billingDetails: expect.objectContaining({ billingMode: "metered" }),
       inputTokens: 100,
       outputTokens: 50,
       // Grok 4.5: the 80 uncached and 20 cached prompt tokens at their own
@@ -810,6 +811,7 @@ describe("runAdmittedModelCall", () => {
     // Reported late usage still replaces the conservative unknown hold in the
     // real repository; it must not make the cancelled call successful.
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      billingDetails: expect.objectContaining({ billingMode: "metered" }),
       inputTokens: 100,
       outputTokens: 50,
       costUsd: expect.closeTo(0.00047, 12),
@@ -834,6 +836,7 @@ describe("runAdmittedModelCall", () => {
     const request = state.acquire.mock.calls[0]?.[0];
     expect(request?.maxCostUsd).toBeGreaterThanOrEqual(2);
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      billingDetails: expect.objectContaining({ billingMode: "metered" }),
       inputTokens: 100,
       outputTokens: 50,
       costUsd: expect.closeTo(0.02047, 12),
@@ -1074,6 +1077,7 @@ describe("runAdmittedModelCall", () => {
     await expect(callOptions(state, { maxOutputTokens: 200 }, async () =>
       response({ model: "unknown-model" }))).resolves.toMatchObject({ model: "unknown-model" });
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      billingDetails: expect.objectContaining({ billingMode: "metered" }),
       inputTokens: 100, outputTokens: 50, costUsd: 0.045, costEstimated: true,
     });
     expect(state.holdUnknown).not.toHaveBeenCalled();
@@ -1120,6 +1124,7 @@ describe("runAdmittedModelCall", () => {
       reason: "provider_execution_profile_resolution",
     });
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      billingDetails: expect.objectContaining({ billingMode: "metered" }),
       inputTokens: 100,
       outputTokens: 50,
       costUsd: expect.closeTo(0.00047, 12),
@@ -1200,6 +1205,7 @@ describe("runAdmittedModelCall", () => {
     // The reservation stays conservative: the charge is only known afterwards.
     expect(state.acquire).toHaveBeenCalledWith(expect.objectContaining({ costEstimated: true }), undefined);
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      billingDetails: expect.objectContaining({ billingMode: "metered" }),
       inputTokens: 22_116,
       outputTokens: 5,
       costUsd: 0.0066,
@@ -1222,6 +1228,7 @@ describe("runAdmittedModelCall", () => {
       }),
     });
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      billingDetails: expect.objectContaining({ billingMode: "metered" }),
       inputTokens: 22_116,
       outputTokens: 5,
       costUsd: expect.closeTo(0.0066408, 12),
@@ -1637,4 +1644,135 @@ test("does not ask after dispatch or count the new model lease twice at an inter
   expect(requestUserInput).not.toHaveBeenCalled();
   expect(invoke).toHaveBeenCalledOnce();
   expect(state.holdUnknown).not.toHaveBeenCalled();
+});
+
+describe('accounting-only plan route and request invariance', () => {
+  test.each([
+    ['openai', 'gpt-6.1-sol', 'oauth', true],
+    ['openai', 'gpt-6.1-sol', 'api_key', false],
+    ['openai', 'gpt-6.1-sol', 'oauth', false],
+    ['deepseek', 'deepseek-v4.1-flash', 'api_key', false],
+    ['grok', 'grok-4.5', 'api_key', false],
+    ['anthropic', 'claude-sonnet-4-6', 'api_key', false],
+    ['qwen-token-plan', 'qwen3.8-plus', 'api_key', false],
+    ['zai-coding-plan', 'glm-5', 'api_key', false],
+    ['grok', 'grok-composer-2.5-fast', 'api_key', false],
+  ])('%s %s %s chatgpt=%s preserves dispatch bytes', async (providerName, model, authMode, chatgptBackend) => {
+    const captured: string[] = [];
+    for (const enabled of ['off', 'on']) {
+      vi.stubEnv('AGENC_PLAN_ACCOUNTING', enabled);
+      tokenAccountingService.clear();
+      try {
+        const state = harness({});
+        const provider = Object.assign({}, state.provider, { name: providerName,
+          config: { model, authMode, chatgptBackend } }) as LLMProvider;
+        const messages = [{ role: 'user' as const, content: 'Reply OK.' }];
+        const result = await runAdmittedModelCall({ session: state.session, provider, messages,
+          options: { model, maxOutputTokens: 128 }, stepId: 'wire-parity', model, providerName,
+          invoke: async options => {
+            captured.push(JSON.stringify({ messages, options }));
+            return response({ model });
+          },
+        });
+        const details = state.reconcile.mock.calls.at(-1)?.[1].billingDetails;
+        const signIn = providerName === 'openai' && authMode === 'oauth' && chatgptBackend;
+        // The billing route is recorded at dispatch too, for calls that never report usage.
+        const dispatchedRoute = state.admission.markDispatched.mock.calls.at(-1)?.[1].details.billingMode;
+        expect(dispatchedRoute).toBe(enabled !== 'off' && (signIn ||
+          ['qwen-token-plan', 'zai-coding-plan'].includes(providerName) || model === 'grok-composer-2.5-fast') ? 'plan' : undefined);
+        if (enabled === 'off') {
+          expect(details).toBeUndefined();
+          expect(result.usage.billingMode).toBeUndefined();
+        } else {
+          const flatPlan = ['qwen-token-plan', 'zai-coding-plan'].includes(providerName) || model === 'grok-composer-2.5-fast';
+          expect(details?.billingMode).toBe(signIn || flatPlan ? 'plan' : 'metered');
+          expect(details?.cachedInputTokens).toBe(20);
+          if (signIn) {
+            expect(details?.apiEquivalentUsd).toBeGreaterThan(0);
+            expect(result.usage.billingMode).toBe('plan');
+          }
+        }
+      } finally { vi.unstubAllEnvs(); }
+    }
+    expect(captured).toHaveLength(2);
+    expect(captured[1]).toBe(captured[0]);
+  });
+});
+
+
+test('reads AGENC_PLAN_ACCOUNTING from the session environment a daemon client forwarded (coste2e37 C2)', async () => {
+  vi.stubEnv('AGENC_PLAN_ACCOUNTING', undefined);
+  tokenAccountingService.clear();
+  try {
+    const state = harness({});
+    const session = { ...state.session, services: { ...state.session.services,
+      providerEnvironment: { AGENC_PLAN_ACCOUNTING: 'off' } } } as typeof state.session;
+    const provider = Object.assign({}, state.provider, { name: 'openai',
+      config: { model: 'gpt-6.1-sol', authMode: 'oauth', chatgptBackend: true } }) as LLMProvider;
+    const messages = [{ role: 'user' as const, content: 'Reply OK.' }];
+    const result = await runAdmittedModelCall({ session, provider, messages,
+      options: { model: 'gpt-6.1-sol', maxOutputTokens: 128 }, stepId: 'session-switch', model: 'gpt-6.1-sol', providerName: 'openai',
+      invoke: async () => response({ model: 'gpt-6.1-sol' }) });
+    expect(state.reconcile.mock.calls.at(-1)?.[1].billingDetails).toBeUndefined();
+    expect(state.admission.markDispatched.mock.calls.at(-1)?.[1].details.billingMode).toBeUndefined();
+    expect(result.usage.billingMode).toBeUndefined();
+  } finally { vi.unstubAllEnvs(); }
+});
+
+test.each(['deepseek', 'openai-api', 'openai-plan'] as const)('captures identical HTTP bytes with accounting on/off: %s', async route => {
+  const captured: string[] = [];
+  for (const enabled of ['off', 'on']) {
+    vi.stubEnv('AGENC_PLAN_ACCOUNTING', enabled);
+    tokenAccountingService.clear();
+    try {
+      const deepseek = route === 'deepseek';
+      const providerName = deepseek ? 'deepseek' : 'openai';
+      const model = deepseek ? 'deepseek-flash' : 'gpt-6.1-sol';
+      const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+        const request = new Request(input, init);
+        captured.push(JSON.stringify({ url: request.url, method: request.method,
+          headers: [...request.headers], body: await request.text() }));
+        return new Response(JSON.stringify(deepseek ? {
+          id: 'fixture', model, choices: [{ index: 0, message: { role: 'assistant', content: '7' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 38, completion_tokens: 1, total_tokens: 39, prompt_cache_hit_tokens: 0 },
+        } : {
+          id: 'fixture', object: 'response', status: 'completed', model,
+          output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '7' }] }],
+          usage: { input_tokens: 38, output_tokens: 1, total_tokens: 39, input_tokens_details: { cached_tokens: 0 } },
+        }), { headers: { 'content-type': 'application/json' } });
+      });
+      const provider = createProvider(providerName, { apiKey: 'synthetic-offline-only', model,
+        extra: { fetchImpl, responsesTransport: 'http',
+          ...(route === 'openai-plan' ? { authMode: 'oauth', chatgptBackend: true,
+            oauth: { accessToken: 'synthetic-offline-only' } } : { authMode: 'api_key' }),
+        },
+      });
+      const state = harness({});
+      const messages = [{ role: 'user' as const, content: 'Reply with just the number 7.' }];
+      await runAdmittedModelCall({ session: state.session, provider, providerName, model, messages,
+        options: { maxOutputTokens: 128, reasoningEffort: 'none' }, stepId: 'wire-body',
+        invoke: options => provider.chat(messages, options),
+      });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    } finally { vi.unstubAllEnvs(); }
+  }
+  expect(captured).toHaveLength(2);
+  expect(captured[1]).toBe(captured[0]);
+});
+
+test('records only DeepSeek token charges as eligible for the off-peak discount', async () => {
+  const state = harness({});
+  const provider = { ...state.provider, name: 'deepseek' } as LLMProvider;
+  await runAdmittedModelCall({ session: state.session, provider, model: 'deepseek-flash', providerName: 'deepseek',
+    messages: [{ role: 'user', content: 'Find the answer.' }], options: { maxOutputTokens: 128 }, stepId: 'tool-fee',
+    invoke: async () => response({ model: 'deepseek-flash', usage: {
+      promptTokens: 1000, completionTokens: 100, totalTokens: 1100,
+      cachedInputTokens: 0, webSearchRequests: 1, availability: 'reported', provenance: 'provider',
+    } }),
+  });
+  expect(state.reconcile).toHaveBeenCalledWith('reservation-1', expect.objectContaining({
+    costUsd: expect.closeTo(0.00117, 12), billingDetails: expect.objectContaining({
+      billingMode: 'metered', offPeakEligibleCostUsd: expect.closeTo(0.00042, 12),
+    }),
+  }));
 });

@@ -26,6 +26,7 @@ import {
   formatTokenCount,
   formatUsdCost,
 } from "../session/cost.js";
+import { cacheUnknownNote, planLabelFor, usageCachePercent } from "../session/usage-display.js";
 import { asRecord } from "../utils/record.js";
 import { isAdmissionUsageSummary } from "../session/usage-summary.js";
 import type { UnpricedUsageCall } from "../budget/admission-types.js";
@@ -39,6 +40,18 @@ import {
 
 /** One per-model row of real, provider-reported usage. */
 export interface CostModelRow {
+  readonly modelCalls?: number;
+  readonly cachedInputTokens?: number;
+  readonly cacheInputTokens?: number;
+  readonly cacheUnreportedCalls?: number;
+  readonly billedEstimateUsd?: number;
+  readonly planCalls?: number;
+  readonly meteredCalls?: number;
+  readonly apiEquivalentUsd?: number;
+  readonly apiEquivalentUnknown?: boolean;
+  /** `tools`: an agent's paid tool work in one row; `toolCharges` counts those charges. */
+  readonly kind?: "tools";
+  readonly toolCharges?: number;
   readonly label: string;
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -62,6 +75,12 @@ export interface CostAgentRow {
 }
 
 export interface CostReport {
+  /** The subscription that covers the plan calls, by name ("ChatGPT plan"). */
+  readonly planLabel?: string;
+  readonly planCalls?: number;
+  readonly apiEquivalentUsd?: number;
+  readonly apiEquivalentUnknown?: boolean;
+  readonly agentModels?: readonly (CostModelRow & { readonly runId: string; readonly agentLabel: string })[];
   /** Accounting total, before recorded off-peak adjustments. */
   readonly totalCostUsd?: number;
   readonly billedEstimateUsd?: number;
@@ -76,7 +95,8 @@ export interface CostReport {
   readonly turns?: number;
   /** True when any model in the session has unknown pricing. */
   readonly hasUnknownCost: boolean;
-  readonly unpricedCalls?: readonly UnpricedUsageCall[];
+  /** `agentLabel`: the name of the agent that made the call ("lead", "Monowire"). */
+  readonly unpricedCalls?: readonly (UnpricedUsageCall & { readonly agentLabel?: string })[];
   readonly unpricedCallCount?: number;
   readonly models: readonly CostModelRow[];
   readonly agents: readonly CostAgentRow[];
@@ -91,6 +111,9 @@ interface CostSidecarLike {
   getSessionModelUsage?: () => ReadonlyArray<{
     readonly model: string;
     readonly provider?: string;
+    readonly planCalls?: number;
+    readonly apiEquivalentUsd?: number;
+    readonly apiEquivalentUnknown?: boolean;
     readonly inputTokens: number;
     readonly outputTokens: number;
     readonly totalTokens: number;
@@ -129,6 +152,7 @@ function readSessionTotals(sidecar: CostSidecarLike | null): {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       costUsd: usage.costUsd,
+      ...(usage.planCalls !== undefined ? { planCalls: usage.planCalls, apiEquivalentUsd: usage.apiEquivalentUsd, apiEquivalentUnknown: usage.apiEquivalentUnknown } : {}),
     }),
   );
   return {
@@ -196,6 +220,47 @@ function truncate(value: string, max: number): string {
 }
 
 /**
+ * One row per agent and model, the lead first, then the sub-agents in ledger
+ * order. Agents go by name; a run id (its first 8 characters) is added only
+ * where two agents share a name.
+ */
+function agentModelRows(
+  rows: NonNullable<import("../budget/admission-types.js").AdmissionUsageSummary["agentModels"]>,
+  leadRunId: string,
+  agentLabel: (runId: string) => string,
+): NonNullable<CostReport["agentModels"]> {
+  const named = rows.map(row => ({
+    ...row, label: row.kind === "tools" ? "tool charges" : row.provider ? `${row.provider}/${row.model}` : row.model,
+    agentLabel: agentLabel(row.runId),
+  }));
+  return [...named.filter(row => row.runId === leadRunId), ...named.filter(row => row.runId !== leadRunId)];
+}
+
+/**
+ * The name of each agent of a session: "lead", or the sub-agent's name. A run
+ * id (its first 8 characters) is added only where two agents share a name.
+ */
+function agentNamer(runIds: readonly string[], leadRunId: string, agents: readonly CostAgentRow[]): (runId: string) => string {
+  // The task label is "name · role"; the report names the agent only. A
+  // sub-agent the session has no name for any more (a cancelled one leaves
+  // the task list) is numbered in ledger order, never shown by its id.
+  const unnamed = new Map<string, string>();
+  for (const runId of runIds) {
+    if (runId !== leadRunId && !agents.some(agent => agent.runId === runId) && !unnamed.has(runId)) {
+      unnamed.set(runId, `sub-agent ${unnamed.size + 1}`);
+    }
+  }
+  const nameOf = (runId: string): string =>
+    runId === leadRunId ? "lead" : agents.find(agent => agent.runId === runId)?.label.split(" · ")[0] ?? unnamed.get(runId) ?? "a sub-agent";
+  const runsByName = new Map<string, Set<string>>();
+  for (const runId of runIds) runsByName.set(nameOf(runId), (runsByName.get(nameOf(runId)) ?? new Set()).add(runId));
+  return runId => {
+    const name = nameOf(runId);
+    return (runsByName.get(name)?.size ?? 1) > 1 ? `${name} [${runId.slice(0, 8)}]` : name;
+  };
+}
+
+/**
  * Build the cost report from a slash-command context. Pure aside from the two
  * read-only accessors (`session.services.costSidecar`, `appState.getAppState`)
  * — exported so tests can feed known usage and assert the rendered numbers.
@@ -208,17 +273,23 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
   const usage = ctx.appState?.getSessionUsage?.() ??
     ctx.session.services?.executionAdmission?.getUsageSummary?.();
   if (isAdmissionUsageSummary(usage)) {
+    const agentLabel = agentNamer([...(usage.agentModels ?? []).map(row => row.runId),
+      ...(usage.unpricedCalls ?? []).map(call => call.runId)], usage.runId, agents);
     return {
       totalCostUsd: usage.costUsd,
+      ...(usage.planCalls !== undefined ? { planCalls: usage.planCalls, apiEquivalentUsd: usage.apiEquivalentUsd, apiEquivalentUnknown: usage.apiEquivalentUnknown } : {}),
+      ...((usage.planCalls ?? 0) > 0 ? { planLabel: planLabelFor(usage.models.filter(row => (row.planCalls ?? 0) > 0).map(row => row.provider)) } : {}),
+      ...(usage.agentModels !== undefined ? { agentModels: agentModelRows(usage.agentModels, usage.runId, agentLabel) } : {}),
       ...(usage.billedEstimateUsd !== undefined ? { billedEstimateUsd: usage.billedEstimateUsd } : {}),
       ...(usage.costEstimated ? { totalIsEstimated: true } : {}),
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       totalTokens: usage.totalTokens,
       hasUnknownCost: usage.hasUnknownCost,
-      ...(usage.unpricedCalls !== undefined ? { unpricedCalls: usage.unpricedCalls } : {}),
+      ...(usage.unpricedCalls !== undefined ? { unpricedCalls: usage.unpricedCalls.map(call => ({ ...call, agentLabel: agentLabel(call.runId) })) } : {}),
       ...(usage.unpricedCallCount !== undefined ? { unpricedCallCount: usage.unpricedCallCount } : {}),
       models: usage.models.map((model) => ({
+        ...model,
         label: model.provider ? `${model.provider}/${model.model}` : model.model,
         inputTokens: model.inputTokens,
         outputTokens: model.outputTokens,
@@ -260,6 +331,13 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
     ...(totalTokens !== undefined ? { totalTokens } : {}),
     ...(totals.turns !== undefined ? { turns: totals.turns } : {}),
     hasUnknownCost: totals.hasUnknownCost || agents.length > 0,
+    ...(totals.models.some(row => (row.planCalls ?? 0) > 0) ? {
+      planLabel: planLabelFor(totals.models.filter(row => (row.planCalls ?? 0) > 0)
+        .map(row => (row.label.includes("/") ? row.label.slice(0, row.label.indexOf("/")) : undefined))),
+      planCalls: totals.models.reduce((sum, row) => sum + (row.planCalls ?? 0), 0),
+      apiEquivalentUsd: totals.models.reduce((sum, row) => sum + (row.apiEquivalentUsd ?? 0), 0),
+      apiEquivalentUnknown: totals.models.some(row => row.apiEquivalentUnknown),
+    } : {}),
     models: totals.models,
     agents,
   };
@@ -269,18 +347,71 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
  * Render a {@link CostReport} as the plain-text fallback (used when the TUI
  * JSX surface isn't available, and as the source the modal re-parses).
  */
-export function unpricedCallDescription(call: UnpricedUsageCall): string {
-  const model = call.provider && call.model ? `${call.provider}/${call.model}` : call.model ?? call.kind;
+/**
+ * One call without reported usage: the agent's name, the model and a plain
+ * reason. Step and run ids stay in the ledger; they mean nothing to a reader.
+ */
+export function unpricedCallDescription(call: UnpricedUsageCall & { readonly agentLabel?: string }): string {
+  const model = call.provider && call.model ? `${call.provider}/${call.model}` : call.model ?? call.provider;
+  const what = call.kind === "model_turn" ? "model call" : call.kind === "tool_exec" ? "tool call" : call.kind.replaceAll("_", " ");
   const knownReasons: Readonly<Record<string, string>> = {
-    missing_provider_usage: "provider returned no usage",
-    provider_call_failed_after_dispatch: "provider call failed after dispatch; usage unavailable",
-    reported_usage_cost_unknown: "reported usage has no price",
-    missing_tool_usage: "tool returned no usage",
+    missing_provider_usage: "the provider reported no usage",
+    provider_call_failed_after_dispatch: "failed after it was sent, no usage reported",
+    reported_usage_cost_unknown: "usage reported, but no price is known",
+    missing_tool_usage: "the tool reported no usage",
   };
   const reason = call.reason.startsWith("cancelled_after_dispatch:")
-    ? `cancelled after dispatch (${call.reason.slice("cancelled_after_dispatch:".length)}); provider usage unavailable`
+    ? `cancelled after it was sent (${call.reason.slice("cancelled_after_dispatch:".length).replaceAll("_", " ")}), no usage reported`
     : (knownReasons[call.reason] ?? call.reason.replaceAll("_", " "));
-  return `${model} · ${call.kind === "model_turn" ? "model call" : call.kind} ${call.stepId} · ${reason}`;
+  // A plan call has no per-token charge, so a missing usage report cannot hide money.
+  const plan = call.plan ? `; ${planLabelFor([call.provider])} call, nothing billed` : "";
+  return `${call.agentLabel ?? "an agent"} · ${model ? `${model} ` : ""}${what} · ${reason}${plan}`;
+}
+
+export function costModelDetail(row: CostModelRow): string {
+  if (row.kind === "tools") {
+    // Tool fees are not discounted off-peak: billed is what they cost.
+    const charges = row.toolCharges ?? 0;
+    return `${charges} ${charges === 1 ? "charge" : "charges"} · ${row.hasUnknownCost ? "≥" : ""}${formatUsdCost(row.billedEstimateUsd ?? row.costUsd)} billed`;
+  }
+  const share = usageCachePercent(row);
+  const unknown = cacheUnknownNote(row.cacheUnreportedCalls);
+  const cache = share === null ? "cache unknown" : `${share}% cached${unknown ? ` ${unknown}` : ""}`;
+  const billed = row.billedEstimateUsd ?? row.costUsd;
+  const planCalls = row.planCalls ?? 0;
+  const plan = planCalls > 0 ? planLabelFor([row.label.includes("/") ? row.label.slice(0, row.label.indexOf("/")) : undefined]) : "";
+  return [
+    row.modelCalls === undefined ? "calls unknown" : `${row.modelCalls} calls`,
+    `${formatTokenCount(row.inputTokens)} in`, cache, `${formatTokenCount(row.outputTokens)} out`,
+    `${row.hasUnknownCost ? "≥" : ""}${formatUsdCost(billed)} billed${row.costEstimated ? " est." : row.billedEstimateUsd === undefined ? " (peak est.)" : ""}`,
+    // Named only where the row is not all plan calls ("ChatGPT plan, 3 of 5 calls").
+    plan ? (row.modelCalls !== undefined && planCalls < row.modelCalls ? `${plan}, ${planCalls} of ${row.modelCalls} calls` : plan) : "",
+    (row.apiEquivalentUsd ?? 0) > 0 ? `${row.apiEquivalentUnknown ? "≥" : ""}${formatUsdCost(row.apiEquivalentUsd!)} on an API key`
+      : row.apiEquivalentUnknown ? "API price unknown" : "",
+  ].filter(Boolean).join(" · ");
+}
+
+/** "ChatGPT plan: 15 calls, covered by your subscription". */
+export function costPlanLine(report: CostReport): string | null {
+  return (report.planCalls ?? 0) > 0
+    ? `${report.planLabel ?? "Subscription plan"}: ${report.planCalls} ${report.planCalls === 1 ? "call" : "calls"}, covered by your subscription`
+    : null;
+}
+
+/** "Same calls on an API key: $0.075 (for comparison, not billed)". */
+export function costApiKeyLine(report: CostReport): string | null {
+  return (report.apiEquivalentUsd ?? 0) > 0
+    ? `Same calls on an API key: ${report.apiEquivalentUnknown ? "≥" : ""}${formatUsdCost(report.apiEquivalentUsd!)} (for comparison, not billed)`
+    : null;
+}
+
+/** The two closing sentences of both /cost surfaces. */
+export const COST_FOOTNOTE = "Billed is an estimate. Plan calls are not charged per token.";
+
+/** Heading of the list of calls that reported no usage. */
+export function unpricedCallsHeading(report: CostReport): string {
+  return report.hasUnknownCost ? "Calls without reported usage (their cost is not in the totals):"
+    : "Calls without reported usage (plan calls, nothing billed):";
 }
 
 export function formatCostReport(report: CostReport): string {
@@ -288,12 +419,17 @@ export function formatCostReport(report: CostReport): string {
   if (report.totalCostUsd !== undefined) {
     const unknown = report.hasUnknownCost ? "≥" : "";
     const est = report.totalIsEstimated ? " est." : "";
-    lines.push(
-      `Session cost: ${unknown}${formatUsdCost(report.totalCostUsd)}${est} (accounting; peak rates before off-peak discounts)`,
-    );
     if (report.billedEstimateUsd !== undefined && !report.totalIsEstimated) {
       lines.push(`Billed estimate: ${unknown}${formatUsdCost(report.billedEstimateUsd)} (recorded per-call off-peak hours)`);
     }
+    const planLine = costPlanLine(report);
+    if (planLine !== null) lines.push(planLine);
+    const apiKeyLine = costApiKeyLine(report);
+    if (apiKeyLine !== null) lines.push(apiKeyLine);
+    if (report.apiEquivalentUnknown) lines.push("Some plan calls have no known API price.");
+    lines.push(
+      `Session cost: ${unknown}${formatUsdCost(report.totalCostUsd)}${est} (accounting; peak rates before off-peak discounts)`,
+    );
   } else {
     lines.push("Session cost: unknown (cost tracking unavailable)");
   }
@@ -313,12 +449,16 @@ export function formatCostReport(report: CostReport): string {
     lines.push("Models:");
     for (const m of report.models) {
       lines.push(
-        `  ${m.label}: ${formatTokenCount(m.inputTokens)} in, ${formatTokenCount(m.outputTokens)} out (${m.hasUnknownCost ? "≥" : ""}${formatUsdCost(m.costUsd)}${m.costEstimated ? " est." : ""})`,
+        `  ${m.label}: ${costModelDetail(m)}`,
+
       );
     }
   }
-  if (report.agents.length > 0) {
-    lines.push("Agents:");
+  if (report.agentModels !== undefined) {
+    lines.push("By agent (the lead, then its sub-agents):");
+    for (const row of report.agentModels) lines.push(`  ${row.agentLabel} · ${row.label}: ${costModelDetail(row)}`);
+  } else if (report.agents.length > 0) {
+    lines.push("Agents (at peak rates, tool charges included):");
     for (const a of report.agents) {
       const tokens =
         a.tokenCount !== undefined ? `${formatTokenCount(a.tokenCount)} tokens` : "tokens unknown";
@@ -330,12 +470,12 @@ export function formatCostReport(report: CostReport): string {
           : "cost unknown";
       lines.push(`  ${a.status} ${a.label}: ${tokens} · ${spend}`);
     }
-  } else {
+  } else if (report.agentModels === undefined) {
     lines.push("Agents: none active");
   }
-  if (report.hasUnknownCost) {
-    lines.push("Unpriced calls (excluded from the known cost):");
-    for (const call of report.unpricedCalls ?? []) lines.push(`  ${unpricedCallDescription(call)} · run ${call.runId}`);
+  if (report.hasUnknownCost || (report.unpricedCalls?.length ?? 0) > 0) {
+    lines.push(unpricedCallsHeading(report));
+    for (const call of report.unpricedCalls ?? []) lines.push(`  ${unpricedCallDescription(call)}`);
     const shown = report.unpricedCalls?.length ?? 0;
     if (report.unpricedCallCount !== undefined && report.unpricedCallCount > shown) {
       lines.push(`  Showing ${shown} of ${report.unpricedCallCount} unpriced calls.`);
@@ -343,9 +483,7 @@ export function formatCostReport(report: CostReport): string {
       lines.push("  Call details unavailable for this older session.");
     }
   }
-  lines.push("Model and agent totals use accounting rates; provider-reported charges are kept as reported.");
-  lines.push("Billed estimates apply recorded schedules only; other discounts and holidays may be missing.");
-  lines.push("Agent costs use recorded usage when available; estimates are marked est.");
+  lines.push(COST_FOOTNOTE);
   return lines.join("\n");
 }
 

@@ -84,20 +84,42 @@ Sources: `runtime/src/commands/*.ts(x)` modules imported by
 
 ### `/cost` and `/stats`
 
-The session accounting total uses peak rates before off-peak discounts, or
-provider-reported charges when available. Model and agent breakdowns retain
-that accounting basis. A separate **billed estimate** applies the recorded
-DeepSeek API and eligible QwenCloud DeepSeek schedules to each call's dispatch
-time, at half price off-peak. It matches the status line's figure, labeled
-`off-peak` only when a discount applies. No estimate is shown when eligible
-calls lack timestamps; the status line then shows `peak est.`. Neither figure
-changes budget enforcement or stored accounting. Unrecorded schedules,
-holidays and other discounts may make the
-actual charge lower.
+`/cost` shows billed estimates separately from subscription usage. ChatGPT
+sign-in calls are listed as `ChatGPT plan: N calls, covered by your
+subscription`; Qwen Token Plan, Z.ai Coding Plan and Grok Build calls read
+`subscription plan`. Plan calls have no per-token charge. For ChatGPT sign-in,
+`Same calls on an API key: $X (for comparison, not billed)` is what the same
+reported tokens would cost at API rates; it is not money charged to the
+subscription. API-key calls keep their API pricing.
 
-`≥` means unpriced calls are excluded from the known total. Their details
-appear below the totals when available. Fallback pricing is marked `est.`;
-the status line shows `price unknown` instead of that fallback figure.
+The report lists totals by provider and model, then one row per agent and
+model: the lead first, then its sub-agents by name, finished ones included (a
+short id is added only where two agents share a name). Each row shows calls,
+input, cached share, output, billed USD, and for plan calls the plan and the
+API-key price. An agent with paid tool work (web search and fetch fees,
+media, model calls a tool makes) also has a `tool charges` row, so the rows of
+each agent add up to its total. Input includes cached tokens. The cached share uses only calls
+with reported cache counts; `(1 call unknown)` names the ones left out. Calls
+count attempts with reported usage, so retries with usage count too. Failed or
+cancelled attempts without usage are listed under "Calls without reported
+usage". For a metered call that makes the money read `≥`; a plan call is
+listed with "nothing billed" and leaves the money exact. In-flight calls
+enter totals when their usage arrives. `est.` means fallback pricing was
+used.
+
+The modal's SESSION headline is the billed estimate, the same figure as the
+status line; the accounting total follows as `at peak rates`.
+The accounting total keeps peak rates for metered calls. The billed estimate
+uses each call's dispatch time and the recorded off-peak schedule. DeepSeek
+tool fees are not halved, and provider-reported charges are kept as reported.
+Neither display changes budget enforcement. Holidays, unrecorded discounts,
+provider rounding and delayed balance updates can cause differences.
+
+Older records can lack billing-route and cache details. AgenC does not guess
+whether an old OpenAI call used sign-in. Without the shared admission ledger,
+sub-agent costs remain explicitly estimated or unknown rather than being added
+to a supposedly exact total. The accounting annotation switch is
+`AGENC_PLAN_ACCOUNTING=off`; it affects new calls only and leaves wire requests intact.
 
 ## Bridge command policy
 

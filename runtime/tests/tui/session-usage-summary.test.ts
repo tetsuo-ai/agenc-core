@@ -61,9 +61,9 @@ describe("session usage projection", () => {
     expect(report.agents[0]?.costEstimated).toBe(true);
     const output = formatCostReport(report);
     expect(output).toContain("Session cost: $0.045 est.");
-    expect(output).toContain("unpriced: 20 in, 10 out ($0.045 est.)");
+    expect(output).toContain("unpriced: 1 calls · 20 in · cache unknown · 10 out · $0.045 billed est.");
     expect(output).toContain("completed Worker · runner: 30 tokens · $0.045 est.");
-    expect(output).toContain("free: 20 in, 10 out ($0.00)");
+    expect(output).toContain("free: 1 calls · 20 in · cache unknown · 10 out · $0.00 billed (peak est.)");
     expect(output).toContain("recorded free-worker: 30 tokens · $0.00");
     expect(output).not.toContain("some pricing unknown");
     expect(output).not.toContain("from agent tokens");
@@ -140,7 +140,7 @@ describe("session usage projection", () => {
     expect(report.hasUnknownCost).toBe(true);
     const output = formatCostReport(report);
     expect(output).toContain("Session cost: ≥$0.400");
-    expect(output).toContain("Unpriced calls (excluded from the known cost):");
+    expect(output).toContain("Calls without reported usage (their cost is not in the totals):");
     expect(output).not.toContain("Session cost: ≥$2.00");
   });
 

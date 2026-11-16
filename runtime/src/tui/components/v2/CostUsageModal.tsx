@@ -1,7 +1,7 @@
 import React from 'react'
 
 import type { CostReport } from '../../../commands/cost.js'
-import { unpricedCallDescription } from '../../../commands/cost.js'
+import { COST_FOOTNOTE, costApiKeyLine, costModelDetail, costPlanLine, unpricedCallDescription, unpricedCallsHeading } from '../../../commands/cost.js'
 import { formatTokenCount, formatUsdCost } from '../../../session/cost.js'
 import { Box, useInput } from '../../ink.js'
 import ThemedText from '../design-system/ThemedText.js'
@@ -57,20 +57,29 @@ export function CostUsageModal({
     report.totalCostUsd !== undefined
       ? `${report.hasUnknownCost ? '≥' : ''}${formatUsdCost(report.totalCostUsd)}${report.totalIsEstimated ? ' est.' : ''}`
       : 'unknown'
-  const tokenDetail =
+  // The value column is 16 cells wide: the input count goes there and the rest in the detail column.
+  const [tokenValue, tokenRest] =
     report.inputTokens !== undefined || report.outputTokens !== undefined
-      ? `${formatTokenCount(report.inputTokens ?? 0)} in · ${formatTokenCount(report.outputTokens ?? 0)} out` +
-        (report.turns !== undefined ? ` · ${report.turns} turns` : '')
+      ? [`${formatTokenCount(report.inputTokens ?? 0)} in`,
+        `${formatTokenCount(report.outputTokens ?? 0)} out` + (report.turns !== undefined ? ` · ${report.turns} turns` : '')]
       : report.totalTokens !== undefined
-        ? `${formatTokenCount(report.totalTokens)} total${report.totalIsEstimated ? ' est.' : ''}`
-        : 'unknown'
+        ? [`${formatTokenCount(report.totalTokens)} total${report.totalIsEstimated ? ' est.' : ''}`, '']
+        : ['unknown', '']
+  // The headline is the figure the status line shows: the billed estimate when one exists.
+  const billed = report.totalCostUsd !== undefined && report.billedEstimateUsd !== undefined && !report.totalIsEstimated
+    ? `${report.hasUnknownCost ? '≥' : ''}${formatUsdCost(report.billedEstimateUsd)} billed`
+    : undefined
+  const headline = billed ?? totalCost
+  const planLine = costPlanLine(report)
+  const apiKeyLine = costApiKeyLine(report)
+  const unpriced = report.unpricedCalls ?? []
 
   return (
     <Popup
       title="cost"
       status={
         report.totalCostUsd !== undefined
-          ? `session ${totalCost}`
+          ? `session ${headline}`
           : 'cost tracking unavailable'
       }
       minHeight={18}
@@ -79,20 +88,26 @@ export function CostUsageModal({
       <Box flexDirection="column" gap={1}>
         <Box flexDirection="row" gap={2}>
           <ThemedText color="agenc">SESSION</ThemedText>
-          <ThemedText color="text2">{totalCost}</ThemedText>
+          <ThemedText color="text2">{headline}</ThemedText>
         </Box>
-        <ThemedText color="muted3">Accounting total: peak rates before off-peak discounts.</ThemedText>
-        {report.billedEstimateUsd !== undefined && !report.totalIsEstimated ? (
-          <Row label="billed estimate" value={`${report.hasUnknownCost ? '≥' : ''}${formatUsdCost(report.billedEstimateUsd)}`}
-            detail="recorded per-call off-peak hours" />
+        {billed !== undefined ? (
+          <ThemedText color="muted3">Billed estimate: metered calls, with recorded per-call off-peak hours applied.</ThemedText>
+        ) : (
+          <ThemedText color="muted3">Accounting total: metered calls at peak rates before off-peak discounts.</ThemedText>
+        )}
+        {planLine !== null ? <ThemedText color="text2">{planLine}</ThemedText> : null}
+        {apiKeyLine !== null ? <ThemedText color="text2">{apiKeyLine}</ThemedText> : null}
+        {billed !== undefined ? (
+          <Row label="at peak rates" value={totalCost} detail="accounting total before off-peak discounts; budgets use it" />
         ) : null}
-        <Row label="tokens" value={tokenDetail} labelColor="inactive" />
-        {report.hasUnknownCost ? (
+        {report.apiEquivalentUnknown ? <ThemedText color="text2">Some plan calls have no known API price.</ThemedText> : null}
+        <Row label="tokens" value={tokenValue} detail={tokenRest} labelColor="inactive" />
+        {report.hasUnknownCost || unpriced.length > 0 ? (
           <Box flexDirection="column">
-            <ThemedText color="text2">Unpriced calls (excluded from the known cost):</ThemedText>
-            {(report.unpricedCalls ?? []).map(call => (
+            <ThemedText color="text2">{unpricedCallsHeading(report)}</ThemedText>
+            {unpriced.map(call => (
               <ThemedText key={call.reservationId} color="text2">
-                {`${unpricedCallDescription(call)} · run ${call.runId}`}
+                {unpricedCallDescription(call)}
               </ThemedText>
             ))}
             {(report.unpricedCallCount ?? 0) > (report.unpricedCalls?.length ?? 0) ? (
@@ -109,12 +124,10 @@ export function CostUsageModal({
           <ThemedText color="agenc">BY MODEL</ThemedText>
           <Box minHeight={1} />
           {report.models.map((m, i) => (
-            <Row
-              key={`model-${i}`}
-              label={m.label}
-              value={`${m.hasUnknownCost ? '≥' : ''}${formatUsdCost(m.costUsd)}${m.costEstimated ? ' est.' : ''}`}
-              detail={`${formatTokenCount(m.inputTokens)} in · ${formatTokenCount(m.outputTokens)} out`}
-            />
+            <Box key={`model-${i}`} flexDirection="column">
+              <ThemedText color="text2">{m.label}</ThemedText>
+              <ThemedText color="muted3">{costModelDetail(m)}</ThemedText>
+            </Box>
           ))}
         </Box>
       ) : null}
@@ -122,7 +135,12 @@ export function CostUsageModal({
       <Box flexDirection="column">
         <ThemedText color="agenc">BY AGENT</ThemedText>
         <Box minHeight={1} />
-        {report.agents.length === 0 ? (
+        {report.agentModels !== undefined ? report.agentModels.map((row, i) => (
+          <Box key={`agent-model-${i}`} flexDirection="column">
+            <ThemedText color="text2">{`${row.agentLabel} · ${row.label}`}</ThemedText>
+            <ThemedText color="muted3">{costModelDetail(row)}</ThemedText>
+          </Box>
+        )) : report.agents.length === 0 ? (
           <ThemedText color="muted3">no fan-out agents active</ThemedText>
         ) : (
           report.agents.map((a, i) => (
@@ -141,10 +159,7 @@ export function CostUsageModal({
           ))
         )}
       </Box>
-      <ThemedText color="muted3">
-        Model/agent totals use accounting rates. Provider-reported charges stay as reported.
-        Billed estimates cover recorded schedules; holidays and other discounts may be missing.
-      </ThemedText>
+      <ThemedText color="muted3">{COST_FOOTNOTE}</ThemedText>
     </Popup>
   )
 }

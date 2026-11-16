@@ -424,6 +424,8 @@ export interface TokenCountEvent {
   readonly speed?: "fast";
   /** What the provider charged for this call in USD (OpenRouter `usage.cost`). */
   readonly providerCostUsd?: number;
+  /** Accounting annotation only, recorded after a ChatGPT sign-in response. */
+  readonly billingMode?: "plan";
 }
 
 export interface McpToolCallBeginEvent {
@@ -2063,6 +2065,7 @@ export function usageToTokenCountEvent(usage: LLMUsage): EventMsg {
       ...(usage.webSearchRequests !== undefined
         ? { webSearchRequests: usage.webSearchRequests }
         : {}),
+      ...(usage.billingMode === "plan" ? { billingMode: "plan" as const } : {}),
       ...(usage.providerCostUsd !== undefined
         ? { providerCostUsd: usage.providerCostUsd }
         : {}),

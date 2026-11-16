@@ -268,10 +268,12 @@ function transcriptNoticesFromRollout(
       }
       if (summary.runId === runId && summary.sequence > usageSequence) {
         usageSequence = summary.sequence;
+        const { agentModels, ...summaryFields } = summary;
         usageNotice = {
           eventId, committedSequence, type: "session_usage",
           payload: {
-            ...summary,
+            ...summaryFields,
+            ...(agentModels === undefined ? {} : { agentModels: agentModels.map(row => ({ ...row })) }),
             models: summary.models.map((model) => ({ ...model })),
             agents: summary.agents.map((agent) => ({ ...agent })),
           },

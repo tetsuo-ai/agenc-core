@@ -30,10 +30,10 @@ it("shows billed and peak accounting estimates in both /cost surfaces with the u
   expect(text).toContain("Billed estimate: ≥$0.750");
   const modal = await renderToString(createElement(CostUsageModal, { report, onDone: () => {}, active: false }),
     { columns: 120, rows: 40 });
-  expect(modal).toContain("≥$1.00");
-  expect(modal).toContain("peak rates before off-peak discounts");
-  expect(modal).toContain("billed estimate");
-  expect(modal).toContain("≥$0.750");
+  expect(modal).toMatch(/SESSION\s+≥\$0\.750 billed/);
+  expect(modal).toMatch(/at peak rates\s+≥\$1\.00/);
+  expect(modal).toContain("before off-peak discounts");
+  expect(modal).toContain("Billed estimate");
 });
 
 /**
@@ -131,9 +131,10 @@ describe("/cost", () => {
     });
     const out = formatCostReport(report);
     expect(out).toContain("Session cost: ≥$0.551");
-    expect(out).toContain("deepseek/deepseek-flash · model call turn-2");
-    expect(out).toContain("cancelled after dispatch (interrupted); provider usage unavailable");
-    expect(out).toContain("run worker-1");
+    // The agent's name, the model and a plain reason; no step or run ids (coste2e37 C4).
+    expect(out).toContain("sub-agent 1 · deepseek/deepseek-flash model call · cancelled after it was sent (interrupted), no usage reported");
+    expect(out).not.toContain("turn-2");
+    expect(out).not.toContain("run worker-1");
     expect(out).not.toContain("+?");
   });
 
@@ -256,4 +257,29 @@ describe("/cost", () => {
     expect(out).toContain("Session cost: ≥$1.23");
     expect(out).toContain("build the parser · runner");
   });
+});
+
+it('shows plan API-equivalent separately and lists lead and child provider/model usage', async () => {
+  const lead = { model: 'gpt-6.1-sol', provider: 'openai', runId: 'session-1', costUsd: 0,
+    billedEstimateUsd: 0, inputTokens: 1000, outputTokens: 100, totalTokens: 1100, modelCalls: 1,
+    heldCostUsd: 0, hasUnknownCost: false, planCalls: 1, meteredCalls: 0, apiEquivalentUsd: 0.01,
+    cachedInputTokens: 500, cacheInputTokens: 1000, cacheUnreportedCalls: 0 };
+  const child = { ...lead, runId: 'worker-1', model: 'deepseek-flash', provider: 'deepseek',
+    costUsd: 0.002, billedEstimateUsd: 0.001, planCalls: 0, meteredCalls: 1, apiEquivalentUsd: 0,
+    cachedInputTokens: 900 };
+  const report = buildCostReport({ ...contextWith({}), appState: { getSessionUsage: () => ({
+    ...lead, sequence: 1, costUsd: 0.002, billedEstimateUsd: 0.001, modelCalls: 2,
+    inputTokens: 2000, outputTokens: 200, totalTokens: 2200, meteredCalls: 1,
+    models: [lead, child], agents: [child], agentModels: [lead, child], includesSubagents: true,
+  }) } });
+  const plain = formatCostReport(report);
+  expect(plain).toContain('ChatGPT plan: 1 call, covered by your subscription');
+  expect(plain).toContain('Same calls on an API key: $0.010 (for comparison, not billed)');
+  expect(plain).toContain('lead · openai/gpt-6.1-sol: 1 calls');
+  expect(plain).toContain('sub-agent 1 · deepseek/deepseek-flash: 1 calls');
+  expect(plain).toContain('90% cached · 100 out · $0.0010 billed');
+  const modal = await renderToString(createElement(CostUsageModal, { report, onDone: () => {}, active: false }),
+    { columns: 120, rows: 60 });
+  for (const text of ['on an API key', 'covered by your subscription', 'ChatGPT plan', 'openai/gpt-6.1-sol',
+    'deepseek/deepseek-flash', '50% cached', '90% cached', '$0.0010 billed']) expect(modal).toContain(text);
 });

@@ -862,6 +862,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       model: isString,
       provider: isString,
       speed: literal("fast"),
+      billingMode: literal("plan"),
       providerCostUsd: isNumber,
     },
   ),

@@ -363,6 +363,8 @@ export interface LLMUsage {
    * can serve the call from an endpoint whose price is not the catalog's.
    */
   readonly providerCostUsd?: number;
+  /** Accounting annotation only, recorded after a ChatGPT sign-in response. */
+  readonly billingMode?: "plan";
 }
 
 /**

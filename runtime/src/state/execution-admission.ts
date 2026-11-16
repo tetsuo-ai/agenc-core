@@ -13,7 +13,6 @@ import type {
   AdmissionUsage,
   AdmissionUsageSummary,
   AdmissionUsageSnapshot,
-  AdmissionUsageTotals,
   PersistedAdmissionRecord,
   PersistedAdmissionStatus,
   RuntimeAdmissionRequest,
@@ -37,7 +36,7 @@ import {
 } from "./run-cancellation.js";
 import { sqlPlaceholders } from "./sql.js";
 import type { StateSqliteDriver, SqliteStatement } from "./sqlite-driver.js";
-import { AdmissionUsageProjection, captureMaterializedUsage, MAX_UNPRICED_USAGE_CALLS, offPeakSavingsNanos, unpricedUsageCall, type UsageReservation } from "./admission-usage-snapshot.js";
+import { AdmissionUsageProjection, captureMaterializedUsage, type UsageReservation } from "./admission-usage-snapshot.js";
 
 export const NANO_USD_PER_USD = 1_000_000_000;
 const MAX_LIST_LIMIT = 1_000;
@@ -107,6 +106,12 @@ export interface ClaimAdmissionOptions {
   readonly attached?: boolean;
   readonly now?: string;
 }
+
+/**
+ * What a dispatched plan call keeps in its job row until usage arrives. The
+ * usage summary reads it as billing details without usage (display only).
+ */
+const PLAN_ROUTE_RESULT_JSON = '{"billingMode":"plan"}';
 
 export interface MarkAdmissionDispatchedOptions {
   readonly dispatchedAt?: string;
@@ -278,50 +283,6 @@ interface ReservationRow {
   readonly resolution_reason: string | null;
   readonly created_at: string;
   readonly updated_at: string;
-}
-
-interface UsageAggregateRow {
-  readonly run_id: string;
-  readonly kind: string;
-  readonly model: string | null;
-  readonly provider: string | null;
-  readonly input_tokens: number;
-  readonly output_tokens: number;
-  readonly total_tokens: number;
-  readonly cost_nanos: number;
-  readonly held_cost_nanos: number;
-  readonly model_calls: number;
-  readonly unknown_count: number;
-  readonly estimated_count: number;
-}
-
-function sumUsageRows(rows: readonly UsageAggregateRow[]): AdmissionUsageTotals {
-  let costNanos = 0;
-  let heldCostNanos = 0;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let totalTokens = 0;
-  let modelCalls = 0;
-  let hasUnknownCost = false;
-  for (const row of rows) {
-    costNanos += row.cost_nanos;
-    heldCostNanos += row.held_cost_nanos;
-    inputTokens += row.input_tokens;
-    outputTokens += row.output_tokens;
-    totalTokens += row.total_tokens;
-    modelCalls += row.model_calls;
-    hasUnknownCost ||= row.unknown_count > 0;
-  }
-  return {
-    costUsd: nanosToUsd(costNanos),
-    heldCostUsd: nanosToUsd(heldCostNanos),
-    inputTokens,
-    outputTokens,
-    totalTokens,
-    modelCalls,
-    hasUnknownCost,
-    ...(rows.some(row => row.estimated_count > 0) ? { costEstimated: true } : {}),
-  };
 }
 
 interface CancellationJobPreStateRow {
@@ -1201,13 +1162,16 @@ export class ExecutionAdmissionRepository {
              WHERE reservation_id = ? AND status = 'reserved'`,
             )
             .run(at, at, options.providerRequestId ?? null, reservationId);
+          // A call on a subscription plan (ChatGPT sign-in) records its
+          // billing route here, so a failure or cancellation that never
+          // reports usage is still known not to cost money. Display only.
           this.#driver
             .prepareState(
               `UPDATE agent_jobs
-             SET admission_dispatched_at = ?, updated_at = ?
+             SET admission_dispatched_at = ?, updated_at = ?, result_json = COALESCE(?, result_json)
              WHERE id = ? AND admission_reservation_id = ?`,
             )
-            .run(at, at, job.id, reservationId);
+            .run(at, at, options.details?.billingMode === "plan" ? PLAN_ROUTE_RESULT_JSON : null, job.id, reservationId);
           this.#appendJournalLocked({
             timestamp: at,
             jobId: job.id,
@@ -1869,104 +1833,18 @@ export class ExecutionAdmissionRepository {
           "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM execution_admission_journal",
         )
         .get()?.sequence ?? 0;
-      const rows = this.#driver
-        .prepareState<string[], UsageAggregateRow>(
-          `SELECT reservation.run_id, reservation.kind, reservation.model, reservation.provider,
-             COALESCE(SUM(CASE WHEN reservation.status IN ('reconciled', 'provider_overrun', 'held_unknown')
-               THEN COALESCE(reservation.actual_input_tokens, 0) ELSE 0 END), 0) AS input_tokens,
-             COALESCE(SUM(CASE WHEN reservation.status IN ('reconciled', 'provider_overrun', 'held_unknown')
-               THEN COALESCE(reservation.actual_output_tokens, 0) ELSE 0 END), 0) AS output_tokens,
-             COALESCE(SUM(CASE WHEN reservation.status IN ('reconciled', 'provider_overrun', 'held_unknown')
-               THEN COALESCE(reservation.actual_tokens, 0) ELSE 0 END), 0) AS total_tokens,
-             COALESCE(SUM(CASE WHEN reservation.status IN ('reconciled', 'provider_overrun')
-               THEN COALESCE(reservation.actual_cost_nanos, 0) ELSE 0 END), 0) AS cost_nanos,
-             COALESCE(SUM(CASE WHEN reservation.status IN ('reserved', 'dispatched', 'held_unknown') OR
-               (reservation.status = 'provider_overrun' AND reservation.actual_cost_nanos IS NULL)
-               THEN reservation.reserved_cost_nanos ELSE 0 END), 0) AS held_cost_nanos,
-             SUM(CASE WHEN reservation.kind = 'model_turn'
-               AND reservation.status IN ('reconciled', 'provider_overrun', 'held_unknown')
-               AND reservation.actual_tokens IS NOT NULL THEN 1 ELSE 0 END) AS model_calls,
-             SUM(CASE WHEN reservation.status = 'held_unknown' OR
-               (reservation.status IN ('reconciled', 'provider_overrun') AND reservation.actual_cost_nanos IS NULL)
-               THEN 1 ELSE 0 END) AS unknown_count,
-             SUM(CASE WHEN reservation.resolution_reason = 'estimated_model_price' THEN 1 ELSE 0 END) AS estimated_count
-           FROM execution_admission_reservations AS reservation
-           JOIN execution_admission_reservation_allocations AS allocation
-             ON allocation.reservation_id = reservation.reservation_id AND allocation.scope_key = ?
-           WHERE reservation.status != 'voided'
-             ${directOnly ? "AND reservation.run_id = ?" : ""}
-           GROUP BY reservation.run_id, reservation.kind, reservation.model, reservation.provider
-           ORDER BY reservation.run_id, reservation.kind, reservation.model, reservation.provider`,
-        )
-        .all(...(directOnly ? [allocationKey, runId] : [allocationKey]));
-      const modelRows = new Map<string, UsageAggregateRow[]>();
-      const agentRows = new Map<string, UsageAggregateRow[]>();
-      for (const row of rows) {
-        if (row.kind === "model_turn") {
-          const key = JSON.stringify([row.provider, row.model]);
-          const group = modelRows.get(key) ?? [];
-          group.push(row);
-          modelRows.set(key, group);
-        }
-        if (row.run_id !== runId) {
-          const group = agentRows.get(row.run_id) ?? [];
-          group.push(row);
-          agentRows.set(row.run_id, group);
-        }
-      }
-      const unpricedCallCount = rows.reduce((sum, row) => sum + row.unknown_count, 0);
-      // Observation only: retain the settled peak-rate accounting totals above.
-      // Read dispatch times before aggregation so mixed-window sessions price
-      // each eligible call independently, including resumed and child calls.
-      const displayRows = this.#driver.prepareState<string[], Parameters<typeof offPeakSavingsNanos>[0]>(
-        `SELECT reservation.kind, reservation.provider, reservation.model, reservation.status,
-           reservation.actual_cost_nanos, reservation.resolution_reason, reservation.dispatched_at
+      const projection = new AdmissionUsageProjection();
+      const rows = this.#driver.prepareState<string[], UsageReservation>(
+        `SELECT reservation.*, job.result_json AS usage_details_json
          FROM execution_admission_reservations AS reservation
          JOIN execution_admission_reservation_allocations AS allocation
            ON allocation.reservation_id = reservation.reservation_id AND allocation.scope_key = ?
-         WHERE reservation.kind = 'model_turn'
-           AND reservation.status IN ('reconciled', 'provider_overrun')
-           AND reservation.actual_cost_nanos > 0
+         LEFT JOIN agent_jobs AS job ON job.id = reservation.job_id
+         WHERE reservation.status != 'voided'
            ${directOnly ? "AND reservation.run_id = ?" : ""}`,
-      ).all(...(directOnly ? [allocationKey, runId] : [allocationKey]));
-      let savingsNanos = 0;
-      let hasMissingTime = false;
-      for (const row of displayRows) {
-        const savings = offPeakSavingsNanos(row);
-        hasMissingTime ||= savings === null;
-        savingsNanos += savings ?? 0;
-      }
-      const usageTotals = sumUsageRows(rows);
-      const unpricedCalls = unpricedCallCount === 0 ? [] : this.#driver
-        .prepareState<string[], UsageReservation>(
-          `SELECT reservation.* FROM execution_admission_reservations AS reservation
-           JOIN execution_admission_reservation_allocations AS allocation
-             ON allocation.reservation_id = reservation.reservation_id AND allocation.scope_key = ?
-           WHERE (reservation.status = 'held_unknown' OR
-             (reservation.status IN ('reconciled', 'provider_overrun') AND reservation.actual_cost_nanos IS NULL))
-             ${directOnly ? "AND reservation.run_id = ?" : ""}
-           ORDER BY reservation.reservation_id LIMIT ${MAX_UNPRICED_USAGE_CALLS}`,
-        ).all(...(directOnly ? [allocationKey, runId] : [allocationKey]))
-        .map(row => unpricedUsageCall(row)!);
-      return {
-        runId,
-        sequence,
-        ...usageTotals,
-        ...(!hasMissingTime && !usageTotals.costEstimated
-          ? { billedEstimateUsd: (rows.reduce((sum, row) => sum + row.cost_nanos, 0) - savingsNanos) / 1_000_000_000 } : {}),
-        ...(savingsNanos > 0 ? { hasOffPeakDiscount: true } : {}),
-        ...(hasMissingTime ? { hasMissingDispatchTime: true } : {}),
-        ...(unpricedCallCount > 0 ? { unpricedCalls, unpricedCallCount } : {}),
-        models: [...modelRows.values()].map((group) => ({
-          model: group[0]!.model ?? "unknown",
-          ...(group[0]!.provider !== null ? { provider: group[0]!.provider! } : {}),
-          ...sumUsageRows(group),
-        })),
-        agents: [...agentRows].map(([agentRunId, group]) => ({
-          runId: agentRunId,
-          ...sumUsageRows(group),
-        })),
-      };
+      ).iterate(...(directOnly ? [allocationKey, runId] : [allocationKey]));
+      for (const row of rows) projection.append(row);
+      return projection.capture(runId, sequence).read();
     });
   }
 
@@ -1987,7 +1865,8 @@ export class ExecutionAdmissionRepository {
       this.#catchUpUsageViews(sequence);
       const key = JSON.stringify([runId, allocationKey]);
       let view = this.#usageViews.get(key);
-      const select = `SELECT reservation.* FROM execution_admission_reservations AS reservation
+      const select = `SELECT reservation.*, job.result_json AS usage_details_json FROM execution_admission_reservations AS reservation
+        LEFT JOIN agent_jobs AS job ON job.id = reservation.job_id
         JOIN execution_admission_reservation_allocations AS allocation
         ON allocation.reservation_id = reservation.reservation_id
         WHERE allocation.scope_key = ? AND reservation.status != 'voided'`;
@@ -2839,8 +2718,9 @@ export class ExecutionAdmissionRepository {
       .run(
         finalStatus,
         actualTokens === null
-          ? null
+          ? (job.result_json === PLAN_ROUTE_RESULT_JSON ? PLAN_ROUTE_RESULT_JSON : null)
           : JSON.stringify({
+              ...((input.kind === "reported" || input.kind === "provider_overrun") ? normalizeUsage(input.usage).billingDetails : {}),
               inputTokens: actualInputTokens,
               outputTokens: actualOutputTokens,
               totalTokens: actualTokens,
@@ -3112,7 +2992,7 @@ export class ExecutionAdmissionRepository {
                  WHEN 'dispatched' THEN 'held_unknown'
                  ELSE 'cancelled'
                END,
-               result_json = NULL,
+               result_json = CASE WHEN job.result_json = '${PLAN_ROUTE_RESULT_JSON}' THEN job.result_json ELSE NULL END,
                error = CASE (
                  SELECT reservation.status
                  FROM execution_admission_reservations AS reservation
@@ -4165,7 +4045,17 @@ function normalizeUsage(usage: AdmissionUsage): AdmissionUsage {
   checkedTokenSum(inputTokens, outputTokens);
   const costUsd =
     usage.costUsd === null ? null : nanosToUsd(usdToNanos(usage.costUsd));
-  return { inputTokens, outputTokens, costUsd };
+  const details = usage.billingDetails;
+  return { inputTokens, outputTokens, costUsd,
+    ...(details === undefined ? {} : { billingDetails: {
+      billingMode: details.billingMode === "plan" ? "plan" as const : "metered" as const,
+      ...(details.apiEquivalentUnknown === true ? { apiEquivalentUnknown: true } : {}),
+      ...(details.cachedInputTokens === undefined ? {} : { cachedInputTokens:
+        Math.min(inputTokens, normalizeNonNegativeInteger(details.cachedInputTokens, "usage.cachedInputTokens")) }),
+      ...(details.apiEquivalentUsd === undefined ? {} : { apiEquivalentUsd: nanosToUsd(usdToNanos(details.apiEquivalentUsd)) }),
+      ...(details.offPeakEligibleCostUsd === undefined ? {} : { offPeakEligibleCostUsd: nanosToUsd(usdToNanos(details.offPeakEligibleCostUsd)) }),
+    } }),
+  };
 }
 
 function requireNonEmpty(value: string, field: string): string {

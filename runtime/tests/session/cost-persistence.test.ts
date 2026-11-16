@@ -1029,3 +1029,21 @@ describe("CostSidecar.stop (lifecycle)", () => {
 afterEach(() => {
   /* tmpdirs cleaned up by OS */
 });
+
+test('restores plan counts and API-equivalent without billing the old tokens again', async () => {
+  const projectDir = makeProjectDir();
+  const sidecar = new CostSidecar({ projectDir, sessionId: 'plan' });
+  sidecar.onEvent({ id: 'p1', msg: { type: 'token_count', payload: {
+    provider: 'openai', model: 'gpt-6.1-sol', promptTokens: 1000, completionTokens: 100,
+    totalTokens: 1100, billingMode: 'plan',
+  } } });
+  const original = sidecar.getSessionModelUsage()[0]!;
+  expect(original.apiEquivalentUsd).toBeGreaterThan(0);
+  await sidecar.saveCurrentSessionCosts();
+  const restored = new CostSidecar({ projectDir, sessionId: 'plan' });
+  await restored.loadFromDisk();
+  expect(restored.restoreSessionCostsForSession('plan')).toBe(true);
+  expect(restored.getTotalCostUsd()).toBe(0);
+  expect(restored.getTotalAccountingCostUsd()).toBeCloseTo(original.apiEquivalentUsd!, 12);
+  expect(restored.getSessionModelUsage()[0]).toMatchObject({ planCalls: 1, apiEquivalentUsd: original.apiEquivalentUsd });
+});

@@ -29,3 +29,8 @@ describe("the default goal judge", () => {
     expect(reviewCalls[0]).toMatchObject({ registerTask: false, reuseKey: false, reviewerModel: "grok-test" });
   });
 });
+
+test('goal budgets retain accounting cost when the display excludes plan charges', () => {
+  const session = { services: { costSidecar: { getTotalCostUsd: () => 0, getTotalAccountingCostUsd: () => 1.25 } } } as never;
+  expect(defaultGoalGateDeps.sessionCostUsd(session)).toBe(1.25);
+});

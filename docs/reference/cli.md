@@ -118,20 +118,48 @@ provider and model keep no data, red when data may be kept, and a dim `ZDR?`
 when AgenC cannot tell; `/status` says why
 ([providers.md](providers.md#zero-data-retention)).
 
-Spend reads, for example, `$0.750 off-peak` when at least one discount applies.
-Otherwise it shows the figure without a suffix. It sums each call's recorded
-cost, applying half price to calls dispatched during the recorded off-peak
-hours for the DeepSeek API and eligible QwenCloud DeepSeek models. The clock
-now and the currently selected model do not change earlier calls' estimates.
-Narrow terminals may shorten `off-peak` to `op`. `≥` means some calls
-have unknown cost and are excluded from the figure; `price unknown` means a
-fallback price was used. Eligible priced calls without the necessary dispatch
-times show the accounting figure with `peak est.` instead. Unrecorded schedules
-(including Ollama Cloud) and Chinese public holidays are not discounted, so a billed
-estimate can still exceed the provider's charge. `/cost` shows the accounting
-total at peak rates alongside the billed estimate. Budgets, spend caps,
-stored accounting totals, custom status-line hook costs and print summaries
-continue to use the accounting total.
+A swarm on ChatGPT sign-in reads
+`ctx lead 3% · swarm cache 90% · swarm $1.12 billed off-peak · ChatGPT plan`.
+`billed` is an estimate of token and tool charges, not an invoice, and it is
+always shown: a sign-in session with no metered call reads
+`$0.00 billed · ChatGPT plan`. `ChatGPT plan` means the session has calls that
+the subscription covers, with no per-token charge (`subscription plan` for
+another provider's plan). ChatGPT sign-in uses plan accounting; an OpenAI API
+key uses API pricing and shows no plan. `swarm` in front of a figure says it
+includes the lead and its recorded sub-agents, finished ones too. `/cost` has
+the breakdown.
+
+`ctx` is the lead's resident context, never the sum of agent contexts; it
+reads `ctx lead` from the first sub-agent on. `swarm cache` is cached input
+divided by input across the lead and sub-agents; plain `cache` is the lead's
+own. It counts tokens, not calls; input already includes cached tokens.
+`(1 call unknown)` after the share means that many calls reported no cache
+count and are left out of it. Sessions recorded before these ledger details
+keep the plain `cache` figure from the lead's transcript. A missing cache
+count is not treated as a cache miss. These shares say nothing about how much
+space remains in a sub-agent's context.
+
+When this block is too wide for the second row, its money facts (billed
+amount, plan, badges) move to a third row, so a plan or swarm line keeps
+whole words down to about 60 columns.
+
+`off-peak` stays next to billed money. Each call uses its dispatch time and the
+recorded DeepSeek or QwenCloud schedule. DeepSeek web-tool fees keep their full
+price; provider-reported charges are not discounted again. `≥` means unpriced
+calls are excluded; a plan call that failed or was cancelled before it
+reported usage never adds `≥`, because its billing route is recorded when it
+is sent. `price unknown` means fallback pricing was needed.
+`peak est.` means an eligible call lacks its dispatch time. Holidays and other
+unrecorded discounts can still make the estimate differ from the provider's
+charge. Historical calls without a recorded billing route cannot be reclassified
+as plan usage safely.
+
+`AGENC_PLAN_ACCOUNTING=off` disables recording the new accounting annotations for
+new calls. The default is enabled. It is read per session: a client sends it
+to a running daemon with its session environment, and a daemon's own value
+does not apply to clients that did not set it. This switch never changes provider requests.
+Budget reservations and enforcement retain their conservative accounting basis;
+API-equivalent values are not subscription invoices.
 
 ### Print-mode notes
 
@@ -230,9 +258,17 @@ continue to use the accounting total.
   OpenRouter and Venice), media generation, and the model calls a tool makes
   (`web_fetch`'s `prompt` extraction, Grok's native web search, `XSearch`).
   A tool call that reports no price (a local tool, or a configured search
-  endpoint) adds nothing. Sub-agents keep their own accounting and are not
-  included. `costKnown` is `false` when the model part is incomplete (for
-  example after a resume) or the tool charges could not be read.
+  endpoint) adds nothing. When the run's ledger records sub-agents, their
+  calls are in these totals too, as in `/cost`. `costUsd` is the accounting
+  total: metered calls at peak rates, with plan calls (ChatGPT sign-in) at
+  zero. Next to it, when the ledger has them: `billedEstimateUsd` is the
+  figure the status line shows as `billed` (recorded off-peak hours
+  applied), `planCalls` counts the calls a subscription covers, and
+  `apiEquivalentUsd` is what those plan calls would cost at API rates
+  (reference only, not billed; `apiEquivalentUnknown` marks a plan call
+  without a known price). `costKnown` is `false` when the model part is
+  incomplete (for example after a resume) or the tool charges could not be
+  read.
 
 ### Examples
 

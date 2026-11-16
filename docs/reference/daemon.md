@@ -427,9 +427,14 @@ Never retry after admission may have arrived.
 turns plus the charges of its own tool calls as the admission ledger settled
 them (web search and fetch fees, media generation, and the model calls tools
 make such as `web_fetch` prompt extraction). A tool call without a price adds
-nothing, and sub-agents are not included. `costKnown` is also `false` when the
-ledger cannot be read. `agenc -p --output-format json` reports this object as
-`tokenUsage`.
+nothing. `costKnown` is also `false` when the ledger cannot be read.
+
+`agenc -p --output-format json` reports `tokenUsage` from the run's ledger
+summary, the same one `/cost` reads: sub-agents recorded in the ledger are
+included in its tokens and `costUsd`, plan calls (ChatGPT sign-in) count at
+zero, and `billedEstimateUsd`, `planCalls` and `apiEquivalentUsd` are added
+when the ledger has them ([cli.md](cli.md)). Only when the run carried no
+ledger summary does it fall back to the snapshot object above.
 
 `session.snapshot` may include `contextBreakdown`, a rough estimate for
 resident, MCP, and deferred tools, readable memory files, history, the system

@@ -1,3 +1,5 @@
+import { cacheUnknownNote, sessionSpendLabel, usageCachePercent, usagePlanLabel } from "../../session/usage-display.js";
+import type { AdmissionUsageSummary } from "../../budget/admission-types.js";
 import { c as _c } from "react-compiler-runtime";
 import { homedir } from 'node:os';
 import { basename, resolve, sep } from 'node:path';
@@ -416,7 +418,7 @@ export function FullscreenLayout(t0) {
   } = useTerminalSize();
   // The status line reports whether it needs a second row; the transcript,
   // prompt and suggestion list give that row up instead of overlapping it.
-  const [statusRows, setStatusRows] = useState<1 | 2>(1);
+  const [statusRows, setStatusRows] = useState<1 | 2 | 3>(1);
   const layoutBudget = calculateFullscreenLayoutBudget(terminalRows, statusRows);
   const isFullscreen = useFullscreenMode();
   const [stickyPrompt, setStickyPrompt] = useState<StickyPrompt | null>(null);
@@ -582,8 +584,7 @@ function useSessionSpendLabel(): string {
   if (usage === null) return '';
   // An estimated call was priced at the registry ceiling because its model
   // has no known price: that figure is not a cost, so say so instead.
-  if (usage?.costEstimated === true) return PRICE_UNKNOWN_LABEL;
-  if (usage !== undefined) return `${usage.hasUnknownCost ? '≥' : ''}${formatUsdCost(usage.billedEstimateUsd ?? usage.costUsd)}`;
+  if (usage !== undefined) return sessionSpendLabel(usage);
   return spend;
 }
 
@@ -663,7 +664,7 @@ export type StatusLineUsageSpan = {
 };
 
 export type StatusLineUsageItem = {
-  readonly key: 'ctx' | 'cache' | 'spend';
+  readonly key: 'ctx' | 'cache' | 'spend' | 'plan';
   readonly spans: readonly StatusLineUsageSpan[];
 };
 
@@ -671,34 +672,74 @@ const OFF_PEAK_NOTE = ' off-peak';
 const PEAK_ESTIMATE_NOTE = ' peak est.';
 const PRICE_UNKNOWN_SHORT_LABEL = 'no price';
 
-/** Qualify discounts and missing dispatch times, independent of the current clock. */
+/**
+ * `swarm`: sub-agents ran or run, so ctx is named the lead's. `cache`: whose
+ * calls the cache share covers. `unknownCalls`: calls left out of that share
+ * because they reported no cache count.
+ */
+export type StatusUsageScope = {
+  readonly swarm: boolean;
+  readonly cache: 'swarm' | 'lead';
+  readonly unknownCalls: number;
+};
+
+/**
+ * What the status line's ctx and cache figures cover, for a session whose
+ * ledger records billing routes. `swarm` is true once sub-agents have usage
+ * or are running, so ctx reads "ctx lead" from the first spawn on, not only
+ * after the first sub-agent call returns. Undefined for older summaries.
+ */
+export function statusUsageScope(
+  usage: Pick<AdmissionUsageSummary, 'planCalls' | 'includesSubagents' | 'cacheInputTokens' | 'cacheUnreportedCalls'> | null | undefined,
+  runningAgents: number,
+): StatusUsageScope | undefined {
+  if (usage === null || usage === undefined) return undefined;
+  if (usage.planCalls === undefined && usage.includesSubagents !== true) return undefined;
+  return {
+    swarm: usage.includesSubagents === true || runningAgents > 0,
+    cache: usage.cacheInputTokens !== undefined && usage.includesSubagents === true ? 'swarm' : 'lead',
+    unknownCalls: usage.cacheInputTokens === undefined ? 0 : usage.cacheUnreportedCalls ?? 0,
+  };
+}
+
 export function statusLineUsageItems(
   contextPercent: number | null,
   cachePercent: number | null,
   spend: string | null,
   costBasis: 'off-peak' | 'peak-estimate' | null,
   valueColor: 'accentSoft' | 'accent' = 'accentSoft',
+  scope?: StatusUsageScope,
+  planLabel: string | null = null,
 ): StatusLineUsageItem[] {
   const items: StatusLineUsageItem[] = [];
   if (contextPercent !== null) {
     items.push({ key: 'ctx', spans: [
-      { text: 'ctx ', color: 'text2' },
+      { text: scope?.swarm ? 'ctx lead ' : 'ctx ', color: 'text2' },
       { text: `${contextPercent}%`, color: contextPercent >= 80 ? 'error' : valueColor },
     ] });
   }
   if (cachePercent !== null) {
+    // "swarm cache" is the share over the lead and its sub-agents; plain
+    // "cache" is the lead's own. Calls without a cache count are named.
+    const unknown = cacheUnknownNote(scope?.unknownCalls);
     items.push({ key: 'cache', spans: [
-      { text: 'cache ', color: 'text2' },
+      { text: scope?.cache === 'swarm' ? 'swarm cache ' : 'cache ', color: 'text2' },
       { text: `${cachePercent}%`, color: valueColor },
+      ...(unknown ? [{ text: ` ${unknown}`, color: 'text2' as const }] : []),
     ] });
   }
   if (spend !== null) {
-    const figure = /^≥?\$/u.test(spend);
+    const figure = /^(swarm )?(≥?\$[^ ]+)(.*)$/u.exec(spend);
     const note = costBasis === 'off-peak' ? OFF_PEAK_NOTE : costBasis === 'peak-estimate' ? PEAK_ESTIMATE_NOTE : null;
     items.push({ key: 'spend', spans: !figure
       ? [{ text: spend, color: 'text' }]
-      : [{ text: spend, color: valueColor }, ...(note === null ? [] : [{ text: note, color: 'text2' as const }])] });
+      : [...(figure[1] ? [{ text: figure[1], color: 'text2' as const }] : []),
+        { text: figure[2]!, color: valueColor },
+        ...(figure[3] ? [{ text: figure[3], color: 'text2' as const }] : []),
+        ...(note === null ? [] : [{ text: note, color: 'text2' as const }])] });
   }
+  // The subscription that covers the plan calls, by name ("ChatGPT plan").
+  if (planLabel !== null) items.push({ key: 'plan', spans: [{ text: planLabel, color: 'text2' }] });
   return items;
 }
 
@@ -724,10 +765,11 @@ export function statusLineRightFacts(
 ): StatusLineFact[] {
   const facts: StatusLineFact[] = items.map((item): StatusLineFact => {
     const short = item.key === 'cache'
-      ? item.spans.map(span => (span.text === 'cache ' ? { ...span, text: 'c ' } : span))
+      ? item.spans.map(span => (span.text.endsWith('cache ') ? { ...span, text: span.text.replace('cache ', 'c ') }
+        : / calls? unknown\)$/u.test(span.text) ? { ...span, text: span.text.replace(/ calls? unknown\)$/u, ' unknown)') } : span))
       : item.key === 'spend'
         ? item.spans.map(span => (
-          span.text === OFF_PEAK_NOTE ? { ...span, text: ' op' }
+          span.text.endsWith(OFF_PEAK_NOTE) ? { ...span, text: span.text.replace(OFF_PEAK_NOTE, ' op') }
             : span.text === PRICE_UNKNOWN_LABEL ? { ...span, text: PRICE_UNKNOWN_SHORT_LABEL } : span
         ))
         : null;
@@ -829,7 +871,7 @@ function StatusLineFacts({ facts }: { readonly facts: readonly PlacedStatusLineF
 function StatusLineChrome({ columns, onRowsChange }: {
   columns: number;
   /** Told the row count the line takes, so the layout can give it room. */
-  onRowsChange?: (rows: 1 | 2) => void;
+  onRowsChange?: (rows: 1 | 2 | 3) => void;
 }): React.ReactNode {
   const model = useAppStateMaybeOutsideOfProvider(state => state.mainLoopModel) ?? 'agenc';
   const mode = useAppStateMaybeOutsideOfProvider(state => state.toolPermissionContext.mode) ?? 'default';
@@ -850,9 +892,12 @@ function StatusLineChrome({ columns, onRowsChange }: {
   const spend = useSessionSpendLabel();
   const effort = useStatusEffort();
   const contextPercent = useStatusContextUsage();
-  const cachePercent = useStatusPromptCache();
+  const leadCachePercent = useStatusPromptCache();
   const usage = useSessionUsage();
-  const costBasis = usage?.hasMissingDispatchTime ? 'peak-estimate'
+  const cachePercent = usage?.cacheInputTokens !== undefined ? usageCachePercent(usage) : leadCachePercent;
+  const usageScope = statusUsageScope(usage, runningAgents);
+  const detailedUsage = usageScope !== undefined;
+  const costBasis = detailedUsage ? null : usage?.hasMissingDispatchTime ? 'peak-estimate'
     : usage?.billedEstimateUsd !== undefined && usage.hasOffPeakDiscount ? 'off-peak' : null;
   const zdr = useStatusZdr();
   const webSearch = useStatusWebSearch();
@@ -867,6 +912,7 @@ function StatusLineChrome({ columns, onRowsChange }: {
   // (PuTTY, Ubuntu, the Windows console), so the dark ANSI theme shows the
   // figures in its bright accent instead.
   const valueColor = themeName === 'dark-ansi' ? 'accent' : 'accentSoft';
+  const planLabel = usageScope !== undefined && usage ? usagePlanLabel(usage) : null;
   const layout = layoutStatusLine(
     columns,
     statusLineLeftFacts({
@@ -876,14 +922,16 @@ function StatusLineChrome({ columns, onRowsChange }: {
       shellCount,
       runningAgents,
     }),
-    statusLineRightFacts(statusLineUsageItems(contextPercent, cachePercent, segments.spend, costBasis, valueColor), zdr, webSearch),
+    statusLineRightFacts(statusLineUsageItems(contextPercent, cachePercent, segments.spend, costBasis, valueColor, usageScope,
+      planLabel), zdr, webSearch),
+    { wholeWords: usageScope?.swarm === true || planLabel !== null },
   );
   useLayoutEffect(() => {
     onRowsChange?.(layout.rows);
   }, [layout.rows, onRowsChange]);
-  if (layout.rows === 2) {
+  if (layout.rows >= 2) {
     return (
-      <Box flexDirection="column" paddingX={2} height={2} overflow="hidden" flexShrink={0}>
+      <Box flexDirection="column" paddingX={2} height={layout.rows} overflow="hidden" flexShrink={0}>
         <Box flexDirection="row" height={1} overflow="hidden">
           <StatusLineFacts facts={layout.left} />
         </Box>
@@ -892,6 +940,12 @@ function StatusLineChrome({ columns, onRowsChange }: {
           <LedgerStatus />
           <StatusLineFacts facts={layout.right} />
         </Box>
+        {layout.rows === 3 ? (
+          <Box flexDirection="row" height={1} overflow="hidden">
+            <Box flexGrow={1} />
+            <StatusLineFacts facts={layout.rightSecond ?? []} />
+          </Box>
+        ) : null}
       </Box>
     );
   }

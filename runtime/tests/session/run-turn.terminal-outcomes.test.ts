@@ -72,12 +72,13 @@ describe("canonical turn outcomes", () => {
     ).toContainEqual(expect.objectContaining({ outcome: "completed", code: 0 }));
   });
 
-  test("cost caps publish a failed canonical boundary before sampling", async () => {
+  test.each([false, true])("cost caps publish a failed canonical boundary before sampling (plan=%s)", async plan => {
     const chatStream = vi.fn(mkProvider().chatStream);
     const { session, events } = mkSession({
       provider: { ...mkProvider(), chatStream },
       services: {
-        costSidecar: { getTotalCostUsd: () => 1 } as SessionServices["costSidecar"],
+        costSidecar: { getTotalCostUsd: () => plan ? 0 : 1,
+          ...(plan ? { getTotalAccountingCostUsd: () => 1 } : {}) } as SessionServices["costSidecar"],
       },
     });
     const ctx = mkCtx();

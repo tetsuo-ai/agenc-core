@@ -12,7 +12,15 @@ function isUsageTotals(value: unknown): value is AdmissionUsageTotals {
     const count = record[key];
     if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) return false;
   }
-  return true;
+  for (const key of ["planCalls", "meteredCalls", "cachedInputTokens", "cacheInputTokens", "cacheUnreportedCalls"]) {
+    const count = record[key];
+    if (count !== undefined && (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0)) return false;
+  }
+  for (const key of ["apiEquivalentUsd", "billedEstimateUsd"]) {
+    const amount = record[key];
+    if (amount !== undefined && (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0)) return false;
+  }
+  return record.apiEquivalentUnknown === undefined || typeof record.apiEquivalentUnknown === "boolean";
 }
 
 export function isAdmissionUsageSummary(value: unknown): value is AdmissionUsageSummary {
@@ -20,6 +28,14 @@ export function isAdmissionUsageSummary(value: unknown): value is AdmissionUsage
   return record !== null && isUsageTotals(record) &&
     (record.billedEstimateUsd === undefined ||
       (typeof record.billedEstimateUsd === "number" && Number.isFinite(record.billedEstimateUsd) && record.billedEstimateUsd >= 0)) &&
+    (record.includesSubagents === undefined || typeof record.includesSubagents === "boolean") &&
+    (record.agentModels === undefined || (Array.isArray(record.agentModels) && record.agentModels.every((entry: unknown) => {
+      const row = asRecord(entry);
+      return row !== null && isUsageTotals(row) && typeof row.runId === "string" && typeof row.model === "string" &&
+        (row.provider === undefined || typeof row.provider === "string") &&
+        (row.kind === undefined || row.kind === "tools") &&
+        (row.toolCharges === undefined || (typeof row.toolCharges === "number" && Number.isSafeInteger(row.toolCharges) && row.toolCharges >= 0));
+    }))) &&
     (record.hasOffPeakDiscount === undefined || typeof record.hasOffPeakDiscount === "boolean") &&
     (record.hasMissingDispatchTime === undefined || typeof record.hasMissingDispatchTime === "boolean") &&
     (record.unpricedCallCount === undefined ||

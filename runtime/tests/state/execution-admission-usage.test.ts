@@ -223,3 +223,30 @@ describe("canonical session usage", () => {
     expect(events).toHaveLength(count);
   });
 });
+
+it('persists plan attribution and cached counts through captured settlement and restart', async () => {
+  const kernel = createKernel();
+  const parent = bind(kernel, 'plan-parent');
+  const child = parent.forSession({ runId: 'plan-child', sessionId: 'plan-child' });
+  const snapshots: AdmissionUsageSummary[] = [];
+  parent.subscribeUsageSnapshot!(snapshot => snapshots.push(snapshot.read()));
+  for (const [client, id, provider, model, billingMode, costUsd, cachedInputTokens] of [
+    [parent, 'lead-plan', 'openai', 'gpt-6.1-sol', 'plan', 0.4, 5],
+    [child, 'child-api', 'deepseek', 'deepseek-v4.1-flash', 'metered', 0.2, 8],
+  ] as const) {
+    const lease = await client.acquire({ stepId: id, kind: 'model_turn', provider, model,
+      maxInputTokens: 20, maxOutputTokens: 20, maxCostUsd: 0.5 });
+    client.markDispatched(lease.reservation.reservationId, { boundary: 'provider_wire', timestamp: '2026-10-24T02:00:00Z' });
+    client.reconcile(lease.reservation.reservationId, { inputTokens: 10, outputTokens: 5, costUsd,
+      billingDetails: { billingMode, cachedInputTokens, ...(billingMode === 'plan' ? { apiEquivalentUsd: costUsd } : {}) } });
+    client.acknowledgeCompletion(lease.reservation.reservationId);
+  }
+  const summary = parent.getUsageSummary!();
+  expect(summary).toMatchObject({ costUsd: 0.2, billedEstimateUsd: 0.1, planCalls: 1, meteredCalls: 1,
+    apiEquivalentUsd: 0.4, cachedInputTokens: 13, cacheInputTokens: 20, includesSubagents: true });
+  expect(summary.agentModels).toHaveLength(2);
+  expect(snapshots.at(-1)).toEqual(summary);
+  kernel.close();
+  kernels.splice(kernels.indexOf(kernel), 1);
+  expect(bind(createKernel(), 'plan-parent').getUsageSummary!()).toMatchObject(summary);
+});

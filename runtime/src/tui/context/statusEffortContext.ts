@@ -25,7 +25,7 @@ export function useStatusTurnBusy(): boolean {
   return useContext(StatusTurnBusyContext);
 }
 
-/** Percent of the session's input served from prompt cache; null hides it. */
+/** Legacy lead-transcript cache share; the footer prefers the scoped usage ledger. */
 export const StatusPromptCacheContext = createContext<number | null>(null);
 export function useStatusPromptCache(): number | null {
   return useContext(StatusPromptCacheContext);
