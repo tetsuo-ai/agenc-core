@@ -2,6 +2,7 @@ import { projectRepeatedReads } from "../tools/read-result-projection.js";
 import { resolveLightRequest } from "../session/light-request/settings.js";
 import { defaultLightModelVerbosity } from "../llm/openai-light-verbosity.js";
 import { lightSessionUsesOpenAiSocket } from "../llm/openai-light-transport.js";
+import { openAiLightOutputEnabled } from "../llm/openai-light-output.js";
 import { DegenerateTextDetector } from "../llm/degenerate-text.js";
 import { completeReasoningCapSample, type ReasoningCapSample } from "../session/reasoning-cap-policy.js";
 /**
@@ -361,8 +362,15 @@ export function buildProviderOptions(
       session.services.provider.name,
       model,
     ) ? { disableThinkingForRecovery: true as const } : {}),
-    reasoningSummary: ctx.reasoningSummary,
-    ...(ctx.reasoningSummaryIsDefault === true ? { reasoningSummaryIsDefault: true as const } : {}),
+    // `no-summary` (llm/openai-light-output.ts): a Light session on OpenAI whose user chose no
+    // summary level asks for none, so the wire adds no `summary: "auto"` for the replay.
+    ...(ctx.reasoningSummaryIsDefault === true && lightSessionUsesOpenAiSocket(session, session.services.provider.name) &&
+      openAiLightOutputEnabled(session.services.providerEnvironment, session.services.provider.name, "no-summary")
+      ? { reasoningSummary: "none" as const }
+      : {
+        reasoningSummary: ctx.reasoningSummary,
+        ...(ctx.reasoningSummaryIsDefault === true ? { reasoningSummaryIsDefault: true as const } : {}),
+      }),
     // Light on the GPT-6 family asks for short answers through the native
     // field unless the user chose a level (see openai-light-verbosity.ts).
     modelVerbosity: ctx.modelVerbosity ??

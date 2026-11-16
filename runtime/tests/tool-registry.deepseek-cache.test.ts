@@ -241,11 +241,15 @@ test("eager DeepSeek process schemas obey disabled-tool policy", () => {
 });
 
 test("other providers retain their measured deferred Light profile", () => {
-  const tools = fixture("openai").toLLMTools();
-  expect(tools.map(tool => tool.function.name)).not.toContain("write_stdin");
-  expect(tools.find(tool => tool.function.name === "exec_command")?.function.parameters.properties)
-    .not.toHaveProperty("sandbox_permissions");
-  expect(fields(tools, "exec_command")).toEqual(["cmd", "workdir", "timeoutMs", "background"]);
+  for (const provider of ["grok", "openai"]) {
+    const tools = fixture(provider).toLLMTools();
+    expect(tools.map(tool => tool.function.name), provider).not.toContain("write_stdin");
+    expect(tools.find(tool => tool.function.name === "exec_command")?.function.parameters.properties, provider)
+      .not.toHaveProperty("sandbox_permissions");
+    // OpenAI Light lists cmd and timeoutMs since 0.19.36 (llm/openai-light-output.ts, exec-args).
+    expect(fields(tools, "exec_command"), provider)
+      .toEqual(provider === "openai" ? ["cmd", "timeoutMs"] : ["cmd", "workdir", "timeoutMs", "background"]);
+  }
 });
 
 test("loading DeepSeek's published core tools is not a deferred load, and discovery survives a provider switch", () => {

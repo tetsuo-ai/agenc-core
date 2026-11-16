@@ -15,7 +15,8 @@ function registry(provider: string, model: string, value?: string, lightMode = t
 const baselines: Record<string, readonly [number, string, number]> = {
   "deepseek-flash": [4301, "943cecd0c7411c51aea663e539b9c2864dd4a59995c5f4b1d07ac130a375e3cf", 204],
   "deepseek-reasoner": [4584, "397ee1b0a1bcc670999adc7f43a4ec66169537310a175a6061f7e249fc830c9e", 190],
-  "gpt-6-luna": [2347, "df9bdc4d9db2110045dc89dd6c428377a6ad9df87aeca71f9fd9425dac7879d7", 102],
+  // 2347 bytes (df9bdc4d...) through 0.19.35; 52 fewer since exec-args is the OpenAI Light default (0.19.36).
+  "gpt-6-luna": [2295, "f321ba3b06dbca16f0ce4621d74f7fc22c630386e8f4012ae4fa0bcc6f1d90e7", 102],
   "claude-sonnet-4-5": [2602, "3bad2ea7bcde5e6f0eb722a291dafb9a750a8bc9597e4d5ff2f142c505c24a54", 190],
 };
 
