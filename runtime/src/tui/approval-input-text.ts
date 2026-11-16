@@ -131,3 +131,26 @@ function fallbackText(value: unknown, options: ApprovalInputTextOptions): string
     return String(value);
   }
 }
+
+/** Human fields for the approval fallback. Exact JSON stays in its details pager. */
+export function approvalInputDisplayText(input: unknown, options: ApprovalInputTextOptions = {}): string {
+  if (approvalInputIsShell(options.toolName, input) || input === null || typeof input !== 'object') {
+    return approvalInputText(input, options);
+  }
+  return labelledFields(input).join('\n');
+}
+
+function labelledFields(value: unknown, indent = ''): string[] {
+  if (value === null || typeof value !== 'object') return [`${indent}${String(value)}`];
+  const entries = Object.entries(value);
+  if (entries.length === 0) return [`${indent}${Array.isArray(value) ? '(empty list)' : '(no fields)'}`];
+  return entries.flatMap(([key, field]) => {
+    const words = Array.isArray(value) ? `Item ${Number(key) + 1}`
+      : key.replace(/([a-z])([A-Z])/gu, '$1 $2').replace(/[_-]+/gu, ' ');
+    const label = words.charAt(0).toUpperCase() + words.slice(1);
+    if (field !== null && typeof field === 'object') {
+      return [`${indent}${label}:`, ...labelledFields(field, `${indent}  `)];
+    }
+    return [`${indent}${label}: ${String(field)}`];
+  });
+}

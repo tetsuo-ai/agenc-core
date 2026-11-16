@@ -362,3 +362,28 @@ describe('BackgroundTasksPanel', () => {
     expect(requestTeammateShutdownMock).not.toHaveBeenCalled()
   })
 })
+
+it('uses a neutral task title before names are restored', async () => {
+  appStateMock.state = { tasks: { hidden: makeShellTask({ id: 'opaque-task-id', command: '', description: '' }) } }
+  const { BackgroundTasksPanel } = await import('./BackgroundTasksPanel.js')
+  const output = await renderToString(<BackgroundTasksPanel />, 100)
+  expect(output).toContain('Background task')
+  expect(output).not.toContain('running · local_bash · opaque-task-id')
+})
+it('does not expose unknown progress arguments in activity labels', async () => {
+  appStateMock.state = { tasks: { hidden: makeTeammateTask({ progress: { toolUseCount: 1, lastActivity: { toolName: 'mcp.inventory.get_stock', input: { task_id: 'internal-call', nested: { protocol: true } } } } }) } }
+  const { BackgroundTasksPanel } = await import('./BackgroundTasksPanel.js')
+  const output = await renderToString(<BackgroundTasksPanel initialDetailTaskId="t1" />, 100)
+  expect(output).toContain('Using Get stock in inventory')
+  expect(output).not.toContain('task_id')
+  expect(output).not.toContain('internal-call')
+})
+
+it('uses a neutral agent name when the registry has not loaded', async () => {
+  appStateMock.state = { tasks: { local: { ...makeTeammateTask(), id: 'local', type: 'local_agent', agentId: 'internal-agent-handle', agentType: 'planner', prompt: '', description: '' } } }
+  const { BackgroundTasksPanel } = await import('./BackgroundTasksPanel.js')
+  terminalSizeMock.size = { columns: 180, rows: 40 }
+  const output = await renderToString(<BackgroundTasksPanel />, 180)
+  expect(output).toContain('Background agent')
+  expect(output).not.toContain('internal-agent-handle')
+})

@@ -181,3 +181,32 @@ describe("a long or multiline shell command", () => {
     }
   });
 });
+
+test('custom approvals show labelled inputs with exact arguments in a separate pager', async () => {
+  const input = { task_id: 'review-target', nested: { overwrite: true }, recipients: ['Ada', 'Bo'] };
+  const before = JSON.stringify(input);
+  const decisions: ReviewDecision[] = [];
+  const request = daemonRequest('mcp.inventory.update_stock', input, decision => decisions.push(decision));
+  const card = await renderCard(request, { columns: 120, rows: 32 });
+  try {
+    const initial = await card.frame();
+    expect(initial).toContain('Updatestockininventory');
+    expect(initial).toContain('Taskid:review-target');
+    expect(initial).toContain('Overwrite:true');
+    expect(initial).not.toContain('mcp.inventory.update_stock');
+    expect(initial).not.toContain('request-1');
+    expect(initial).not.toContain('"task_id"');
+    expect(initial).toContain('ctrl+wd');
+    await card.press('\x17'); await card.press('d');
+    const details = await card.frame();
+    expect(details).toContain('EXACTAPPROVALARGUMENTS');
+    expect(details).toContain('"task_id"');
+    expect(details).toContain('mcp.inventory.update_stock');
+    await card.press('1');
+    expect(decisions).toEqual([]);
+    await card.press('q');
+    await card.press('\r');
+    expect(decisions).toEqual([APPROVED]);
+    expect(JSON.stringify(input)).toBe(before);
+  } finally { await card.close(); }
+});

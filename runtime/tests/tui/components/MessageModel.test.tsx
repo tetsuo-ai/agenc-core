@@ -96,3 +96,7 @@ describe("MessageModel", () => {
     expect(output.trim()).toBe("");
   });
 });
+
+ test("hides the synthetic agenc identity in expanded daemon messages", async () => {
+   expect((await renderModel(assistantMessage({ model: "agenc" }))).trim()).toBe("");
+ });
