@@ -17,6 +17,7 @@ import {
   NativeSecureStorageError,
   readNativeSecureStorage,
   readNativeSecureStorageAsync,
+  readNativeSecureStorageFresh,
   updateNativeSecureStorage,
 } from './secureStorage/native.js'
 import { secureStorageIdentityKey } from './secureStorage/home.js'
@@ -163,9 +164,11 @@ export function readOpenAiOauthCredentials(
 
 export async function readOpenAiOauthCredentialsAsync(
   home: HomeContext,
+  fresh = false,
 ): Promise<OpenAiOauthCredentialBlob | undefined> {
   const blob = normalizeOpenAiOauthCredentialBlob(
-    (await readNativeSecureStorageAsync(home))[OPENAI_OAUTH_STORAGE_KEY],
+    // Recovery must see an external login even inside the native keychain TTL.
+    (fresh ? readNativeSecureStorageFresh(home) : await readNativeSecureStorageAsync(home))[OPENAI_OAUTH_STORAGE_KEY],
   )
   updateReadCache(home, blob)
   return blob === undefined ? undefined : structuredClone(blob)

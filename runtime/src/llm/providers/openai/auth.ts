@@ -17,21 +17,39 @@ import {
   type OAuthRefreshOutcome,
   type OAuthRefreshState,
 } from "../../oauth/refresh-loop.js";
-import type { ProviderAuthHeaderContext } from "../../client-session.js";
-import { LLMProviderError } from "../../errors.js";
+import { isInitialProviderHttpRejection, type ProviderAuthHeaderContext } from "../../client-session.js";
+import {
+  isLLMPreGenerationRejection,
+  LLMAuthenticationError,
+  LLMProviderError,
+  markLLMPreGenerationRejection,
+} from "../../errors.js";
 import { providerApiKeyEnvironmentLabel } from "../../registry/provider-info.js";
 import type { OpenAIProviderConfig } from "./types.js";
 
 interface AuthorizedOperationOptions {
   readonly singleWireAttempt?: boolean;
+  readonly openAiAuthRetryAttempt?: number;
   readonly signal?: AbortSignal;
+}
+
+/** Credentials recovered, but the rejected wire attempt must settle first. */
+export class OpenAIAuthRetryError extends LLMProviderError {
+  constructor() {
+    super("openai", "ChatGPT credentials recovered; a new admission is required.", 401);
+    markLLMPreGenerationRejection(this, "openai");
+  }
+}
+
+interface OpenAIAuthState extends OAuthRefreshState {
+  readonly accountId?: string;
 }
 
 export class OpenAIAuthSession {
   private readonly config: OpenAIProviderConfig;
-  private oauthState: OAuthRefreshState | null;
+  private oauthState: OpenAIAuthState | null;
   private oauthExhaustedMessage: string | null = null;
-  private readonly operationState = new AsyncLocalStorage<OAuthRefreshState>();
+  private readonly operationState = new AsyncLocalStorage<OpenAIAuthState>();
   private refreshFlight: {
     readonly state: OAuthRefreshState;
     readonly promise: Promise<void>;
@@ -51,6 +69,7 @@ export class OpenAIAuthSession {
         ? {
           accessToken: config.oauth.accessToken,
           refreshToken: config.oauth.refreshToken,
+          accountId: config.oauth.accountId,
           consecutiveAuthFailures: 0,
         }
         : null;
@@ -62,6 +81,9 @@ export class OpenAIAuthSession {
   ): Promise<T> {
     const oauth = this.config.oauth;
     if (!this.oauthState || !oauth) return await operation();
+    if (this.providerName === "openai" && this.config.chatgptBackend === true) {
+      return this.withChatGptOperation(operation, options);
+    }
     let authFailures = 0;
     for (;;) {
       options.signal?.throwIfAborted();
@@ -78,6 +100,67 @@ export class OpenAIAuthSession {
         await this.recoverAuthFailure(state, error, options, authFailures);
       }
     }
+  }
+
+  private async withChatGptOperation<T>(
+    operation: () => Promise<T>,
+    options: AuthorizedOperationOptions,
+  ): Promise<T> {
+    let attempt = options.openAiAuthRetryAttempt ?? 0;
+    for (;;) {
+      options.signal?.throwIfAborted();
+      const exhaustedMessage = this.oauthExhaustedMessage;
+      if (exhaustedMessage) {
+        if (!await waitForOAuthRefresh(this.reloadChatGptCredentials(this.oauthState!), options.signal)) {
+          // No wire request was made while this generation remains exhausted.
+          throw markLLMPreGenerationRejection(
+            new LLMAuthenticationError("openai", 401, exhaustedMessage), "openai",
+          );
+        }
+      }
+      const state = this.oauthState!;
+      try {
+        const value = await this.operationState.run(state, operation);
+        if (this.oauthState === state) state.consecutiveAuthFailures = 0;
+        return value;
+      } catch (error) {
+        if (!isUnauthorizedStatus(error)) throw error;
+        options.signal?.throwIfAborted();
+        const rejected = isInitialProviderHttpRejection(error) ||
+          isLLMPreGenerationRejection(error, "openai");
+        // Never replay a stream that has already started generating.
+        if (rejected && attempt < 2) {
+          if (attempt === 0 && this.oauthState === state) {
+            try {
+              await waitForOAuthRefresh(this.refreshOAuthState(state, error, this.config.oauth!), options.signal);
+            } catch {
+              options.signal?.throwIfAborted();
+              // A revoked refresh token can race a fresh interactive sign-in.
+            }
+          }
+          if (this.oauthState !== state ||
+              await waitForOAuthRefresh(this.reloadChatGptCredentials(state), options.signal)) {
+            options.signal?.throwIfAborted();
+            if (options.singleWireAttempt) throw new OpenAIAuthRetryError();
+            attempt += 1;
+            continue;
+          }
+        }
+        const message = `${chatGptServerMessage(error)} ChatGPT sign-in recovery failed. Run agenc openai-login to sign in again.`;
+        if (this.oauthState === state) this.oauthExhaustedMessage = message;
+        const failure = new LLMAuthenticationError("openai", 401, message);
+        throw rejected ? markLLMPreGenerationRejection(failure, "openai") : failure;
+      }
+    }
+  }
+
+  private async reloadChatGptCredentials(state: OpenAIAuthState): Promise<boolean> {
+    const stored = await this.config.oauth?.reloadCredentials?.().catch(() => undefined);
+    if (this.oauthState !== state) return true;
+    if (!stored || stored.accessToken === state.accessToken) return false;
+    this.oauthState = { ...stored, consecutiveAuthFailures: 0 };
+    this.oauthExhaustedMessage = null;
+    return true;
   }
 
   private async recoverAuthFailure(
@@ -100,7 +183,9 @@ export class OpenAIAuthSession {
 
   private exhaustedError(state: OAuthRefreshState): LLMProviderError {
     const message = `OAuth refresh exhausted - re-authenticate via ${this.providerName} login.`;
-    if (this.oauthState === state) this.oauthExhaustedMessage = message;
+    if (this.oauthState === state && !(this.providerName === "openai" && this.config.chatgptBackend)) {
+      this.oauthExhaustedMessage = message;
+    }
     return new LLMProviderError(this.providerName, message, 401);
   }
 
@@ -147,6 +232,8 @@ export class OpenAIAuthSession {
     this.oauthState = {
       accessToken: outcome.accessToken,
       refreshToken: outcome.refreshToken ?? state.refreshToken,
+      accountId: "accountId" in outcome && typeof outcome.accountId === "string"
+        ? outcome.accountId : (state as OpenAIAuthState).accountId,
       consecutiveAuthFailures: state.consecutiveAuthFailures,
     };
     this.oauthExhaustedMessage = null;
@@ -157,7 +244,11 @@ export class OpenAIAuthSession {
   ): Readonly<Record<string, string>> {
     const state = this.operationState.getStore() ?? this.oauthState;
     if (state) {
-      return this.headersForBearerToken(state.accessToken);
+      return {
+        ...this.headersForBearerToken(state.accessToken),
+        ...(this.providerName === "openai" && this.config.chatgptBackend && state.accountId
+          ? { "ChatGPT-Account-ID": state.accountId } : {}),
+      };
     }
 
     switch (this.config.authStrategy ?? "bearer") {
@@ -201,18 +292,31 @@ function isUnauthorizedStatus(
   return status === 401 || statusCode === 401;
 }
 
-function waitForOAuthRefresh(operation: Promise<void>, signal?: AbortSignal): Promise<void> {
+function chatGptServerMessage(error: Error): string {
+  const body = (error as Error & { readonly body?: unknown }).body;
+  let value: unknown = body;
+  if (typeof value === "string") {
+    try { value = JSON.parse(value); } catch { /* A plain-text refusal is valid. */ }
+  }
+  if (value && typeof value === "object") {
+    const record = value as { message?: unknown; error?: { message?: unknown } | string };
+    value = typeof record.error === "string" ? record.error : record.error?.message ?? record.message;
+  }
+  return (typeof value === "string" && value.trim() ? value : error.message).replace(/\s+/g, " ").trim();
+}
+
+function waitForOAuthRefresh<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return operation;
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<T>((resolve, reject) => {
     const onAbort = (): void => {
       signal.removeEventListener("abort", onAbort);
       reject(signal.reason ?? new DOMException("Operation aborted", "AbortError"));
     };
     signal.addEventListener("abort", onAbort, { once: true });
     operation.then(
-      () => {
+      (value) => {
         signal.removeEventListener("abort", onAbort);
-        resolve();
+        resolve(value);
       },
       (error: unknown) => {
         signal.removeEventListener("abort", onAbort);

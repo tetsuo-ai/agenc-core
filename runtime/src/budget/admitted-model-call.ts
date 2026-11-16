@@ -49,6 +49,7 @@ import {
   LLMManagedAdmissionError,
 } from "../llm/errors.js";
 import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
+import { OpenAIAuthRetryError } from "../llm/providers/openai/auth.js";
 
 // A local-only count has no cache consumer. Match a SHA-256 revision's encoded
 // width so omitting that unused digest does not change the aggregate byte cap.
@@ -535,6 +536,25 @@ export function fitOutputReservationToContext(
 }
 
 export async function runAdmittedModelCall(
+  params: AdmittedModelCallOptions,
+): Promise<LLMResponse> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await runAdmittedModelAttempt(attempt === 0 ? params : {
+        ...params,
+        stepId: `${params.stepId}:openai-auth:${attempt}`,
+        options: { ...params.options, openAiAuthRetryAttempt: attempt },
+      });
+    } catch (error) {
+      if (params.providerName !== "openai" || !(error instanceof OpenAIAuthRetryError) || attempt >= 2) {
+        throw error;
+      }
+      params.signal?.throwIfAborted();
+    }
+  }
+}
+
+async function runAdmittedModelAttempt(
   params: AdmittedModelCallOptions,
 ): Promise<LLMResponse> {
   const taskBudget = taskBudgetOf(params.session);
