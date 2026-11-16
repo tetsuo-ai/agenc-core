@@ -149,7 +149,7 @@ describe("/cost wording", () => {
     for (const surface of [out, modal]) {
       expect(surface).toContain("85% cached (1 call unknown)");
       expect(surface).toContain("Calls without reported usage (plan calls, nothing billed):");
-      expect(surface).toContain("provider call failed after dispatch; usage unavailable; ChatGPT plan call, nothing billed");
+      expect(surface).toContain("lead · openai/gpt-6.1-sol model call · failed after it was sent, no usage reported; ChatGPT plan call, nothing billed");
       expect(surface).not.toContain("≥");
     }
     expect(modal).toMatch(/SESSION\s+\$0\.011 billed/);

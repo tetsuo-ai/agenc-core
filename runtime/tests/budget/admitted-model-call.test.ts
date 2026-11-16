@@ -1700,6 +1700,25 @@ describe('accounting-only plan route and request invariance', () => {
 });
 
 
+test('reads AGENC_PLAN_ACCOUNTING from the session environment a daemon client forwarded (coste2e37 C2)', async () => {
+  vi.stubEnv('AGENC_PLAN_ACCOUNTING', undefined);
+  tokenAccountingService.clear();
+  try {
+    const state = harness({});
+    const session = { ...state.session, services: { ...state.session.services,
+      providerEnvironment: { AGENC_PLAN_ACCOUNTING: 'off' } } } as typeof state.session;
+    const provider = Object.assign({}, state.provider, { name: 'openai',
+      config: { model: 'gpt-6.1-sol', authMode: 'oauth', chatgptBackend: true } }) as LLMProvider;
+    const messages = [{ role: 'user' as const, content: 'Reply OK.' }];
+    const result = await runAdmittedModelCall({ session, provider, messages,
+      options: { model: 'gpt-6.1-sol', maxOutputTokens: 128 }, stepId: 'session-switch', model: 'gpt-6.1-sol', providerName: 'openai',
+      invoke: async () => response({ model: 'gpt-6.1-sol' }) });
+    expect(state.reconcile.mock.calls.at(-1)?.[1].billingDetails).toBeUndefined();
+    expect(state.admission.markDispatched.mock.calls.at(-1)?.[1].details.billingMode).toBeUndefined();
+    expect(result.usage.billingMode).toBeUndefined();
+  } finally { vi.unstubAllEnvs(); }
+});
+
 test.each(['deepseek', 'openai-api', 'openai-plan'] as const)('captures identical HTTP bytes with accounting on/off: %s', async route => {
   const captured: string[] = [];
   for (const enabled of ['off', 'on']) {

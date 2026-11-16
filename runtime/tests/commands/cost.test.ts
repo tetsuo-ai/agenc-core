@@ -131,9 +131,10 @@ describe("/cost", () => {
     });
     const out = formatCostReport(report);
     expect(out).toContain("Session cost: ≥$0.551");
-    expect(out).toContain("deepseek/deepseek-flash · model call turn-2");
-    expect(out).toContain("cancelled after dispatch (interrupted); provider usage unavailable");
-    expect(out).toContain("run worker-1");
+    // The agent's name, the model and a plain reason; no step or run ids (coste2e37 C4).
+    expect(out).toContain("agent worker-1 · deepseek/deepseek-flash model call · cancelled after it was sent (interrupted), no usage reported");
+    expect(out).not.toContain("turn-2");
+    expect(out).not.toContain("run worker-1");
     expect(out).not.toContain("+?");
   });
 

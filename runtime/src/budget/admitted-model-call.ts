@@ -1,6 +1,6 @@
 /** Shared M3 boundary for logical model calls. */
 
-import { planAccountingEnabled, isChatGptPlan } from "../session/usage-billing.js";
+import { accountingEnvironment, planAccountingEnabled, isChatGptPlan } from "../session/usage-billing.js";
 
 import type { Session } from "../session/session.js";
 import { billableTokenUsage as reconciledTokenUsage } from "../llm/usage.js";
@@ -547,7 +547,7 @@ export async function runAdmittedModelCall(
         stepId: `${params.stepId}:openai-auth:${attempt}`,
         options: { ...params.options, openAiAuthRetryAttempt: attempt } as typeof params.options & OpenAIAuthRetryChatOptions,
       });
-      if (isChatGptPlan(params.providerName, readProviderFactoryOptions(params.provider))) {
+      if (isChatGptPlan(params.providerName, readProviderFactoryOptions(params.provider), accountingEnvironment(params.session))) {
         return { ...response, usage: { ...response.usage, billingMode: "plan" } };
       }
       return response;
@@ -580,6 +580,7 @@ async function runAdmittedModelAttempt(
     })();
   };
   const providerFactoryOptions = readProviderFactoryOptions(params.provider);
+  const accountingEnv = accountingEnvironment(params.session);
   // A few structurally typed embedding/test providers predate the explicit
   // identity fields on this boundary. Keep the admission path fail-safe at
   // runtime by resolving the same concrete identity from request, factory,
@@ -1022,7 +1023,7 @@ async function runAdmittedModelAttempt(
         tokenAccountingConfidence: accountingResult?.confidence,
         tokenAccountingCoverageComplete: accountingResult?.coverage.complete,
         // The billing route, so a call that never reports usage is still known as a plan call.
-        ...(planAccountingEnabled() && (isChatGptPlan(requestedProvider, providerFactoryOptions) ||
+        ...(planAccountingEnabled(accountingEnv) && (isChatGptPlan(requestedProvider, providerFactoryOptions, accountingEnv) ||
           resolveModelCostEntry({ model: effectiveModel, provider: effectiveProvider }, DEFAULT_MODEL_COSTS)?.entry.label === "plan")
           ? { billingMode: "plan" } : {}),
       },
@@ -1146,15 +1147,15 @@ async function runAdmittedModelAttempt(
       inputTokens: reconciled.inputTokens,
       outputTokens: reconciled.outputTokens,
       costUsd: actualPrice.costUsd,
-      ...(planAccountingEnabled() ? { billingDetails: {
-        billingMode: isChatGptPlan(requestedProvider, providerFactoryOptions) ||
+      ...(planAccountingEnabled(accountingEnv) ? { billingDetails: {
+        billingMode: isChatGptPlan(requestedProvider, providerFactoryOptions, accountingEnv) ||
           resolveModelCostEntry({ model: actualModel, provider: pricingProvider }, DEFAULT_MODEL_COSTS)?.entry.label === "plan"
           ? "plan" as const : "metered" as const,
         ...(usage.cachedInputTokens !== undefined ? { cachedInputTokens: usage.cachedInputTokens } : {}),
         ...(pricingProvider === "deepseek" ? { offPeakEligibleCostUsd: usage.providerCostUsd !== undefined ? 0 :
           Math.max(0, actualPrice.costUsd - (usage.webSearchRequests ?? 0) *
             (resolveModelCostEntry({ model: actualModel, provider: pricingProvider }, DEFAULT_MODEL_COSTS)?.entry.webSearchUsdPerRequest ?? 0)) } : {}),
-        ...(isChatGptPlan(requestedProvider, providerFactoryOptions)
+        ...(isChatGptPlan(requestedProvider, providerFactoryOptions, accountingEnv)
           ? actualPrice.costEstimated ? { apiEquivalentUnknown: true } : { apiEquivalentUsd: actualPrice.costUsd }
           : {}),
       } } : {}),

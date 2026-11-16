@@ -107,7 +107,7 @@ export function CostUsageModal({
             <ThemedText color="text2">{unpricedCallsHeading(report)}</ThemedText>
             {unpriced.map(call => (
               <ThemedText key={call.reservationId} color="text2">
-                {`${unpricedCallDescription(call)} · run ${call.runId}`}
+                {unpricedCallDescription(call)}
               </ThemedText>
             ))}
             {(report.unpricedCallCount ?? 0) > (report.unpricedCalls?.length ?? 0) ? (

@@ -49,6 +49,9 @@ export interface CostModelRow {
   readonly meteredCalls?: number;
   readonly apiEquivalentUsd?: number;
   readonly apiEquivalentUnknown?: boolean;
+  /** `tools`: an agent's paid tool work in one row; `toolCharges` counts those charges. */
+  readonly kind?: "tools";
+  readonly toolCharges?: number;
   readonly label: string;
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -92,7 +95,8 @@ export interface CostReport {
   readonly turns?: number;
   /** True when any model in the session has unknown pricing. */
   readonly hasUnknownCost: boolean;
-  readonly unpricedCalls?: readonly UnpricedUsageCall[];
+  /** `agentLabel`: the name of the agent that made the call ("lead", "Monowire"). */
+  readonly unpricedCalls?: readonly (UnpricedUsageCall & { readonly agentLabel?: string })[];
   readonly unpricedCallCount?: number;
   readonly models: readonly CostModelRow[];
   readonly agents: readonly CostAgentRow[];
@@ -223,21 +227,29 @@ function truncate(value: string, max: number): string {
 function agentModelRows(
   rows: NonNullable<import("../budget/admission-types.js").AdmissionUsageSummary["agentModels"]>,
   leadRunId: string,
-  agents: readonly CostAgentRow[],
+  agentLabel: (runId: string) => string,
 ): NonNullable<CostReport["agentModels"]> {
+  const named = rows.map(row => ({
+    ...row, label: row.kind === "tools" ? "tool charges" : row.provider ? `${row.provider}/${row.model}` : row.model,
+    agentLabel: agentLabel(row.runId),
+  }));
+  return [...named.filter(row => row.runId === leadRunId), ...named.filter(row => row.runId !== leadRunId)];
+}
+
+/**
+ * The name of each agent of a session: "lead", or the sub-agent's name. A run
+ * id (its first 8 characters) is added only where two agents share a name.
+ */
+function agentNamer(runIds: readonly string[], leadRunId: string, agents: readonly CostAgentRow[]): (runId: string) => string {
   // The task label is "name · role"; the report names the agent only.
   const nameOf = (runId: string): string =>
     runId === leadRunId ? "lead" : agents.find(agent => agent.runId === runId)?.label.split(" · ")[0] ?? `agent ${runId.slice(0, 8)}`;
   const runsByName = new Map<string, Set<string>>();
-  for (const row of rows) runsByName.set(nameOf(row.runId), (runsByName.get(nameOf(row.runId)) ?? new Set()).add(row.runId));
-  const named = rows.map(row => {
-    const name = nameOf(row.runId);
-    return {
-      ...row, label: row.provider ? `${row.provider}/${row.model}` : row.model,
-      agentLabel: (runsByName.get(name)?.size ?? 1) > 1 ? `${name} [${row.runId.slice(0, 8)}]` : name,
-    };
-  });
-  return [...named.filter(row => row.runId === leadRunId), ...named.filter(row => row.runId !== leadRunId)];
+  for (const runId of runIds) runsByName.set(nameOf(runId), (runsByName.get(nameOf(runId)) ?? new Set()).add(runId));
+  return runId => {
+    const name = nameOf(runId);
+    return (runsByName.get(name)?.size ?? 1) > 1 ? `${name} [${runId.slice(0, 8)}]` : name;
+  };
 }
 
 /**
@@ -253,18 +265,20 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
   const usage = ctx.appState?.getSessionUsage?.() ??
     ctx.session.services?.executionAdmission?.getUsageSummary?.();
   if (isAdmissionUsageSummary(usage)) {
+    const agentLabel = agentNamer([...(usage.agentModels ?? []).map(row => row.runId),
+      ...(usage.unpricedCalls ?? []).map(call => call.runId)], usage.runId, agents);
     return {
       totalCostUsd: usage.costUsd,
       ...(usage.planCalls !== undefined ? { planCalls: usage.planCalls, apiEquivalentUsd: usage.apiEquivalentUsd, apiEquivalentUnknown: usage.apiEquivalentUnknown } : {}),
       ...((usage.planCalls ?? 0) > 0 ? { planLabel: planLabelFor(usage.models.filter(row => (row.planCalls ?? 0) > 0).map(row => row.provider)) } : {}),
-      ...(usage.agentModels !== undefined ? { agentModels: agentModelRows(usage.agentModels, usage.runId, agents) } : {}),
+      ...(usage.agentModels !== undefined ? { agentModels: agentModelRows(usage.agentModels, usage.runId, agentLabel) } : {}),
       ...(usage.billedEstimateUsd !== undefined ? { billedEstimateUsd: usage.billedEstimateUsd } : {}),
       ...(usage.costEstimated ? { totalIsEstimated: true } : {}),
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       totalTokens: usage.totalTokens,
       hasUnknownCost: usage.hasUnknownCost,
-      ...(usage.unpricedCalls !== undefined ? { unpricedCalls: usage.unpricedCalls } : {}),
+      ...(usage.unpricedCalls !== undefined ? { unpricedCalls: usage.unpricedCalls.map(call => ({ ...call, agentLabel: agentLabel(call.runId) })) } : {}),
       ...(usage.unpricedCallCount !== undefined ? { unpricedCallCount: usage.unpricedCallCount } : {}),
       models: usage.models.map((model) => ({
         ...model,
@@ -325,23 +339,33 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
  * Render a {@link CostReport} as the plain-text fallback (used when the TUI
  * JSX surface isn't available, and as the source the modal re-parses).
  */
-export function unpricedCallDescription(call: UnpricedUsageCall): string {
-  const model = call.provider && call.model ? `${call.provider}/${call.model}` : call.model ?? call.kind;
+/**
+ * One call without reported usage: the agent's name, the model and a plain
+ * reason. Step and run ids stay in the ledger; they mean nothing to a reader.
+ */
+export function unpricedCallDescription(call: UnpricedUsageCall & { readonly agentLabel?: string }): string {
+  const model = call.provider && call.model ? `${call.provider}/${call.model}` : call.model ?? call.provider;
+  const what = call.kind === "model_turn" ? "model call" : call.kind === "tool_exec" ? "tool call" : call.kind.replaceAll("_", " ");
   const knownReasons: Readonly<Record<string, string>> = {
-    missing_provider_usage: "provider returned no usage",
-    provider_call_failed_after_dispatch: "provider call failed after dispatch; usage unavailable",
-    reported_usage_cost_unknown: "reported usage has no price",
-    missing_tool_usage: "tool returned no usage",
+    missing_provider_usage: "the provider reported no usage",
+    provider_call_failed_after_dispatch: "failed after it was sent, no usage reported",
+    reported_usage_cost_unknown: "usage reported, but no price is known",
+    missing_tool_usage: "the tool reported no usage",
   };
   const reason = call.reason.startsWith("cancelled_after_dispatch:")
-    ? `cancelled after dispatch (${call.reason.slice("cancelled_after_dispatch:".length)}); provider usage unavailable`
+    ? `cancelled after it was sent (${call.reason.slice("cancelled_after_dispatch:".length).replaceAll("_", " ")}), no usage reported`
     : (knownReasons[call.reason] ?? call.reason.replaceAll("_", " "));
   // A plan call has no per-token charge, so a missing usage report cannot hide money.
   const plan = call.plan ? `; ${planLabelFor([call.provider])} call, nothing billed` : "";
-  return `${model} · ${call.kind === "model_turn" ? "model call" : call.kind} ${call.stepId} · ${reason}${plan}`;
+  return `${call.agentLabel ?? "an agent"} · ${model ? `${model} ` : ""}${what} · ${reason}${plan}`;
 }
 
 export function costModelDetail(row: CostModelRow): string {
+  if (row.kind === "tools") {
+    // Tool fees are not discounted off-peak: billed is what they cost.
+    const charges = row.toolCharges ?? 0;
+    return `${charges} ${charges === 1 ? "charge" : "charges"} · ${row.hasUnknownCost ? "≥" : ""}${formatUsdCost(row.billedEstimateUsd ?? row.costUsd)} billed`;
+  }
   const share = usageCachePercent(row);
   const unknown = cacheUnknownNote(row.cacheUnreportedCalls);
   const cache = share === null ? "cache unknown" : `${share}% cached${unknown ? ` ${unknown}` : ""}`;
@@ -443,7 +467,7 @@ export function formatCostReport(report: CostReport): string {
   }
   if (report.hasUnknownCost || (report.unpricedCalls?.length ?? 0) > 0) {
     lines.push(unpricedCallsHeading(report));
-    for (const call of report.unpricedCalls ?? []) lines.push(`  ${unpricedCallDescription(call)} · run ${call.runId}`);
+    for (const call of report.unpricedCalls ?? []) lines.push(`  ${unpricedCallDescription(call)}`);
     const shown = report.unpricedCalls?.length ?? 0;
     if (report.unpricedCallCount !== undefined && report.unpricedCallCount > shown) {
       lines.push(`  Showing ${shown} of ${report.unpricedCallCount} unpriced calls.`);

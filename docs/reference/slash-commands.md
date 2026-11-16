@@ -96,7 +96,9 @@ The report lists totals by provider and model, then one row per agent and
 model: the lead first, then its sub-agents by name, finished ones included (a
 short id is added only where two agents share a name). Each row shows calls,
 input, cached share, output, billed USD, and for plan calls the plan and the
-API-key price. Input includes cached tokens. The cached share uses only calls
+API-key price. An agent with paid tool work (web search and fetch fees,
+media, model calls a tool makes) also has a `tool charges` row, so the rows of
+each agent add up to its total. Input includes cached tokens. The cached share uses only calls
 with reported cache counts; `(1 call unknown)` names the ones left out. Calls
 count attempts with reported usage, so retries with usage count too. Failed or
 cancelled attempts without usage are listed under "Calls without reported

@@ -155,7 +155,9 @@ charge. Historical calls without a recorded billing route cannot be reclassified
 as plan usage safely.
 
 `AGENC_PLAN_ACCOUNTING=off` disables recording the new accounting annotations for
-new calls. The default is enabled. This switch never changes provider requests.
+new calls. The default is enabled. It is read per session: a client sends it
+to a running daemon with its session environment, and a daemon's own value
+does not apply to clients that did not set it. This switch never changes provider requests.
 Budget reservations and enforcement retain their conservative accounting basis;
 API-equivalent values are not subscription invoices.
 

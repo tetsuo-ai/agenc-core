@@ -73,13 +73,13 @@ function readBillingDetails(raw: string | null | undefined): import("../session/
 // Original cost/hold/tokens/calls/unknown/estimated/savings/missing-time counters,
 // then cached tokens, cache-reporting input, missing cache calls, plan calls,
 // API-equivalent nanos, metered calls, calls with billing details and unpriced equivalents.
-type Counts = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
+type Counts = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
 interface Group {
   readonly identity: readonly [string, string, string | null, string | null];
   readonly counts: Counts;
   count: number;
 }
-const zero = (): Counts => [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const zero = (): Counts => [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 function contribution(row: UsageReservation): Counts {
   const details = readBillingDetails(row.usage_details_json);
@@ -109,6 +109,8 @@ function contribution(row: UsageReservation): Counts {
     reported && row.kind === "model_turn" && !plan ? 1 : 0,
     reported && details !== undefined ? 1 : 0,
     reported && details?.apiEquivalentUnknown ? 1 : 0,
+    // Paid work that is not a model turn: a tool's charge, priced or unknown.
+    row.kind !== "model_turn" && (priced ? (row.actual_cost_nanos ?? 0) > 0 : row.status === "held_unknown") ? 1 : 0,
   ];
 }
 
@@ -124,7 +126,7 @@ function encodeTotals(value: AdmissionUsageTotals): readonly unknown[] {
 }
 
 function encodeAgentModels(rows: AdmissionUsageSummary["agentModels"]): unknown {
-  return rows?.map(row => [row.runId, row.model, row.provider ?? null, encodeTotals(row)]) ?? null;
+  return rows?.map(row => [row.runId, row.model, row.provider ?? null, encodeTotals(row), row.kind ?? null, row.toolCharges ?? null]) ?? null;
 }
 
 function visible(counts: Counts): readonly unknown[] {
@@ -162,6 +164,35 @@ function totals(counts: Counts): AdmissionUsageTotals {
       ...(counts[9] === 0 && counts[7] === 0 ? { billedEstimateUsd: (counts[0] - counts[8]) / 1_000_000_000 } : {}),
     } : {}),
   };
+}
+
+/**
+ * One row per agent and model, plus one "tool charges" row per agent for its
+ * paid tool work (web search and fetch fees, media, model calls a tool
+ * makes), so the rows of an agent add up to its total. A row without cost or
+ * unknown cost is left out (a local tool, a spawn).
+ */
+function agentModelRows(groups: readonly Group[]): NonNullable<AdmissionUsageSummary["agentModels"]> {
+  const rows: Array<NonNullable<AdmissionUsageSummary["agentModels"]>[number]> = [];
+  const tools = new Map<string, Counts>();
+  for (const g of groups) {
+    const [owner, kind, model, provider] = g.identity;
+    if (kind === "model_turn") {
+      rows.push({ runId: owner, model: model ?? "unknown", ...(provider === null ? {} : { provider }), ...totals(g.counts) });
+      continue;
+    }
+    const counts = tools.get(owner) ?? zero();
+    add(counts, g.counts);
+    tools.set(owner, counts);
+  }
+  for (const [owner, counts] of tools) {
+    if (counts[0] === 0 && counts[6] === 0) continue;
+    const row = totals(counts);
+    // Tool fees are not discounted off-peak: what they cost is what is billed.
+    rows.push({ runId: owner, model: "tool charges", kind: "tools", ...row, toolCharges: counts[18],
+      ...(counts[9] === 0 && counts[7] === 0 ? { billedEstimateUsd: (counts[0] - counts[8]) / 1_000_000_000 } : {}) });
+  }
+  return rows;
 }
 
 function compareIdentity(a: Group, b: Group): number {
@@ -245,11 +276,7 @@ export class AdmissionUsageProjection {
       .slice(0, MAX_UNPRICED_USAGE_CALLS);
     const unpricedCallCount = Math.max(this.appendedUnpriced, this.unpriced.size);
     const billedEstimateUsd = all[9] === 0 && all[7] === 0 ? (all[0] - all[8]) / 1_000_000_000 : undefined;
-    const agentModels = all[16] > 0 ? [...this.groups.values()].sort(compareIdentity)
-      .filter(g => g.identity[1] === "model_turn").map(g => ({
-        runId: g.identity[0], model: g.identity[2] ?? "unknown",
-        ...(g.identity[3] === null ? {} : { provider: g.identity[3] }), ...totals(g.counts),
-      })) : undefined;
+    const agentModels = all[16] > 0 ? agentModelRows([...this.groups.values()].sort(compareIdentity)) : undefined;
     const signature = JSON.stringify([
       encodeTotals({ ...totals(all), ...(billedEstimateUsd !== undefined ? { billedEstimateUsd } : {}) }), billedEstimateUsd, all[8] > 0, all[9] > 0,
       [...models.values()].map(m => [m.model ?? "unknown", m.provider, visible(m.counts)]),

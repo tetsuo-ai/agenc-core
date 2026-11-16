@@ -32,7 +32,9 @@ export function isAdmissionUsageSummary(value: unknown): value is AdmissionUsage
     (record.agentModels === undefined || (Array.isArray(record.agentModels) && record.agentModels.every((entry: unknown) => {
       const row = asRecord(entry);
       return row !== null && isUsageTotals(row) && typeof row.runId === "string" && typeof row.model === "string" &&
-        (row.provider === undefined || typeof row.provider === "string");
+        (row.provider === undefined || typeof row.provider === "string") &&
+        (row.kind === undefined || row.kind === "tools") &&
+        (row.toolCharges === undefined || (typeof row.toolCharges === "number" && Number.isSafeInteger(row.toolCharges) && row.toolCharges >= 0));
     }))) &&
     (record.hasOffPeakDiscount === undefined || typeof record.hasOffPeakDiscount === "boolean") &&
     (record.hasMissingDispatchTime === undefined || typeof record.hasMissingDispatchTime === "boolean") &&

@@ -122,7 +122,11 @@ export type UnpricedUsageCall = {
 
 export interface AdmissionUsageSummary extends AdmissionUsageTotals {
   readonly includesSubagents?: boolean;
-  readonly agentModels?: readonly (AdmissionUsageTotals & { readonly runId: string; readonly model: string; readonly provider?: string })[];
+  readonly agentModels?: readonly (AdmissionUsageTotals & {
+    readonly runId: string; readonly model: string; readonly provider?: string;
+    /** `tools`: the agent's paid tool work in one row; `toolCharges` counts those charges. */
+    readonly kind?: "tools"; readonly toolCharges?: number;
+  })[];
   /** Display only: known cost adjusted by recorded per-call off-peak hours. Never budget authority. */
   readonly billedEstimateUsd?: number;
   /** Display only: at least one settled call has a recorded off-peak discount. */
