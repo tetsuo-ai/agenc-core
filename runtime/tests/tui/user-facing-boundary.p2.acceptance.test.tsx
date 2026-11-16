@@ -216,3 +216,9 @@ describe('P2 and P3 display boundary', () => {
     expect(formatOrphanToolResultContent({ error: 'rejected by user' } as never)).toBe('Permission denied.');
   });
 });
+
+describe('interrupted tool call', () => {
+  test('reads as an interruption, not as "Tool execution failed"', () => {
+    expect(summarizeToolError('[Request interrupted by user for tool use]')).toBe('Interrupted.');
+  });
+});

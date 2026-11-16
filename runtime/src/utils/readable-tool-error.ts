@@ -23,6 +23,9 @@ export function readableToolError(raw: unknown, depth = 0): string {
   if (typeof raw !== "string") return "Tool execution failed";
   const trimmed = raw.trim();
   // Sandbox diagnostics begin with a bracketed reason, not a JSON array.
+  // The interruption sentinel is a bracketed sentence, not a JSON array. It
+  // used to fail the parse below and read as "Tool execution failed".
+  if (/^\[Request interrupted by user(?: for tool use)?\]$/.test(trimmed)) return raw;
   const hasDiagnosticTag = /^\[[A-Za-z][A-Za-z0-9_-]*\](?:\s|$)/.test(trimmed);
   if (/^[\[{]/.test(trimmed) && !trimmed.startsWith("[exec ") && !hasDiagnosticTag) {
     try { return readableToolError(JSON.parse(trimmed), depth + 1); }
