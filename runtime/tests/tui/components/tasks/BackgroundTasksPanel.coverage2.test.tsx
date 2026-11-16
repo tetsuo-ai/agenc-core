@@ -136,16 +136,17 @@ describe('BackgroundTasksPanel local agent coverage', () => {
     )
 
     expect(output).toContain('TASK DETAIL')
-    expect(output).toContain('local-agent-1 · Agent')
+    // An unnamed background agent gets a readable label, not its id (0.19.37).
+    expect(output).toContain('Background agent · Agent')
     expect(output).toContain('local-model')
     expect(output).toContain('Review the task queue')
     expect(output).toContain('Follow up once complete')
     expect(output).toContain('Captured implementation notes')
     expect(output).toContain('retryable tool failure')
     expect(output).toContain('"summary":"ready"')
-    expect(output).toContain(
-      'read {"path":"runtime/src/tui/components/tasks/BackgroundTasksPanel.tsx"}',
-    )
+    // Activity shows a readable summary, not the tool's arguments (0.19.37).
+    expect(output).toContain('Using Read')
+    expect(output).not.toContain('{"path":"runtime/src/tui/components/tasks/BackgroundTasksPanel.tsx"}')
 
     if (!inputHandler.current) {
       throw new Error('BackgroundTasksPanel did not register input handling')
