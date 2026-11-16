@@ -30,3 +30,12 @@ it("retains the old lookup behavior behind the diagnostic opt-out", () => {
   resolver.readOpenRouterCatalog(); resolver.readOpenRouterCatalog();
   expect(readSavedApiKey).toHaveBeenCalledTimes(2);
 });
+
+
+it("preserves every provider's picker metadata with the optimization enabled", () => {
+  const params = { config: { model_provider: "deepseek" } as AgenCConfig, metadata: { env: {}, readSavedApiKey: () => undefined } };
+  vi.stubEnv("AGENC_SPAWN_RESPONSIVENESS", "off");
+  const legacy = new StaticModelsManager(params).tryListModels();
+  vi.stubEnv("AGENC_SPAWN_RESPONSIVENESS", "on");
+  expect(new StaticModelsManager(params).tryListModels()).toEqual(legacy);
+});

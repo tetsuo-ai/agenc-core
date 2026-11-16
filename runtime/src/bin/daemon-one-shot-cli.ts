@@ -1759,7 +1759,7 @@ export async function oneShotCLI(
     throwIfAborted("resolveUserMessage");
     // Built-in UI commands must never become paid model prompts, including
     // continued sessions and stream-json stdin. /goal has its own print route.
-    const slashName = /^\s*\/([a-zA-Z][a-zA-Z0-9:_-]*)(?:\s|$)/u.exec(resolvedUserMessage)?.[1];
+    const slashName = /^\s*\/([a-zA-Z][a-zA-Z0-9:_-]*)(?:\(MCP\))?(?:\s|$)/u.exec(resolvedUserMessage)?.[1];
     if (slashName !== undefined && slashName !== "goal" && isBuiltInCommandName(slashName)) {
       io.stderr.write(`agenc: /${slashName} is only available in the TUI; open agenc interactively to run it.\n`);
       return 1;

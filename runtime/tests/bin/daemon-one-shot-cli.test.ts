@@ -315,9 +315,18 @@ it("sends only an explicit mode flag when continuing, so the session keeps its r
   expect(mocks.continuation.mock.calls[1]?.[0].runtimeOptions).toMatchObject({ lightMode: false });
 });
 
-it.each(["/cost", " /status ", "/model openai:gpt-6.1-sol"])("never submits local command %s as a model prompt", async prompt => {
+it.each(["/cost", " /status ", "/model openai:gpt-6.1-sol", "/mcp(MCP) list"])("never submits local command %s as a model prompt", async prompt => {
   expect(await oneShotCLI(prompt, [], undefined, { kind: "latest" })).toBe(1);
   expect(mocks.continuation).not.toHaveBeenCalled();
   expect(mocks.connect).not.toHaveBeenCalled();
   expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining("only available in the TUI"));
+});
+
+
+it.each(["text", "json", "stream-json"])("refuses local slash commands in resident %s output without creating an agent", async format => {
+  const f = invocationFixture("slash", format);
+  expect(await oneShotCLI("/stats", [], undefined, undefined, f.overrides, f.context)).toBe(1);
+  expect(f.call).not.toHaveBeenCalled();
+  expect(f.output().stdout).toBe("");
+  expect(f.output().stderr).toContain("/stats is only available in the TUI");
 });

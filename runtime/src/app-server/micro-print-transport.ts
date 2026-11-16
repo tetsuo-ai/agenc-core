@@ -85,7 +85,12 @@ export class MicroPrintTransport {
     return new MicroPrintTransport(socket);
   }
   get signal(): AbortSignal { return this.#abort.signal; }
-  assertLive(): void { if (this.signal.aborted || this.#socket.destroyed) throw microTransportError(); }
+  assertLive(): void {
+    if (this.signal.aborted || this.#socket.destroyed) {
+      throw this.signal.reason instanceof MicroPrintError
+        ? this.signal.reason : microTransportError("disconnected");
+    }
+  }
   setNotificationHandler(handler: (notification: MicroNotification) => Promise<void>): void {
     if (this.#handler !== undefined) throw microTransportError();
     this.#handler = handler;
