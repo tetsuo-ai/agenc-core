@@ -1,3 +1,4 @@
+import { sessionSpendLabel, usageCachePercent } from "../../session/usage-display.js";
 import { c as _c } from "react-compiler-runtime";
 import { homedir } from 'node:os';
 import { basename, resolve, sep } from 'node:path';
@@ -582,8 +583,7 @@ function useSessionSpendLabel(): string {
   if (usage === null) return '';
   // An estimated call was priced at the registry ceiling because its model
   // has no known price: that figure is not a cost, so say so instead.
-  if (usage?.costEstimated === true) return PRICE_UNKNOWN_LABEL;
-  if (usage !== undefined) return `${usage.hasUnknownCost ? '≥' : ''}${formatUsdCost(usage.billedEstimateUsd ?? usage.costUsd)}`;
+  if (usage !== undefined) return sessionSpendLabel(usage);
   return spend;
 }
 
@@ -678,26 +678,29 @@ export function statusLineUsageItems(
   spend: string | null,
   costBasis: 'off-peak' | 'peak-estimate' | null,
   valueColor: 'accentSoft' | 'accent' = 'accentSoft',
+  scope?: { readonly swarm: boolean; readonly cache: 'swarm' | 'lead' | 'known' },
 ): StatusLineUsageItem[] {
   const items: StatusLineUsageItem[] = [];
   if (contextPercent !== null) {
     items.push({ key: 'ctx', spans: [
-      { text: 'ctx ', color: 'text2' },
+      { text: scope?.swarm ? 'ctx lead ' : 'ctx ', color: 'text2' },
       { text: `${contextPercent}%`, color: contextPercent >= 80 ? 'error' : valueColor },
     ] });
   }
   if (cachePercent !== null) {
     items.push({ key: 'cache', spans: [
-      { text: 'cache ', color: 'text2' },
+      { text: scope ? `cache ${scope.cache} ` : 'cache ', color: 'text2' },
       { text: `${cachePercent}%`, color: valueColor },
     ] });
   }
   if (spend !== null) {
-    const figure = /^≥?\$/u.test(spend);
+    const figure = /^(≥?\$[^ ]+)(.*)$/u.exec(spend);
     const note = costBasis === 'off-peak' ? OFF_PEAK_NOTE : costBasis === 'peak-estimate' ? PEAK_ESTIMATE_NOTE : null;
     items.push({ key: 'spend', spans: !figure
       ? [{ text: spend, color: 'text' }]
-      : [{ text: spend, color: valueColor }, ...(note === null ? [] : [{ text: note, color: 'text2' as const }])] });
+      : [{ text: figure[1]!, color: valueColor },
+        ...(figure[2] ? [{ text: figure[2], color: 'text2' as const }] : []),
+        ...(note === null ? [] : [{ text: note, color: 'text2' as const }])] });
   }
   return items;
 }
@@ -724,7 +727,7 @@ export function statusLineRightFacts(
 ): StatusLineFact[] {
   const facts: StatusLineFact[] = items.map((item): StatusLineFact => {
     const short = item.key === 'cache'
-      ? item.spans.map(span => (span.text === 'cache ' ? { ...span, text: 'c ' } : span))
+      ? item.spans.map(span => (span.text.startsWith('cache ') ? { ...span, text: span.text.replace('cache ', 'c ') } : span))
       : item.key === 'spend'
         ? item.spans.map(span => (
           span.text === OFF_PEAK_NOTE ? { ...span, text: ' op' }
@@ -850,9 +853,15 @@ function StatusLineChrome({ columns, onRowsChange }: {
   const spend = useSessionSpendLabel();
   const effort = useStatusEffort();
   const contextPercent = useStatusContextUsage();
-  const cachePercent = useStatusPromptCache();
+  const leadCachePercent = useStatusPromptCache();
   const usage = useSessionUsage();
-  const costBasis = usage?.hasMissingDispatchTime ? 'peak-estimate'
+  const cachePercent = usage?.cacheInputTokens !== undefined ? usageCachePercent(usage) : leadCachePercent;
+  const detailedUsage = usage?.planCalls !== undefined || usage?.includesSubagents === true;
+  const usageScope = detailedUsage ? { swarm: usage?.includesSubagents === true,
+    cache: usage?.cacheInputTokens === undefined ? 'lead' as const
+      : (usage.cacheUnreportedCalls ?? 0) > 0 ? 'known' as const
+        : usage.includesSubagents ? 'swarm' as const : 'lead' as const } : undefined;
+  const costBasis = detailedUsage ? null : usage?.hasMissingDispatchTime ? 'peak-estimate'
     : usage?.billedEstimateUsd !== undefined && usage.hasOffPeakDiscount ? 'off-peak' : null;
   const zdr = useStatusZdr();
   const webSearch = useStatusWebSearch();
@@ -876,7 +885,7 @@ function StatusLineChrome({ columns, onRowsChange }: {
       shellCount,
       runningAgents,
     }),
-    statusLineRightFacts(statusLineUsageItems(contextPercent, cachePercent, segments.spend, costBasis, valueColor), zdr, webSearch),
+    statusLineRightFacts(statusLineUsageItems(contextPercent, cachePercent, segments.spend, costBasis, valueColor, usageScope), zdr, webSearch),
   );
   useLayoutEffect(() => {
     onRowsChange?.(layout.rows);

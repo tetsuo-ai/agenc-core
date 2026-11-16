@@ -2,6 +2,7 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FullscreenLayout } from "./FullscreenLayout.js";
 import { FullscreenModeProvider } from "../context/fullscreenModeContext.js";
+import { StatusContextUsageContext, StatusPromptCacheContext } from "../context/statusEffortContext.js";
 import { SessionUsageContext } from "../context/sessionUsageContext.js";
 import { AppStateProvider, getDefaultAppState } from "../state/AppState.js";
 import { Text } from "../ink.js";
@@ -64,4 +65,28 @@ describe("alternate fullscreen canonical spend", () => {
     expect(output).toContain("$9.00");
     expect(mocks.getTotalCost).toHaveBeenCalled();
   });
+});
+
+
+test.each([80, 120])("scopes context, cache and mixed billed/plan spend at %s columns", async columns => {
+  const output = await renderToString(
+    <AppStateProvider initialState={getDefaultAppState()}>
+      <SessionUsageContext value={{ costUsd: 2.24, billedEstimateUsd: 1.12, hasUnknownCost: false,
+        planCalls: 1, meteredCalls: 6, includesSubagents: true, hasOffPeakDiscount: true,
+        cachedInputTokens: 970, cacheInputTokens: 1000, cacheUnreportedCalls: 0 }}>
+        <StatusContextUsageContext value={33}>
+          <StatusPromptCacheContext value={50}>
+            <FullscreenModeProvider enabled>
+              <FullscreenLayout scrollable={<Text>ready</Text>} bottom={<Text>prompt</Text>} />
+            </FullscreenModeProvider>
+          </StatusPromptCacheContext>
+        </StatusContextUsageContext>
+      </SessionUsageContext>
+    </AppStateProvider>, { columns, rows: 24 });
+  expect(output).toContain('ctx lead 33%');
+  expect(output).toMatch(/(?:cache|c) swarm 97%/);
+  expect(output).toContain('$1.12 billed off-peak');
+  expect(output).toContain('plan');
+  expect(output).toContain('swarm');
+  expect(output).not.toContain('50%');
 });

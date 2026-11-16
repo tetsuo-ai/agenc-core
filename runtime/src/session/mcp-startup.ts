@@ -635,6 +635,7 @@ function tokenCountEventForSampling(
     ...(usage.webSearchRequests !== undefined
       ? { webSearchRequests: usage.webSearchRequests }
       : {}),
+    ...(usage.billingMode === "plan" ? { billingMode: "plan" as const } : {}),
     ...(usage.providerCostUsd !== undefined
       ? { providerCostUsd: usage.providerCostUsd }
       : {}),

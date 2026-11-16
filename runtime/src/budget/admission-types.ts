@@ -89,6 +89,14 @@ export interface AdmissionJournalEvent {
 export type AdmissionEventListener = (event: AdmissionJournalEvent) => void;
 
 export interface AdmissionUsageTotals {
+  readonly planCalls?: number;
+  readonly meteredCalls?: number;
+  readonly apiEquivalentUsd?: number;
+  readonly apiEquivalentUnknown?: boolean;
+  readonly cachedInputTokens?: number;
+  readonly cacheInputTokens?: number;
+  readonly cacheUnreportedCalls?: number;
+  readonly billedEstimateUsd?: number;
   readonly costEstimated?: boolean;
   readonly costUsd: number;
   readonly inputTokens: number;
@@ -111,6 +119,8 @@ export type UnpricedUsageCall = {
 };
 
 export interface AdmissionUsageSummary extends AdmissionUsageTotals {
+  readonly includesSubagents?: boolean;
+  readonly agentModels?: readonly (AdmissionUsageTotals & { readonly runId: string; readonly model: string; readonly provider?: string })[];
   /** Display only: known cost adjusted by recorded per-call off-peak hours. Never budget authority. */
   readonly billedEstimateUsd?: number;
   /** Display only: at least one settled call has a recorded off-peak discount. */
@@ -221,6 +231,7 @@ export interface AdmissionLease extends AdmissionGrant {
 }
 
 export interface AdmissionUsage {
+  readonly billingDetails?: import("../session/usage-billing.js").UsageBillingDetails;
   readonly costEstimated?: boolean;
   readonly inputTokens: number;
   readonly outputTokens: number;

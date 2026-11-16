@@ -1506,6 +1506,8 @@ export interface ModelUsage {
    * `usage.cost`). When set it is the cost, and no rate card is consulted.
    */
   readonly providerCostUsd?: number;
+  /** Accounting annotation only, recorded after a ChatGPT sign-in response. */
+  readonly billingMode?: "plan";
   /**
    * When these tokens were billed (epoch milliseconds), for a model whose
    * price changes on an announced date. Unset means now.
@@ -1626,6 +1628,7 @@ export function computeUsdCostWithResolution(
   usage: ModelUsage,
   registry: Readonly<Record<string, ModelCostEntry>>,
 ): CostResolution {
+  if (usage.provider === "openai" && usage.billingMode === "plan") return { costUsd: 0, known: true };
   const match = resolveModelCostEntry(usage, registry);
   const charged = usage.providerCostUsd;
   if (charged !== undefined && Number.isFinite(charged) && charged >= 0) {
@@ -2142,6 +2145,11 @@ export interface SessionCostRecord {
 }
 
 export interface SessionCostModelUsage {
+  /** Conservative pre-plan accounting retained only for existing budget guards. */
+  readonly planAccountingCostUsd?: number;
+  readonly planCalls?: number;
+  readonly apiEquivalentUsd?: number;
+  readonly apiEquivalentUnknown?: boolean;
   readonly model: string;
   readonly provider?: string;
   readonly inputTokens: number;
@@ -2219,6 +2227,10 @@ function coerceSessionModelUsage(
     turns: normalizeCounter(row.turns as number | undefined),
     costUsd: normalizeCost(row.costUsd as number | undefined),
     ...(typeof row.costKnown === "boolean" ? { costKnown: row.costKnown } : {}),
+    ...(typeof row.planCalls === "number" ? { planCalls: normalizeCounter(row.planCalls) } : {}),
+    ...(typeof row.planAccountingCostUsd === "number" ? { planAccountingCostUsd: normalizeCost(row.planAccountingCostUsd) } : {}),
+    ...(row.apiEquivalentUnknown === true ? { apiEquivalentUnknown: true } : {}),
+    ...(typeof row.apiEquivalentUsd === "number" ? { apiEquivalentUsd: normalizeCost(row.apiEquivalentUsd) } : {}),
   };
 }
 
@@ -2461,6 +2473,7 @@ export class CostSidecar implements Sidecar {
   private restoredPerModelBaselines = new Map<string, ModelUsage>();
   private restoredPerModelCostUsd = new Map<string, number>();
   private explicitPerModelUsage = new Map<string, ModelUsage>();
+  private planUsage = new Map<string, { planCalls: number; apiEquivalentUsd: number; planAccountingCostUsd: number; apiEquivalentUnknown?: boolean }>();
   private explicitPerModelCostUsd = new Map<string, number>();
   private restoredSessionId: string | null = null;
   private restoredWallDurationMs = 0;
@@ -2556,6 +2569,7 @@ export class CostSidecar implements Sidecar {
             totalTokens: msg.payload.totalTokens ?? 0,
             turns: 0,
             singleCall: true,
+            ...(msg.payload.billingMode === "plan" ? { billingMode: "plan" as const } : {}),
             ...(msg.payload.speed === "fast" ? { speed: "fast" as const } : {}),
             ...(chargedUsd(msg.payload.providerCostUsd) !== undefined
               ? { providerCostUsd: chargedUsd(msg.payload.providerCostUsd) }
@@ -2564,8 +2578,18 @@ export class CostSidecar implements Sidecar {
           const resolvedEntry = resolveModelCostEntry(callDelta, this.registry);
           const standardEntry = resolvedEntry?.entry;
           const callCost = computeUsdCostWithResolution(callDelta, this.registry);
+          if (callDelta.billingMode === "plan") {
+            const equivalent = computeUsdCostWithResolution({ ...callDelta, billingMode: undefined, providerCostUsd: undefined }, this.registry);
+            const before = this.planUsage.get(key);
+            this.planUsage.set(key, { planCalls: (before?.planCalls ?? 0) + 1,
+              apiEquivalentUsd: (before?.apiEquivalentUsd ?? 0) + (equivalent.known ? equivalent.costUsd : 0),
+              planAccountingCostUsd: (before?.planAccountingCostUsd ?? 0) +
+                computeUsdCostWithResolution({ ...callDelta, billingMode: undefined }, this.registry).costUsd,
+              ...(!equivalent.known || before?.apiEquivalentUnknown ? { apiEquivalentUnknown: true } : {}),
+            });
+          }
           if (
-            callDelta.providerCostUsd !== undefined || provider === "ollama-cloud" ||
+            callDelta.billingMode === "plan" || callDelta.providerCostUsd !== undefined || provider === "ollama-cloud" ||
             !callCost.known || (callDelta.cacheCreation1hInputTokens ?? 0) > 0 ||
             // A dated price is fixed when the call bills, so a session that
             // crosses the change keeps each call at the rate of its moment.
@@ -2639,6 +2663,13 @@ export class CostSidecar implements Sidecar {
     return total + this.restoredCostAdjustmentUsd;
   }
 
+  /** Existing budget guards keep their pre-plan accounting, separate from billed display. */
+  getTotalAccountingCostUsd(): number {
+    let cost = this.getTotalCostUsd();
+    for (const plan of this.planUsage.values()) cost += plan.planAccountingCostUsd;
+    return cost;
+  }
+
   getPerModelUsage(): ReadonlyArray<ModelUsage> {
     return Array.from(this.perModel.values());
   }
@@ -2657,6 +2688,7 @@ export class CostSidecar implements Sidecar {
       turns: usage.turns,
       costUsd: this.getModelUsageCostUsd(usage),
       costKnown: !this.unknownCostModels.has(usageKey(usage.model, usage.provider)),
+      ...this.planUsage.get(usageKey(usage.model, usage.provider)),
     }));
   }
 
@@ -2979,6 +3011,7 @@ export class CostSidecar implements Sidecar {
     this.restoredPerModelBaselines = new Map();
     this.restoredPerModelCostUsd = new Map();
     this.explicitPerModelUsage = new Map();
+    this.planUsage.clear();
     this.explicitPerModelCostUsd = new Map();
     this.restoredSessionId = null;
     this.restoredWallDurationMs = 0;
@@ -3240,6 +3273,11 @@ export class CostSidecar implements Sidecar {
         turns: row.turns,
       };
       const key = usageKey(usage.model, usage.provider);
+      if (row.planCalls !== undefined) this.planUsage.set(key, {
+        planCalls: row.planCalls, apiEquivalentUsd: row.apiEquivalentUsd ?? 0,
+        planAccountingCostUsd: row.planAccountingCostUsd ?? row.apiEquivalentUsd ?? 0,
+        ...(row.apiEquivalentUnknown ? { apiEquivalentUnknown: true } : {}),
+      });
       this.perModel.set(key, usage);
       this.restoredPerModelBaselines.set(key, { ...usage });
       this.restoredPerModelCostUsd.set(key, row.costUsd);

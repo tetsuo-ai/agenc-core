@@ -1,5 +1,7 @@
 /** Shared M3 boundary for logical model calls. */
 
+import { honestUsageEnabled, isChatGptPlan } from "../session/usage-billing.js";
+
 import type { Session } from "../session/session.js";
 import { billableTokenUsage as reconciledTokenUsage } from "../llm/usage.js";
 import type {
@@ -540,11 +542,15 @@ export async function runAdmittedModelCall(
 ): Promise<LLMResponse> {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await runAdmittedModelAttempt(attempt === 0 ? params : {
+      const response = await runAdmittedModelAttempt(attempt === 0 ? params : {
         ...params,
         stepId: `${params.stepId}:openai-auth:${attempt}`,
         options: { ...params.options, openAiAuthRetryAttempt: attempt } as typeof params.options & OpenAIAuthRetryChatOptions,
       });
+      if (isChatGptPlan(params.providerName, readProviderFactoryOptions(params.provider))) {
+        return { ...response, usage: { ...response.usage, billingMode: "plan" } };
+      }
+      return response;
     } catch (error) {
       if (params.providerName !== "openai" || !(error instanceof OpenAIAuthRetryError) || attempt >= 2) {
         throw error;
@@ -1136,6 +1142,18 @@ async function runAdmittedModelAttempt(
       inputTokens: reconciled.inputTokens,
       outputTokens: reconciled.outputTokens,
       costUsd: actualPrice.costUsd,
+      ...(honestUsageEnabled() ? { billingDetails: {
+        billingMode: isChatGptPlan(requestedProvider, providerFactoryOptions) ||
+          resolveModelCostEntry({ model: actualModel, provider: pricingProvider }, DEFAULT_MODEL_COSTS)?.entry.label === "plan"
+          ? "plan" as const : "metered" as const,
+        ...(usage.cachedInputTokens !== undefined ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+        ...(pricingProvider === "deepseek" ? { offPeakEligibleCostUsd: usage.providerCostUsd !== undefined ? 0 :
+          Math.max(0, actualPrice.costUsd - (usage.webSearchRequests ?? 0) *
+            (resolveModelCostEntry({ model: actualModel, provider: pricingProvider }, DEFAULT_MODEL_COSTS)?.entry.webSearchUsdPerRequest ?? 0)) } : {}),
+        ...(isChatGptPlan(requestedProvider, providerFactoryOptions)
+          ? actualPrice.costEstimated ? { apiEquivalentUnknown: true } : { apiEquivalentUsd: actualPrice.costUsd }
+          : {}),
+      } } : {}),
       ...(actualPrice.costEstimated ? { costEstimated: true } : {}),
     });
     settled = true;

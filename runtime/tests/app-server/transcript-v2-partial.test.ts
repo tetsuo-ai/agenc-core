@@ -186,3 +186,15 @@ describe("partial assistant transcript recovery", () => {
     ]).messages.at(-1)!.messageId);
   });
 });
+
+it('preserves plan and per-agent model accounting through the daemon transcript JSON boundary', () => {
+  const row = { runId: 'run', provider: 'openai', model: 'gpt-6.1-sol', costUsd: 0, heldCostUsd: 0,
+    inputTokens: 100, outputTokens: 10, totalTokens: 110, modelCalls: 1, hasUnknownCost: false,
+    planCalls: 1, meteredCalls: 0, apiEquivalentUsd: 0.01, cachedInputTokens: 90, cacheInputTokens: 100 };
+  const usage = { ...row, sequence: 1, models: [row], agents: [], agentModels: [row] };
+  const rebuilt = snapshot([event(1, { type: 'session_usage', payload: usage })], false);
+  const transported = JSON.parse(JSON.stringify(rebuilt));
+  const display = adaptTranscriptEvents(daemonTranscriptSnapshotEvents(transported, 'session'));
+  expect(display.sessionUsage).toMatchObject({ costUsd: 0, planCalls: 1, apiEquivalentUsd: 0.01,
+    agentModels: [row] });
+});

@@ -132,7 +132,7 @@ export async function resolveGoalBaseCommit(cwd: string): Promise<string | undef
 
 export const defaultGoalGateDeps: GoalGateDeps = {
   now: () => new Date().toISOString(),
-  sessionCostUsd: (session) => session.services.costSidecar?.getTotalCostUsd() ?? 0,
+  sessionCostUsd: (session) => session.services.costSidecar?.getTotalAccountingCostUsd?.() ?? session.services.costSidecar?.getTotalCostUsd() ?? 0,
   async runVerification({ commands, ctx, session, timeoutMs, signal }) {
     const results: GoalVerificationResult[] = [];
     // Sequential on purpose: checks share a workspace and build caches.

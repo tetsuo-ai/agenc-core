@@ -257,3 +257,28 @@ describe("/cost", () => {
     expect(out).toContain("build the parser · runner");
   });
 });
+
+it('shows plan API-equivalent separately and lists lead and child provider/model usage', async () => {
+  const lead = { model: 'gpt-6.1-sol', provider: 'openai', runId: 'session-1', costUsd: 0,
+    billedEstimateUsd: 0, inputTokens: 1000, outputTokens: 100, totalTokens: 1100, modelCalls: 1,
+    heldCostUsd: 0, hasUnknownCost: false, planCalls: 1, meteredCalls: 0, apiEquivalentUsd: 0.01,
+    cachedInputTokens: 500, cacheInputTokens: 1000, cacheUnreportedCalls: 0 };
+  const child = { ...lead, runId: 'worker-1', model: 'deepseek-flash', provider: 'deepseek',
+    costUsd: 0.002, billedEstimateUsd: 0.001, planCalls: 0, meteredCalls: 1, apiEquivalentUsd: 0,
+    cachedInputTokens: 900 };
+  const report = buildCostReport({ ...contextWith({}), appState: { getSessionUsage: () => ({
+    ...lead, sequence: 1, costUsd: 0.002, billedEstimateUsd: 0.001, modelCalls: 2,
+    inputTokens: 2000, outputTokens: 200, totalTokens: 2200, meteredCalls: 1,
+    models: [lead, child], agents: [child], agentModels: [lead, child], includesSubagents: true,
+  }) } });
+  const plain = formatCostReport(report);
+  expect(plain).toContain('Plan: 1 calls, no per-token charge');
+  expect(plain).toContain('API-equivalent: $0.010 (reference only; not billed)');
+  expect(plain).toContain('lead [session-1] · openai/gpt-6.1-sol: 1 calls');
+  expect(plain).toContain('worker-1 [worker-1] · deepseek/deepseek-flash: 1 calls');
+  expect(plain).toContain('90% cached · 100 out · $0.0010 billed');
+  const modal = await renderToString(createElement(CostUsageModal, { report, onDone: () => {}, active: false }),
+    { columns: 120, rows: 60 });
+  for (const text of ['API-equivalent', 'no per-token charge', 'openai/gpt-6.1-sol',
+    'deepseek/deepseek-flash', '50% cached', '90% cached', '$0.0010 billed']) expect(modal).toContain(text);
+});

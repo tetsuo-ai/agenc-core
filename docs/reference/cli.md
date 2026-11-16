@@ -118,20 +118,34 @@ provider and model keep no data, red when data may be kept, and a dim `ZDR?`
 when AgenC cannot tell; `/status` says why
 ([providers.md](providers.md#zero-data-retention)).
 
-Spend reads, for example, `$0.750 off-peak` when at least one discount applies.
-Otherwise it shows the figure without a suffix. It sums each call's recorded
-cost, applying half price to calls dispatched during the recorded off-peak
-hours for the DeepSeek API and eligible QwenCloud DeepSeek models. The clock
-now and the currently selected model do not change earlier calls' estimates.
-Narrow terminals may shorten `off-peak` to `op`. `≥` means some calls
-have unknown cost and are excluded from the figure; `price unknown` means a
-fallback price was used. Eligible priced calls without the necessary dispatch
-times show the accounting figure with `peak est.` instead. Unrecorded schedules
-(including Ollama Cloud) and Chinese public holidays are not discounted, so a billed
-estimate can still exceed the provider's charge. `/cost` shows the accounting
-total at peak rates alongside the billed estimate. Budgets, spend caps,
-stored accounting totals, custom status-line hook costs and print summaries
-continue to use the accounting total.
+Spend reads `$1.12 billed off-peak · plan · swarm` when a session combines
+metered calls, plan calls and sub-agents. `billed` is an estimate of token and
+tool charges, not an invoice. `plan` means calls included in a subscription,
+with no per-token charge. ChatGPT sign-in uses plan accounting; an OpenAI API
+key uses API pricing. `swarm` says the figure includes the lead and recorded
+sub-agents, including finished agents. `/cost` has the breakdown.
+
+`ctx lead` is the lead's resident context, never the sum of agent contexts.
+`cache swarm` is cached input divided by input across the lead and sub-agents.
+It counts tokens, not calls; input already includes cached tokens. `cache known`
+means some calls did not report cache counts and are excluded from this share.
+Older sessions without these ledger details keep the legacy `cache` label,
+from the lead's transcript. A missing cache count is not treated as a cache miss. These shares
+say nothing about how much space remains in a sub-agent's context.
+
+`off-peak` stays next to billed money. Each call uses its dispatch time and the
+recorded DeepSeek or QwenCloud schedule. DeepSeek web-tool fees keep their full
+price; provider-reported charges are not discounted again. `≥` means unpriced
+calls are excluded. `price unknown` means fallback pricing was needed.
+`peak est.` means an eligible call lacks its dispatch time. Holidays and other
+unrecorded discounts can still make the estimate differ from the provider's
+charge. Historical calls without a recorded billing route cannot be reclassified
+as plan usage safely.
+
+`AGENC_HONEST_USAGE=0` disables recording the new accounting annotations for
+new calls. The default is enabled. This switch never changes provider requests.
+Budget reservations and enforcement retain their conservative accounting basis;
+API-equivalent values are not subscription invoices.
 
 ### Print-mode notes
 

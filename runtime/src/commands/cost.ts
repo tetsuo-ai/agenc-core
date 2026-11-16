@@ -26,6 +26,7 @@ import {
   formatTokenCount,
   formatUsdCost,
 } from "../session/cost.js";
+import { usageCachePercent } from "../session/usage-display.js";
 import { asRecord } from "../utils/record.js";
 import { isAdmissionUsageSummary } from "../session/usage-summary.js";
 import type { UnpricedUsageCall } from "../budget/admission-types.js";
@@ -39,6 +40,15 @@ import {
 
 /** One per-model row of real, provider-reported usage. */
 export interface CostModelRow {
+  readonly modelCalls?: number;
+  readonly cachedInputTokens?: number;
+  readonly cacheInputTokens?: number;
+  readonly cacheUnreportedCalls?: number;
+  readonly billedEstimateUsd?: number;
+  readonly planCalls?: number;
+  readonly meteredCalls?: number;
+  readonly apiEquivalentUsd?: number;
+  readonly apiEquivalentUnknown?: boolean;
   readonly label: string;
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -62,6 +72,10 @@ export interface CostAgentRow {
 }
 
 export interface CostReport {
+  readonly planCalls?: number;
+  readonly apiEquivalentUsd?: number;
+  readonly apiEquivalentUnknown?: boolean;
+  readonly agentModels?: readonly (CostModelRow & { readonly runId: string; readonly agentLabel: string })[];
   /** Accounting total, before recorded off-peak adjustments. */
   readonly totalCostUsd?: number;
   readonly billedEstimateUsd?: number;
@@ -91,6 +105,9 @@ interface CostSidecarLike {
   getSessionModelUsage?: () => ReadonlyArray<{
     readonly model: string;
     readonly provider?: string;
+    readonly planCalls?: number;
+    readonly apiEquivalentUsd?: number;
+    readonly apiEquivalentUnknown?: boolean;
     readonly inputTokens: number;
     readonly outputTokens: number;
     readonly totalTokens: number;
@@ -129,6 +146,7 @@ function readSessionTotals(sidecar: CostSidecarLike | null): {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       costUsd: usage.costUsd,
+      ...(usage.planCalls !== undefined ? { planCalls: usage.planCalls, apiEquivalentUsd: usage.apiEquivalentUsd, apiEquivalentUnknown: usage.apiEquivalentUnknown } : {}),
     }),
   );
   return {
@@ -210,6 +228,11 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
   if (isAdmissionUsageSummary(usage)) {
     return {
       totalCostUsd: usage.costUsd,
+      ...(usage.planCalls !== undefined ? { planCalls: usage.planCalls, apiEquivalentUsd: usage.apiEquivalentUsd, apiEquivalentUnknown: usage.apiEquivalentUnknown } : {}),
+      ...(usage.agentModels !== undefined ? { agentModels: usage.agentModels.map(row => ({
+        ...row, label: row.provider ? `${row.provider}/${row.model}` : row.model,
+        agentLabel: row.runId === usage.runId ? "lead" : agents.find(agent => agent.runId === row.runId)?.label ?? row.runId,
+      })) } : {}),
       ...(usage.billedEstimateUsd !== undefined ? { billedEstimateUsd: usage.billedEstimateUsd } : {}),
       ...(usage.costEstimated ? { totalIsEstimated: true } : {}),
       inputTokens: usage.inputTokens,
@@ -219,6 +242,7 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
       ...(usage.unpricedCalls !== undefined ? { unpricedCalls: usage.unpricedCalls } : {}),
       ...(usage.unpricedCallCount !== undefined ? { unpricedCallCount: usage.unpricedCallCount } : {}),
       models: usage.models.map((model) => ({
+        ...model,
         label: model.provider ? `${model.provider}/${model.model}` : model.model,
         inputTokens: model.inputTokens,
         outputTokens: model.outputTokens,
@@ -260,6 +284,11 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
     ...(totalTokens !== undefined ? { totalTokens } : {}),
     ...(totals.turns !== undefined ? { turns: totals.turns } : {}),
     hasUnknownCost: totals.hasUnknownCost || agents.length > 0,
+    ...(totals.models.some(row => (row.planCalls ?? 0) > 0) ? {
+      planCalls: totals.models.reduce((sum, row) => sum + (row.planCalls ?? 0), 0),
+      apiEquivalentUsd: totals.models.reduce((sum, row) => sum + (row.apiEquivalentUsd ?? 0), 0),
+      apiEquivalentUnknown: totals.models.some(row => row.apiEquivalentUnknown),
+    } : {}),
     models: totals.models,
     agents,
   };
@@ -283,11 +312,28 @@ export function unpricedCallDescription(call: UnpricedUsageCall): string {
   return `${model} · ${call.kind === "model_turn" ? "model call" : call.kind} ${call.stepId} · ${reason}`;
 }
 
+export function costModelDetail(row: CostModelRow): string {
+  const share = usageCachePercent(row);
+  const cache = share === null ? "cache unknown" : `${share}% cached${(row.cacheUnreportedCalls ?? 0) > 0 ? " (reported calls only)" : ""}`;
+  const billed = row.billedEstimateUsd ?? row.costUsd;
+  return [
+    row.modelCalls === undefined ? "calls unknown" : `${row.modelCalls} calls`,
+    `${formatTokenCount(row.inputTokens)} in`, cache, `${formatTokenCount(row.outputTokens)} out`,
+    `${row.hasUnknownCost ? "≥" : ""}${formatUsdCost(billed)} billed${row.costEstimated ? " est." : row.billedEstimateUsd === undefined ? " (peak est.)" : ""}`,
+    (row.planCalls ?? 0) > 0 ? `plan (${row.planCalls} calls)` : "",
+    (row.apiEquivalentUsd ?? 0) > 0 ? `${row.apiEquivalentUnknown ? "≥" : ""}${formatUsdCost(row.apiEquivalentUsd!)} API-equivalent`
+      : row.apiEquivalentUnknown ? "API-equivalent unknown" : "",
+  ].filter(Boolean).join(" · ");
+}
+
 export function formatCostReport(report: CostReport): string {
   const lines: string[] = [];
   if (report.totalCostUsd !== undefined) {
     const unknown = report.hasUnknownCost ? "≥" : "";
     const est = report.totalIsEstimated ? " est." : "";
+    if ((report.planCalls ?? 0) > 0) lines.push(`Plan: ${report.planCalls} calls, no per-token charge`);
+    if ((report.apiEquivalentUsd ?? 0) > 0) lines.push(`API-equivalent: ${report.apiEquivalentUnknown ? "≥" : ""}${formatUsdCost(report.apiEquivalentUsd!)} (reference only; not billed)`);
+    if (report.apiEquivalentUnknown) lines.push("Some plan calls have unknown API-equivalent pricing.");
     lines.push(
       `Session cost: ${unknown}${formatUsdCost(report.totalCostUsd)}${est} (accounting; peak rates before off-peak discounts)`,
     );
@@ -313,12 +359,17 @@ export function formatCostReport(report: CostReport): string {
     lines.push("Models:");
     for (const m of report.models) {
       lines.push(
-        `  ${m.label}: ${formatTokenCount(m.inputTokens)} in, ${formatTokenCount(m.outputTokens)} out (${m.hasUnknownCost ? "≥" : ""}${formatUsdCost(m.costUsd)}${m.costEstimated ? " est." : ""})`,
+        `  ${m.label}: ${costModelDetail(m)}`,
+
       );
     }
   }
+  if (report.agentModels !== undefined) {
+    lines.push("By agent / provider / model (lead and sub-agents):");
+    for (const row of report.agentModels) lines.push(`  ${row.agentLabel} [${row.runId}] · ${row.label}: ${costModelDetail(row)}`);
+  }
   if (report.agents.length > 0) {
-    lines.push("Agents:");
+    lines.push("Agents (accounting totals include tool charges):");
     for (const a of report.agents) {
       const tokens =
         a.tokenCount !== undefined ? `${formatTokenCount(a.tokenCount)} tokens` : "tokens unknown";
@@ -330,7 +381,7 @@ export function formatCostReport(report: CostReport): string {
           : "cost unknown";
       lines.push(`  ${a.status} ${a.label}: ${tokens} · ${spend}`);
     }
-  } else {
+  } else if (report.agentModels === undefined) {
     lines.push("Agents: none active");
   }
   if (report.hasUnknownCost) {
@@ -343,9 +394,11 @@ export function formatCostReport(report: CostReport): string {
       lines.push("  Call details unavailable for this older session.");
     }
   }
-  lines.push("Model and agent totals use accounting rates; provider-reported charges are kept as reported.");
+  lines.push("Per-model rows count model calls. Session and agent totals also include separately reported tool charges.");
+  lines.push("Input includes cache reads and writes. Cached share uses only calls with a reported cache count; missing counts are marked.");
+  lines.push("Billed USD is an estimate. Plan calls have no per-token charge; API-equivalent is a reference value only.");
   lines.push("Billed estimates apply recorded schedules only; other discounts and holidays may be missing.");
-  lines.push("Agent costs use recorded usage when available; estimates are marked est.");
+  lines.push("Calls count reported attempts, including retries with usage. Failed attempts without usage are listed as unpriced. Old calls may lack billing-route or cache details.");
   return lines.join("\n");
 }
 

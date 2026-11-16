@@ -1834,6 +1834,7 @@ export async function streamModel(
           totalTokens: response.usage.totalTokens,
           model: response.model,
           provider: providerName,
+          ...(response.usage.billingMode === "plan" ? { billingMode: "plan" as const } : {}),
           ...(cached !== undefined ? { cachedInputTokens: cached } : {}),
           ...(cacheCreation1h !== undefined ? { cacheCreation1hInputTokens: cacheCreation1h } : {}),
           ...(cacheCreation !== undefined

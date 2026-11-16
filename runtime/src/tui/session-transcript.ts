@@ -1103,6 +1103,7 @@ function usageFromTokenCountPayload(payload: Record<string, unknown>): ModelUsag
     // A turn served in fast mode bills at the model's fast-mode rates.
     ...(payload.speed === "fast" ? { speed: "fast" as const } : {}),
     // The provider's own charge for the call, when it reported one.
+    ...(payload.billingMode === "plan" ? { billingMode: "plan" as const } : {}),
     ...(typeof payload.providerCostUsd === "number" && Number.isFinite(payload.providerCostUsd) &&
       payload.providerCostUsd >= 0
       ? { providerCostUsd: payload.providerCostUsd }
