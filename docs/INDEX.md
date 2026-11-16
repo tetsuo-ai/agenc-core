@@ -3,7 +3,7 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.19.35**; embedding SDK
+Version in tree: **runtime / launcher 0.19.36**; embedding SDK
 **0.3.0**. Default provider **grok**; fresh-config session and direct-provider
 default **grok-4.6**. OpenRouter's default remains
 **`x-ai/grok-4.5`** (see [providers.md](reference/providers.md)).
@@ -99,6 +99,7 @@ history; the linked pages below are current product truth.
 
 | Doc | Summary |
 | --- | --- |
+| [releases/0.19.36.md](releases/0.19.36.md) | AgenC 0.19.36: Light on OpenAI shows the model a two-field `exec_command` and writes shorter commands (API and ChatGPT sign-in), with an off switch; Qwen4 Max on QwenCloud Pay-As-You-Go and the Token Plan; Gemini tool results under a key (fewer empty answers), fuller steps on Flash, an explicit prefix cache on Gemini 3.1 Pro |
 | [releases/0.19.35.md](releases/0.19.35.md) | AgenC 0.19.35: Light on OpenAI sends its model calls over one WebSocket per session (API and ChatGPT sign-in), with an HTTP opt-out; opt-in freeform edit tool; Gemini 4 Hydrogen and an up-to-date Gemini model list; tool-result images reach Gemini; faster Gemini token counting |
 | [releases/0.19.34.md](releases/0.19.34.md) | AgenC 0.19.34: Windows with Smart App Control; /update finds the right launcher; auto theme, readable colors and visible selection; calmer chat: input-colored sent band, light tables, queue in the input box, short turn line; low verbosity for Light on GPT-6.1 Terra and Sol |
 | [releases/0.19.33.md](releases/0.19.33.md) | AgenC 0.19.33: Long sessions wait and compact with fewer wasted calls and keep image-heavy runs on the prompt cache; lean Light request for native DeepSeek; Muse Ember, Qwen4 Max Preview and DeepSeek app tools; ChatGPT cache fix; table and emoji display fixes; MCP SSE token |
@@ -169,7 +170,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.19.35) |
+| [`../README.md`](../README.md) | Product README (0.19.36) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |
