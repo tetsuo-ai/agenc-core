@@ -33,6 +33,18 @@ interface AuthorizedOperationOptions {
   readonly signal?: AbortSignal;
 }
 
+/**
+ * @internal Bounded ChatGPT auth recovery across newly admitted attempts. The count travels on the chat options
+ * object; its type stays here so the shared LLMChatOptions in llm/types.ts (bound by the FND baseline) is unchanged.
+ */
+export interface OpenAIAuthRetryChatOptions {
+  readonly openAiAuthRetryAttempt?: number;
+}
+
+export function openAiAuthRetryAttemptOf(options: object | undefined): number | undefined {
+  return (options as OpenAIAuthRetryChatOptions | undefined)?.openAiAuthRetryAttempt;
+}
+
 /** Credentials recovered, but the rejected wire attempt must settle first. */
 export class OpenAIAuthRetryError extends LLMProviderError {
   constructor() {

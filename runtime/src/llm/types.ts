@@ -759,8 +759,6 @@ export interface LLMChatOptions {
    * as a user-facing retry control.
    */
   readonly singleWireAttempt?: boolean;
-  /** @internal Bounded ChatGPT auth recovery across newly admitted attempts. */
-  readonly openAiAuthRetryAttempt?: number;
   /**
    * The call belongs to the main loop of a Light session on the `openai`
    * provider, whose streamed Responses calls travel over the session's

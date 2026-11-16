@@ -111,7 +111,7 @@ import type { OpenAIProviderConfig } from "./types.js";
 import type { ResponsesWebSocketSession, ResponsesWebSocketTurn } from "./responses-websocket.js";
 import { currentSessionWriteBehind } from "../../../session/write-behind.js";
 import { resolveStreamIdleTimeoutMs } from "../../stream-watchdog.js";
-import { OpenAIAuthSession } from "./auth.js";
+import { OpenAIAuthSession, openAiAuthRetryAttemptOf } from "./auth.js";
 import { parseSSEFrames, type SSEFrame } from "../../_deps/sse.js";
 import {
   evaluateProviderFallback,
@@ -1333,7 +1333,7 @@ export class OpenAIProvider implements LLMProvider {
           providerCapabilityHints,
           toolCallIdNamespace: headers?.["Idempotency-Key"],
         }, { responseHeaders: response.headers });
-      }, { singleWireAttempt: options?.singleWireAttempt, openAiAuthRetryAttempt: options?.openAiAuthRetryAttempt, signal: options?.signal });
+      }, { singleWireAttempt: options?.singleWireAttempt, openAiAuthRetryAttempt: openAiAuthRetryAttemptOf(options), signal: options?.signal });
     } catch (error) {
       if (isFallbackTriggeredError(error)) {
         throw error;
@@ -1399,7 +1399,7 @@ export class OpenAIProvider implements LLMProvider {
           timeoutMs,
           headers,
         );
-      }, { singleWireAttempt: options?.singleWireAttempt, openAiAuthRetryAttempt: options?.openAiAuthRetryAttempt, signal: options?.signal });
+      }, { singleWireAttempt: options?.singleWireAttempt, openAiAuthRetryAttempt: openAiAuthRetryAttemptOf(options), signal: options?.signal });
     } catch (error) {
       // Structured provider failures are already classified; their prose is
       // not evidence of a second, transport-level failure.
