@@ -1,8 +1,10 @@
 /**
  * Audited SQL of the private admission writer. These queries read only
  * synchronously committed admission, cancellation, lifecycle or spawn state.
- * Canonical rollout/thread projections are never in this set. Any query edit
- * falls back to the ordinary reader barrier until it is audited here too.
+ * Canonical rollout/thread projections are never in this set. The usage views
+ * also read agent_jobs.result_json of admission jobs, which only this writer
+ * sets. Any query edit falls back to the ordinary reader barrier until it is
+ * audited here too.
  */
 const AUDITED_ADMISSION_READS = new Set([
   "SELECT * FROM execution_admission_allocations ORDER BY scope_key ASC",
@@ -24,9 +26,9 @@ const AUDITED_ADMISSION_READS = new Set([
   "SELECT id, kind, status, priority, input_json, result_json, error, worker_id, created_at, updated_at, available_at, admission_run_id, admission_step_id, admission_parent_run_id, admission_workspace_id, admission_session_id, admission_parent_id, admission_provider, admission_model, admission_autonomous, admission_deadline_at, admission_approval_required, admission_max_input_tokens, admission_max_output_tokens, admission_max_cost_nanos, admission_attempts, admission_queue_sequence, admission_owner_pid, admission_owner_id, admission_attached, admission_admitted_at, admission_dispatched_at, admission_completed_at, admission_reason, admission_reservation_id FROM agent_jobs WHERE id = ? AND admission_run_id IS NOT NULL",
   "SELECT ra.reservation_id, ra.scope_key, ra.reserved_tokens, ra.reserved_cost_nanos, r.status, r.actual_tokens, r.actual_cost_nanos FROM execution_admission_reservation_allocations ra JOIN execution_admission_reservations r ON r.reservation_id = ra.reservation_id ORDER BY ra.scope_key ASC, ra.reservation_id ASC",
   "SELECT requested.run_id, run.status, EXISTS ( SELECT 1 FROM execution_admission_cancellations AS locked WHERE locked.run_id = requested.run_id ) AS cancelled, (run.id IS NOT NULL OR EXISTS ( SELECT 1 FROM agent_jobs AS identity_job WHERE identity_job.admission_run_id = requested.run_id ) OR EXISTS ( SELECT 1 FROM run_lifecycle_epochs AS lifecycle WHERE lifecycle.run_id = requested.run_id )) AS durable_identity, '[]' AS parents_json FROM (SELECT ? AS run_id) AS requested LEFT JOIN agent_runs AS run ON run.id = requested.run_id WHERE NOT EXISTS ( SELECT 1 FROM thread_spawn_edges AS edge WHERE edge.child_thread_id = requested.run_id ) AND NOT EXISTS ( SELECT 1 FROM agent_jobs AS parent_job WHERE parent_job.admission_run_id = requested.run_id AND parent_job.admission_parent_run_id IS NOT NULL )",
-  "SELECT reservation.* FROM execution_admission_reservations AS reservation JOIN execution_admission_reservation_allocations AS allocation ON allocation.reservation_id = reservation.reservation_id WHERE allocation.scope_key = ? AND reservation.status != 'voided'",
-  "SELECT reservation.* FROM execution_admission_reservations AS reservation JOIN execution_admission_reservation_allocations AS allocation ON allocation.reservation_id = reservation.reservation_id WHERE allocation.scope_key = ? AND reservation.status != 'voided' AND reservation.reservation_id = ?",
-  "SELECT reservation.* FROM execution_admission_reservations AS reservation JOIN execution_admission_reservation_allocations AS allocation ON allocation.reservation_id = reservation.reservation_id WHERE allocation.scope_key = ? AND reservation.status != 'voided' LIMIT 10001",
+  "SELECT reservation.*, job.result_json AS usage_details_json FROM execution_admission_reservations AS reservation LEFT JOIN agent_jobs AS job ON job.id = reservation.job_id JOIN execution_admission_reservation_allocations AS allocation ON allocation.reservation_id = reservation.reservation_id WHERE allocation.scope_key = ? AND reservation.status != 'voided'",
+  "SELECT reservation.*, job.result_json AS usage_details_json FROM execution_admission_reservations AS reservation LEFT JOIN agent_jobs AS job ON job.id = reservation.job_id JOIN execution_admission_reservation_allocations AS allocation ON allocation.reservation_id = reservation.reservation_id WHERE allocation.scope_key = ? AND reservation.status != 'voided' AND reservation.reservation_id = ?",
+  "SELECT reservation.*, job.result_json AS usage_details_json FROM execution_admission_reservations AS reservation LEFT JOIN agent_jobs AS job ON job.id = reservation.job_id JOIN execution_admission_reservation_allocations AS allocation ON allocation.reservation_id = reservation.reservation_id WHERE allocation.scope_key = ? AND reservation.status != 'voided' LIMIT 10001",
   "SELECT reservation_id, scope_key, reserved_tokens, reserved_cost_nanos FROM execution_admission_reservation_allocations WHERE reservation_id = ? ORDER BY scope_key ASC",
   "SELECT run_id FROM execution_admission_run_limits ORDER BY run_id ASC",
   "SELECT run_id FROM execution_admission_run_limits WHERE deadline_at IS NOT NULL AND deadline_at <= ? ORDER BY deadline_at ASC, run_id ASC",

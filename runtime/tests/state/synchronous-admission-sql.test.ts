@@ -7,6 +7,16 @@ describe("audited admission SQL", () => {
     expect(isAuditedAdmissionRead(allowed)).toBe(true);
     expect(isAuditedAdmissionRead(` \n SELECT *  FROM execution_admission_allocations\n WHERE scope_key = ? `)).toBe(true);
   });
+  it.each(["", " AND reservation.reservation_id = ?", " LIMIT 10001"])("audits the usage view read with plan billing details%s", suffix => {
+    // The view joins agent_jobs for the billing route. Unaudited, every usage
+    // snapshot would drain the one-shot write-behind buffer (rb37, step 5).
+    const select = `SELECT reservation.*, job.result_json AS usage_details_json FROM execution_admission_reservations AS reservation
+        LEFT JOIN agent_jobs AS job ON job.id = reservation.job_id
+        JOIN execution_admission_reservation_allocations AS allocation
+        ON allocation.reservation_id = reservation.reservation_id
+        WHERE allocation.scope_key = ? AND reservation.status != 'voided'`;
+    expect(isAuditedAdmissionRead(select + suffix)).toBe(true);
+  });
   it.each([
     "SELECT * FROM execution_admission_allocations, session_snapshots WHERE scope_key = ?",
     "SELECT * FROM execution_admission_allocations JOIN session_snapshots ON 1 = 1 WHERE scope_key = ?",

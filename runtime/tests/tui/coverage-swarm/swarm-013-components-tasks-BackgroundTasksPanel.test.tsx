@@ -405,7 +405,8 @@ describe('BackgroundTasksPanel swarm row 013', () => {
     expect(output).toContain('null')
     expect(output).toContain('true')
     expect(output).toContain('[object Object]')
-    expect(output).toContain('write notes.txt')
+    // Activity shows a readable summary, not the tool's arguments (0.19.37).
+    expect(output).toContain('Using Write')
   })
 })
 

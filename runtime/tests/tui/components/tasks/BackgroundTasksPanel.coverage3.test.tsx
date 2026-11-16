@@ -217,7 +217,9 @@ describe('BackgroundTasksPanel branch coverage', () => {
     const output = `${listOutput}\n${detailOutput}`
 
     expect(output).toContain('Navigator · Runner')
-    expect(output).toContain('Edit {"file":"src/tui/App.tsx"}')
+    // Activity shows a readable summary, not the tool's arguments (0.19.37).
+    expect(output).toContain('Using Edit')
+    expect(output).not.toContain('{"file":"src/tui/App.tsx"}')
     expect(output).toContain('preview error')
     expect(output).toContain('first note')
     expect(output).toContain('second note')
@@ -247,7 +249,7 @@ describe('BackgroundTasksPanel branch coverage', () => {
     expect(output).toContain('Reviewer · Scanner')
     expect(output).toContain('idle')
     expect(output).toContain('77 tokens')
-    expect(output).toContain('Read notes.md')
+    expect(output).toContain('Using Read')
   })
 
   it('falls back for blank titles, missing timestamps, empty activity, and unknown selected-agent roles', async () => {

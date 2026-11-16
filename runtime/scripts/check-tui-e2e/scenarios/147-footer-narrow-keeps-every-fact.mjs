@@ -39,7 +39,8 @@ export default async function (session) {
   // Two rows, one under the other: facts on the first, usage on the second.
   assert.equal(second.index, first.index + 1, `the status rows are not adjacent:\n${frame}`);
   assert.match(first.row, /project · local-pi[^\s]*model · asks\s*$/u, `first status row:\n${frame}`);
-  assert.match(second.row, /ctx \d+% · \$0\.00\d*\s*$/u, `second status row:\n${frame}`);
+  // The billed figure is always shown, also at $0.00 (0.19.37).
+  assert.match(second.row, /ctx \d+% · \$0\.00\d* billed\s*$/u, `second status row:\n${frame}`);
   assert.ok(!frame.includes("ZDR"), `an unknown ZDR state is shown:\n${frame}`);
   // The prompt stays above the status line, not under or over it.
   const prompt = rows.findIndex((row) => row.includes("❯") && !row.includes("ALPHA") && !row.includes("Reply"));

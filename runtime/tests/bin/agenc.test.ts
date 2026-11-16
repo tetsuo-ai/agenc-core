@@ -1990,7 +1990,7 @@ describe("main() smoke", () => {
     ).toBeNull();
   });
 
-  it("oneShotCLI starts a daemon prompt agent for slash-looking input", async () => {
+  it("oneShotCLI starts a daemon prompt agent for slash-looking input that is not a local command", async () => {
     const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-slash-home-"));
     const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-slash-cwd-"));
     const prevEnv = { ...process.env };
@@ -2035,13 +2035,13 @@ describe("main() smoke", () => {
 
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
-      const code = await oneShotCLI("/help\nextra");
+      const code = await oneShotCLI("/release-check\nextra");
       expect(code).toBe(0);
       expect(daemon.requests[0]).toEqual({
         method: "agent.create",
         params: expect.objectContaining({
-          objective: "/help\nextra",
-          instructions: "/help\nextra",
+          objective: "/release-check\nextra",
+          instructions: "/release-check\nextra",
           cwd: tmpCwd,
           runtimeOptions: expect.objectContaining({
             allowUntrustedHooks: true,

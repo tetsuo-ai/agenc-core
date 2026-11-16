@@ -134,7 +134,8 @@ describe("the session choice of a tool with a long name", () => {
     );
     try {
       const frame = card.frame();
-      expect(frame).toContain("2approveforsessionanyarguments,everymcp.warehouse_inventory_");
+      // The readable label of the long tool name follows the scope (0.19.37).
+      expect(frame).toContain("2approveforsessionanyarguments,everyMcpwarehouseinventory");
       expect(frame).not.toContain("thisexactactiononly");
     } finally {
       await card.close();

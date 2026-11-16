@@ -167,8 +167,9 @@ describe("a workflow child's MCP approval", () => {
     for (let step = 0; step < index; step += 1) await panel.press("\x1b[B");
     await panel.press("\r");
     const frame = panel.frame();
-    expect(frame).toContain(`TOOL·${TOOL.toUpperCase()}`);
-    expect(frame).toContain(`2approveforsessionanyarguments,every${TOOL}call`);
+    // The card names the tool by its readable label (0.19.37); the scope still comes first.
+    expect(frame).toContain("TOOL·GETSTOCKININVENTORY");
+    expect(frame).toContain("2approveforsessionanyarguments,everyGetstockininventorycall");
     expect(frame).not.toContain("thisexactactiononly");
     await panel.press("2");
     await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce());
