@@ -521,8 +521,9 @@ const MODELS_KEEPING_SUMMARY_DEFAULT: ReadonlySet<string> = new Set([
  * sent later through `additional_tools` keep the declaration too.
  */
 function responsesRequestTools(input: OpenAIResponsesRequestOptions): Record<string, unknown>[] {
-  return toOpenAIResponsesTools(omitsToolsForChoice(input) ? [] : input.tools).map((tool) => {
-    const declared = input.declareNonStrictTools === true && !isStrictCompatibleToolSchema(tool.parameters)
+  return toOpenAIResponsesTools(omitsToolsForChoice(input) ? [] : input.tools).map((tool, index) => {
+    const declared = input.declareNonStrictTools === true &&
+      (input.tools[index]?.function.strict === false || !isStrictCompatibleToolSchema(tool.parameters))
       ? { ...tool, strict: false }
       : tool;
     return input.freeformApplyPatch === true ? freeformResponsesTool(declared) : declared;

@@ -14,7 +14,7 @@ const variants: Partial<ExecCommandToolOutput>[] = [
   { exitCode: 0, truncated: true },
 ];
 
-async function capture(provider: string, lightMode: boolean, value?: string, model = "gpt-6.1-terra") {
+async function capture(provider: string, lightMode: boolean, value?: string, model = "gpt-6.1-terra", chatgptBackend = model !== "gpt-6-luna") {
   let output: ExecCommandToolOutput;
   const exec = vi.fn(async (_request: unknown) => output);
   const write = vi.fn(async (_request: unknown) => output);
@@ -31,7 +31,7 @@ async function capture(provider: string, lightMode: boolean, value?: string, mod
   const results: unknown[] = [];
   const messages: LLMMessage[] = [{ role: "user", content: "Inspect the project." }];
   const request = () => provider === "openai"
-    ? buildOpenAIResponsesRequest({ model, chatgptBackend: model !== "gpt-6-luna", reasoningReplayProvider: "openai",
+    ? buildOpenAIResponsesRequest({ model, chatgptBackend, declareNonStrictTools: !chatgptBackend, reasoningReplayProvider: "openai",
       messages, tools: registry.toLLMTools(), options: { systemPrompt: "SYSTEM" } })
     : buildChatCompletionsRequest({ model, messages, tools: registry.toLLMTools(), options: { systemPrompt: "SYSTEM" },
       providerCapabilityHints: chatCompletionsCapabilityHintsForProvider(provider, model) });
@@ -78,10 +78,11 @@ describe("OpenAI Light trim wire isolation", () => {
     }
   });
 
-  test.each(["gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-luna"])("%s changes only the intended schema and result text", async model => {
-    const before = await capture("openai", true, undefined, model);
+  test.each([["gpt-6.1-terra", true], ["gpt-6.1-terra", false], ["gpt-6.1-sol", true],
+    ["gpt-6.1-sol", false], ["gpt-6-luna", false]] as const)("%s ChatGPT=%s changes only the intended schema and result text", async (model, backend) => {
+    const before = await capture("openai", true, undefined, model, backend);
     for (const value of ["exec-timeout", "exec-results", "exec-timeout,exec-results"]) {
-      const after = await capture("openai", true, value, model);
+      const after = await capture("openai", true, value, model, backend);
       expect(after.results).toEqual(before.results);
       const paths = changedPaths(before.requests, after.requests);
       expect(paths.length).toBeGreaterThan(0);

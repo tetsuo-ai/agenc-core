@@ -204,6 +204,8 @@ export interface LLMTool {
     name: string;
     description: string;
     parameters: Record<string, unknown>;
+    /** Preserve a lean tool's non-strict declaration on the OpenAI platform route. */
+    strict?: false;
   };
 }
 

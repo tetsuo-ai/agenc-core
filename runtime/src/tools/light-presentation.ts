@@ -111,8 +111,11 @@ export function lightPresentation(
     if (options.omitExecTimeout === true) {
       const fields = options.shortExecArgs === true ? SHORT_EXEC_FIELDS : LEAN_EXEC_FIELDS;
       const pointer = options.shortExecArgs === true ? SHORT_EXEC_POINTER : LEAN_EXEC_POINTER;
-      return withOnlyFields(presented, new Set([...fields].filter(name => name !== "timeoutMs")),
+      const trimmed = withOnlyFields(presented, new Set([...fields].filter(name => name !== "timeoutMs")),
         pointer.replace("Advanced fields (", "Advanced fields (timeoutMs, "));
+      // Hiding the last optional field must not opt the platform API into strict mode.
+      // Execution still accepts the advanced fields named in the pointer.
+      return { ...trimmed, function: { ...trimmed.function, strict: false } };
     }
     return options.shortExecArgs === true
       ? withOnlyFields(presented, SHORT_EXEC_FIELDS, SHORT_EXEC_POINTER)
