@@ -1296,7 +1296,7 @@ export async function assembleSystemPrompt(
             write: opts.enabledToolNames?.has("Write") ?? true,
             applyPatch: opts.enabledToolNames?.has("apply_patch") ?? true,
           },
-          lightUsesGeminiBatching(envInfoInputs.provider),
+          lightUsesGeminiBatching(envInfoInputs.provider, envInfoInputs.model),
         ),
         lightBudgetSystem(),
         lightBudgetActions(),

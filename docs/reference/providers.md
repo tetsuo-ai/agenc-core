@@ -208,6 +208,9 @@ text names, and the data inside a JSON string cannot close it.
 
 The Light head of the native Gemini provider asks for fuller steps: every
 file the task needs in one response, and independent commands together.
+`gemini-3.1-pro-preview` and `gemini-3.1-pro-preview-customtools` keep the
+short sentence: with the fuller one Pro made fewer calls but solved 12 of 14
+tasks against 14 of 14, which 14 runs do not settle.
 
 `gemini-3.1-pro-preview` does not apply Google's implicit cache to a request
 under about 8,200 prompt tokens (measured 2026-11-15: no cached token at

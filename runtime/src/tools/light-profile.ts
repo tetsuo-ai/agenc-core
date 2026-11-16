@@ -127,11 +127,27 @@ export function lightUsesDeepSeekWorkRules(providerName: string | undefined, mod
 }
 
 /**
- * Native Gemini Light sessions get the fuller batching sentence (prompts/light-budget-prompt.ts
- * LIGHT_GEMINI_BATCHING). Gemini models served by another provider keep what they were measured with.
+ * Gemini 3.1 Pro keeps the short batching sentence. With the fuller one it made 16% fewer calls but solved 12 of
+ * 14 tasks against 14 of 14 (2026-11-16, 14 triples: not significant, and not settled either).
  */
-export function lightUsesGeminiBatching(providerName: string | undefined): boolean {
-  return providerName?.trim().toLowerCase() === "gemini";
+const GEMINI_SHORT_BATCHING_MODELS: ReadonlySet<string> = new Set([
+  "gemini-3.1-pro-preview",
+  "gemini-3.1-pro-preview-customtools",
+]);
+
+/**
+ * Native Gemini Light sessions get the fuller batching sentence (prompts/light-budget-prompt.ts
+ * LIGHT_GEMINI_BATCHING), except Gemini 3.1 Pro. Gemini models served by another provider keep what they were
+ * measured with.
+ */
+export function lightUsesGeminiBatching(providerName: string | undefined, model: string | undefined): boolean {
+  if (providerName?.trim().toLowerCase() !== "gemini") return false;
+  const name = (model ?? "").trim().toLowerCase()
+    .replace(/^gemini:/u, "")
+    .replace(/^publishers\/google\/models\//u, "")
+    .replace(/^models\//u, "")
+    .replace(/^google\//u, "");
+  return !GEMINI_SHORT_BATCHING_MODELS.has(name);
 }
 
 /** DeepSeek, abliteration.ai Large V2 and QwenCloud Qwen3.8 Light sessions use batch Edit (#3163). */

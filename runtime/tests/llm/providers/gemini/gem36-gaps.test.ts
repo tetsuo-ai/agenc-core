@@ -109,10 +109,24 @@ describe("the Light head asks native Gemini for fuller steps", () => {
   const SHORT = "Put independent tool calls in one response; omit default arguments.";
 
   test("only the gemini provider is selected", () => {
-    expect(lightUsesGeminiBatching("gemini")).toBe(true);
-    expect(lightUsesGeminiBatching(" Gemini ")).toBe(true);
+    expect(lightUsesGeminiBatching("gemini", "gemini-3.8-flash")).toBe(true);
+    expect(lightUsesGeminiBatching(" Gemini ", "gemini-3.8-flash")).toBe(true);
+    expect(lightUsesGeminiBatching("gemini", undefined)).toBe(true);
     for (const other of ["deepseek", "openai", "openrouter", "abliteration", "anthropic", "ollama", undefined]) {
-      expect(lightUsesGeminiBatching(other)).toBe(false);
+      expect(lightUsesGeminiBatching(other, "gemini-3.8-flash")).toBe(false);
+    }
+  });
+
+  test("Gemini 3.1 Pro keeps the short sentence", () => {
+    for (const pro of [
+      "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", " Gemini-3.1-Pro-Preview ",
+      "models/gemini-3.1-pro-preview", "gemini:gemini-3.1-pro-preview", "google/gemini-3.1-pro-preview",
+      "publishers/google/models/gemini-3.1-pro-preview",
+    ]) {
+      expect(lightUsesGeminiBatching("gemini", pro)).toBe(false);
+    }
+    for (const other of ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen", "gemini-3.1-pro"]) {
+      expect(lightUsesGeminiBatching("gemini", other)).toBe(true);
     }
   });
 
