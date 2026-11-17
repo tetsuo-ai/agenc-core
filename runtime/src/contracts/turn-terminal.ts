@@ -112,6 +112,8 @@ export function createTurnFailedEvent(payload: TurnFailedEvent): {
       turnId: payload.turnId,
       code: payload.code,
       message: payload.message.slice(0, MAX_TURN_FAILURE_MESSAGE_LENGTH),
+      ...(typeof payload.retryable === "boolean" ? { retryable: payload.retryable } : {}),
+      ...(typeof payload.sessionUsable === "boolean" ? { sessionUsable: payload.sessionUsable } : {}),
       ...(completedAt !== undefined ? { completedAt } : {}),
       ...(durationMs !== undefined ? { durationMs } : {}),
       ...diagnosticFields({ ...payload }),

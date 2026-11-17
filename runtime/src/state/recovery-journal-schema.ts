@@ -1054,9 +1054,14 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
     { agentPath: isString, taskText: isString, terminal: isChildTerminalOutcome, message: isString },
     { taskId: isString },
   ),
+  turn_changes: objectShape(
+    { turnId: isString, from: literal("checkpoint"), files: arrayOf(objectShape({ path: isString, op: oneOf("created", "modified", "deleted"), added: isNonNegativeInteger, removed: isNonNegativeInteger }, { binary: isBoolean })) },
+    { diff: isString, diffTruncated: isBoolean, skipped: isBoolean, note: isString },
+  ),
   turn_complete: objectShape(
     { turnId: isString },
     {
+      usage: objectShape({}, { input: isNonNegativeInteger, output: isNonNegativeInteger, cached: isNonNegativeInteger, reasoning: isNonNegativeInteger, costUsd: isTurnFailureTime, billedEstimateUsd: isTurnFailureTime, planCalls: isNonNegativeInteger }),
       taskId: isString,
       toolCallCount: isNonNegativeInteger,
       worktree: isWorktreeLocator,
@@ -1070,6 +1075,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
   turn_failed: objectShape(
     { turnId: isTurnFailureId, code: validFailureCode, message: isTurnFailureMessage },
     { completedAt: isTurnFailureTime, durationMs: isTurnFailureTime,
+      retryable: isBoolean, sessionUsable: isBoolean,
       remainingDeadlineMs: isTurnFailureTime, usableFinalAnswer: isBoolean,
       transportFailure: objectShape({ category: oneOf("stream_truncated", "http_5xx", "connection_lost", "timeout") },
         { status: isNonNegativeInteger }),

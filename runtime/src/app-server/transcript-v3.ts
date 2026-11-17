@@ -46,7 +46,6 @@ export function transcriptV3Turns(items: readonly RolloutItem[], boundaryIndex: 
       pendingTodos.clear();
       current.toolCalls.forEach((call, index) => calls.set(call.callId, { turn: current!, index }));
     } else if (msg.type === "tool_call_started" && current) {
-      if (current.toolCalls.length >= 128) { truncated = true; continue; }
       if (calls.has(msg.payload.callId)) continue;
       if (msg.payload.toolName === "TodoWrite" && msg.payload.args.length <= 64 * 1024) {
         try {
@@ -55,10 +54,12 @@ export function transcriptV3Turns(items: readonly RolloutItem[], boundaryIndex: 
             const todos: NonNullable<Turn["todos"]> = input.todos.slice(0, 128).flatMap((todo: any) =>
               typeof todo?.content === "string" && ["pending", "in_progress", "completed"].includes(todo.status)
                 ? [{ text: todo.content.slice(0, 512), state: todo.status === "completed" ? "done" : todo.status === "in_progress" ? "running" : "pending" }] : []);
+            if (pendingTodos.size >= 128) { pendingTodos.delete(pendingTodos.keys().next().value!); truncated = true; }
             pendingTodos.set(msg.payload.callId, { todos, truncated: input.todos.length > 128 || input.todos.some((todo: any) => typeof todo?.content === "string" && todo.content.length > 512) });
           }
         } catch { /* Invalid tool inputs do not replace the last valid list. */ }
       }
+      if (current.toolCalls.length >= 128) { truncated = true; continue; }
       const call: Call = { callId: msg.payload.callId.slice(0, 256), toolName: msg.payload.toolName.slice(0, 256), inputDigest: toolInputDigest(msg.payload.args) };
       calls.set(msg.payload.callId, { turn: current, index: current.toolCalls.length });
       (current.toolCalls as Call[]).push(call);

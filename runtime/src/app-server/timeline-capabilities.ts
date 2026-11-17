@@ -23,6 +23,7 @@ export function timelineNotification(message: JsonObject, capabilities: JsonObje
   const key = message.method === "event.session_event" ? "event" : "turnEvent";
   const event = params[key];
   if (!object(event) || !object(event.payload)) return message;
+  if (event.type === "turn_changes") return capabilities["turn.changes.v1"] === true ? message : null;
   if (event.type === "turn_complete") {
     if (capabilities["turn.usage.v1"] === true) return message;
     const { usage: _usage, ...payload } = event.payload;

@@ -18,19 +18,26 @@ export class TurnUsageCollector {
   private output: number | undefined;
   private cached: number | undefined;
   private reasoning: number | undefined;
+  private readonly missing = new Set<string>();
   constructor(private readonly read?: () => AdmissionUsageSummary) {
-    this.before = read?.();
+    this.before = this.readSummary();
+  }
+  private readSummary(): AdmissionUsageSummary | undefined {
+    try { return this.read?.(); } catch { return undefined; }
   }
   observe(event: Event): void {
     if (event.msg.type !== "token_count") return;
     const p = event.msg.payload;
-    this.input = (this.input ?? 0) + p.promptTokens;
-    this.output = (this.output ?? 0) + p.completionTokens;
+    for (const [key, value] of Object.entries({ input: p.promptTokens, output: p.completionTokens, cached: p.cachedInputTokens, reasoning: p.reasoningOutputTokens })) {
+      if (value === undefined) this.missing.add(key);
+    }
+    if (p.promptTokens !== undefined) this.input = (this.input ?? 0) + p.promptTokens;
+    if (p.completionTokens !== undefined) this.output = (this.output ?? 0) + p.completionTokens;
     if (p.cachedInputTokens !== undefined) this.cached = (this.cached ?? 0) + p.cachedInputTokens;
     if (p.reasoningOutputTokens !== undefined) this.reasoning = (this.reasoning ?? 0) + p.reasoningOutputTokens;
   }
   snapshot(): TurnUsage {
-    const after = this.read?.();
+    const after = this.readSummary();
     const before = this.before;
     const difference = (key: "costUsd" | "billedEstimateUsd" | "planCalls") => {
       const a = after?.[key], b = before?.[key];
@@ -42,10 +49,10 @@ export class TurnUsageCollector {
     const billedEstimateUsd = difference("billedEstimateUsd");
     const planCalls = difference("planCalls");
     return {
-      ...(this.input !== undefined ? { input: this.input } : {}),
-      ...(this.output !== undefined ? { output: this.output } : {}),
-      ...(this.cached !== undefined ? { cached: this.cached } : {}),
-      ...(this.reasoning !== undefined ? { reasoning: this.reasoning } : {}),
+      ...(this.input !== undefined && !this.missing.has("input") ? { input: this.input } : {}),
+      ...(this.output !== undefined && !this.missing.has("output") ? { output: this.output } : {}),
+      ...(this.cached !== undefined && !this.missing.has("cached") ? { cached: this.cached } : {}),
+      ...(this.reasoning !== undefined && !this.missing.has("reasoning") ? { reasoning: this.reasoning } : {}),
       ...(costUsd !== undefined ? { costUsd } : {}),
       ...(billedEstimateUsd !== undefined ? { billedEstimateUsd } : {}),
       ...(planCalls !== undefined ? { planCalls } : {}),

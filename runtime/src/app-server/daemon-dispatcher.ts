@@ -552,6 +552,7 @@ function buildServerCapabilities(
     "transcript.tools.v3": true,
     "transcript.plans.v3": true,
     "tool.progress.shell.v1": true,
+    "turn.changes.v1": true,
     ...(inputs.printHome !== undefined ? { [AGENC_PRINT_INVOKE_CAPABILITY]: true } : {}),
     [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.freeze(
       methodCapabilities,
@@ -2661,6 +2662,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         this.#agentManager.streamAgentMessage({
           sessionId: sendParams.sessionId,
           content: sendParams.content,
+          ...(sendParams.turnChanges !== undefined && connection.initializeState?.clientCapabilities["turn.changes.v1"] === true ? { turnChanges: sendParams.turnChanges } : {}),
           ...displayUserMessageFromMetadata(
             "message.send",
             sendParams.metadata,
@@ -2720,6 +2722,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         this.#agentManager.streamAgentMessage({
           sessionId: streamParams.sessionId,
           content: streamParams.content,
+          ...(streamParams.turnChanges !== undefined && connection.initializeState?.clientCapabilities["turn.changes.v1"] === true ? { turnChanges: streamParams.turnChanges } : {}),
           ...(streamParams.exactOutput !== undefined ? { exactOutput: streamParams.exactOutput } : {}),
           ...(streamParams.skillInvocation !== undefined
             ? { skillInvocation: streamParams.skillInvocation }
@@ -2933,7 +2936,8 @@ export class AgenCDaemonJsonRpcConnection {
     return (message) => {
       const projected = timelineNotification(message, this.#initializeState?.clientCapabilities);
       if (projected !== null) {
-        const progress = this.promptProgress.project(projected);
+        const progress = this.#initializeState?.clientCapabilities["tool.progress.shell.v1"] === true
+          ? this.promptProgress.project(projected) : projected;
         if (progress !== null) return send(progress);
       }
     };
@@ -4868,7 +4872,7 @@ function validateMessageSendParams(params: JsonObject): MessageSendParams {
   const validated = validateObjectShape(params, {
     methodName: "message.send",
     stringFields: ["sessionId", "clientMessageId", "ifBusy"],
-    objectFields: ["metadata"],
+    objectFields: ["metadata", "turnChanges"],
     valueFields: ["content", "includeToolProgress"],
   });
   validateRequiredString(validated, "message.send", "sessionId");
@@ -4877,6 +4881,10 @@ function validateMessageSendParams(params: JsonObject): MessageSendParams {
   if (validated.ifBusy !== undefined && validated.ifBusy !== "reject") {
     throw invalidParams("message.send param 'ifBusy' must be 'reject'");
   }
+  if (validated.turnChanges !== undefined) {
+    const changes = validateObjectShape(validated.turnChanges as JsonObject, { methodName: "message.send.turnChanges", valueFields: ["includeDiff"] });
+    if (changes.includeDiff !== undefined && typeof changes.includeDiff !== "boolean") throw invalidParams("turnChanges.includeDiff must be boolean");
+  }
   return validated as MessageSendParams;
 }
 
@@ -4884,7 +4892,7 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   const validated = validateObjectShape(params, {
     methodName: "message.stream",
     stringFields: ["sessionId", "clientMessageId", "streamId", "ifBusy"],
-    objectFields: ["metadata", "skillInvocation"],
+    objectFields: ["metadata", "skillInvocation", "turnChanges"],
     valueFields: ["content", "exactOutput", "includeToolProgress"],
   });
   if (
@@ -4903,6 +4911,10 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   }
   if (validated.skillInvocation !== undefined) {
     validateMessageSkillInvocation(validated.skillInvocation as JsonObject);
+  }
+  if (validated.turnChanges !== undefined) {
+    const changes = validateObjectShape(validated.turnChanges as JsonObject, { methodName: "message.stream.turnChanges", valueFields: ["includeDiff"] });
+    if (changes.includeDiff !== undefined && typeof changes.includeDiff !== "boolean") throw invalidParams("turnChanges.includeDiff must be boolean");
   }
   return validated as MessageStreamParams;
 }

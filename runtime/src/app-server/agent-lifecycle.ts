@@ -3874,6 +3874,7 @@ export class AgenCDaemonAgentManager {
     params: SessionTranscriptV2Params,
     options: { readonly schemaVersion?: 2 | 3; readonly includeCompleteMessages?: boolean } = {},
   ): Promise<SessionTranscriptV2Result> {
+    options = { ...options, ...(params.schemaVersion !== undefined ? { schemaVersion: params.schemaVersion } : {}) };
     if (this.#sessionManager === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "INVALID_ARGUMENT",
@@ -4450,6 +4451,7 @@ export class AgenCDaemonAgentManager {
   }
 
   async streamAgentMessage(params: {
+    readonly turnChanges?: { readonly includeDiff?: boolean };
     readonly exactOutput?: boolean;
     /** Settings of the skill the user started this turn with. */
     readonly skillInvocation?: MessageSkillInvocation;
@@ -4526,6 +4528,7 @@ export class AgenCDaemonAgentManager {
         sessionId: params.sessionId,
         content: params.content,
         originalContent: params.content,
+        ...(params.turnChanges !== undefined ? { turnChanges: params.turnChanges } : {}),
         ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
         ...(params.skillInvocation !== undefined
           ? { skillInvocation: params.skillInvocation }

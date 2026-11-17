@@ -25,9 +25,9 @@ describe("C6 prompt shell progress", () => {
     connection = dispatcher.createConnection({ sendNotification: message => { sent.push(message); } });
     expect(await connection.dispatch({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION }, capabilities: enabled ? { "tool.progress.shell.v1": true } : {} } })).toMatchObject({ result: { capabilities: { "tool.progress.shell.v1": true } } });
     expect(await connection.dispatch({ jsonrpc: "2.0", id: 2, method: "message.stream", params: { sessionId: "s", clientMessageId: "m", content: "test", ...(enabled ? { includeToolProgress: true } : {}) } })).toHaveProperty("result");
-    expect(sent).toEqual(enabled ? [progress()] : []);
+    expect(sent).toEqual(enabled ? [progress()] : [progress(), progress("FileRead")]);
     await connection.sendNotification(progress());
-    expect(sent).toHaveLength(enabled ? 1 : 0);
+    expect(sent).toHaveLength(enabled ? 1 : 3);
     await connection.close();
   });
 });

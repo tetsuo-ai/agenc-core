@@ -1203,6 +1203,9 @@ export interface PluginSettingsSetParams extends PluginSettingsParams {
 }
 
 export interface MessageSendParams extends JsonObject {
+    readonly turnChanges?: {
+        readonly includeDiff?: boolean;
+    };
     readonly includeToolProgress?: boolean;
     readonly sessionId: string;
     readonly content: MessageContent;
@@ -1488,6 +1491,12 @@ export const AGENC_SESSION_APPLY_CONFIG_REASONING_EFFORT_CLEAR_CAPABILITY = "ses
 export const AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY = "message.stream.skillInvocation" as const;
 
 export type AgenCDaemonServerCapabilities = JsonObject & {
+    readonly "turn.failure.v1"?: true;
+    readonly "turn.usage.v1"?: true;
+    readonly "transcript.tools.v3"?: true;
+    readonly "transcript.plans.v3"?: true;
+    readonly "tool.progress.shell.v1"?: true;
+    readonly "turn.changes.v1"?: true;
     readonly [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: AgenCDaemonMethodCapabilities;
     readonly [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]?: true;
     readonly [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]?: true;
