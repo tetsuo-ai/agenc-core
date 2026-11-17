@@ -2385,6 +2385,7 @@ export type MessageContentBlock =
 export type MessageContent = string | readonly MessageContentBlock[];
 
 export interface MessageSendParams extends JsonObject {
+  readonly includeToolProgress?: boolean;
   readonly sessionId: string;
   readonly content: MessageContent;
   readonly clientMessageId?: string;

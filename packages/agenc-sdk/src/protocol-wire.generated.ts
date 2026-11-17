@@ -1203,6 +1203,7 @@ export interface PluginSettingsSetParams extends PluginSettingsParams {
 }
 
 export interface MessageSendParams extends JsonObject {
+    readonly includeToolProgress?: boolean;
     readonly sessionId: string;
     readonly content: MessageContent;
     readonly clientMessageId?: string;

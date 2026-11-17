@@ -1,4 +1,4 @@
-import { timelineNotification } from "./timeline-capabilities.js";
+import { timelineNotification, PromptProgressGate } from "./timeline-capabilities.js";
 import { PermissionModeTransitionPrecommitError } from "../permissions/permission-mode.js";
 import { PrintInvocation, validatePrintInvokeParams } from "./print-invocation.js";
 import { promoteOneShotRun } from "../durability/one-shot-durability.js";
@@ -551,6 +551,7 @@ function buildServerCapabilities(
     "turn.usage.v1": true,
     "transcript.tools.v3": true,
     "transcript.plans.v3": true,
+    "tool.progress.shell.v1": true,
     ...(inputs.printHome !== undefined ? { [AGENC_PRINT_INVOKE_CAPABILITY]: true } : {}),
     [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.freeze(
       methodCapabilities,
@@ -1925,6 +1926,7 @@ export class AgenCDaemonJsonRpcDispatcher {
             AGENC_DAEMON_METHOD_CAPABILITIES_KEY
           ]["session.transcript.v2"] === true,
           connection.remoteAccess === undefined,
+          connection,
         );
       case "message.stream":
         return this.#streamMessage(
@@ -1935,6 +1937,7 @@ export class AgenCDaemonJsonRpcDispatcher {
             AGENC_DAEMON_METHOD_CAPABILITIES_KEY
           ]["session.transcript.v2"] === true,
           connection.remoteAccess === undefined,
+          connection,
         );
       case "thread/realtime/start":
         return successResponse(
@@ -2642,11 +2645,15 @@ export class AgenCDaemonJsonRpcDispatcher {
     signal: AbortSignal,
     identitySafeCancellation: boolean,
     localMcpAccess: boolean,
+    connection: AgenCDaemonJsonRpcConnection,
   ): Promise<AgenCDaemonResponse> {
     const sendParams = validateMessageSendParams(params);
     const messageId = sendParams.clientMessageId ?? this.#createMessageId();
     const acceptedAt = this.#now();
-    const submissionResult = await this.#runMessageWithCancel(
+    const submissionResult = await connection.promptProgress.run(
+      sendParams.sessionId, messageId,
+      sendParams.includeToolProgress === true && connection.initializeState?.clientCapabilities["tool.progress.shell.v1"] === true,
+      () => this.#runMessageWithCancel(
       signal,
       sendParams.sessionId,
       !identitySafeCancellation || sendParams.clientMessageId === undefined,
@@ -2667,7 +2674,7 @@ export class AgenCDaemonJsonRpcDispatcher {
             ? { ifBusy: sendParams.ifBusy }
             : {}),
         }),
-    );
+    ));
     const submission = submissionResult ?? {
       disposition: "started" as const,
       acceptedAt,
@@ -2696,12 +2703,16 @@ export class AgenCDaemonJsonRpcDispatcher {
     signal: AbortSignal,
     identitySafeCancellation: boolean,
     localMcpAccess: boolean,
+    connection: AgenCDaemonJsonRpcConnection,
   ): Promise<AgenCDaemonResponse> {
     const streamParams = validateMessageStreamParams(params);
     const messageId = streamParams.clientMessageId ?? this.#createMessageId();
     const streamId = streamParams.streamId ?? messageId;
     const acceptedAt = this.#now();
-    const submissionResult = await this.#runMessageWithCancel(
+    const submissionResult = await connection.promptProgress.run(
+      streamParams.sessionId, messageId,
+      streamParams.includeToolProgress === true && connection.initializeState?.clientCapabilities["tool.progress.shell.v1"] === true,
+      () => this.#runMessageWithCancel(
       signal,
       streamParams.sessionId,
       !identitySafeCancellation || streamParams.clientMessageId === undefined,
@@ -2725,7 +2736,7 @@ export class AgenCDaemonJsonRpcDispatcher {
             ? { ifBusy: streamParams.ifBusy }
             : {}),
         }),
-    );
+    ));
     const submission = submissionResult ?? {
       disposition: "started" as const,
       acceptedAt,
@@ -2913,13 +2924,18 @@ export class AgenCDaemonJsonRpcConnection {
     return this.#daemonSocketIdentity;
   }
 
+  readonly promptProgress = new PromptProgressGate();
+
   get sendNotification():
     ((message: JsonObject) => void | Promise<void>) | undefined {
     const send = this.printEventSink ?? this.#sendNotification;
     if (!send) return undefined;
     return (message) => {
       const projected = timelineNotification(message, this.#initializeState?.clientCapabilities);
-      if (projected !== null) return send(projected);
+      if (projected !== null) {
+        const progress = this.promptProgress.project(projected);
+        if (progress !== null) return send(progress);
+      }
     };
   }
 
@@ -4853,10 +4869,11 @@ function validateMessageSendParams(params: JsonObject): MessageSendParams {
     methodName: "message.send",
     stringFields: ["sessionId", "clientMessageId", "ifBusy"],
     objectFields: ["metadata"],
-    valueFields: ["content"],
+    valueFields: ["content", "includeToolProgress"],
   });
   validateRequiredString(validated, "message.send", "sessionId");
   validateMessageContent("message.send", "content", validated.content);
+  if (validated.includeToolProgress !== undefined && typeof validated.includeToolProgress !== "boolean") throw invalidParams("message.send includeToolProgress must be boolean");
   if (validated.ifBusy !== undefined && validated.ifBusy !== "reject") {
     throw invalidParams("message.send param 'ifBusy' must be 'reject'");
   }
@@ -4868,7 +4885,7 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
     methodName: "message.stream",
     stringFields: ["sessionId", "clientMessageId", "streamId", "ifBusy"],
     objectFields: ["metadata", "skillInvocation"],
-    valueFields: ["content", "exactOutput"],
+    valueFields: ["content", "exactOutput", "includeToolProgress"],
   });
   if (
     typeof validated.sessionId !== "string" ||
@@ -4877,6 +4894,7 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
     throw invalidParams("message.stream requires sessionId");
   }
   validateMessageContent("message.stream", "content", validated.content);
+  if (validated.includeToolProgress !== undefined && typeof validated.includeToolProgress !== "boolean") throw invalidParams("message.stream includeToolProgress must be boolean");
   if (validated.ifBusy !== undefined && validated.ifBusy !== "reject") {
     throw invalidParams("message.stream param 'ifBusy' must be 'reject'");
   }

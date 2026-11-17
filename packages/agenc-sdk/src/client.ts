@@ -347,6 +347,7 @@ export interface AgencCreateSessionParams extends SessionCreateParams {
 }
 
 export interface AgencPromptOptions {
+  readonly includeToolProgress?: boolean;
   readonly signal?: AbortSignal;
   /** Stable caller identity used for idempotent retry and event correlation. */
   readonly clientMessageId?: string;
@@ -1645,6 +1646,7 @@ export class AgencClient {
         sessionId,
         content: dispatchedContent,
         clientMessageId,
+        ...(options.includeToolProgress !== undefined ? { includeToolProgress: options.includeToolProgress } : {}),
         ...(options.ifBusy !== undefined ? { ifBusy: options.ifBusy } : {}),
         ...(options.metadata !== undefined
           ? { metadata: options.metadata }

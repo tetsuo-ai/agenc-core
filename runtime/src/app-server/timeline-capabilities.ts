@@ -34,3 +34,31 @@ export function timelineNotification(message: JsonObject, capabilities: JsonObje
     ? { ...legacy, ...failureAdvice(event.payload) } : legacy;
   return { ...message, params: { ...params, [key]: { ...event, payload } } };
 }
+
+/** One opt-in belongs to one prompt on one connection. */
+export class PromptProgressGate {
+  private readonly prompts = new Map<string, { sessionId: string; calls: Map<string, number> }>();
+  async run<T>(sessionId: string, messageId: string, enabled: boolean, task: () => Promise<T>): Promise<T> {
+    if (!enabled) return task();
+    const key = JSON.stringify([sessionId, messageId]);
+    const state = { sessionId, calls: new Map<string, number>() };
+    this.prompts.set(key, state);
+    try { return await task(); }
+    finally { if (this.prompts.get(key) === state) this.prompts.delete(key); }
+  }
+  project(message: JsonObject): JsonObject | null {
+    const params = message.params;
+    if (!object(params) || !object(params.event) || params.event.type !== "tool_progress") return message;
+    const event = params.event;
+    const payload = event.payload;
+    if (!object(payload) || typeof params.sessionId !== "string" || typeof params.clientMessageId !== "string") return null;
+    const state = this.prompts.get(JSON.stringify([params.sessionId, params.clientMessageId]));
+    if (!state || !["Bash", "PowerShell", "exec_command", "write_stdin", "system.exec_command", "system.write_stdin"].includes(String(payload.toolName)) || typeof payload.callId !== "string" || typeof payload.chunk !== "string") return null;
+    const used = state.calls.get(payload.callId) ?? 0;
+    if (used > 65536 || (!state.calls.has(payload.callId) && state.calls.size >= 256)) return null;
+    const chunk = payload.chunk.slice(0, Math.min(4096, 65536 - used));
+    const dropped = chunk.length < payload.chunk.length;
+    state.calls.set(payload.callId, dropped ? 65537 : used + chunk.length);
+    return { ...message, params: { ...params, event: { ...event, payload: { ...payload, chunk, ...(dropped ? { outputDropped: true } : {}) } } } };
+  }
+}
