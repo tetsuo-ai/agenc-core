@@ -15,6 +15,8 @@ export const APPROVAL_DENIED_ABORT_REASON = "approval_denied";
 const TURN_TERMINAL_EVENT_TYPES = new Set(["turn_complete", "turn_aborted", "turn_failed"]);
 
 export interface TurnFailedEvent {
+  readonly retryable?: boolean;
+  readonly sessionUsable?: boolean;
   readonly turnId: string;
   readonly code: string;
   readonly message: string;

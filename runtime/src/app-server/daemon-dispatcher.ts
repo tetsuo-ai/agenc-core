@@ -1,3 +1,4 @@
+import { timelineNotification } from "./timeline-capabilities.js";
 import { PermissionModeTransitionPrecommitError } from "../permissions/permission-mode.js";
 import { PrintInvocation, validatePrintInvokeParams } from "./print-invocation.js";
 import { promoteOneShotRun } from "../durability/one-shot-durability.js";
@@ -546,6 +547,7 @@ function buildServerCapabilities(
   }
 
   return Object.freeze({
+    "turn.failure.v1": true,
     ...(inputs.printHome !== undefined ? { [AGENC_PRINT_INVOKE_CAPABILITY]: true } : {}),
     [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.freeze(
       methodCapabilities,
@@ -2910,7 +2912,12 @@ export class AgenCDaemonJsonRpcConnection {
 
   get sendNotification():
     ((message: JsonObject) => void | Promise<void>) | undefined {
-    return this.printEventSink ?? this.#sendNotification;
+    const send = this.printEventSink ?? this.#sendNotification;
+    if (!send) return undefined;
+    return (message) => {
+      const projected = timelineNotification(message, this.#initializeState?.clientCapabilities);
+      if (projected !== null) return send(projected);
+    };
   }
 
   get rawSendNotification(): ((message: JsonObject) => void | Promise<void>) | undefined {
