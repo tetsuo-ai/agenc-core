@@ -1,3 +1,4 @@
+import { isTodoPlanMirror } from "./timeline-capabilities.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { SessionTranscriptV2Result } from "./protocol/index.js";
 
@@ -35,6 +36,7 @@ export function transcriptV3Turns(items: readonly RolloutItem[], boundaryIndex: 
     const item = items[i]!;
     if (item.type !== "event_msg") continue;
     const msg = item.payload.msg;
+    if (isTodoPlanMirror(msg.type, msg.payload)) continue;
     if (msg.type === "turn_started") {
       current = turns.find(turn => turn.turnId === msg.payload.turnId);
       if (!current) {

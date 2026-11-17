@@ -30,3 +30,25 @@ describe("C4 durable plan state", () => {
     await connection.close();
   });
 });
+
+const mirror: EventMsg[] = [
+  { type: "plan_started", payload: { turnId: "t", planItemId: "TodoWrite-t", title: "Updated Plan", timestamp: 4 } },
+  { type: "plan_item_completed", payload: { turnId: "t", planItemId: "TodoWrite-t", finalText: "(no todo items)", timestamp: 5 } },
+];
+it("v3 suppresses the TodoWrite mirror without replacing the real plan or list", () => {
+  const withMirror: RolloutItem[] = [...items, ...mirror.map((msg, i): RolloutItem => ({ type: "event_msg", payload: { id: `mirror-${i}`, seq: 20 + i, msg } }))];
+  const v3 = sessionTranscriptV2FromRollout(withMirror, "s", "r", undefined, undefined, { schemaVersion: 3 });
+  expect(v3.turns![0]).toMatchObject({ plan: { planItemId: "p", text: "Final plan" }, todos: [{ text: "Verify", state: "running" }] });
+  expect(JSON.stringify(v3.turns)).not.toContain("TodoWrite-t");
+  expect(sessionTranscriptV2FromRollout(withMirror, "s", "r")).not.toHaveProperty("turns");
+});
+it.each([false, true])("keeps legacy plan events and suppresses only mirrors for opted-in=%s", async enabled => {
+  const sent: any[] = [];
+  const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: {} as never });
+  const connection = dispatcher.createConnection({ sendNotification: message => { sent.push(message); } });
+  await connection.dispatch({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION }, capabilities: enabled ? { "transcript.plans.v3": true } : {} } });
+  const events = [messages[1]!, ...mirror];
+  for (const event of events) await connection.sendNotification!({ method: "event.session_event", params: { sessionId: "s", event } });
+  expect(sent.map(message => message.params.event)).toEqual(enabled ? [events[0]] : events);
+  await connection.close();
+});

@@ -76,7 +76,7 @@ The RPC name remains `session.transcript.v2`. Its default response stays schema 
 
 The projection keeps at most 128 turns and 128 calls per turn. The entire `turns` JSON is capped at 128 KiB by dropping older turns. It reports `turnsTruncated`. It follows the visible transcript boundary. Ordinary v2 messages, results and notices keep their existing retention policy.
 
-A plan is the latest streamed plan item in that turn. Final text replaces deltas. Text is capped at 16,384 characters. Prose is retained as prose, rather than inventing structured steps. To-do lists come from successful `TodoWrite` calls. Failed or denied calls do not replace the latest list. A list has at most 128 items, each with at most 512 characters. An empty successful list is meaningful. This is a concrete extension of the design's unspecified C4 snapshot field.
+A plan is the latest streamed plan item in that turn. The legacy `TodoWrite-<turnId>` prose mirror is excluded from v3 and from live notifications on connections that negotiate `transcript.plans.v3`. It can contain an empty list even when the tool supplied items. The successful tool call already carries the real structured list, so suppressing the mirror avoids duplicate and misleading cards. Other plan prose and all legacy notifications remain unchanged. Final text replaces deltas. Text is capped at 16,384 characters. Prose is retained as prose, rather than inventing structured steps. To-do lists come from successful `TodoWrite` calls. Failed or denied calls do not replace the latest list. A list has at most 128 items, each with at most 512 characters. An empty successful list is meaningful. This is a concrete extension of the design's unspecified C4 snapshot field.
 
 ## C6: command progress
 

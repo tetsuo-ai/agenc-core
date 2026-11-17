@@ -16,6 +16,12 @@ export function failureAdvice(payload: JsonObject): JsonObject {
   return { retryable, sessionUsable };
 }
 
+/** TodoWrite already supplies structured todos. Its legacy prose mirror is redundant. */
+export function isTodoPlanMirror(type: string, payload: unknown): boolean {
+  return object(payload) && ["plan_started", "plan_delta", "plan_item_completed"].includes(type) &&
+    typeof payload.turnId === "string" && payload.planItemId === `TodoWrite-${payload.turnId}`;
+}
+
 /** Project a copy at the connection boundary. Canonical events stay untouched. */
 export function timelineNotification(message: JsonObject, capabilities: JsonObject = {}): JsonObject | null {
   const params = message.params;
@@ -23,6 +29,7 @@ export function timelineNotification(message: JsonObject, capabilities: JsonObje
   const key = message.method === "event.session_event" ? "event" : "turnEvent";
   const event = params[key];
   if (!object(event) || !object(event.payload)) return message;
+  if (capabilities["transcript.plans.v3"] === true && isTodoPlanMirror(String(event.type), event.payload)) return null;
   if (event.type === "turn_changes") return capabilities["turn.changes.v1"] === true ? message : null;
   if (event.type === "turn_complete") {
     if (capabilities["turn.usage.v1"] === true) return message;
