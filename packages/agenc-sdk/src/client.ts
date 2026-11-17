@@ -529,9 +529,10 @@ export class AgencSession {
   }
 
   /** Identity-bearing transcript (`session.transcript.v2`). Requires protocol 1.2. */
-  transcriptV2(): Promise<SessionTranscriptV2Result> {
+  transcriptV2(options: { schemaVersion?: 2 | 3 } = {}): Promise<SessionTranscriptV2Result> {
     return this.#client.request("session.transcript.v2", {
       sessionId: this.sessionId,
+      ...(options.schemaVersion !== undefined ? { schemaVersion: options.schemaVersion } : {}),
     });
   }
 

@@ -1068,6 +1068,7 @@ export interface SessionTranscriptParams extends JsonObject {
 }
 
 export interface SessionTranscriptV2Params extends JsonObject {
+    readonly schemaVersion?: 2 | 3;
     readonly sessionId: string;
 }
 
@@ -2716,7 +2717,21 @@ export interface SessionTranscriptV2Result extends JsonObject {
     readonly pendingEffectReviews?: readonly PendingEffectReview[];
     /** Active selectable canonical user IDs; archived display rows are not targets. */
     readonly activeUserMessageIds?: readonly string[];
-    readonly schemaVersion: 2;
+    readonly schemaVersion: 2 | 3;
+    /** Present only when schemaVersion 3 was requested. No tool outputs. */
+    readonly turns?: readonly {
+        readonly turnId: string;
+        readonly toolCalls: readonly {
+            readonly callId: string;
+            readonly toolName: string;
+            readonly inputDigest: {
+                readonly [key: string]: string;
+            };
+            readonly isError?: boolean;
+            readonly durationMs?: number;
+        }[];
+    }[];
+    readonly turnsTruncated?: boolean;
     readonly sessionId: string;
     readonly runId: string;
     readonly historyEpoch: string;

@@ -574,7 +574,7 @@ export interface AgenCBackgroundAgentRunner {
   ): Promise<SessionTranscriptResult>;
   getAgentSessionTranscriptV2?(
     agentId: string,
-    params: { readonly sessionId: string; readonly includeCompleteMessages?: boolean },
+    params: { readonly sessionId: string; readonly schemaVersion?: 2 | 3; readonly includeCompleteMessages?: boolean },
   ): Promise<SessionTranscriptV2Result>;
   resolveLiveEffectReview?(
     agentId: string,

@@ -549,6 +549,7 @@ function buildServerCapabilities(
   return Object.freeze({
     "turn.failure.v1": true,
     "turn.usage.v1": true,
+    "transcript.tools.v3": true,
     ...(inputs.printHome !== undefined ? { [AGENC_PRINT_INVOKE_CAPABILITY]: true } : {}),
     [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.freeze(
       methodCapabilities,
@@ -1652,7 +1653,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           const clientMinor = Number(connection.initializeState?.clientProtocol.version.split(".")[1] ?? 0);
           const transcript = await this.#agentManager.getSessionTranscriptV2(
             validateSessionTranscriptV2Params(params),
-            { includeCompleteMessages: clientMinor < 18 },
+            { includeCompleteMessages: clientMinor < 18, ...(params.schemaVersion === 3 ? { schemaVersion: 3 as const } : {}) },
           );
           if (clientMinor >= 18) return successResponse(id, transcript);
           // Protocol 1.17 has no artifact RPC. Restore complete messages only
@@ -4101,8 +4102,12 @@ function validateSessionTranscriptV2Params(
   const validated = validateObjectShape(params, {
     methodName: "session.transcript.v2",
     stringFields: ["sessionId"],
+    numberFields: ["schemaVersion"],
   });
   validateRequiredString(validated, "session.transcript.v2", "sessionId");
+  if (params.schemaVersion !== undefined && params.schemaVersion !== 2 && params.schemaVersion !== 3) {
+    throw invalidParams("session.transcript.v2 schemaVersion must be 2 or 3");
+  }
   return validated as SessionTranscriptV2Params;
 }
 

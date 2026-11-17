@@ -3872,7 +3872,7 @@ export class AgenCDaemonAgentManager {
 
   async getSessionTranscriptV2(
     params: SessionTranscriptV2Params,
-    options: { readonly includeCompleteMessages?: boolean } = {},
+    options: { readonly schemaVersion?: 2 | 3; readonly includeCompleteMessages?: boolean } = {},
   ): Promise<SessionTranscriptV2Result> {
     if (this.#sessionManager === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
@@ -3910,6 +3910,7 @@ export class AgenCDaemonAgentManager {
       return await this.#runner.getAgentSessionTranscriptV2(agentId, {
         sessionId: params.sessionId,
         includeCompleteMessages: options.includeCompleteMessages,
+        schemaVersion: options.schemaVersion,
       });
     } catch (error) {
       if (isNoLiveAgentRunnerError(error)) {
@@ -4009,7 +4010,7 @@ export class AgenCDaemonAgentManager {
 
   async #readPersistedSessionTranscriptV2(
     sessionId: string,
-    options: { readonly includeCompleteMessages?: boolean } = {},
+    options: { readonly schemaVersion?: 2 | 3; readonly includeCompleteMessages?: boolean } = {},
   ): Promise<SessionTranscriptV2Result | undefined> {
     const thread = await this.#readPersistedThreadForSession(sessionId);
     if (thread === undefined) return undefined;
