@@ -1,3 +1,4 @@
+import type { SessionTurnDiffResult } from "./protocol.js";
 /**
  * Typed AgenC daemon client for embedders.
  *
@@ -536,6 +537,11 @@ export class AgencSession {
       sessionId: this.sessionId,
       ...(options.schemaVersion !== undefined ? { schemaVersion: options.schemaVersion } : {}),
     });
+  }
+
+  /** One cached file patch. Requires turn.changes.v1 and turn.diff.read.v1. */
+  turnFileDiff(turnId: string, path: string): Promise<SessionTurnDiffResult> {
+    return this.#client.request("session.turn.diff", { sessionId: this.sessionId, turnId, path });
   }
 
   /** Live turn count and token usage (`session.snapshot`). */

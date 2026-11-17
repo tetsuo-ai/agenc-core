@@ -1,3 +1,5 @@
+import { turnDiffCache } from "../session/turn-diff-cache.js";
+import type { SessionTurnDiffParams, SessionTurnDiffResult } from "./protocol/index.js";
 import { hasRuntimeHistoryWrapper, userFacingHistoryText } from "../session/user-facing-history-text.js";
 import { promoteOneShotRun, selectRelaxedOneShot } from "../durability/one-shot-durability.js";
 /**
@@ -3923,6 +3925,16 @@ export class AgenCDaemonAgentManager {
       }
       throw error;
     }
+  }
+
+  async readSessionTurnDiff(params: SessionTurnDiffParams): Promise<SessionTurnDiffResult> {
+    // Resolve session ownership and the visible turn boundary through the same
+    // authoritative projection used for reopening a chat.
+    const snapshot = await this.getSessionTranscriptV2({ sessionId: params.sessionId, schemaVersion: 3 });
+    if (!snapshot.turns?.some(turn => turn.turnId === params.turnId)) {
+      return { ...params, unavailable: true, note: "turn is outside the visible transcript" };
+    }
+    return { ...params, ...turnDiffCache.read(snapshot.runId, params.turnId, params.path) };
   }
 
   async readSessionArtifact(params: SessionArtifactReadParams): Promise<SessionArtifactReadResult> {

@@ -122,6 +122,7 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "session.goal",
   "session.transcript",
   "session.transcript.v2",
+  "session.turn.diff",
   "session.artifact.read",
   "session.cancelTurn",
   "session.resolveToolCall",
@@ -279,6 +280,8 @@ export type SessionProcessSnapshot = Wire.SessionProcessSnapshot;
 
 export type SessionTranscriptParams = Wire.SessionTranscriptParams;
 
+export type SessionTurnDiffParams = Wire.SessionTurnDiffParams;
+export type SessionTurnDiffResult = Wire.SessionTurnDiffResult;
 export type SessionTranscriptV2Params = Wire.SessionTranscriptV2Params;
 
 export type SessionCancelTurnParams = Wire.SessionCancelTurnParams;

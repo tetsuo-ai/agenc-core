@@ -2239,7 +2239,7 @@ async function* runTurnKernelScoped(
     const emit = pendingTerminal;
     pendingTerminal = undefined;
     try {
-      const changes = await current.finish(ctx.subId);
+      const changes = await current.finish(ctx.subId, String(session.conversationId));
       session.emit({ id: session.nextInternalSubId(), msg: { type: "turn_changes", payload: changes } });
     } finally { current.dispose(); emit(); }
   };

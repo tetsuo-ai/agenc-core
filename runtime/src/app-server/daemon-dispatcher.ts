@@ -1,3 +1,4 @@
+import type { SessionTurnDiffParams } from "./protocol/index.js";
 import { timelineNotification, PromptProgressGate } from "./timeline-capabilities.js";
 import { PermissionModeTransitionPrecommitError } from "../permissions/permission-mode.js";
 import { PrintInvocation, validatePrintInvokeParams } from "./print-invocation.js";
@@ -420,6 +421,7 @@ function buildServerCapabilities(
     "session.processes.stop": hasMethod(agentManager, "stopSessionProcess"),
     "session.transcript": hasMethod(agentManager, "getSessionTranscript"),
     "session.transcript.v2": hasMethod(agentManager, "getSessionTranscriptV2"),
+    "session.turn.diff": hasMethod(agentManager, "readSessionTurnDiff"),
     "session.artifact.read": hasMethod(agentManager, "readSessionArtifact"),
     "session.cancelTurn": hasMethod(agentManager, "cancelSessionTurn"),
     "session.resolveToolCall": hasMethod(
@@ -553,6 +555,7 @@ function buildServerCapabilities(
     "transcript.plans.v3": true,
     "tool.progress.shell.v1": true,
     "turn.changes.v1": true,
+    "turn.diff.read.v1": true,
     ...(inputs.printHome !== undefined ? { [AGENC_PRINT_INVOKE_CAPABILITY]: true } : {}),
     [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.freeze(
       methodCapabilities,
@@ -589,6 +592,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "snapshotSession"
     | "getSessionTranscript"
     | "getSessionTranscriptV2"
+    | "readSessionTurnDiff"
     | "readSessionArtifact"
     | "getMcpStatusForSession"
     | "addMcpServerToSession"
@@ -736,6 +740,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "snapshotSession"
     | "getSessionTranscript"
     | "getSessionTranscriptV2"
+    | "readSessionTurnDiff"
     | "readSessionArtifact"
     | "getMcpStatusForSession"
     | "addMcpServerToSession"
@@ -1705,6 +1710,15 @@ export class AgenCDaemonJsonRpcDispatcher {
           }
           return emptyResponse;
         }
+      case "session.turn.diff": {
+        if (connection.initializeState?.clientCapabilities["turn.changes.v1"] !== true ||
+            connection.initializeState?.clientCapabilities["turn.diff.read.v1"] !== true ||
+            this.#agentManager.readSessionTurnDiff === undefined) return methodNotImplementedResponse(id, method);
+        const value = validateObjectShape(params, { methodName: method, stringFields: ["sessionId", "turnId", "path"] });
+        for (const key of ["sessionId", "turnId", "path"]) validateRequiredString(value, method, key);
+        if (String(value.path).length > 512 || String(value.turnId).length > 256) throw invalidParams("turn diff identifier exceeds limit");
+        return successResponse(id, await this.#agentManager.readSessionTurnDiff(value as SessionTurnDiffParams));
+      }
       case "session.artifact.read":
         {
           return successResponse(id, await this.#agentManager.readSessionArtifact(validateSessionArtifactReadParams(params)));

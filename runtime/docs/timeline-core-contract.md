@@ -13,6 +13,7 @@ The existing `initialize` response advertises these boolean capabilities:
 | `transcript.tools.v3` | Call `session.transcript.v2` with `{sessionId, schemaVersion: 3}`. |
 | `transcript.plans.v3` | The same v3 request includes optional plan and to-do state. |
 | `tool.progress.shell.v1` | Set the capability to `true`, then set `includeToolProgress: true` on `message.send` or `message.stream`. |
+| `turn.diff.read.v1` | Negotiate this and `turn.changes.v1`, then call `session.turn.diff` with `{sessionId, turnId, path}`. |
 | `turn.changes.v1` | Set the capability to `true`, then set `turnChanges: {includeDiff?: boolean}` on the prompt request. |
 
 Use capabilities, never runtime version strings. Set them on the session's turn connection. No new polling call is needed. The SDK accepts `session.transcriptV2({schemaVersion: 3})`, `prompt(..., {includeToolProgress: true})` and `prompt(..., {turnChanges: {includeDiff: true}})`. The SDK connection still needs the matching initialize capabilities.
@@ -124,6 +125,12 @@ The snapshot uses a read-only worker. It never invokes Git or writes a snapshot 
 Bounds per scan: 1 second of worker scan time, a 2-second parent deadline, 10,000 entries, 2,000 files, depth 32, 256 KiB per file and 8 MiB of file contents. Worker old-generation memory is capped at 48 MiB. At most 256 changed paths are returned. Paths above 512 characters cause a skip. Requested diff text is capped at 64 KiB at complete patch boundaries. Workers terminate after collection.
 
 The scan excludes Git metadata, agent state, dependency/build directories, symlinks and common credential filenames. It refuses filesystem roots, the user's home, and protected agent/key directories as workspace roots. A limit, read error or unstable file causes `{files: [], skipped: true, note}`. This means unavailable, not no changes. The normal note explains exclusions and possible concurrent external edits. The comparison attributes a time interval, not sole authorship. Reconnect does not reconstruct a lost in-memory before snapshot.
+
+### Read one file diff
+
+`session.turn.diff` returns `{sessionId, turnId, path, diff?, binary?, diffTruncated?, unavailable?, note?}`. `path` is the exact workspace-relative path from `turn_changes`. The SDK exposes `session.turnFileDiff(turnId, path)`. Both `turn.changes.v1` and `turn.diff.read.v1` must be negotiated. Start the turn with `turnChanges: {}` to capture patches without sending them in the event. Existing `includeDiff: true` requests keep the same aggregate diff behavior.
+
+The read returns the captured turn patch, even if that file later changes. It never reads today's file. It verifies the session and visible transcript boundary. Each patch is at most 64 KiB. Oversized patches return `unavailable` and `diffTruncated`, without a partial patch. Binary files return `binary` without diff text. Cache limits are 256 KiB of patches per turn, 256 paths, 64 turns and 4 MiB across the daemon. Old entries are evicted. A daemon restart, eviction, skipped checkpoint, or unknown path returns `unavailable` with a note. This cache is intentionally transient. The RPC currently follows the local Desktop transport surface.
 
 ## Verification
 

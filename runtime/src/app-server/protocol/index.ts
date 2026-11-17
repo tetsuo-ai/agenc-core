@@ -212,6 +212,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.goal",
   "session.transcript",
   "session.transcript.v2",
+  "session.turn.diff",
   "session.artifact.read",
   "session.cancelTurn",
   "session.resolveToolCall",
@@ -295,6 +296,7 @@ export type AgenCDaemonServerCapabilities = JsonObject & {
   readonly "transcript.plans.v3"?: true;
   readonly "tool.progress.shell.v1"?: true;
   readonly "turn.changes.v1"?: true;
+  readonly "turn.diff.read.v1"?: true;
   readonly [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: AgenCDaemonMethodCapabilities;
   readonly [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]?: true;
   readonly [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]?: true;
@@ -927,6 +929,13 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description:
       "Read an identity-bearing, sequence-watermarked transcript projection suitable for atomic snapshot-plus-live reconciliation.",
+  },
+  "session.turn.diff": {
+    method: "session.turn.diff",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Read one bounded immutable file diff from an opted-in turn checkpoint.",
   },
   "session.artifact.read": {
     method: "session.artifact.read",
@@ -3021,6 +3030,7 @@ export type AgenCDaemonRequest =
       "session.transcript.v2",
       SessionTranscriptV2Params
     >
+  | AgenCDaemonRequestWithParams<"session.turn.diff", SessionTurnDiffParams>
   | AgenCDaemonRequestWithParams<"session.artifact.read", SessionArtifactReadParams>
   | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams>
   | AgenCDaemonRequestWithParams<
@@ -3933,6 +3943,22 @@ export interface SessionTranscriptParams extends JsonObject {
   readonly sessionId: string;
 }
 
+export interface SessionTurnDiffParams extends JsonObject {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly path: string;
+}
+export interface SessionTurnDiffResult extends JsonObject {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly path: string;
+  readonly diff?: string;
+  readonly binary?: true;
+  readonly diffTruncated?: true;
+  readonly unavailable?: true;
+  readonly note?: string;
+}
+
 export interface SessionTranscriptV2Params extends JsonObject {
   readonly schemaVersion?: 2 | 3;
   readonly sessionId: string;
@@ -4732,6 +4758,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.goal": SessionGoalResult;
   readonly "session.transcript": SessionTranscriptResult;
   readonly "session.transcript.v2": SessionTranscriptV2Result;
+  readonly "session.turn.diff": SessionTurnDiffResult;
   readonly "session.artifact.read": SessionArtifactReadResult;
   readonly "session.cancelTurn": SessionCancelTurnResult;
   readonly "session.resolveToolCall": SessionResolveToolCallResult;

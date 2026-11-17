@@ -1,3 +1,4 @@
+import { turnDiffCache } from "./turn-diff-cache.js";
 import { Worker } from "node:worker_threads";
 
 export interface TurnChanges {
@@ -71,7 +72,7 @@ function lines(buffer) {
   return text.match(/[^\n]*\n|[^\n]+$/g) || [];
 }
 function compare(before, after) {
-  const files = []; let diff = '', diffTruncated = false;
+  const files = [], fileDiffs = []; let diff = '', diffTruncated = false, fileDiffBytes = 0;
   const paths = [...new Set([...before.keys(), ...after.keys()])].sort();
   for (const name of paths) {
     const old = before.get(name), next = after.get(name);
@@ -80,13 +81,12 @@ function compare(before, after) {
     const a = lines(old || Buffer.alloc(0)), b = lines(next || Buffer.alloc(0));
     if (name.length > 512) throw Error('changed path length limit');
     const op = !old ? 'created' : !next ? 'deleted' : 'modified';
-    if (a === null || b === null) { files.push({ path: name, op, added: 0, removed: 0, binary: true }); continue; }
+    if (a === null || b === null) { files.push({ path: name, op, added: 0, removed: 0, binary: true }); fileDiffs.push({ path: name, binary: true }); continue; }
     let start = 0, end = 0;
     while (start < a.length && start < b.length && a[start] === b[start]) start++;
     while (end < a.length - start && end < b.length - start && a[a.length - 1 - end] === b[b.length - 1 - end]) end++;
     const removed = a.length - start - end, added = b.length - start - end;
     files.push({ path: name, op, added, removed });
-    if (!workerData.includeDiff || diffTruncated) continue;
     const contextStart = Math.max(0, start - 3), contextEnd = Math.min(end, 3);
     const oldCount = a.length - end + contextEnd - contextStart;
     const newCount = b.length - end + contextEnd - contextStart;
@@ -96,10 +96,16 @@ function compare(before, after) {
     for (let i = start; i < a.length - end; i++) append('-', a[i]);
     for (let i = start; i < b.length - end; i++) append('+', b[i]);
     for (let i = 0; i < contextEnd; i++) append(' ', a[a.length - end + i]);
-    if (Buffer.byteLength(diff) + Buffer.byteLength(patch) > 65536) diffTruncated = true;
-    else diff += patch;
+    const patchBytes = Buffer.byteLength(patch);
+    if (patchBytes > 65536) fileDiffs.push({ path: name, diffTruncated: true, unavailable: true, note: 'file diff exceeds 64 KiB' });
+    else if (fileDiffBytes + patchBytes > 256 * 1024) fileDiffs.push({ path: name, unavailable: true, note: 'turn diff cache limit' });
+    else { fileDiffs.push({ path: name, diff: patch }); fileDiffBytes += patchBytes; }
+    if (workerData.includeDiff && !diffTruncated) {
+      if (Buffer.byteLength(diff) + patchBytes > 65536) diffTruncated = true;
+      else diff += patch;
+    }
   }
-  return { files, note, ...(workerData.includeDiff ? { diff, ...(diffTruncated ? { diffTruncated: true } : {}) } : {}) };
+  return { files, fileDiffs, note, ...(workerData.includeDiff ? { diff, ...(diffTruncated ? { diffTruncated: true } : {}) } : {}) };
 }
 try {
   root = fs.realpathSync(workerData.root);
@@ -113,7 +119,7 @@ try {
 } catch (error) { parentPort.postMessage({ files: [], skipped: true, note: error.message }); }
 `;
 
-export interface WorkspaceChangeCheckpoint { finish(turnId: string): Promise<TurnChanges>; dispose(): void }
+export interface WorkspaceChangeCheckpoint { finish(turnId: string, runId?: string): Promise<TurnChanges>; dispose(): void }
 
 /** Hard deadline on each scan. Idle workers retain at most 8 MiB of file data. */
 export async function beginWorkspaceChanges(root: string, includeDiff: boolean, overrides: Partial<{
@@ -140,11 +146,12 @@ export async function beginWorkspaceChanges(root: string, includeDiff: boolean, 
   } catch { failure = skip("workspace snapshot unavailable"); dispose(); }
   return {
     dispose,
-    async finish(turnId) {
+    async finish(turnId, runId) {
       if (failure || !worker) return { turnId, from: "checkpoint", ...(failure ?? skip("workspace snapshot unavailable")) };
       const result = receive();
       worker.postMessage("finish");
-      const changes = await result;
+      const { fileDiffs = [], ...changes } = await result;
+      if (runId !== undefined) turnDiffCache.put(runId, turnId, fileDiffs);
       dispose();
       return { turnId, from: "checkpoint", ...changes };
     },
