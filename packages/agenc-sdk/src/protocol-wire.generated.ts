@@ -2751,6 +2751,32 @@ export interface SessionTranscriptV2Result extends JsonObject {
             readonly state: "pending" | "running" | "done";
         }[];
         readonly todosTruncated?: boolean;
+        /** Values recorded by Core at completion, never reconstructed from session totals. */
+        readonly usage?: {
+            readonly mark: "reported" | "missing";
+            readonly input?: number;
+            readonly output?: number;
+            readonly cached?: number;
+            readonly reasoning?: number;
+            readonly costUsd?: number;
+            readonly billedEstimateUsd?: number;
+            readonly planCalls?: number;
+        };
+        /** Checkpoint summary only. Diff text is fetched separately. */
+        readonly changes?: {
+            readonly turnId: string;
+            readonly from: "checkpoint";
+            readonly files: readonly {
+                readonly path: string;
+                readonly op: "created" | "modified" | "deleted";
+                readonly added: number;
+                readonly removed: number;
+                readonly binary?: boolean;
+            }[];
+            readonly skipped?: boolean;
+            readonly note?: string;
+            readonly filesTruncated?: true;
+        };
         readonly toolCalls: readonly {
             readonly callId: string;
             readonly toolName: string;

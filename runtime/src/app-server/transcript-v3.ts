@@ -23,6 +23,15 @@ export function toolInputDigest(args: string): Record<string, string> {
   return digest;
 }
 
+function recordedUsage(usage: NonNullable<Extract<import("../session/event-log.js").EventMsg, { type: "turn_complete" }>["payload"]["usage"]>): NonNullable<Turn["usage"]> {
+  const counters: Record<string, number> = {};
+  for (const key of ["input", "output", "cached", "reasoning", "costUsd", "billedEstimateUsd", "planCalls"] as const) {
+    const value = usage[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) counters[key] = value;
+  }
+  return { ...counters, mark: Object.keys(counters).length ? "reported" : "missing" };
+}
+
 /** Bounded display projection over the same visible history as snapshot v2. */
 export function transcriptV3Turns(items: readonly RolloutItem[], boundaryIndex: number): {
   turns: Turn[]; turnsTruncated?: true;
@@ -80,8 +89,26 @@ export function transcriptV3Turns(items: readonly RolloutItem[], boundaryIndex: 
     } else if ((msg.type === "plan_delta" || msg.type === "plan_item_completed") && current?.turnId === msg.payload.turnId && current.plan?.planItemId === msg.payload.planItemId) {
       const text = msg.type === "plan_delta" ? current.plan.text + msg.payload.delta : msg.payload.finalText;
       Object.assign(current, { plan: { ...current.plan, text: text.slice(0, 16384), state: msg.type === "plan_delta" ? "running" : "done", ...(text.length > 16384 || current.plan.truncated ? { truncated: true } : {}) } });
+    } else if (msg.type === "turn_changes") {
+      const turn = turns.find(turn => turn.turnId === msg.payload.turnId);
+      if (turn) {
+        const payload = msg.payload;
+        const files = payload.files.slice(0, 256).map(file => ({
+          path: file.path.slice(0, 512), op: file.op, added: file.added, removed: file.removed,
+          ...(file.binary === true ? { binary: true } : {}),
+        }));
+        Object.assign(turn, { changes: {
+          turnId: payload.turnId, from: "checkpoint", files,
+          ...(payload.skipped !== undefined ? { skipped: payload.skipped } : {}),
+          ...(payload.note !== undefined ? { note: payload.note.slice(0, 2048) } : {}),
+          ...(payload.files.length > 256 || payload.files.some(file => file.path.length > 512) ? { filesTruncated: true } : {}),
+        } });
+      }
     } else if (["turn_complete", "turn_failed", "turn_aborted"].includes(msg.type) &&
       "turnId" in msg.payload && msg.payload.turnId === current?.turnId) {
+      if (msg.type === "turn_complete" && msg.payload.usage !== undefined && current) {
+        Object.assign(current, { usage: recordedUsage(msg.payload.usage) });
+      }
       current = undefined;
       calls.clear();
     }

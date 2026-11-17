@@ -67,7 +67,17 @@ The RPC name remains `session.transcript.v2`. Its default response stays schema 
       state: "running" | "done", truncated?: boolean
     },
     todos?: Array<{text: string, state: "pending" | "running" | "done"}>,
-    todosTruncated?: boolean
+    todosTruncated?: boolean,
+    usage?: {
+      mark: "reported" | "missing",
+      input?: number, output?: number, cached?: number, reasoning?: number,
+      costUsd?: number, billedEstimateUsd?: number, planCalls?: number
+    },
+    changes?: {
+      turnId: string, from: "checkpoint",
+      files: Array<{path: string, op: "created" | "modified" | "deleted", added: number, removed: number, binary?: boolean}>,
+      skipped?: boolean, note?: string, filesTruncated?: true
+    }
   }>,
   turnsTruncated?: boolean
 }
@@ -78,6 +88,10 @@ The RPC name remains `session.transcript.v2`. Its default response stays schema 
 The projection keeps at most 128 turns and 128 calls per turn. The entire `turns` JSON is capped at 128 KiB by dropping older turns. It reports `turnsTruncated`. It follows the visible transcript boundary. Ordinary v2 messages, results and notices keep their existing retention policy.
 
 A plan is the latest streamed plan item in that turn. The legacy `TodoWrite-<turnId>` prose mirror is excluded from v3 and from live notifications on connections that negotiate `transcript.plans.v3`. It can contain an empty list even when the tool supplied items. The successful tool call already carries the real structured list, so suppressing the mirror avoids duplicate and misleading cards. Other plan prose and all legacy notifications remain unchanged. Final text replaces deltas. Text is capped at 16,384 characters. Prose is retained as prose, rather than inventing structured steps. To-do lists come from successful `TodoWrite` calls. Failed or denied calls do not replace the latest list. A list has at most 128 items, each with at most 512 characters. An empty successful list is meaningful. This is a concrete extension of the design's unspecified C4 snapshot field.
+
+Reopened v3 turns retain the exact available numeric fields from Core's recorded completion usage. `mark: "reported"` identifies that source, without recomputing session deltas. An empty recorded object becomes `mark: "missing"`; older turns with no usage field keep it absent. `billedEstimateUsd` still means an estimate, even within a Core-recorded object. Missing counters remain absent, and recorded zero cost remains zero.
+
+`changes` retains the recorded checkpoint summary without any diff text. Skipped scans remain skipped, with their note. The summary is bounded to 256 paths of 512 characters and a 2,048-character note. `filesTruncated` signals a shortened list or path. These fields share the existing v3 turn-count and total-byte limits and visible transcript boundary. Default and explicit v2 responses stay unchanged. No new `session_usage` fields or accounting behavior are introduced.
 
 ## C6: command progress
 
