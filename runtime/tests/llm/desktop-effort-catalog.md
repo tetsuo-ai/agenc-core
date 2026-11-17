@@ -14,6 +14,8 @@ likewise comes from the Desktop Muse Wonder change and lands with Core first.
 The `openai`/`gpt-6.1-terra` row (levels none through max, default medium) is
 the row Desktop's `scripts/generate-openai-reasoning-models.mjs` generates from
 this Core registry; it also lands with Core first.
+The GPT-6.2 Astra and Sol rows come from the regenerated Desktop catalog.
+Both offer low through max.
 The source is `src/renderer/src/modelCatalog.ts`, including its shared catalog imports.
 
 To refresh, fetch that repository, bundle the source with esbuild for Node (ESM),
