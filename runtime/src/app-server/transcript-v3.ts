@@ -28,6 +28,7 @@ export function transcriptV3Turns(items: readonly RolloutItem[], boundaryIndex: 
 } {
   const turns: Turn[] = [];
   const calls = new Map<string, { turn: Turn; index: number }>();
+  const pendingTodos = new Map<string, { todos: NonNullable<Turn["todos"]>; truncated: boolean }>();
   let current: Turn | undefined;
   let truncated = false;
   for (let i = boundaryIndex + 1; i < items.length; i++) {
@@ -42,20 +43,40 @@ export function transcriptV3Turns(items: readonly RolloutItem[], boundaryIndex: 
         if (turns.length > 128) { turns.shift(); truncated = true; }
       }
       calls.clear();
+      pendingTodos.clear();
       current.toolCalls.forEach((call, index) => calls.set(call.callId, { turn: current!, index }));
     } else if (msg.type === "tool_call_started" && current) {
       if (current.toolCalls.length >= 128) { truncated = true; continue; }
       if (calls.has(msg.payload.callId)) continue;
+      if (msg.payload.toolName === "TodoWrite" && msg.payload.args.length <= 64 * 1024) {
+        try {
+          const input = JSON.parse(msg.payload.args);
+          if (Array.isArray(input.todos)) {
+            const todos: NonNullable<Turn["todos"]> = input.todos.slice(0, 128).flatMap((todo: any) =>
+              typeof todo?.content === "string" && ["pending", "in_progress", "completed"].includes(todo.status)
+                ? [{ text: todo.content.slice(0, 512), state: todo.status === "completed" ? "done" : todo.status === "in_progress" ? "running" : "pending" }] : []);
+            pendingTodos.set(msg.payload.callId, { todos, truncated: input.todos.length > 128 || input.todos.some((todo: any) => typeof todo?.content === "string" && todo.content.length > 512) });
+          }
+        } catch { /* Invalid tool inputs do not replace the last valid list. */ }
+      }
       const call: Call = { callId: msg.payload.callId.slice(0, 256), toolName: msg.payload.toolName.slice(0, 256), inputDigest: toolInputDigest(msg.payload.args) };
       calls.set(msg.payload.callId, { turn: current, index: current.toolCalls.length });
       (current.toolCalls as Call[]).push(call);
     } else if (msg.type === "tool_call_completed") {
+      const pending = pendingTodos.get(msg.payload.callId);
+      if (pending && current && !msg.payload.isError) Object.assign(current, { todos: pending.todos, ...(pending.truncated ? { todosTruncated: true } : { todosTruncated: undefined }) });
+      pendingTodos.delete(msg.payload.callId);
       const found = calls.get(msg.payload.callId);
       if (found) {
         const call = found.turn.toolCalls[found.index]!;
         (found.turn.toolCalls as Call[])[found.index] = { ...call, isError: msg.payload.isError,
           ...(typeof msg.payload.durationMs === "number" && Number.isFinite(msg.payload.durationMs) && msg.payload.durationMs >= 0 ? { durationMs: msg.payload.durationMs } : {}) };
       }
+    } else if (msg.type === "plan_started" && current?.turnId === msg.payload.turnId) {
+      Object.assign(current, { plan: { planItemId: msg.payload.planItemId.slice(0, 256), title: msg.payload.title.slice(0, 512), text: "", state: "running" } });
+    } else if ((msg.type === "plan_delta" || msg.type === "plan_item_completed") && current?.turnId === msg.payload.turnId && current.plan?.planItemId === msg.payload.planItemId) {
+      const text = msg.type === "plan_delta" ? current.plan.text + msg.payload.delta : msg.payload.finalText;
+      Object.assign(current, { plan: { ...current.plan, text: text.slice(0, 16384), state: msg.type === "plan_delta" ? "running" : "done", ...(text.length > 16384 || current.plan.truncated ? { truncated: true } : {}) } });
     } else if (["turn_complete", "turn_failed", "turn_aborted"].includes(msg.type) &&
       "turnId" in msg.payload && msg.payload.turnId === current?.turnId) {
       current = undefined;

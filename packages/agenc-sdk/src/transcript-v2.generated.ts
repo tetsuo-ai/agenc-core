@@ -155,6 +155,9 @@ export interface SessionTranscriptV2Result extends TranscriptV2JsonObject {
   /** Present only when schemaVersion 3 was requested. No tool outputs. */
   readonly turns?: readonly {
     readonly turnId: string;
+    readonly plan?: { readonly planItemId: string; readonly title: string; readonly text: string; readonly state: "running" | "done"; readonly truncated?: boolean };
+    readonly todos?: readonly { readonly text: string; readonly state: "pending" | "running" | "done" }[];
+    readonly todosTruncated?: boolean;
     readonly toolCalls: readonly {
       readonly callId: string;
       readonly toolName: string;

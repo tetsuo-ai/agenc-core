@@ -550,6 +550,7 @@ function buildServerCapabilities(
     "turn.failure.v1": true,
     "turn.usage.v1": true,
     "transcript.tools.v3": true,
+    "transcript.plans.v3": true,
     ...(inputs.printHome !== undefined ? { [AGENC_PRINT_INVOKE_CAPABILITY]: true } : {}),
     [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.freeze(
       methodCapabilities,
