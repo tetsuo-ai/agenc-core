@@ -20,6 +20,10 @@ export const OPENAI_REASONING_MODELS = [
   { model: "gpt-5.6-luna", label: "GPT-5.6 Luna", efforts: EFFORTS_WITH_NONE },
   // Keep the existing default order. Adding Astra must not select it for users.
   { model: "gpt-6-astra", label: "GPT-6 Astra", efforts: POSITIVE_EFFORTS },
+  // The GPT-6.2 model pages publish the same limits. Codex Ultra uses
+  // subagents. The highest single-model API effort is max.
+  { model: "gpt-6.2-astra", label: "GPT-6.2 Astra", efforts: POSITIVE_EFFORTS },
+  { model: "gpt-6.2-sol", label: "GPT-6.2 Sol", efforts: POSITIVE_EFFORTS },
   // /api/docs/models/gpt-6.1-sol independently verifies the limits below
   // (2026-09-29); live Responses verifies low..max and rejects none/minimal.
   { model: "gpt-6.1-sol", label: "GPT-6.1 Sol", efforts: POSITIVE_EFFORTS },
@@ -142,7 +146,9 @@ export function openAiChatCompletionsRejectsFunctionTools(
   const normalized = model.trim().toLowerCase().replace(/^openai[/:]/, "");
   // GPT-6.1 Sol never accepts function tools on Chat Completions, including
   // when the effort is omitted (official guide and live 400, 2026-09-29).
-  if (normalized === "gpt-6-astra" || normalized === "gpt-6.1-sol") return true;
+  // The GPT-6.2 migration guide requires Responses for tool calling too.
+  if (normalized === "gpt-6-astra" || normalized === "gpt-6.1-sol" ||
+      normalized === "gpt-6.2-astra" || normalized === "gpt-6.2-sol") return true;
   // The guide says Terra's tool calls need Responses. The live API
   // (2026-10-28) answers 400 when the effort is omitted or is not none
   // ("use /v1/responses or set reasoning_effort to 'none'") and returns the

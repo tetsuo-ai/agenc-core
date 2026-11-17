@@ -89,6 +89,8 @@ describe("OpenAI Chat Completions temperature rule", () => {
 
 describe("OpenAI function tools that Chat Completions rejects go through Responses", () => {
   test.each([
+    ["gpt-6.2-astra", "max"],
+    ["gpt-6.2-sol", undefined],
     ["gpt-6.1-terra", "medium"],
     ["gpt-6.1-terra", undefined],
     ["gpt-6.1-sol", "low"],
@@ -112,6 +114,8 @@ describe("OpenAI function tools that Chat Completions rejects go through Respons
     // Live 2026-10-28: Terra returned the tool call on Chat Completions at none.
     ["gpt-6.1-terra", "none", [TOOL]],
     ["gpt-6.1-terra", "medium", []],
+    ["gpt-6.2-astra", "max", []],
+    ["gpt-6.2-sol", "max", []],
     ["gpt-6.1-sol", "low", []],
     ["gpt-6-sol", "none", [TOOL]],
     ["gpt-6-sol", "low", []],

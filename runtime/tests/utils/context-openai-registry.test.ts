@@ -14,6 +14,10 @@ import {
 const openai = { provider: 'openai', environment: {} }
 
 test.each([
+  'gpt-6.2-astra',
+  'openai/gpt-6.2-astra',
+  'gpt-6.2-sol',
+  'openai/gpt-6.2-sol',
   'gpt-6.1-terra',
   'openai/gpt-6.1-terra',
   'gpt-6.1-sol',

@@ -37,6 +37,7 @@ const PROFILES: Readonly<Record<string, Readonly<Record<string, ChildModelProfil
   }),
   openai: Object.freeze({
     "gpt-6-luna": COMPACT, "gpt-6-sol": BALANCED, "gpt-6-astra": STRONG,
+    "gpt-6.2-sol": BALANCED, "gpt-6.2-astra": STRONG,
     // OpenAI lists GPT-6.1 Terra between Sol and Luna, the tier GPT-5.6 Terra holds.
     "gpt-6.1-terra": BALANCED,
     "gpt-5.6-luna": COMPACT, "gpt-5.6-terra": BALANCED, "gpt-5.6-sol": STRONG,

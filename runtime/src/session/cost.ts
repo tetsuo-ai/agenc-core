@@ -414,6 +414,12 @@ const COST_TIER_GPT_6_SOL = openAiTier({
   fast: [4, 20, 0.4, 5],
   longContext: { standard: [4, 15, 0.4, 5], fast: [8, 30, 0.8, 10] },
 });
+// GPT-6.2 Standard and Fast prices from developers.openai.com/api/docs/pricing.
+const COST_TIER_GPT_6_2_ASTRA = openAiTier({
+  standard: [8, 40, 0.4, 10],
+  fast: [16, 80, 0.8, 20],
+  longContext: { standard: [16, 60, 0.8, 20], fast: [32, 120, 1.6, 40] },
+});
 // Independently verified against /api/docs/models/gpt-6.1-sol and
 // /api/docs/pricing on 2026-09-29. Cache reads are 5% of input, not 10%.
 const COST_TIER_GPT_6_1_SOL = openAiTier({
@@ -1148,6 +1154,9 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ),
     ...openAiCostAliases("gpt-6-astra", COST_TIER_GPT_6_ASTRA),
     ...openAiCostAliases("gpt-6-sol", COST_TIER_GPT_6_SOL),
+    "openai:gpt-6.2-astra": COST_TIER_GPT_6_2_ASTRA,
+    // GPT-6.2 Sol has the same Standard, Fast and long-context rates as 6.1 Sol.
+    "openai:gpt-6.2-sol": COST_TIER_GPT_6_1_SOL,
     ...openAiCostAliases("gpt-6.1-sol", COST_TIER_GPT_6_1_SOL),
     ...openAiCostAliases("gpt-6.1-terra", COST_TIER_GPT_6_1_TERRA),
     ...openAiCostAliases("gpt-6-luna", COST_TIER_GPT_6_LUNA),
@@ -1823,6 +1832,8 @@ export function hasManagedRoutePrice(
  * because a Pro sibling costs many times its base model.
  */
 const OPENAI_EXACTLY_PRICED_MODELS = Object.freeze([
+  "gpt-6.2-astra",
+  "gpt-6.2-sol",
   "gpt-6.1-sol",
   "gpt-6.1-terra",
   "gpt-6-astra",
