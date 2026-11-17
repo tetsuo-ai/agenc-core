@@ -2982,6 +2982,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     const submitOptions: DaemonHumanSessionSubmitOptions = {
       clientMessageId: params.messageId,
+      ...(params.includeToolProgress === true ? { includeToolProgress: true } : {}),
       ...(params.turnChanges !== undefined ? { turnChanges: params.turnChanges } : {}),
       ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
       ...(params.skillInvocation !== undefined
@@ -6501,6 +6502,7 @@ function installDaemonTurnDriverHooks(
           // excluded by rootHumanTurnText below.
           querySource: "sdk",
           exactOutput: opts?.exactOutput,
+          ...(opts?.includeToolProgress === true ? { includeToolProgress: true } : {}),
           ...(opts?.turnChanges !== undefined ? { turnChanges: opts.turnChanges } : {}),
           displayUserMessage: null,
           ...(rootHumanTurnText !== undefined && opts?.clientMessageId !== undefined

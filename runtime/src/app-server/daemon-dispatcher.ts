@@ -2662,6 +2662,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         this.#agentManager.streamAgentMessage({
           sessionId: sendParams.sessionId,
           content: sendParams.content,
+          ...(sendParams.includeToolProgress === true && connection.initializeState?.clientCapabilities["tool.progress.shell.v1"] === true ? { includeToolProgress: true } : {}),
           ...(sendParams.turnChanges !== undefined && connection.initializeState?.clientCapabilities["turn.changes.v1"] === true ? { turnChanges: sendParams.turnChanges } : {}),
           ...displayUserMessageFromMetadata(
             "message.send",
@@ -2722,6 +2723,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         this.#agentManager.streamAgentMessage({
           sessionId: streamParams.sessionId,
           content: streamParams.content,
+          ...(streamParams.includeToolProgress === true && connection.initializeState?.clientCapabilities["tool.progress.shell.v1"] === true ? { includeToolProgress: true } : {}),
           ...(streamParams.turnChanges !== undefined && connection.initializeState?.clientCapabilities["turn.changes.v1"] === true ? { turnChanges: streamParams.turnChanges } : {}),
           ...(streamParams.exactOutput !== undefined ? { exactOutput: streamParams.exactOutput } : {}),
           ...(streamParams.skillInvocation !== undefined

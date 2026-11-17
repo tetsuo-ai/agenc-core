@@ -1,3 +1,5 @@
+import { UnifiedExecProcessManager, ProcessOutputBuffer } from "../../src/unified-exec/process-manager.js";
+import { withLiveShellProgress } from "../../src/session/live-shell-progress.js";
 import { describe, expect, it } from "vitest";
 import { PromptProgressGate } from "../../src/app-server/timeline-capabilities.js";
 import { AgenCDaemonJsonRpcDispatcher } from "../../src/app-server/daemon-dispatcher.js";
@@ -26,7 +28,8 @@ describe("C6 prompt shell progress", () => {
   it.each([false, true])("forwards during opted-in=%s prompt only", async enabled => {
     const sent: any[] = [];
     let connection: any;
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: { streamAgentMessage: async () => {
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: { streamAgentMessage: async (params: any) => {
+      expect(params.includeToolProgress).toBe(enabled ? true : undefined);
       await connection.sendNotification(progress());
       await connection.sendNotification(progress("FileRead"));
       return { disposition: "started", acceptedAt: "now" };
@@ -39,4 +42,35 @@ describe("C6 prompt shell progress", () => {
     expect(sent).toHaveLength(enabled ? 1 : 3);
     await connection.close();
   });
+});
+
+// A real process writes while collection is still waiting for its exit.
+it.each([false, true])("streams timed command output before completion only with opt-in=%s", async enabled => {
+  const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+  const received: { at: number; chunk: string }[] = [];
+  const started = Date.now();
+  try {
+    const result = await withLiveShellProgress(enabled, () => manager.execCommand({
+      cmd: "printf 'first\\n'; sleep 0.4; printf 'second\\n'; sleep 0.4; printf 'third\\n'",
+      yield_time_ms: 5000,
+      __onProgress: event => received.push({ at: Date.now() - started, chunk: event.chunk }),
+    }));
+    const ended = Date.now() - started;
+    expect(result.stdout).toBe("first\nsecond\nthird\n");
+    expect(received.map(event => event.chunk).join("")).toBe(result.stdout);
+    expect(received.length).toBeGreaterThanOrEqual(3);
+    if (enabled) expect(received[0]!.at).toBeLessThan(ended - 500);
+    else expect(received[0]!.at).toBeGreaterThanOrEqual(ended - 100);
+  } finally { await manager.closeAll("test_cleanup"); }
+});
+it("live buffer subscription does not consume output and cleans up", () => {
+  const buffer = new ProcessOutputBuffer();
+  buffer.append("stdout", "before");
+  const chunks: string[] = [];
+  const off = buffer.subscribe(event => chunks.push(event.chunk));
+  buffer.append("stderr", "during");
+  off();
+  buffer.append("stdout", "after");
+  expect(chunks).toEqual(["before", "during"]);
+  expect(buffer.drain().map(event => event.chunk)).toEqual(["before", "during", "after"]);
 });

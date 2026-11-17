@@ -11,6 +11,7 @@ const DEFAULT_AUTONOMOUS_TICK_DELAY_MS = 0;
 export type SessionSubmitSource = "user" | typeof AUTONOMOUS_SUBMIT_SOURCE;
 
 export interface SessionSubmitOptions {
+  readonly includeToolProgress?: boolean;
   readonly turnChanges?: { readonly includeDiff?: boolean };
   /** Explicit caller output contract, scoped to this submitted turn. */
   readonly exactOutput?: boolean;

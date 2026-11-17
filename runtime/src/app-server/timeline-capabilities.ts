@@ -58,7 +58,7 @@ export class PromptProgressGate {
     const used = state.calls.get(payload.callId) ?? 0;
     if (used > 65536 || (!state.calls.has(payload.callId) && state.calls.size >= 256)) return null;
     const chunk = payload.chunk.slice(0, Math.min(4096, 65536 - used));
-    const dropped = chunk.length < payload.chunk.length;
+    const dropped = chunk.length < payload.chunk.length || payload.outputDropped === true;
     state.calls.set(payload.callId, dropped ? 65537 : used + chunk.length);
     return { ...message, params: { ...params, event: { ...event, payload: { ...payload, chunk, ...(dropped ? { outputDropped: true } : {}) } } } };
   }

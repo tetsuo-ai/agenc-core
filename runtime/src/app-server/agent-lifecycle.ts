@@ -4451,6 +4451,7 @@ export class AgenCDaemonAgentManager {
   }
 
   async streamAgentMessage(params: {
+    readonly includeToolProgress?: boolean;
     readonly turnChanges?: { readonly includeDiff?: boolean };
     readonly exactOutput?: boolean;
     /** Settings of the skill the user started this turn with. */
@@ -4528,6 +4529,7 @@ export class AgenCDaemonAgentManager {
         sessionId: params.sessionId,
         content: params.content,
         originalContent: params.content,
+        ...(params.includeToolProgress === true ? { includeToolProgress: true } : {}),
         ...(params.turnChanges !== undefined ? { turnChanges: params.turnChanges } : {}),
         ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
         ...(params.skillInvocation !== undefined

@@ -92,6 +92,8 @@ For a connection that negotiates `tool.progress.shell.v1`, progress is delivered
 
 Shell names are Bash, PowerShell, exec_command, write_stdin and their system-prefixed forms. Each chunk is capped at 4,096 characters. A call has a 65,536-character total cap. A truncated chunk sets `outputDropped` and ends progress for that call. At most 256 calls are tracked per prompt. Cleanup runs on success and failure.
 
+Opted-in turns publish command chunks during collection. The collector subscribes without draining the final tool output. It caps live delivery at 256 chunks and 65,536 characters per collection, with at most 4,096 characters per chunk. The one-shot loop also publishes tool lifecycle events immediately for opted-in turns. Without the flag, collection and one-shot event timing stay unchanged.
+
 Compatibility detail: release 0.19.37 already broadcasts generic `tool_progress` session events. That legacy traffic remains unchanged for connections that do not negotiate the new capability. The new opt-in rules apply to the negotiated prompt stream. Removing the legacy broadcast would violate the task's old-client compatibility requirement.
 
 ## C3: filesystem changes

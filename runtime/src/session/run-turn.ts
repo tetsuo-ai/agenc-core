@@ -1,3 +1,4 @@
+import { withLiveShellProgress } from "./live-shell-progress.js";
 import { beginWorkspaceChanges, type WorkspaceChangeCheckpoint } from "./workspace-changes.js";
 import { TurnUsageCollector } from "./turn-usage.js";
 import { leanEditMode, resolveLightRequest } from "./light-request/settings.js";
@@ -353,6 +354,7 @@ import { taskBudgetOf, continueInteractiveTaskBudget, interactiveTaskBudget } fr
 import { StepLimitTrail, stepLimitReminder, stepLimitWrapup, STEP_LIMIT_WRAPUP_INSTRUCTION } from "./step-limit-wrapup.js";
 
 export interface RunTurnOptions {
+  readonly includeToolProgress?: boolean;
   readonly turnChanges?: { readonly includeDiff?: boolean };
   /**
    * Read at each provider failure, with that failure. True while a live child
@@ -2194,7 +2196,21 @@ function restoreModelSampleResumePrompt(state: TurnState): void {
  * so bin/agenc.ts renders without a rewrite. Returns the terminal
  * reason as the generator return value.
  */
-export async function* runTurnKernel(
+export function runTurnKernel(
+  session: Session, ctx: TurnContext, userMessage: string | readonly LLMContentPart[], opts: RunTurnOptions = {},
+): AsyncGenerator<PhaseEvent, Terminal> {
+  const iterator = runTurnKernelScoped(session, ctx, userMessage, opts);
+  const run = <T>(task: () => T): T => withLiveShellProgress(opts.includeToolProgress === true, task);
+  return {
+    next: (...args) => run(() => iterator.next(...args)),
+    return: value => run(() => iterator.return(value)),
+    throw: error => run(() => iterator.throw(error)),
+    [Symbol.asyncIterator]() { return this; },
+    [Symbol.asyncDispose]: () => run(() => iterator[Symbol.asyncDispose]()),
+  };
+}
+
+async function* runTurnKernelScoped(
   session: Session,
   ctx: TurnContext,
   userMessage: string | readonly LLMContentPart[],
@@ -4712,6 +4728,7 @@ export function runTurn(
       opts?: {
         ctx?: TurnContext;
         turnChanges?: RunTurnOptions["turnChanges"];
+        includeToolProgress?: boolean;
         exactOutput?: boolean;
         stepLimitWrapup?: RunTurnOptions["stepLimitWrapup"];
         childRoutingOwnsRetries?: (error: unknown) => boolean;
@@ -4736,6 +4753,7 @@ export function runTurn(
   if (typeof sessionOwner.runTurn === "function") {
     return sessionOwner.runTurn(userMessage, {
       ctx,
+      ...(opts.includeToolProgress === true ? { includeToolProgress: true } : {}),
       ...(opts.turnChanges !== undefined ? { turnChanges: opts.turnChanges } : {}),
       exactOutput: opts.exactOutput,
       stepLimitWrapup: opts.stepLimitWrapup,

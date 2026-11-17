@@ -302,6 +302,7 @@ export interface AgenCBackgroundAgentSessionEventBinding {
 }
 
 export interface AgenCBackgroundAgentMessageParams {
+  readonly includeToolProgress?: boolean;
   readonly turnChanges?: { readonly includeDiff?: boolean };
   readonly exactOutput?: boolean;
   /** Settings of the skill the user started this turn with (`message.stream`). */
