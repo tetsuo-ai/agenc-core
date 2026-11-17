@@ -61,6 +61,19 @@ describe("C3 read-only workspace checkpoints", () => {
       expect(await checkpoint.finish("t")).toMatchObject({ diffTruncated: true, diff: "", files: [{ path: "a", added: 1, removed: 1 }] });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+  it("marks binary files and preserves a missing final newline", async () => {
+    const root = await mkdtemp(join(tmpdir(), "timeline-binary-"));
+    try {
+      await writeFile(join(root, "a.txt"), "before");
+      await writeFile(join(root, "b.bin"), Buffer.from([0, 1]));
+      const checkpoint = await beginWorkspaceChanges(root, true);
+      await writeFile(join(root, "a.txt"), "after");
+      await writeFile(join(root, "b.bin"), Buffer.from([0, 2]));
+      const result = await checkpoint.finish("t");
+      expect(result.files[1]).toEqual({ path: "b.bin", op: "modified", added: 0, removed: 0, binary: true });
+      expect(applyPatch("before", result.diff!)).toBe("after");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it.each([false, true])("negotiates checkpoints for opted-in=%s clients", async enabled => {
     const sent: any[] = [], submissions: any[] = [];
     let connection: any;

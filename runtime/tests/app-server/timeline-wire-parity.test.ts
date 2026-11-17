@@ -82,5 +82,9 @@ it("preserves DeepSeek bytes through a tool round and a second user turn", async
   const old = await run(false), modern = await run(true);
   expect(modern).toEqual(old);
   expect(old.length).toBe(3);
-  console.log("TIMELINE_MULTITURN_SHA256", old.map(body => createHash("sha256").update(body).digest("hex")).join(","));
+  expect(old.map(body => createHash("sha256").update(body).digest("hex"))).toEqual([
+    "4888ac65a07dd83f3e7b84768bd3c45edfe34f4ebe2c67e216270888cf0f88c5",
+    "9843ba1a022fd752d741f00ca659cf607cc1b69aba7ce5c943badaa89a8a4546",
+    "dbcde16a3a4b69cae3d0fd606ae5b00658996e1e5fc821d93fa554570e791434",
+  ]);
 });

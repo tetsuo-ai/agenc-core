@@ -2312,7 +2312,7 @@ export async function* runTurnKernel(
         payload: {
           turnId: ctx.subId,
           lastAgentMessage: content,
-          usage: turnUsage?.snapshot(),
+          usage: opts.resume === undefined ? turnUsage?.snapshot() : {},
           completedAt: Date.now(),
           durationMs: Date.now() - turnStartedAt,
           usableFinalAnswer: content.trim().length > 0,

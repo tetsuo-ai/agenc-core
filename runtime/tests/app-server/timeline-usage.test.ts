@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { isCanonicalEventPayload } from "../../src/state/recovery-journal-schema.js";
 import { TurnUsageCollector } from "../../src/session/turn-usage.js";
 import { AgenCDaemonJsonRpcDispatcher } from "../../src/app-server/daemon-dispatcher.js";
 import { AGENC_DAEMON_PROTOCOL_VERSION } from "../../src/app-server/protocol/index.js";
@@ -16,6 +17,14 @@ describe("C1 turn usage", () => {
     summary = { ...summary, hasUnknownCost: true, costUsd: 8, billedEstimateUsd: undefined };
     expect(collector.snapshot()).not.toHaveProperty("costUsd");
     expect(collector.snapshot()).not.toHaveProperty("billedEstimateUsd");
+  });
+  it("omits partially reported counters and tolerates unavailable accounting", () => {
+    const collector = new TurnUsageCollector(() => { throw new Error("unavailable"); });
+    collector.observe({ id: "a", msg: { type: "token_count", payload: { promptTokens: 4, completionTokens: 2, cachedInputTokens: 1 } } });
+    collector.observe({ id: "b", msg: { type: "token_count", payload: { promptTokens: 6, completionTokens: 3 } } });
+    expect(collector.snapshot()).toEqual({ input: 10, output: 5 });
+    expect(isCanonicalEventPayload("turn_complete", { turnId: "t", usage: collector.snapshot() })).toBe(true);
+    expect(isCanonicalEventPayload("turn_complete", { turnId: "t", usage: { costUsd: -1 } })).toBe(false);
   });
   it.each([false, true])("delivers usage only to opted-in=%s clients", async enabled => {
     const sent: any[] = [];

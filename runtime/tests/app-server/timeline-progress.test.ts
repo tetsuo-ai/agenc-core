@@ -14,6 +14,15 @@ describe("C6 prompt shell progress", () => {
     });
     expect(gate.project(progress())).toBeNull();
   });
+  it("keeps a capable connection quiet without a prompt flag", async () => {
+    const sent: unknown[] = [];
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: {} as never });
+    const connection = dispatcher.createConnection({ sendNotification: message => { sent.push(message); } });
+    await connection.dispatch({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION }, capabilities: { "tool.progress.shell.v1": true } } });
+    await connection.sendNotification!(progress());
+    expect(sent).toEqual([]);
+    await connection.close();
+  });
   it.each([false, true])("forwards during opted-in=%s prompt only", async enabled => {
     const sent: any[] = [];
     let connection: any;
