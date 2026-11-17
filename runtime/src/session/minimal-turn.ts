@@ -85,8 +85,9 @@ export async function* runMinimalTurn(
   let handoff = false;
   let modelCalls = 0;
   const observations: EventMsg[] = [];
+  const liveProgress = liveShellProgressEnabled();
   const observe = (msg: EventMsg): void => {
-    if (liveShellProgressEnabled() && ["tool_call_started", "tool_progress", "tool_call_completed"].includes(msg.type)) {
+    if (liveProgress && ["tool_call_started", "tool_progress", "tool_call_completed"].includes(msg.type)) {
       session.emit({ id: session.nextInternalSubId(), msg });
     } else observations.push(msg);
   };

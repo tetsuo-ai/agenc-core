@@ -56,8 +56,10 @@ describe("C3 read-only workspace checkpoints", () => {
     const root = await mkdtemp(join(tmpdir(), "timeline-limits-"));
     try {
       await writeFile(join(root, "a"), "a".repeat(80000));
+      turnDiffCache.put("diff-limits", "skipped", [{ path: "a", diff: "previous" }]);
       const small = await beginWorkspaceChanges(root, true, { bytes: 1 });
-      expect(await small.finish("t")).toMatchObject({ skipped: true, files: [], note: "workspace size limit" });
+      expect(await small.finish("skipped", "diff-limits")).toMatchObject({ skipped: true, files: [], note: "workspace size limit" });
+      expect(turnDiffCache.read("diff-limits", "skipped", "a").unavailable).toBe(true);
       const checkpoint = await beginWorkspaceChanges(root, true);
       await writeFile(join(root, "a"), "b".repeat(80000));
       expect(await checkpoint.finish("large", "diff-limits")).toMatchObject({ diffTruncated: true, diff: "", files: [{ path: "a", added: 1, removed: 1 }] });

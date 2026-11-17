@@ -152,7 +152,9 @@ All tests run offline, one file at a time at nice 19. Runtime typechecking uses 
 
 New tests: `timeline-failure`, `timeline-usage`, `timeline-transcript-v3`, `timeline-plans`, `timeline-progress`, `timeline-changes` and `timeline-wire-parity`, under `runtime/tests/app-server/`. They exercise both old and new protocol clients for every capability. The workspace tests cover shell writes, non-Git folders, applicable patches, Git HEAD/index preservation, exclusions and caps.
 
-Existing checks passed: transcript-v2 contract, turn-terminal contract, run-turn usage propagation, workflow turn boundaries, SDK protocol drift, and generated SDK type parity.
+The follow-up validation passes 146 tests across 15 selected files. The checks cover timed real commands through both turn loops, with opt-in off and on; removal of the TodoWrite mirror; per-file cache isolation, bounds and reads; and serialized-rollout reopening with recorded usage and diff-free changes. The wire fixture enables live progress as well as checkpoints.
+
+Existing checks passed: transcript-v2 contract, turn-terminal contract, run-turn usage propagation, workflow turn boundaries, one-shot turns, command collection, SDK transcript contracts, SDK protocol drift, and generated SDK type parity.
 
 The offline wire fixture was also run against a source archive of release `e22b6bee82e9`. All four DeepSeek request hashes match. Raw requests also match with timeline options off and on, including a tool result and a second user turn. No serialized request is normalized before comparison.
 
@@ -166,7 +168,7 @@ The offline wire fixture was also run against a source archive of release `e22b6
 ## Desktop decisions
 
 - Enable the live capabilities on the existing per-session connection. Request v3 only when advertised.
-- Read completion usage from the nested turn event. Keep the current estimated fallback when fields are absent, including resumed turns. Keep billed estimates labelled as estimates.
+- Read live completion usage from the nested turn event and reopened usage from `turns[].usage`. Keep the current estimated fallback when fields are absent or marked missing, including resumed turns. Keep billed estimates labelled as estimates.
 - Treat plan prose and structured to-do lists as separate optional state. Decide whether to show both or prefer one card.
-- Show truncation and skipped-checkpoint notes. Decide whether to request diffs for every turn or only when a diff surface is enabled before submission.
+- Show truncation and skipped-checkpoint notes. Use `turnChanges: {}` and `session.turn.diff` for on-demand patches when `turn.diff.read.v1` is advertised. Keep `includeDiff: true` as the fallback for earlier capable Core versions.
 - Keep legacy progress mapping for old daemons. Negotiated progress requires both the connection capability and prompt flag.

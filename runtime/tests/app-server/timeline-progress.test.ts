@@ -1,3 +1,5 @@
+import { runTurn } from "../../src/session/run-turn.js";
+import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 import { UnifiedExecProcessManager, ProcessOutputBuffer } from "../../src/unified-exec/process-manager.js";
 import { withLiveShellProgress } from "../../src/session/live-shell-progress.js";
 import { describe, expect, it } from "vitest";
@@ -73,4 +75,35 @@ it("live buffer subscription does not consume output and cleans up", () => {
   buffer.append("stdout", "after");
   expect(chunks).toEqual(["before", "during"]);
   expect(buffer.drain().map(event => event.chunk)).toEqual(["before", "during", "after"]);
+});
+
+it.each([[false, false], [true, false], [false, true], [true, true]])("carries live opt-in=%s through a real turn and command, one-shot=%s", async (enabled, fast) => {
+  const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+  let commandEndedAt = 0;
+  let usedMinimalDispatch = false;
+  const tool = { name: "exec_command", description: "Run fixture command", requiresApproval: false, isReadOnly: true,
+    inputSchema: { type: "object", properties: {} }, execute: async (args: any) => {
+      const result = await manager.execCommand({ cmd: "printf 'first\\n'; sleep 0.4; printf 'second\\n'; sleep 0.4", yield_time_ms: 5000, __onProgress: args.__onProgress });
+      commandEndedAt = Date.now();
+      return { content: result.stdout };
+    } };
+  const registry: any = { tools: [tool], toLLMTools: () => [{ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }],
+    dispatch: (call: any, options: any) => {
+      usedMinimalDispatch = options?.prepareArguments !== undefined;
+      return tool.execute(options?.prepareArguments ? options.prepareArguments(JSON.parse(call.arguments), tool) : JSON.parse(call.arguments));
+    } };
+  let modelCalls = 0;
+  const provider = mkProvider();
+  provider.chatStream = async () => ({ content: modelCalls ? "Done" : "", toolCalls: modelCalls++ ? [] : [{ id: "command", name: "exec_command", arguments: "{}" }], finishReason: modelCalls === 1 ? "tool_calls" : "stop", model: "test-model", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } });
+  const { session } = mkSession({ provider, registry, cwd: process.cwd(), ...(fast ? { services: { runtimeOptions: { dangerouslyBypassApprovalsAndSandbox: true, nonInteractive: true, relaxedOneShot: true } as any } } : {}) });
+  const progress: { at: number; text: string }[] = [];
+  session.eventLog.subscribe(event => { if (event.msg.type === "tool_progress") progress.push({ at: Date.now(), text: event.msg.payload.chunk }); });
+  try {
+    await drain(runTurn(session, mkCtx({ cwd: process.cwd(), permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" } }), "Run the command", enabled ? { includeToolProgress: true } : {}));
+    expect(progress.map(event => event.text).join("")).toBe("first\nsecond\n");
+    expect(commandEndedAt).toBeGreaterThan(0);
+    expect(usedMinimalDispatch).toBe(fast);
+    if (enabled) expect(progress[0]!.at).toBeLessThan(commandEndedAt - 500);
+    else expect(progress[0]!.at).toBeGreaterThanOrEqual(commandEndedAt - 100);
+  } finally { await manager.closeAll("test_cleanup"); }
 });

@@ -147,7 +147,10 @@ export async function beginWorkspaceChanges(root: string, includeDiff: boolean, 
   return {
     dispose,
     async finish(turnId, runId) {
-      if (failure || !worker) return { turnId, from: "checkpoint", ...(failure ?? skip("workspace snapshot unavailable")) };
+      if (failure || !worker) {
+        if (runId !== undefined) turnDiffCache.put(runId, turnId, []);
+        return { turnId, from: "checkpoint", ...(failure ?? skip("workspace snapshot unavailable")) };
+      }
       const result = receive();
       worker.postMessage("finish");
       const { fileDiffs = [], ...changes } = await result;

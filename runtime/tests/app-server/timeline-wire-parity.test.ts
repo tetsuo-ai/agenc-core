@@ -23,7 +23,7 @@ it("keeps DeepSeek request bytes identical with every timeline observer enabled"
         return { content: "Finished fixture work.", toolCalls: [], usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110, cachedInputTokens: 20, reasoningOutputTokens: 2 }, model: "deepseek-flash", finishReason: "stop" };
       };
       const { session, events } = mkSession({ cwd, provider });
-      await drain(runTurn(session, mkCtx({ cwd }), "Reply with a short answer.", { ...(enabled ? { turnChanges: { includeDiff: true } } : {}) }));
+      await drain(runTurn(session, mkCtx({ cwd }), "Reply with a short answer.", { ...(enabled ? { includeToolProgress: true, turnChanges: { includeDiff: true } } : {}) }));
       return { bodies, events };
     };
     const old = await run(false), modern = await run(true);
@@ -52,7 +52,7 @@ it("pins portable DeepSeek provider request bytes against the release fixture", 
       return { content: "Fixture answer.", toolCalls: [], usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 }, model: "deepseek-flash", finishReason: "stop" };
     };
     const { session } = mkSession({ cwd: "/workspace/timeline-fixture", provider });
-    await drain(runTurn(session, mkCtx({ cwd: "/workspace/timeline-fixture" }), "Reply with a short answer.", { ...(enabled ? { turnChanges: {} } : {}) }));
+    await drain(runTurn(session, mkCtx({ cwd: "/workspace/timeline-fixture" }), "Reply with a short answer.", { ...(enabled ? { includeToolProgress: true, turnChanges: {} } : {}) }));
     return bodies;
   };
   const old = await run(false), modern = await run(true);
@@ -73,7 +73,7 @@ it("preserves DeepSeek bytes through a tool round and a second user turn", async
       return { content: first ? "" : "Fixture answer.", toolCalls: first ? [{ id: "fixture-call", name: "fixture_read", arguments: "{}" }] : [], usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 }, model: "deepseek-flash", finishReason: first ? "tool_calls" : "stop" };
     };
     const { session, events } = mkSession({ cwd: "/workspace/timeline-fixture", provider, registry });
-    const opts = enabled ? { turnChanges: {} } : {};
+    const opts = enabled ? { includeToolProgress: true, turnChanges: {} } : {};
     await drain(runTurn(session, mkCtx({ cwd: "/workspace/timeline-fixture" }), "Read the fixture.", opts));
     await drain(runTurn(session, mkCtx({ cwd: "/workspace/timeline-fixture", subId: "turn-second" }), "Reply again.", opts));
     expect(events.filter(event => event.msg.type === "tool_call_completed").map(event => event.msg)).toContainEqual(expect.objectContaining({ payload: expect.objectContaining({ isError: false }) }));
