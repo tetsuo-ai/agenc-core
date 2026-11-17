@@ -149,6 +149,7 @@ export interface TurnStartedEvent {
 }
 
 export interface TurnCompleteEvent {
+  readonly usage?: import("./turn-usage.js").TurnUsage;
   readonly usableFinalAnswer?: boolean;
   readonly turnId: string;
   /** Agent-assignment correlation id, when this is a reusable worker turn. */

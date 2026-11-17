@@ -1,3 +1,4 @@
+import { TurnUsageCollector } from "./turn-usage.js";
 import { leanEditMode, resolveLightRequest } from "./light-request/settings.js";
 import { announceLightRequest } from "./light-request/notice.js";
 import { editThenRunCommand, editThenRunEnabled } from "../tools/edit-then-run.js";
@@ -2207,6 +2208,7 @@ export async function* runTurnKernel(
   // recovery in rollout-reconstruction would treat every clean turn
   // as a `process_killed` abort.
   const turnStartedAt = Date.now();
+  let turnUsage: TurnUsageCollector | undefined;
   let turnStarted = false;
   let terminalAttempted = false;
   let usableFinalAnswer = false;
@@ -2291,6 +2293,7 @@ export async function* runTurnKernel(
         payload: {
           turnId: ctx.subId,
           lastAgentMessage: content,
+          usage: turnUsage?.snapshot(),
           completedAt: Date.now(),
           durationMs: Date.now() - turnStartedAt,
           usableFinalAnswer: content.trim().length > 0,
@@ -2420,6 +2423,10 @@ export async function* runTurnKernel(
   // release below flush them.
   const releaseTurnDurability = session.rolloutStore?.deferSyncsForTurn?.();
 
+  const admissionUsage = session.services.executionAdmission;
+  turnUsage = new TurnUsageCollector(admissionUsage?.getDirectUsageSummary?.bind(admissionUsage));
+  const unsubscribeTurnUsage = session.eventLog.subscribe(event => turnUsage?.observe(event));
+  signalCleanups.push(unsubscribeTurnUsage);
   try {
     return yield* runTurnKernelInner(
       session,
