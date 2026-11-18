@@ -718,7 +718,16 @@ function writableRootsAllow(
   if (reserved.length > 0) {
     // One fresh physical target for this decision, checked against every
     // reservation. Never retain this observation across permission checks.
-    const physicalTarget = canonicalAuthorityPath(path.resolve(cwd, target));
+    let physicalTarget: string;
+    try {
+      physicalTarget = canonicalAuthorityPath(path.resolve(cwd, target));
+    } catch (error) {
+      // A path through a regular file (a name below a write grant on one
+      // file) can never be written. Asking about one used to throw, and
+      // with it every spawn whose profile granted an existing file.
+      if ((error as NodeJS.ErrnoException).code === "ENOTDIR") return false;
+      throw error;
+    }
     if (reserved.some((root) => isWithinAuthorityPath(physicalTarget, root))) return false;
   }
   return canWriteAccess(
