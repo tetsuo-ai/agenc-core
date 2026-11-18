@@ -76,6 +76,7 @@ import { canonicalAuthorityPath } from "../sandbox/desktop-authority-protection.
 import { readBoundedRegularFileSync } from "../utils/bounded-regular-file.js";
 import {
   hardenGitWorktreeMutationArgs,
+  linkedWorktreePointerPaths,
   worktreeCheckoutPermissions,
   worktreeMutationPermissions,
   resolveGitMetadataRoot,
@@ -457,7 +458,7 @@ export async function getOrCreateWorktree(
       opts.gitRoot,
       opts.sandboxExecutionBroker,
       opts.gitRoot,
-      [workspaceRoot],
+      [workspaceRoot, ...linkedWorktreePointerPaths(path)],
     );
     if (addResult.code !== 0) {
       throw new Error(
@@ -473,7 +474,7 @@ export async function getOrCreateWorktree(
         opts.gitRoot,
         opts.sandboxExecutionBroker,
         opts.gitRoot,
-        [workspaceRoot],
+        [workspaceRoot, ...linkedWorktreePointerPaths(path)],
       );
       throw new Error(message);
     };
@@ -972,6 +973,7 @@ export async function removeAgentWorktree(
       opts.gitRoot,
       opts.sandboxExecutionBroker,
       opts.gitRoot,
+      linkedWorktreePointerPaths(opts.path),
     );
     if (remove.code !== 0) {
       throw new Error(
@@ -1093,6 +1095,8 @@ function assertWorktreeRemovalBoundary(opts: RemoveWorktreeOpts): void {
   }
   // No extra target/parent grant is added. Binding the deletion target itself
   // makes rmdir fail with EBUSY after Git has already removed files/metadata.
+  // macOS alone also names the target's own `.git` pointer for the remove (see
+  // linkedWorktreePointerPaths); seatbelt binds nothing.
 }
 
 // ─────────────────────────────────────────────────────────────────────
