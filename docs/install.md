@@ -103,11 +103,17 @@ ceiling made any link under about 1 MiB/s unable to finish a ~120 MiB runtime.
 | Official runtime artifact ceiling (`MAX_ARTIFACT_BYTES` = 256 MiB) | about 34 minutes at the 128 KiB/s floor |
 | Stall (no delivered bytes) | 60s abort, independent of the total budget |
 
-The Windows Node bootstrap uses the same sized formula against the pinned
-Node distro byte count. Unix Node bootstrap still uses the trusted OS `curl`
-before `fetch_to` exists. Test-only `AGENC_INSTALL_TEST_*` overrides may
-shorten a deadline; they cannot extend it. A byzantine server stays bounded
-by the declared size at that minimum sustained rate.
+The Node bootstrap downloads use the same sized formula against their pinned
+byte counts. On Windows that is the Node distribution. On macOS and Linux it is
+the Node distribution plus, on Linux, the libatomic compatibility payload,
+fetched with the trusted OS `curl` before `fetch_to` exists. curl gives up when
+less than 1 byte per second arrives for 60s, or when connecting and the TLS
+handshake take 60s. The 58 MB macOS arm64 Node archive gets 476s, and the
+26 KB payload keeps 120s. Up to 0.19.38 these two curl downloads had a fixed
+120s total, which failed on links under about 4 Mbit/s while bytes were still
+arriving. Test-only `AGENC_INSTALL_TEST_*` overrides may shorten a deadline;
+they cannot extend it. A byzantine server stays bounded by the declared size
+at that minimum sustained rate.
 
 `download deadline exceeded after …ms` is a slow or stalled link, not a
 corrupt artifact. Retry; a hash mismatch is a different failure.
