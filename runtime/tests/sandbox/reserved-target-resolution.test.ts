@@ -59,6 +59,18 @@ describe.each(checks)("fresh reserved target for $name writes", ({ check }) => {
     expect(check(p, "leaf", denied, root)).toBe(false);
   });
 
+  it("denies a target below a regular file instead of throwing", () => {
+    // A write grant on one existing file (a linked worktree's `.git` pointer
+    // during its removal) makes the file a writable root, and the profile
+    // then asks about names below it. That threw ENOTDIR and refused the spawn.
+    const file = path.join(root, "pointer");
+    fs.writeFileSync(file, "gitdir: elsewhere\n");
+    const p = policy([path.join(root, "reservation")]);
+    expect(check(p, path.join(file, ".git"), root, root)).toBe(false);
+    expect(check(p, "pointer/new/leaf", root, root)).toBe(false);
+    expect(check(p, file, root, root)).toBe(true);
+  });
+
   it.each(["EACCES", "ELOOP"])("propagates %s instead of allowing an unresolved target", code => {
     const error = Object.assign(new Error("resolution failed"), { code });
     vi.spyOn(authority, "canonicalAuthorityPath").mockImplementation(() => { throw error; });

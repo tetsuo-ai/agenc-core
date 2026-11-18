@@ -1,5 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +29,12 @@ import type {
   RunStepIdentity,
 } from "../../src/contracts/run-contracts.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
+import { itOnDarwin } from "../helpers/platform-registration.js";
+import {
+  SandboxExecutionBroker,
+  type SandboxExecutionBrokerLike,
+} from "../../src/sandbox/execution-broker.js";
+import { runSupervisedProcess } from "../../src/utils/supervisedProcess.js";
 
 const broker = explicitDangerBroker;
 
@@ -299,4 +313,102 @@ describe("M5 worktree lifecycle", () => {
       git(repo, "show", `${workflowRunRef(spec.runId)}:delivered.txt`),
     ).toContain("the change");
   });
+
+  /**
+   * One sandboxed shell command on the surface model commands use. Each probe
+   * prints whether it wrote: the pointer `$1`, a nested `.git` under `$2`,
+   * and the ordinary file `$3`.
+   */
+  async function modelCommandWrites(
+    commandBroker: SandboxExecutionBrokerLike,
+    cwd: string,
+    pointer: string,
+    nestedDir: string,
+    file: string,
+  ): Promise<string> {
+    const script = [
+      `if printf 'gitdir: /tmp/planted\\n' > "$1"; then echo pointer:written; else echo pointer:refused; fi`,
+      `mkdir -p "$2"`,
+      `if printf 'gitdir: /tmp/planted\\n' > "$2/.git"; then echo nested:written; else echo nested:refused; fi`,
+      `if printf 'export const edited = true;\\n' >> "$3"; then echo file:written; else echo file:refused; fi`,
+    ].join("\n");
+    const command = commandBroker.prepareSpawn("tool", {
+      program: "/bin/sh",
+      args: ["-c", script, "sh", pointer, nestedDir, file],
+      cwd,
+      env: { PATH: "/usr/bin:/bin" },
+    });
+    const result = await runSupervisedProcess(command, {
+      timeoutMs: 20_000,
+      maxOutputBytes: 64 * 1024,
+    });
+    return result.stdout.toString("utf8");
+  }
+
+  // Since the macOS profile refused every nested `.git`, `git worktree add`
+  // died on the new worktree's own pointer and no Goal run got past its
+  // worktree step on a Mac. Core's own git now names that one file; a
+  // command the model runs still cannot write any `.git`.
+  itOnDarwin("provisions, exports and removes a Goal worktree under the real macOS sandbox", async () => {
+    const root = realpathSync(tempWork());
+    const repo = join(root, "repo");
+    const base = initRepo(repo);
+    const sessionTemp = join(root, "session-tmp");
+    mkdirSync(sessionTemp);
+    const sandboxed = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: repo,
+      sessionTempRoot: sessionTemp,
+      env: { ...process.env, AGENC_HOME: join(root, "agenc-home") },
+    });
+    expect(sandboxed.status()).toMatchObject({
+      kind: "ready",
+      isolationProgram: "/usr/bin/sandbox-exec",
+    });
+    const spec = { runId: "wf-seatbelt0001", repoPath: repo, baseCommit: base };
+
+    const handle = await provisionWorkflowWorktree(spec, sandboxed);
+    expect(handle.created).toBe(true);
+    expect(readFileSync(join(handle.path, "src", "index.ts"), "utf8"))
+      .toBe("export const answer = 41;\n");
+    const pointer = join(handle.path, ".git");
+    const pointerBytes = readFileSync(pointer, "utf8");
+    expect(pointerBytes).toMatch(/^gitdir: /u);
+
+    // The model's commands, from the checkout and from inside the worktree.
+    expect(await modelCommandWrites(
+      sandboxed, repo, pointer, join(repo, "nested"), join(repo, "README.md"),
+    )).toBe("pointer:refused\nnested:refused\nfile:written\n");
+    const confined = sandboxed.forkForCwd(handle.path, {
+      worktreeConfinement: { worktree: handle.path, checkout: repo },
+    });
+    expect(await modelCommandWrites(
+      confined, handle.path, pointer, join(handle.path, "nested"),
+      join(handle.path, "src", "index.ts"),
+    )).toBe("pointer:refused\nnested:refused\nfile:written\n");
+    expect(readFileSync(pointer, "utf8")).toBe(pointerBytes);
+    expect(existsSync(join(repo, "nested", ".git"))).toBe(false);
+    expect(existsSync(join(handle.path, "nested", ".git"))).toBe(false);
+
+    const exported = await exportPatchArtifacts({
+      handle, baseCommit: base, step: STEP, sink: new MemorySink(), broker: sandboxed,
+    });
+    expect(new TextDecoder().decode(exported.patchBytes)).toContain("+export const edited = true;");
+
+    const warnings: string[] = [];
+    await cleanupAfterEvidence({
+      proof: mintSealedEvidenceProof({
+        runId: spec.runId,
+        sealDigest: `sha256:${"f".repeat(64)}`,
+      }),
+      handle,
+      headCommit: exported.headCommit,
+      broker: sandboxed,
+      warn: (message) => warnings.push(message),
+    });
+    expect(warnings).toEqual([]);
+    expect(existsSync(handle.path)).toBe(false);
+    expect(git(repo, "branch", "--list", handle.branch).trim()).toBe("");
+    expect(git(repo, "rev-parse", workflowRunRef(spec.runId)).trim()).toBe(exported.headCommit);
+  }, 60_000);
 });
