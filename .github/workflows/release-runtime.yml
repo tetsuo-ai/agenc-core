@@ -132,25 +132,21 @@ jobs:
           import re
           import urllib.request
 
+          from scripts.release_candidate_policy import require_public_escrow_repository
+
           repository = os.environ["GITHUB_REPOSITORY"]
           run_id = int(os.environ["CANDIDATE_RUN_ID"])
           tested_sha = os.environ["TESTED_SHA"]
           token = os.environ["GITHUB_TOKEN"]
           api_root = f"https://api.github.com/repos/{repository}"
 
-          def get(
-              path,
-              api_root=api_root,
-              api_version="2022-11-28",
-              authenticated=True,
-          ):
+          def get(path, api_root=api_root, api_version="2022-11-28"):
               headers = {
                   "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {token}",
                   "User-Agent": "agenc-release-candidate-verifier",
                   "X-GitHub-Api-Version": api_version,
               }
-              if authenticated:
-                  headers["Authorization"] = f"Bearer {token}"
               request = urllib.request.Request(
                   f"{api_root}{path}",
                   headers=headers,
@@ -230,11 +226,12 @@ jobs:
           release_api_root = (
               f"https://api.github.com/repos/{release_repository}"
           )
+          escrow_repository = get("", api_root=release_api_root, api_version="2026-03-10")
+          require_public_escrow_repository(escrow_repository)
           candidate_release = get(
               f"/releases/tags/{candidate_tag}",
               api_root=release_api_root,
               api_version="2026-03-10",
-              authenticated=False,
           )
           expected_release = {
               "tag_name": candidate_tag,

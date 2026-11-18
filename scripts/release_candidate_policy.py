@@ -90,6 +90,11 @@ def _fail(message: str) -> None:
     raise CandidatePolicyError(message)
 
 
+def require_public_escrow_repository(repository: Mapping[str, Any]) -> None:
+    if repository.get("visibility") != "public" or repository.get("private") is not False:
+        _fail("candidate escrow repository must report visibility=public and private=false")
+
+
 def _require_fullmatch(pattern: re.Pattern[str], value: str, label: str) -> str:
     if not isinstance(value, str) or pattern.fullmatch(value) is None:
         _fail(f"{label} is not canonical")

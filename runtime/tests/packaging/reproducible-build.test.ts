@@ -1708,7 +1708,17 @@ describe("reproducible install and release contract", () => {
     expect(releaseSource).toContain(
       'release_repository = "tetsuo-ai/agenc-releases"',
     );
-    expect(releaseSource).toContain('api_version="2026-03-10"');
+    expect(releaseSource).toContain("GITHUB_TOKEN: ${{ github.token }}");
+    expect(releaseSource).toContain('"Authorization": f"Bearer {token}"');
+    expect(releaseSource).toContain(
+      'escrow_repository = get("", api_root=release_api_root, api_version="2026-03-10")',
+    );
+    expect(releaseSource).toContain(
+      "require_public_escrow_repository(escrow_repository)",
+    );
+    expect(releaseSource).toMatch(
+      /candidate_release = get\(\s*f"\/releases\/tags\/\{candidate_tag\}",\s*api_root=release_api_root,\s*api_version="2026-03-10",\s*\)/u,
+    );
     expect(releaseSource).toContain('"immutable": True');
     expect(releaseSource).toContain('"draft": False');
     expect(releaseSource).toContain('"prerelease": True');
@@ -1909,7 +1919,7 @@ describe("reproducible install and release contract", () => {
     );
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stderr).toContain("Ran 10 tests");
+    expect(result.stderr).toContain("Ran 12 tests");
     expect(result.stderr).toContain("OK");
   });
 

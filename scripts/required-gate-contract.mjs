@@ -179,10 +179,12 @@ export const REQUIRED_GATE_POLICY_PATHS = Object.freeze([
   "scripts/local-gatekeeper.test.mjs",
   "scripts/local-gate-ruleset.mjs",
   "scripts/local-gate-ruleset.test.mjs",
+  "scripts/release_candidate_policy.py",
   "scripts/required-gate-contract.mjs",
   "scripts/run-required-gates.mjs",
   "scripts/run-required-gates.test.mjs",
   "scripts/systemd-worker-sandbox.mjs",
+  "scripts/test_release_candidate_policy.py",
   "scripts/verify-required-gate-check.mjs",
 ]);
 
