@@ -253,13 +253,16 @@ test "$(git rev-parse refs/remotes/origin/main)" = "$tested_sha"
 After both candidate checkpoints pass and the tag is created, first dispatch
 only `release-runtime.yml` with `phase=tagged`, the successful
 `candidate_run_id`, and the same `tested_sha` and
-`local_evidence_sha256`. Tagged mode verifies the candidate run and immutable
-escrow API identity, downloads its five exact runtime artifacts plus its
-attested seal from that permanent public prerelease (never from Actions),
-preserves each
-authenticated branch-ref bundle as `<archive>.build.sigstore.json`, and creates
-a separate `<archive>.sigstore.json` tag-ref attestation over the same archive
-and metadata bytes without rebuilding on hosted native infrastructure.
+`local_evidence_sha256`. Tagged mode verifies the candidate run. It uses the
+workflow token to read the escrow repository and release metadata. The
+repository must report `visibility="public"` and `private=false`. The release
+at the derived tag must report `draft=false`, `prerelease=true`, and
+`immutable=true`. These reads use the authenticated API quota.
+Tagged mode downloads the five exact runtime artifacts and their attested seal
+from the public prerelease. It preserves each authenticated branch-ref bundle
+as `<archive>.build.sigstore.json`. It creates a separate
+`<archive>.sigstore.json` tag-ref attestation over the same archive and metadata
+bytes without rebuilding on hosted native infrastructure.
 Assemble those tagged promotion outputs and record `runtime-build-complete`;
 stage the matching cross-repository draft and record `release-draft-staged`;
 then publish and verify the immutable GitHub release and record

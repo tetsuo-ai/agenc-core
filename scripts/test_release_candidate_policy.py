@@ -14,6 +14,11 @@ import unittest
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+if __package__:
+    from . import release_candidate_policy as policy
+else:
+    import release_candidate_policy as policy
+
 
 SCRIPT = pathlib.Path(__file__).with_name("release_candidate_policy.py")
 REPOSITORY = "tetsuo-ai/agenc-core"
@@ -103,6 +108,24 @@ def _bundle(
         },
         "verificationMaterial": {},
     }
+
+
+class EscrowRepositoryTests(unittest.TestCase):
+    def test_accepts_public_repository(self) -> None:
+        policy.require_public_escrow_repository({"visibility": "public", "private": False})
+
+    def test_rejects_missing_or_conflicting_visibility(self) -> None:
+        for repository in (
+            {"private": False},
+            {"visibility": "internal", "private": False},
+            {"visibility": "private", "private": False},
+            {"visibility": "public"},
+            {"visibility": "public", "private": True},
+            {"visibility": "public", "private": 0},
+            {"visibility": "public", "private": "false"},
+        ):
+            with self.subTest(repository=repository), self.assertRaises(policy.CandidatePolicyError):
+                policy.require_public_escrow_repository(repository)
 
 
 class CandidatePolicyCliTests(unittest.TestCase):
