@@ -38,6 +38,7 @@ import {
   readdirSync,
   realpathSync,
   readFileSync,
+  rmdirSync,
   statSync,
   utimesSync,
   writeSync,
@@ -450,6 +451,22 @@ export async function getOrCreateWorktree(
       );
     }
 
+    // What this attempt finds in place is not its to clean up if it fails.
+    const failedAttempt: FailedRegistration = {
+      gitRoot: opts.gitRoot,
+      path,
+      workspaceRoot,
+      branch,
+      baseCommit,
+      branchExisted: await branchExists(
+        opts.gitRoot,
+        branch,
+        opts.sandboxExecutionBroker,
+      ),
+      workspaceRootExisted: pathEntryExists(workspaceRoot),
+      sandboxExecutionBroker: opts.sandboxExecutionBroker,
+    };
+
     // Register metadata without materializing repository content. Checkout is
     // a second, narrowly granted phase so a configured filter cannot write the
     // common .git directory with Git's inherited authority.
@@ -461,6 +478,7 @@ export async function getOrCreateWorktree(
       [workspaceRoot, ...linkedWorktreePointerPaths(path)],
     );
     if (addResult.code !== 0) {
+      await discardFailedRegistration(failedAttempt, false);
       throw new Error(
         `git worktree add failed: ${addResult.stderr.trim() || addResult.stdout.trim()}`,
       );
@@ -469,13 +487,7 @@ export async function getOrCreateWorktree(
 
     const checkoutPermissions = worktreeCheckoutPermissions(opts.gitRoot, path);
     const tearDownIncompleteWorktree = async (message: string): Promise<never> => {
-      await runGitMutation(
-        ["worktree", "remove", "--force", path],
-        opts.gitRoot,
-        opts.sandboxExecutionBroker,
-        opts.gitRoot,
-        [workspaceRoot, ...linkedWorktreePointerPaths(path)],
-      );
+      await discardFailedRegistration(failedAttempt, true);
       throw new Error(message);
     };
 
@@ -519,6 +531,99 @@ export async function getOrCreateWorktree(
 
     return { path, branch, gitRoot: opts.gitRoot, created: true };
   });
+}
+
+interface FailedRegistration {
+  readonly gitRoot: string;
+  readonly path: string;
+  readonly workspaceRoot: string;
+  readonly branch: string;
+  readonly baseCommit: string;
+  /** The branch was there before the attempt; `-B` only moved it. */
+  readonly branchExisted: boolean;
+  readonly workspaceRootExisted: boolean;
+  readonly sandboxExecutionBroker: SandboxExecutionBrokerLike;
+}
+
+/**
+ * Take back what a failed worktree registration left in the user's
+ * repository. `git worktree add -B` creates the branch before it registers
+ * the worktree, and the workspace folder on the way, so a registration that
+ * failed after that (every one on macOS while the sandbox refused the
+ * worktree's `.git` pointer) left a stray `worktree-<slug>` branch and an
+ * empty `.agenc-worktrees/` in the user's checkout.
+ *
+ * Only what the attempt made goes: a registered worktree through git, then
+ * the branch if it is new and still names the commit the attempt gave it,
+ * then the workspace folder if it is new and empty. While the worktree folder
+ * is still there the branch stays, as that worktree's HEAD. Best effort: the
+ * caller reports the failure that brought it here.
+ */
+async function discardFailedRegistration(
+  attempt: FailedRegistration,
+  registered: boolean,
+): Promise<void> {
+  try {
+    if (registered) {
+      await runGitMutation(
+        ["worktree", "remove", "--force", attempt.path],
+        attempt.gitRoot,
+        attempt.sandboxExecutionBroker,
+        attempt.gitRoot,
+        [attempt.workspaceRoot, ...linkedWorktreePointerPaths(attempt.path)],
+      );
+    }
+    // git removes the folder it made unless it was stopped partway.
+    removeEmptyDirectory(attempt.path);
+    if (pathEntryExists(attempt.path)) return;
+    if (!attempt.branchExisted) {
+      // Compare-and-delete: a branch moved since the attempt is not ours.
+      await runGitMutation(
+        ["update-ref", "-d", `refs/heads/${attempt.branch}`, attempt.baseCommit],
+        attempt.gitRoot,
+        attempt.sandboxExecutionBroker,
+        attempt.gitRoot,
+      );
+    }
+    if (!attempt.workspaceRootExisted) {
+      removeEmptyDirectory(attempt.workspaceRoot);
+    }
+  } catch {
+    // Leftovers are a nuisance; the registration failure is the error.
+  }
+}
+
+/** Whether `refs/heads/<branch>` exists. An unclear answer counts as yes. */
+async function branchExists(
+  gitRoot: string,
+  branch: string,
+  sandboxExecutionBroker: SandboxExecutionBrokerLike,
+): Promise<boolean> {
+  const result = await runGit(
+    ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+    gitRoot,
+    sandboxExecutionBroker,
+  );
+  return result.code !== 1;
+}
+
+/** Whether anything, a dangling link included, sits at `target`. */
+function pathEntryExists(target: string): boolean {
+  try {
+    lstatSync(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Remove `target` only when it is a real, empty directory. */
+function removeEmptyDirectory(target: string): void {
+  try {
+    if (lstatSync(target).isDirectory()) rmdirSync(target);
+  } catch {
+    // Absent or not empty: leave it.
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────

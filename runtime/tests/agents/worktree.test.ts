@@ -388,6 +388,82 @@ describe("getOrCreateWorktree", () => {
     );
     expect(existsSync(join(repo, ".agenc-worktrees", "agent-killed"))).toBe(false);
   });
+
+  /**
+   * Fail one phase of worktree creation. A failed registration does what git
+   * did on macOS before it died on the worktree's `.git` pointer: `-B` had
+   * made the branch and the workspace folder already.
+   */
+  function failingPhaseBroker(repo: string, phase: "registration" | "checkout") {
+    const broker = explicitDangerBroker.forkForCwd(repo);
+    const prepareSpawn = broker.prepareSpawn.bind(broker);
+    const failWith = (script: string) => ["-e", script];
+    vi.spyOn(broker, "prepareSpawn").mockImplementation((surface, command, options) => {
+      const args = command.args;
+      let replacement: string[] | undefined;
+      if (phase === "registration" && args.includes("add")) {
+        // [..., "worktree", "add", "--no-checkout", "-B", branch, path, commit]
+        const [branch, path, commit] = args.slice(-3);
+        replacement = failWith([
+          `require("node:child_process").execFileSync("git", ["branch", "-f", ${JSON.stringify(branch)}, ${JSON.stringify(commit)}], { cwd: ${JSON.stringify(repo)} });`,
+          `require("node:fs").mkdirSync(${JSON.stringify(join(path!, ".."))}, { recursive: true });`,
+          `process.stderr.write(${JSON.stringify(`fatal: could not open '${path}/.git' for writing: Operation not permitted\n`)});`,
+          "process.exit(128);",
+        ].join("\n"));
+      } else if (phase === "checkout" && args.includes("checkout")) {
+        replacement = failWith(`process.stderr.write("injected checkout failure"); process.exit(1);`);
+      }
+      return prepareSpawn(
+        surface,
+        replacement === undefined
+          ? command
+          : { ...command, program: process.execPath, argv0: process.execPath, args: replacement },
+        options,
+      );
+    });
+    return broker;
+  }
+
+  const branches = (repo: string) =>
+    execFileSync("git", ["branch", "--list", "worktree-*"], { cwd: repo, encoding: "utf8" }).trim();
+
+  it.each([
+    ["registration", /^git worktree add failed: fatal: could not open '.+\/\.git' for writing: Operation not permitted$/u],
+    ["checkout", /^git worktree checkout failed: injected checkout failure$/u],
+  ] as const)("takes back the branch and workspace folder a failed %s left", async (phase, error) => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const broker = failingPhaseBroker(repo, phase);
+
+    await expect(getOrCreateWorktreeUnbound({
+      gitRoot: repo,
+      slug: "m5-failed",
+      sandboxExecutionBroker: broker,
+    })).rejects.toThrow(error);
+
+    expect(branches(repo)).toBe("");
+    expect(existsSync(join(repo, ".agenc-worktrees"))).toBe(false);
+    expect(execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: repo, encoding: "utf8" }))
+      .not.toContain(".agenc-worktrees");
+  });
+
+  it.each(["registration", "checkout"] as const)("keeps a branch and workspace folder that were there before a failed %s", async (phase) => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    execFileSync("git", ["branch", "worktree-m5-failed"], { cwd: repo });
+    mkdirSync(join(repo, ".agenc-worktrees"));
+    const broker = failingPhaseBroker(repo, phase);
+
+    await expect(getOrCreateWorktreeUnbound({
+      gitRoot: repo,
+      slug: "m5-failed",
+      sandboxExecutionBroker: broker,
+    })).rejects.toThrow(/failed/u);
+
+    expect(branches(repo)).toBe("worktree-m5-failed");
+    expect(existsSync(join(repo, ".agenc-worktrees"))).toBe(true);
+    expect(existsSync(join(repo, ".agenc-worktrees", "m5-failed"))).toBe(false);
+  });
 });
 
 describe("removeAgentWorktree", () => {
