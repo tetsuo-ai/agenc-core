@@ -267,8 +267,8 @@ API-equivalent values are not subscription invoices.
   `apiEquivalentUsd` is what those plan calls would cost at API rates
   (reference only, not billed; `apiEquivalentUnknown` marks a plan call
   without a known price). `costKnown` is `false` when the model part is
-  incomplete (for example after a resume) or the tool charges could not be
-  read.
+  incomplete (for example a resumed session whose saved cost totals miss an
+  earlier run) or the tool charges could not be read.
 
 ### Examples
 

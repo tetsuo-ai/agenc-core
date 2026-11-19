@@ -12781,6 +12781,53 @@ describe("AgenC delegate background-agent runner", () => {
     });
   });
 
+  it("[managed-thread] reports a resumed session's whole cost once its restored totals cover the history", async () => {
+    // This process ran one call after the resume; the sidecar restored the
+    // saved totals of the calls before it.
+    const { runner, session, sessionState } = makeTopLevelRunner({
+      conversationId: "session-resumed-accounting",
+      totalTokenUsage: () => ({ inputTokens: 500, outputTokens: 20, totalTokens: 520 }),
+    });
+    type Totals = { inputTokens: number; outputTokens: number; totalTokens: number };
+    const getRestoredSessionTotals = vi.fn((): Totals | null => ({
+      inputTokens: 2_000, outputTokens: 100, totalTokens: 2_100,
+    }));
+    Object.assign(session.services, {
+      costSidecar: {
+        getTotalCostUsd: () => 0.25,
+        getSessionTotals: () => ({ inputTokens: 2_500, outputTokens: 120, totalTokens: 2_620 }),
+        getRestoredSessionTotals,
+        hasUnknownModelCost: () => false,
+      },
+    });
+    const state = sessionState as typeof sessionState & {
+      initialTokenUsage?: unknown;
+      resumedHistoryTokenUsage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+    };
+    state.initialTokenUsage = { promptTokens: 900, completionTokens: 40, totalTokens: 940 };
+    state.resumedHistoryTokenUsage = { promptTokens: 2_000, completionTokens: 100, totalTokens: 2_100 };
+    await runner.startAgent({ objective: "resume accounting", unattendedAllow: [], unattendedDeny: [] });
+    const tokenUsage = async () => (await runner.snapshotAgentSession(
+      "session-resumed-accounting",
+      { sessionId: "session-resumed-accounting" },
+    )).tokenUsage;
+
+    expect(await tokenUsage()).toEqual({
+      inputTokens: 2_500, outputTokens: 120, totalTokens: 2_620, costUsd: 0.25, costKnown: true,
+    });
+
+    // An earlier run ended before its totals were saved, so the rollout
+    // recorded calls the restored totals do not cover.
+    state.resumedHistoryTokenUsage = { promptTokens: 2_600, completionTokens: 130, totalTokens: 2_730 };
+    expect(await tokenUsage()).toEqual({
+      inputTokens: 500, outputTokens: 20, totalTokens: 520, costUsd: 0.25, costKnown: false,
+    });
+
+    state.resumedHistoryTokenUsage = { promptTokens: 2_000, completionTokens: 100, totalTokens: 2_100 };
+    getRestoredSessionTotals.mockReturnValue(null);
+    expect(await tokenUsage()).toMatchObject({ inputTokens: 500, costKnown: false });
+  });
+
   it("[managed-thread] inspects and stops a real child process through session RPC without consuming its output", async () => {
     const agentId = "process-owner-agent";
     const sessionId = "process-owner-session";

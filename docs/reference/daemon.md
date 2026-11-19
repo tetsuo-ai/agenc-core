@@ -430,6 +430,12 @@ them (web search and fetch fees, media generation, and the model calls tools
 make such as `web_fetch` prompt extraction). A tool call without a price adds
 nothing. `costKnown` is also `false` when the ledger cannot be read.
 
+For a resumed session the tokens and cost cover the whole session when the
+totals saved in `cost-totals.json` account for every model call its rollout
+recorded. When they fall short, for example because an earlier run stopped
+before its totals were saved, the tokens count only what the current daemon
+process ran and `costKnown` is `false`.
+
 `agenc -p --output-format json` reports `tokenUsage` from the run's ledger
 summary, the same one `/cost` reads: sub-agents recorded in the ledger are
 included in its tokens and `costUsd`, plan calls (ChatGPT sign-in) count at

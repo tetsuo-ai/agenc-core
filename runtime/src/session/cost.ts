@@ -2487,6 +2487,8 @@ export class CostSidecar implements Sidecar {
   private planUsage = new Map<string, { planCalls: number; apiEquivalentUsd: number; planAccountingCostUsd: number; apiEquivalentUnknown?: boolean }>();
   private explicitPerModelCostUsd = new Map<string, number>();
   private restoredSessionId: string | null = null;
+  /** `getSessionTotals()` right after a restore; null when nothing was restored. */
+  private restoredSessionTotals: CostTotals | null = null;
   private restoredWallDurationMs = 0;
   private restoredApiDurationMs = 0;
   private restoredApiDurationWithoutRetriesMs = 0;
@@ -3025,6 +3027,7 @@ export class CostSidecar implements Sidecar {
     this.planUsage.clear();
     this.explicitPerModelCostUsd = new Map();
     this.restoredSessionId = null;
+    this.restoredSessionTotals = null;
     this.restoredWallDurationMs = 0;
     this.restoredApiDurationMs = 0;
     this.restoredApiDurationWithoutRetriesMs = 0;
@@ -3266,6 +3269,7 @@ export class CostSidecar implements Sidecar {
     if (modelUsage.length === 0) {
       this.restoredAggregateBaseline = restoredUsage;
       this.restoredCostAdjustmentUsd = record.costUsd;
+      this.restoredSessionTotals = this.getSessionTotals();
       return true;
     }
 
@@ -3299,7 +3303,17 @@ export class CostSidecar implements Sidecar {
     }
     this.restoredAggregateBaseline = emptyTotals();
     this.restoredCostAdjustmentUsd = record.costUsd - restoredModelCostUsd;
+    this.restoredSessionTotals = this.getSessionTotals();
     return true;
+  }
+
+  /**
+   * The usage this session's persisted record carried into the current
+   * totals on resume, or null when nothing was restored. Everything
+   * `getSessionTotals()` reports beyond it was observed by this process.
+   */
+  getRestoredSessionTotals(): CostTotals | null {
+    return this.restoredSessionTotals;
   }
 
   getStoredSessionRecord(sessionId: string): SessionCostRecord | undefined {
