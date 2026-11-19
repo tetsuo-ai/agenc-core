@@ -266,9 +266,9 @@ API-equivalent values are not subscription invoices.
   applied), `planCalls` counts the calls a subscription covers, and
   `apiEquivalentUsd` is what those plan calls would cost at API rates
   (reference only, not billed; `apiEquivalentUnknown` marks a plan call
-  without a known price). `costKnown` is `false` when the model part is
-  incomplete (for example a resumed session whose saved cost totals miss an
-  earlier run) or the tool charges could not be read.
+  without a known price). `costKnown` is `false` when a call has no price;
+  in the snapshot fallback also when the ledger does not hold a resumed
+  session's earlier calls or could not be read.
 
 ### Examples
 

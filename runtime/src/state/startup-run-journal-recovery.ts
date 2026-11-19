@@ -2465,6 +2465,11 @@ function nullableFiniteNumber(value: unknown, name: string): number | null {
   return value;
 }
 
+/**
+ * The terminal's usage as the live writer recorded it, cost marks included:
+ * a terminal projected without `costKnown` or `costEstimated` differs from
+ * the one the daemon stored and defers the run as a projection failure.
+ */
 function nullableUsage(value: unknown): RunUsageTotals | null {
   if (value === null) return null;
   const usage = asRecord(value);
@@ -2474,7 +2479,19 @@ function nullableUsage(value: unknown): RunUsageTotals | null {
     outputTokens: requireNonNegativeNumber(usage.outputTokens, "outputTokens"),
     totalTokens: requireNonNegativeNumber(usage.totalTokens, "totalTokens"),
     costUsd: requireNonNegativeNumber(usage.costUsd, "costUsd"),
+    ...optionalUsageFlag(usage, "costKnown"),
+    ...optionalUsageFlag(usage, "costEstimated"),
   };
+}
+
+function optionalUsageFlag(
+  usage: Record<string, unknown>,
+  name: "costKnown" | "costEstimated",
+): Partial<Record<typeof name, boolean>> {
+  const value = usage[name];
+  if (value === undefined) return {};
+  if (typeof value !== "boolean") throw new TypeError(`usage.${name} is invalid`);
+  return { [name]: value };
 }
 
 function requireNonNegativeNumber(value: unknown, name: string): number {

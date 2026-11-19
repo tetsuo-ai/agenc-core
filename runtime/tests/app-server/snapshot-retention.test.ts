@@ -364,3 +364,97 @@ describe("snapshot cost includes the session's tool charges", () => {
       .toEqual({ ...live, costUsd: 0.003, costKnown: true });
   });
 });
+
+describe("snapshot cost from the admission ledger", () => {
+  type Counts = { inputTokens: number; outputTokens: number; totalTokens: number };
+  function ledgerSummary(counts: Counts, costUsd: number, extra: Record<string, unknown> = {}) {
+    return { runId: "chat", sequence: 7, ...counts, costUsd, modelCalls: 3, hasUnknownCost: false,
+      heldCostUsd: 0, models: [], agents: [], ...extra };
+  }
+  function activeWith(params: {
+    readonly live: Counts;
+    readonly ledger: () => unknown;
+    readonly state?: Record<string, unknown>;
+    readonly sidecar?: Record<string, unknown>;
+  }) {
+    const state = params.state ?? {};
+    return {
+      thread: { totalTokenUsage: () => params.live },
+      bootstrap: { session: {
+        state: { unsafePeek: () => state },
+        services: {
+          executionAdmission: { getDirectUsageSummary: params.ledger },
+          ...(params.sidecar !== undefined ? { costSidecar: params.sidecar } : {}),
+        },
+      } },
+    } as unknown as Parameters<typeof terminalUsageForActiveAgent>[0];
+  }
+  // A cost record saved before the last turns: what cost-totals.json holds
+  // after the daemon dies mid-session.
+  const shortSidecar = {
+    getTotalCostUsd: () => 0.003,
+    getSessionTotals: () => ({ inputTokens: 1_200, outputTokens: 40, totalTokens: 1_240 }),
+    getRestoredSessionTotals: () => ({ inputTokens: 1_200, outputTokens: 40, totalTokens: 1_240 }),
+    hasUnknownModelCost: () => false,
+  };
+
+  it("takes a session's cost from its ledger, not the cost sidecar", () => {
+    const live = { inputTokens: 1_000, outputTokens: 100, totalTokens: 1_100 };
+    expect(terminalUsageForActiveAgent(activeWith({
+      live,
+      ledger: () => ledgerSummary(live, 0.004),
+      sidecar: { getTotalCostUsd: () => 0.003, getSessionTotals: () => live, hasUnknownModelCost: () => false },
+    }))).toEqual({ ...live, costUsd: 0.004, costKnown: true });
+  });
+
+  it("reports a session revived after a crash whole, with the ledger's cost", () => {
+    // Turns before the crash recorded 2,000 / 80 tokens; the saved cost
+    // record covers only 1,200 / 40 of them. This process ran 500 / 20 more.
+    const live = { inputTokens: 500, outputTokens: 20, totalTokens: 520 };
+    const state = {
+      initialTokenUsage: { promptTokens: 800, completionTokens: 40, totalTokens: 840 },
+      resumedHistoryTokenUsage: { promptTokens: 2_000, completionTokens: 80, totalTokens: 2_080 },
+      resumedLedgerUsage: { inputTokens: 2_000, outputTokens: 80, totalTokens: 2_080 },
+    };
+    expect(terminalUsageForActiveAgent(activeWith({
+      live, state, sidecar: shortSidecar,
+      ledger: () => ledgerSummary({ inputTokens: 2_500, outputTokens: 100, totalTokens: 2_600 }, 0.0071),
+    }))).toEqual({ inputTokens: 2_500, outputTokens: 100, totalTokens: 2_600, costUsd: 0.0071, costKnown: true });
+  });
+
+  it("calls the cost unknown when the ledger missed calls the turns reported", () => {
+    const live = { inputTokens: 500, outputTokens: 20, totalTokens: 520 };
+    const history = { promptTokens: 2_000, completionTokens: 80, totalTokens: 2_080 };
+    const whole = { inputTokens: 2_500, outputTokens: 100, totalTokens: 2_600 };
+    const usage = (state: Record<string, unknown>, ledger: () => unknown) =>
+      terminalUsageForActiveAgent(activeWith({ live, state, ledger }));
+    // The run's earlier calls were admitted elsewhere: at the resume the
+    // ledger held only part of the recorded history.
+    expect(usage(
+      { resumedHistoryTokenUsage: history, resumedLedgerUsage: { inputTokens: 1_200, outputTokens: 40, totalTokens: 1_240 } },
+      () => ledgerSummary(whole, 0.0071),
+    )).toEqual({ ...whole, costUsd: 0.0071, costKnown: false });
+    // No ledger reading at the resume.
+    expect(usage({ resumedHistoryTokenUsage: history }, () => ledgerSummary(whole, 0.0071)))
+      .toMatchObject({ ...whole, costKnown: false });
+    // The ledger now holds less than the turns reported.
+    expect(usage({}, () => ledgerSummary({ inputTokens: 499, outputTokens: 20, totalTokens: 519 }, 0.001)))
+      .toEqual({ ...live, costUsd: 0.001, costKnown: false });
+    // A history seeded without its sum cannot be checked.
+    expect(usage({ initialTokenUsage: { promptTokens: 9, completionTokens: 1, totalTokens: 10 } },
+      () => ledgerSummary(whole, 0.0071))).toEqual({ ...live, costUsd: 0.0071, costKnown: false });
+  });
+
+  it("marks an unpriced or estimated call, and a ledger it cannot read", () => {
+    const live = { inputTokens: 1_000, outputTokens: 100, totalTokens: 1_100 };
+    const usage = (ledger: () => unknown) => terminalUsageForActiveAgent(activeWith({ live, ledger }));
+    expect(usage(() => ledgerSummary(live, 0.004, { hasUnknownCost: true })))
+      .toEqual({ ...live, costUsd: 0.004, costKnown: false });
+    expect(usage(() => ledgerSummary(live, 0.004, { costEstimated: true })))
+      .toEqual({ ...live, costUsd: 0.004, costKnown: true, costEstimated: true });
+    expect(usage(() => { throw new Error("kernel closed"); }))
+      .toEqual({ ...live, costUsd: 0, costKnown: false });
+    expect(usage(() => ledgerSummary(live, Number.NaN)))
+      .toEqual({ ...live, costUsd: 0, costKnown: false });
+  });
+});

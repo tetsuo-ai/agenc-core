@@ -435,16 +435,22 @@ Never retry after admission may have arrived.
 | `auth.login` / `auth.whoami` / `auth.logout`                                                                | Auth backend                                                                                                       |
 
 `session.snapshot.tokenUsage.costUsd` is the cost of the session's own model
-turns plus the charges of its own tool calls as the admission ledger settled
-them (web search and fetch fees, media generation, and the model calls tools
-make such as `web_fetch` prompt extraction). A tool call without a price adds
-nothing. `costKnown` is also `false` when the ledger cannot be read.
+calls and tool calls as the admission ledger settled them, the ledger
+`/status`, `/cost` and `agenc -p` read: its model turns, compaction, the model
+calls tools make such as `web_fetch` prompt extraction, and tool fees (web
+search and fetch, media generation). Sub-agents are not included. A tool call
+without a price adds nothing. The ledger commits each call when it settles, so
+a session revived after its daemon was killed (or ran out of memory) still
+reports the cost of every call settled before. The ledger's writes are synced,
+so this holds after a power loss too, except in a fresh `agenc -p` run without
+`--full-durability` ([print-mode durability](cli.md#print-mode-durability)).
 
-For a resumed session the tokens and cost cover the whole session when the
-totals saved in `cost-totals.json` account for every model call its rollout
-recorded. When they fall short, for example because an earlier run stopped
-before its totals were saved, the tokens count only what the current daemon
-process ran and `costKnown` is `false`.
+The tokens count what the session's model turns reported; for a resumed
+session, every `token_count` its rollout recorded plus what the current daemon
+process ran. `costKnown` is `false` when the ledger holds fewer calls than the
+turns reported (for example a resumed run whose earlier calls were admitted in
+another project's database), when a call has no price, or when the ledger
+cannot be read.
 
 `agenc -p --output-format json` reports `tokenUsage` from the run's ledger
 summary, the same one `/cost` reads: sub-agents recorded in the ledger are
