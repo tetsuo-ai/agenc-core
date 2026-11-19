@@ -2008,6 +2008,37 @@ describe("FND benchmark harness fault contracts", () => {
         }),
       ).not.toThrow();
 
+      // A published main commit the line never took is refused.
+      runGit(fixture.repositoryRoot, ["checkout", "--quiet", "main"]);
+      writeFileSync(fixture.unrelatedPath, "export const unrelated = 2;\n", "utf8");
+      runGit(fixture.repositoryRoot, ["add", "source/unrelated.ts"]);
+      runGit(fixture.repositoryRoot, [
+        "-c",
+        "user.name=AgenC Test",
+        "-c",
+        "user.email=test@agenc.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "main change",
+      ]);
+      const mainRevision = readGitText(fixture.repositoryRoot, [
+        "rev-parse",
+        "HEAD",
+      ]);
+      runGit(fixture.repositoryRoot, [
+        "update-ref",
+        "refs/remotes/origin/main",
+        mainRevision,
+      ]);
+      expect(() =>
+        captureBenchmarkProvenance({
+          ...options,
+          sourceRevision: mainRevision,
+        }),
+      ).toThrow(/ancestor of the default branch/u);
+
       // Without the line's branch there is no default branch: main never stands in.
       runGit(fixture.repositoryRoot, ["checkout", "--quiet", "--detach"]);
       runGit(fixture.repositoryRoot, [
