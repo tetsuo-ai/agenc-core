@@ -72,6 +72,12 @@ export interface SessionStateUpdate {
    * recovery line limit.
    */
   readonly coreCatalog?: "expanded";
+  /**
+   * The date and git branch the conversation's base instructions were first
+   * built with, written once (prompt-environment.ts). Later assemblies for
+   * the conversation, a resume above all, reuse them.
+   */
+  readonly promptEnvironment?: import("./prompt-environment.js").PromptEnvironment;
   readonly agentTask?: SessionAgentTask;
   readonly memoryExtraction?: SessionMemoryExtractionState;
   readonly userStop?: {
