@@ -45,6 +45,7 @@ import {
   discoverStateDatabasePaths,
   openStateDatabasePaths,
   resolveStateDatabasePaths,
+  stateDatabasePathsForProjectDir,
   type StateDatabasePaths,
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
@@ -158,6 +159,12 @@ export interface BindExecutionAdmissionClientOptions {
    */
   readonly budgetIdentity?: string;
   readonly projectRootMarkers?: readonly string[];
+  /**
+   * The project that holds the run's journal. A resumed run passes it, so its
+   * admission records join its journal instead of the project found again
+   * from `cwd`.
+   */
+  readonly projectDir?: string;
   readonly scope: Omit<AdmissionClientScope, "workspaceId" | "budgetIdentity">;
   readonly budget?: ExecutionAdmissionBudgetPolicy;
 }
@@ -404,13 +411,15 @@ export class ExecutionAdmissionKernel {
     options: BindExecutionAdmissionClientOptions,
   ): ExecutionAdmissionClient {
     this.#assertOpen();
-    const paths = resolveStateDatabasePaths({
-      cwd: options.cwd,
-      agencHome: this.#agencHome,
-      ...(options.projectRootMarkers !== undefined
-        ? { projectRootMarkers: options.projectRootMarkers }
-        : {}),
-    });
+    const paths = options.projectDir !== undefined
+      ? stateDatabasePathsForProjectDir(options.projectDir)
+      : resolveStateDatabasePaths({
+          cwd: options.cwd,
+          agencHome: this.#agencHome,
+          ...(options.projectRootMarkers !== undefined
+            ? { projectRootMarkers: options.projectRootMarkers }
+            : {}),
+        });
     this.#flushCaptured();
     const workspaceId = options.workspaceId ?? paths.projectDir;
     const workspace = this.#registerPaths(paths, workspaceId);

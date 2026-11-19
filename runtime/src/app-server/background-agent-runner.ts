@@ -134,7 +134,11 @@ import {
   type ResolveDurableEffectReviewOptions,
   type ResolveDurableEffectReviewResult,
 } from "../state/effect-review.js";
-import { openStateDatabases } from "../state/sqlite-driver.js";
+import {
+  openStateDatabasePaths,
+  openStateDatabases,
+  stateDatabasePathsForProjectDir,
+} from "../state/sqlite-driver.js";
 import { listUnresolvedUnknownOutcomeEffects } from "../state/unknown-outcome-gate.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
 import { mergeDaemonClientEnvironment } from "./client-env-snapshot.js";
@@ -3659,7 +3663,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const rolloutStore = session.rolloutStore;
     if (rolloutStore === null) throw new Error(`Owning session ${params.sessionId} has no live effect journal`);
     return runWithCurrentRuntimeSession(session, () => {
-      const driver = openStateDatabases({ cwd: active.bootstrap.workspaceRoot, agencHome });
+      // The owning session's effects are in the project of its journal.
+      const driver = openStateDatabasePaths(stateDatabasePathsForProjectDir(rolloutStore.stateProjectDir));
       try {
         const outcome = resolveLiveDurableEffectReview(driver, params, {
           readAll: () => rolloutStore.readAll(),

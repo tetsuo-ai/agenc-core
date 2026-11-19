@@ -2,6 +2,7 @@ import { turnDiffCache } from "../session/turn-diff-cache.js";
 import type { SessionTurnDiffParams, SessionTurnDiffResult } from "./protocol/index.js";
 import { hasRuntimeHistoryWrapper, userFacingHistoryText } from "../session/user-facing-history-text.js";
 import { promoteOneShotRun, selectRelaxedOneShot } from "../durability/one-shot-durability.js";
+import { rolloutProjectDir } from "../session/rollout-project.js";
 /**
  * In-memory daemon lifecycle for user-started background agents.
  *
@@ -57,7 +58,11 @@ import {
   DAEMON_AGENT_CREATE_TIMEOUT_MS,
   DAEMON_AGENT_STOP_TIMEOUT_MS,
 } from "./operation-deadline.js";
-import { openStateDatabases } from "../state/sqlite-driver.js";
+import {
+  openStateDatabasePaths,
+  openStateDatabases,
+  stateDatabasePathsForProjectDir,
+} from "../state/sqlite-driver.js";
 import {
   createOperatorAttestationEvidence,
   createOperatorEffectReviewResolution,
@@ -1286,6 +1291,13 @@ export class AgenCDaemonAgentManager {
           ? { canonicalRolloutIno: started.rolloutIno }
           : {}),
       };
+      // The run's journal lives in the project that holds its rollout. Record
+      // the daemon's own rows for it there too: found again from the folder
+      // (default root markers, the daemon's HOME), the project can differ.
+      const stateProjectDir =
+        (started.rolloutPath !== undefined
+          ? rolloutProjectDir(started.rolloutPath, this.#agencHome)
+          : undefined) ?? retainedAgent?.stateProjectDir;
       const agent: MutableAgent = {
         agentId: started.agentId,
         ...(started.runtimeGenerationId !== undefined
@@ -1307,9 +1319,7 @@ export class AgenCDaemonAgentManager {
         logSessionIds: retainedAgent?.logSessionIds.slice() ?? [],
         cwd,
         metadata: agentMetadata,
-        ...(retainedAgent?.stateProjectDir !== undefined
-          ? { stateProjectDir: retainedAgent.stateProjectDir }
-          : {}),
+        ...(stateProjectDir !== undefined ? { stateProjectDir } : {}),
       };
 
       let createdLifecycleSessionId: string | undefined;
@@ -3196,7 +3206,12 @@ export class AgenCDaemonAgentManager {
         `Session ${params.effectSessionId} is not owned by parent ${params.sessionId}; attach to its owning session to review it`);
     }
     const selectedIds = params.effectSessionId === undefined ? reviewSessionIds : [params.effectSessionId];
-    const driver = openStateDatabases({ cwd: session.cwd, agencHome: this.#agencHome });
+    // The conversation's effects are in the project of its journal, which the
+    // folder may no longer name after a restart.
+    const stateProjectDir = await this.#state.with((state) => state.agents.get(session.agentId)?.stateProjectDir);
+    const driver = stateProjectDir !== undefined
+      ? openStateDatabasePaths(stateDatabasePathsForProjectDir(stateProjectDir))
+      : openStateDatabases({ cwd: session.cwd, agencHome: this.#agencHome });
     try {
       const durableEffects = new StateRunDurabilityRepository(driver);
       const pending = selectedIds.flatMap(id => [...listUnresolvedUnknownOutcomeEffects(driver, id)]);
@@ -5389,7 +5404,14 @@ export function assertCanonicalRuntimeSettingsProjection(
     // ambient current-session accessor refused with "Ambiguous runtime
     // session" as soon as more than one session lived in the daemon, so no
     // session could be resumed after a restart while others were open.
-    driver = openStateDatabases({ cwd, agencHome });
+    // The projection is in the project that holds the rollout; the folder
+    // can name another project after a restart.
+    const projectDir = proof.rolloutPath === undefined
+      ? undefined
+      : rolloutProjectDir(proof.rolloutPath, agencHome);
+    driver = projectDir !== undefined
+      ? openStateDatabasePaths(stateDatabasePathsForProjectDir(projectDir))
+      : openStateDatabases({ cwd, agencHome });
   } catch (error) {
     // Say why. A live resume failed for an hour with this sentence and
     // nothing else; the cause (a locked database, a schema mismatch, a bad

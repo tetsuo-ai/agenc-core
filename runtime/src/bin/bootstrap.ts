@@ -76,6 +76,7 @@ import {
   type ResumeRolloutDescriptorLease,
 } from "../session/session-store.js";
 import { RolloutStore } from "../session/rollout-store.js";
+import { rolloutProjectDir } from "../session/rollout-project.js";
 import { recordInitialHistoryOnResume } from "../session/agent-task-lifecycle.js";
 import { copyPlanForResume } from "../planning/plan-files.js";
 import {
@@ -1700,6 +1701,15 @@ async function bootstrapLocalRuntimeSessionScoped(
   let initialTranscriptEvents: readonly BootstrapTranscriptEvent[] = [];
 
   const sessionProjectRootMarkers = startup.config.project_root_markers;
+  // The project that holds this run's journal. A resumed run keeps the one
+  // its rollout is in: found again from the folder, it can be another (a root
+  // marker above the folder came or went, or the daemon has another HOME), and
+  // the run's admission records and state would split from its journal.
+  const resumedProjectDir = options.resumeRolloutPath !== undefined
+    ? rolloutProjectDir(options.resumeRolloutPath, agencHome)
+    : undefined;
+  const stateProjectDir = resumedProjectDir ??
+    getProjectDir(workspaceRoot, sessionProjectRootMarkers, agencHome);
   const ownedExecutionAdmissionKernel =
     options.executionAdmissionKernel === undefined
       ? new ExecutionAdmissionKernel({
@@ -1713,6 +1723,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     options.executionAdmissionKernel ?? ownedExecutionAdmissionKernel!;
   const executionAdmission = executionAdmissionKernel.bindClient({
     cwd: workspaceRoot,
+    ...(resumedProjectDir !== undefined ? { projectDir: resumedProjectDir } : {}),
     ...(options.executionAdmissionBudgetIdentity !== undefined
       ? { budgetIdentity: options.executionAdmissionBudgetIdentity }
       : options.executionAdmissionAutonomous !== undefined
@@ -1788,6 +1799,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       modelsManager,
       agencHome,
       workspaceRoot,
+      ...(resumedProjectDir !== undefined ? { stateProjectDir: resumedProjectDir } : {}),
       env,
       conversationId,
       model,
@@ -2122,11 +2134,7 @@ async function bootstrapLocalRuntimeSessionScoped(
           if (existingItems.length > 0) {
             const indexSnapshot = readIndexSnapshot(
               join(
-                getProjectDir(
-                  workspaceRoot,
-                  sessionProjectRootMarkers,
-                  agencHome,
-                ),
+                rolloutStore.stateProjectDir,
                 "sessions",
                 conversationId,
                 "index.json",
@@ -2197,11 +2205,7 @@ async function bootstrapLocalRuntimeSessionScoped(
           ? deferSidecar(s.eventLog) : undefined;
         const initializeSidecars = async (): Promise<void> => {
         s.abortController.signal.throwIfAborted();
-        const projectDir = getProjectDir(
-          workspaceRoot,
-          sessionProjectRootMarkers,
-          agencHome,
-        );
+        const projectDir = stateProjectDir;
         sidecarManager = new SidecarManager({
           onDiagnostic: (diagnostic) => {
             s.emit({
