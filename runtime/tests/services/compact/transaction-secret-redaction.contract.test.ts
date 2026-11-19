@@ -161,6 +161,49 @@ describe("compaction whose summary the rollout's secret redaction rewrites", () 
   });
 });
 
+describe("compaction whose model-visible summary message the rollout's redaction rewrites", () => {
+  it("commits, and the session continues with the replacement history a reopen reads", async () => {
+    // Review finding: the body passes redaction unchanged (the word after the
+    // blank line has 7 characters), but the message the model reads renders
+    // the body as JSON, where the newlines become two characters each and the
+    // value rule matches. Stored history and session history must still agree.
+    const narrative = "The deploy password:\n\nunknown until the user says it.";
+    const source: readonly RuntimeMessage[] = Array.from({ length: 20 }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `source-${index}:${"x".repeat(4_000)}`,
+    }));
+    const harness = createCompactionTransactionHarness(source, {
+      compactionMode: "manual",
+      sessionId: "summary-message-redaction",
+      chat: summarizerWriting(() => ({ narrative, facts: [], open_actions: [] })),
+    });
+    try {
+      const result = await compactConversation(source, harness.context);
+      const transaction = result.transaction;
+      expect(transaction).toBeDefined();
+      expect(transaction!.committed.summary.body.narrative).toBe(narrative);
+      await finalizeCompactionTransaction({
+        store: harness.store,
+        attemptId: transaction!.attempt_id,
+        applyProjection: () => {},
+        cleanup: () => {},
+      });
+      const items = harness.store.readAll();
+      const commit = items.find((item) => item.type === "compaction_committed");
+      if (commit?.type !== "compaction_committed") throw new Error("no hydrated commit");
+      expect(canonicalizeJson(commit.payload.replacement_history))
+        .toBe(canonicalizeJson(transaction!.committed.replacement_history));
+      const summaryMessage = transaction!.committed.replacement_history.find(
+        (message) => message.compactionHistory?.kind === "summary",
+      );
+      expect(JSON.stringify(summaryMessage?.content)).toContain(REDACTED_SECRET);
+      expect(JSON.stringify(summaryMessage?.content)).not.toContain("unknown until");
+    } finally {
+      harness.close();
+    }
+  });
+});
+
 describe("createCompactionSummaryV1 and the rollout's secret redaction", () => {
   const sourceRef: CompactionSourceRefV1 = {
     kind: "compaction_summary",

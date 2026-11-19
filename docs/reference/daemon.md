@@ -502,14 +502,17 @@ never does. A remote browser connection is not offered it.
 
 Every compaction stores its summary in the form its digest names: the rollout
 keeps payloads secret-redacted, so the summary is redacted before it is
-digested, and the commit reads itself back from its stored payloads before the
-commit point. A commit that would not read back fails with the history
-unchanged. Core before this rule digested a summary before the redaction
-rewrote it ("the next token: suspension bridge"), and such a chat cannot be
-verified again: every read, prompt and reopen of it answers `-32000` with
-`data.code: "COMPACTION_RECORD_DAMAGED"` and the message "This chat cannot be
-opened because the summary saved when it was compacted is damaged." The daemon
-log names the compaction attempt. Other chats and the daemon are not affected.
+digested. The commit point reads the commit back from its stored payloads, and
+that stored form is what is pinned and what the session continues with, so a
+reopen reads exactly what the session had. A commit no later load could read
+fails with the history unchanged. Core before this rule digested a summary
+before the redaction rewrote it ("the next token: suspension bridge"), and such
+a chat cannot be verified again: reopening it (`agent.create` with
+`resumeSessionId`), or reading it while it is still loaded, answers `-32000`
+with `data.code: "COMPACTION_RECORD_DAMAGED"` and the message "This chat cannot
+be opened because the summary saved when it was compacted is damaged." The
+daemon log names the compaction attempt. Other chats and the daemon are not
+affected.
 
 #### Session mode (Light)
 
