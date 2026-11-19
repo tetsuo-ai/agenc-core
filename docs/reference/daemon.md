@@ -1521,6 +1521,20 @@ mapping above. A summarizer that ignores abort for 5 s becomes
 Operator contract:
 [CP-0006 wall budget](../design/critical-path/0006-compaction-transaction.md#compaction-transaction-wall-budget).
 
+### Stored compaction summaries
+
+Every compaction (`/compact` or automatic) stores its summary in the form its
+digest names: the rollout keeps payloads secret-redacted, so the summary is
+redacted before it is digested, and the commit reads itself back from its
+stored payloads before the commit point. A commit that would not read back
+fails with the history unchanged. Core before this rule digested a summary
+before the redaction rewrote it ("the next token: suspension bridge"), and such
+a chat cannot be verified again: every read, prompt and reopen of it answers
+`-32000` with `data.code: "COMPACTION_RECORD_DAMAGED"` and the message "This
+chat cannot be opened because the summary saved when it was compacted is
+damaged." The daemon log names the compaction attempt. Other chats and the
+daemon are not affected.
+
 ### Max-output-tokens recovery
 
 When the last assistant message is withheld with

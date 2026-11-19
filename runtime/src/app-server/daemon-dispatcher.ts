@@ -97,6 +97,7 @@ import {
   AgentRuntimeOptionsError,
   validateAgentRuntimeOptions,
 } from "../session/runtime-options.js";
+import { CompactionRecordDamagedError } from "../session/compaction-event-reader.js";
 import { normalizeDaemonClientEnvOverrides } from "./client-env-snapshot.js";
 import { MAX_SESSION_PERMISSION_RULE_UTF8_BYTES } from "../permissions/session-rule-buckets.js";
 import { RUN_RUNTIME_REASONING_EFFORTS } from "../contracts/run-contracts.js";
@@ -5742,6 +5743,16 @@ function mapDispatchError(
   }
   if (error instanceof AgenCSessionLifecycleError) {
     return errorResponse(id, -32602, error.message, { code: error.code });
+  }
+  if (error instanceof CompactionRecordDamagedError) {
+    // One chat's stored summary fails its digest check. The client gets the
+    // plain sentence and a stable code; the cause stays in the daemon log.
+    console.error(
+      `agenc: compaction ${error.attemptId} cannot be read: ${
+        error.cause instanceof Error ? error.cause.message : String(error.cause)
+      }`,
+    );
+    return errorResponse(id, -32000, error.message, { code: error.code });
   }
   // The daemon owns a bounded console sink. Keep internal handler failures
   // diagnosable there, including their stack, without logging request params.

@@ -22,6 +22,7 @@ import {
   MIN_COMPACTION_RELATIVE_TOKEN_SAVINGS,
   MANUAL_PROPORTIONAL_COMPACTION_READER_RUNTIME,
   minimumCompactionTokenSavings,
+  CompactionTransactionError,
   type CompactionCleanupPendingV1,
   type CompactionCommittedV1,
   type CompactionFailedV1,
@@ -124,6 +125,44 @@ export function readCompactionRolloutPayload(
       return readRetentionExtension(value);
     case "compaction_source_release":
       return readRelease(value);
+  }
+}
+
+/**
+ * A stored compaction commit whose summary no longer matches its own digest.
+ * Core before w21 digested a summary before the rollout's secret redaction
+ * rewrote it, so such a chat holds only the redacted words and a digest of
+ * the words they replaced: it can never be verified again, and is refused
+ * with one plain sentence. The session store and the canonical scan read
+ * one chat at a time, so the other chats and the daemon are not affected.
+ */
+export class CompactionRecordDamagedError extends Error {
+  readonly code = "COMPACTION_RECORD_DAMAGED";
+
+  constructor(readonly attemptId: string, options?: ErrorOptions) {
+    super(
+      "This chat cannot be opened because the summary saved when it was compacted is damaged.",
+      options,
+    );
+    this.name = "CompactionRecordDamagedError";
+  }
+}
+
+/** Read a compaction commit hydrated from a stored rollout. */
+export function readStoredCompactionCommit(
+  value: unknown,
+): CompactionRolloutPayload {
+  try {
+    return readCompactionRolloutPayload("compaction_committed", value);
+  } catch (error) {
+    if (error instanceof CompactionTransactionError && error.reason === "digest_invalid") {
+      const attemptId = typeof value === "object" && value !== null &&
+          typeof (value as { attempt_id?: unknown }).attempt_id === "string"
+        ? (value as { attempt_id: string }).attempt_id
+        : "unknown";
+      throw new CompactionRecordDamagedError(attemptId, { cause: error });
+    }
+    throw error;
   }
 }
 
