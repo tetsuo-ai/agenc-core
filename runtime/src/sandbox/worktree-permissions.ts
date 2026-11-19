@@ -2,6 +2,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { findCanonicalGitRoot } from "../utils/git.js";
+import { canonicalAuthorityPath } from "./desktop-authority-protection.js";
 import type { AdditionalPermissionProfile } from "./engine/index.js";
 
 /**
@@ -21,6 +22,37 @@ export function worktreeMutationPermissions(
       access: "write" as const,
     }));
   return { fileSystem: { entries } };
+}
+
+/**
+ * The `.git` pointer file of the linked worktree at `worktreePath`, as an
+ * extra write path for the two Core-run git commands that create it
+ * (`git worktree add`) and delete it (`git worktree remove`). Empty off macOS.
+ *
+ * The macOS seatbelt profile is static: below every writable root it refuses
+ * any `.git` entry, so a command cannot plant a nested repository or a gitfile
+ * pointer that a later host-side git would follow. A linked worktree's own
+ * pointer is such an entry, and macOS has no created-path monitor to tell it
+ * apart, so `git worktree add` died with "could not open '<worktree>/.git' for
+ * writing: Operation not permitted" and every Goal run and worktree-isolated
+ * agent failed there. These two commands therefore name this one file. The
+ * grant never reaches a command the model runs: those still cannot create,
+ * rewrite or remove a `.git` anywhere.
+ *
+ * Linux needs no grant and must not get one. Its created-path monitor accepts
+ * a pointer into the protected `.git/worktrees`, and its launcher would turn
+ * the missing pointer into a directory before `git worktree add` and refuses
+ * the existing one before `git worktree remove`.
+ *
+ * The parent is spelled physically because the pointer does not exist when it
+ * is created, and the seatbelt profile matches physical paths.
+ */
+export function linkedWorktreePointerPaths(
+  worktreePath: string,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  if (platform !== "darwin") return [];
+  return [join(canonicalAuthorityPath(worktreePath), ".git")];
 }
 
 /** The Git metadata directory a worktree mutation of `repoRoot` may write. */

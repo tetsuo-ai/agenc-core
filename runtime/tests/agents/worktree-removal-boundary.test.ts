@@ -75,7 +75,14 @@ describe("worktree removal boundary", () => {
     await removeAgentWorktree({ ...f.worktree, sandboxExecutionBroker: f.broker });
     const call = prepare.mock.calls.find(([, command]) => command.args.includes("remove"));
     expect(call).toBeDefined();
-    expect(call![1].additionalPermissions?.fileSystem?.entries).toEqual([{ path: { kind: "path", path: join(f.project, ".git") }, access: "write" }]);
+    expect(call![1].additionalPermissions?.fileSystem?.entries).toEqual([
+      { path: { kind: "path", path: join(f.project, ".git") }, access: "write" },
+      // macOS alone also names the worktree's own `.git` pointer, which the
+      // remove deletes and its static profile otherwise refuses. Not a bind.
+      ...(process.platform === "darwin"
+        ? [{ path: { kind: "path", path: join(f.worktree.path, ".git") }, access: "write" }]
+        : []),
+    ]);
     expect(existsSync(f.worktree.path)).toBe(false);
     expect(existsSync(f.admin)).toBe(false);
     expect(readFileSync(join(sibling.path, "tracked.txt"), "utf8")).toBe("preserve me\n");
