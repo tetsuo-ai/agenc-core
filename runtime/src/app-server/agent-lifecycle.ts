@@ -1,3 +1,5 @@
+import { turnDiffCache } from "../session/turn-diff-cache.js";
+import type { SessionTurnDiffParams, SessionTurnDiffResult } from "./protocol/index.js";
 import { hasRuntimeHistoryWrapper, userFacingHistoryText } from "../session/user-facing-history-text.js";
 import { promoteOneShotRun, selectRelaxedOneShot } from "../durability/one-shot-durability.js";
 /**
@@ -3872,8 +3874,9 @@ export class AgenCDaemonAgentManager {
 
   async getSessionTranscriptV2(
     params: SessionTranscriptV2Params,
-    options: { readonly includeCompleteMessages?: boolean } = {},
+    options: { readonly schemaVersion?: 2 | 3; readonly includeCompleteMessages?: boolean } = {},
   ): Promise<SessionTranscriptV2Result> {
+    options = { ...options, ...(params.schemaVersion !== undefined ? { schemaVersion: params.schemaVersion } : {}) };
     if (this.#sessionManager === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "INVALID_ARGUMENT",
@@ -3910,6 +3913,7 @@ export class AgenCDaemonAgentManager {
       return await this.#runner.getAgentSessionTranscriptV2(agentId, {
         sessionId: params.sessionId,
         includeCompleteMessages: options.includeCompleteMessages,
+        schemaVersion: options.schemaVersion,
       });
     } catch (error) {
       if (isNoLiveAgentRunnerError(error)) {
@@ -3921,6 +3925,16 @@ export class AgenCDaemonAgentManager {
       }
       throw error;
     }
+  }
+
+  async readSessionTurnDiff(params: SessionTurnDiffParams): Promise<SessionTurnDiffResult> {
+    // Resolve session ownership and the visible turn boundary through the same
+    // authoritative projection used for reopening a chat.
+    const snapshot = await this.getSessionTranscriptV2({ sessionId: params.sessionId, schemaVersion: 3 });
+    if (!snapshot.turns?.some(turn => turn.turnId === params.turnId)) {
+      return { ...params, unavailable: true, note: "turn is outside the visible transcript" };
+    }
+    return { ...params, ...turnDiffCache.read(snapshot.runId, params.turnId, params.path) };
   }
 
   async readSessionArtifact(params: SessionArtifactReadParams): Promise<SessionArtifactReadResult> {
@@ -4009,7 +4023,7 @@ export class AgenCDaemonAgentManager {
 
   async #readPersistedSessionTranscriptV2(
     sessionId: string,
-    options: { readonly includeCompleteMessages?: boolean } = {},
+    options: { readonly schemaVersion?: 2 | 3; readonly includeCompleteMessages?: boolean } = {},
   ): Promise<SessionTranscriptV2Result | undefined> {
     const thread = await this.#readPersistedThreadForSession(sessionId);
     if (thread === undefined) return undefined;
@@ -4449,6 +4463,8 @@ export class AgenCDaemonAgentManager {
   }
 
   async streamAgentMessage(params: {
+    readonly includeToolProgress?: boolean;
+    readonly turnChanges?: { readonly includeDiff?: boolean };
     readonly exactOutput?: boolean;
     /** Settings of the skill the user started this turn with. */
     readonly skillInvocation?: MessageSkillInvocation;
@@ -4525,6 +4541,8 @@ export class AgenCDaemonAgentManager {
         sessionId: params.sessionId,
         content: params.content,
         originalContent: params.content,
+        ...(params.includeToolProgress === true ? { includeToolProgress: true } : {}),
+        ...(params.turnChanges !== undefined ? { turnChanges: params.turnChanges } : {}),
         ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
         ...(params.skillInvocation !== undefined
           ? { skillInvocation: params.skillInvocation }

@@ -1,3 +1,4 @@
+import { withLiveShellProgress } from "../../src/session/live-shell-progress.js";
 import { expect, test, vi } from "vitest";
 import type { LLMMessage } from "../../src/llm/types.js";
 import type { Session } from "../../src/session/session.js";
@@ -132,4 +133,16 @@ test("RV final fast reasoning transcript remains serializable after durable reda
  const item = f.appendRollout.mock.calls.map(call => call[0]).find(item => item.type === "response_item" && item.payload.role === "assistant");
  expect(() => serializeRolloutItem(item)).not.toThrow();
  expect(serializeRolloutItem(item)).not.toContain(secret);
+});
+
+test.each([false, true])("one-shot tool start is observable during execution only with live opt-in=%s", async enabled => {
+  const f = fixture([{ content: "", toolCalls: [{ id: "a", name: "exec_command", arguments: "{}" }] }, { content: "done", toolCalls: [] }]);
+  f.execCommand.mockImplementationOnce(async () => {
+    expect(vi.mocked(f.session.emit).mock.calls.some(([event]) => event.msg.type === "tool_call_started")).toBe(enabled);
+    return { content: "ok" };
+  });
+  await withLiveShellProgress(enabled, async () => {
+    for await (const _ of runMinimalTurn(f.session, {} as TurnContext, [{ role: "user", content: "run" }], "", new AbortController().signal)) {}
+  });
+  expect(vi.mocked(f.session.emit).mock.calls.filter(([event]) => event.msg.type === "tool_call_started")).toHaveLength(1);
 });

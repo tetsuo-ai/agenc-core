@@ -1,3 +1,4 @@
+import { liveShellProgressEnabled } from "../session/live-shell-progress.js";
 import { resolveHomeContext } from "../config/home.js";
 import { FullOutputLog, MAX_FULL_OUTPUT_LOG_BYTES, MAX_RETAINED_OUTPUT_LOGS, logOutputEnabled, reduceLogsTogether } from "./log-output.js";
 import { OneShotProcessServer, OneShotProcessServerCleanupError } from "./one-shot-process-server.js";
@@ -252,6 +253,13 @@ interface SpawnCommand {
 export class ProcessOutputBuffer {
   private readonly chunks: OutputChunk[] = [];
   private consumedIndex = 0;
+  private readonly listeners = new Set<(chunk: OutputChunk) => void>();
+  subscribe(listener: (chunk: OutputChunk) => void): () => void {
+    // Replay pending bytes without consuming the model's output.
+    for (const chunk of this.chunks.slice(this.consumedIndex)) listener(chunk);
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
   private totalChars = 0;
   private outputTail = "";
   private outputBytes = 0;
@@ -276,6 +284,7 @@ export class ProcessOutputBuffer {
       ? chunk.slice(-TASK_OUTPUT_TAIL_CHARS)
       : (this.outputTail + chunk).slice(-TASK_OUTPUT_TAIL_CHARS);
     this.chunks.push({ stream, chunk });
+    for (const listener of this.listeners) listener({ stream, chunk });
     this.totalChars += chunk.length;
     // Evicting already-consumed chunks is cheap and safe on every append. The
     // expensive pending collapse (slice/filter/join/truncateHeadTail over the
@@ -2768,6 +2777,18 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     },
   ): Promise<ExecCommandToolOutput> {
     let timedOut = true;
+    const live = liveShellProgressEnabled() && options.onProgress !== undefined;
+    // Bound notification work as well as text. The gate applies its own cap.
+    let remaining = 65536, chunksLeft = 256;
+    const unsubscribe = live ? entry.output.subscribe(chunk => {
+      if (remaining < 0 || chunksLeft-- <= 0) return;
+      const text = chunk.chunk.slice(0, Math.min(4096, remaining));
+      const dropped = text.length < chunk.chunk.length || chunksLeft === 0;
+      remaining = dropped ? -1 : remaining - text.length;
+      options.onProgress?.({ stream: chunk.stream, chunk: text, processId: entry.processId,
+        ...(dropped ? { outputDropped: true } : {}) });
+    }) : undefined;
+    try {
     const deadline = new AbortController();
     const waitStartedAt = performance.now();
     try {
@@ -2828,7 +2849,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     // An exit during the sample ended the wait as an exit, not at the yield.
     if (entry.exitState !== null) timedOut = false;
     const chunks = entry.output.drain();
-    for (const chunk of chunks) {
+    for (const chunk of live ? [] : chunks) {
       options.onProgress?.({
         stream: chunk.stream,
         chunk: chunk.chunk,
@@ -2888,6 +2909,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
     this.pruneOutputLogs();
     return result;
+    } finally { unsubscribe?.(); }
   }
 
   /**

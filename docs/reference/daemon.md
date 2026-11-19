@@ -400,6 +400,7 @@ Never retry after admission may have arrived.
 | `session.resolveToolCall`                                                                                   | Resolve a tool call whose durable outcome requires review                                                          |
 | `session.mcp.status`                                                                                        | Read the owning session's revisioned, credential-free MCP status projection                                        |
 | `session.mcp.addServer`                                                                                     | Attach MCP server to a session                                                                                     |
+| `session.turn.diff`                                                                                         | Read one file's patch from a turn's workspace checkpoint, for a connection that negotiated `turn.changes.v1` and `turn.diff.read.v1`. See [timeline-core-contract.md](../../runtime/docs/timeline-core-contract.md) |
 | `session.artifact.read`                                                                                     | Read a display artifact's bytes by its digest id, at most 512 KiB per call, for clients on protocol 1.18. See [display-attachments.md](../display-attachments.md) |
 | `plugin.settings.get` / `plugin.settings.set` / `plugin.settings.reset`                                     | Read, write or clear a plugin's manifest settings. Secrets are kept in the OS secure storage and never returned. See [skills-plugins.md](skills-plugins.md) |
 | `message.send` / `message.stream`                                                                           | Prompt turns                                                                                                       |
@@ -883,6 +884,17 @@ fields that name the call's target (`command`, `cmd`, `file_path`, `path`,
 `url`, `pattern`, `query`, each at most 1000 characters). A reopened client
 can say what was denied without the call's full arguments. Clients ignore
 notice types they do not know.
+
+A client that sends `schemaVersion: 3` (the daemon advertises
+`transcript.tools.v3` and `transcript.plans.v3`) gets the same answer with
+`schemaVersion: 3` and `turns`: for each visible turn, its tool calls (name,
+the fields that name the call's target, error and duration, never outputs),
+its plan and to-do list, the usage Core recorded when it ended and its
+workspace change summary. Without the field the answer stays schema 2. The
+other timeline capabilities (`turn.failure.v1`, `turn.usage.v1`,
+`tool.progress.shell.v1`, `turn.changes.v1`, `turn.diff.read.v1`) are asked
+for in `initialize` and change nothing for a client that does not ask. See
+[timeline-core-contract.md](../../runtime/docs/timeline-core-contract.md).
 
 Live notifications carry the same `eventId`, `sequence`, `runId`,
 `historyEpoch`, `turnId`, `clientMessageId`, and `messageId` correlation where

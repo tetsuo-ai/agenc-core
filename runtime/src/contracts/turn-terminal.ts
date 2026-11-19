@@ -15,6 +15,8 @@ export const APPROVAL_DENIED_ABORT_REASON = "approval_denied";
 const TURN_TERMINAL_EVENT_TYPES = new Set(["turn_complete", "turn_aborted", "turn_failed"]);
 
 export interface TurnFailedEvent {
+  readonly retryable?: boolean;
+  readonly sessionUsable?: boolean;
   readonly turnId: string;
   readonly code: string;
   readonly message: string;
@@ -110,6 +112,8 @@ export function createTurnFailedEvent(payload: TurnFailedEvent): {
       turnId: payload.turnId,
       code: payload.code,
       message: payload.message.slice(0, MAX_TURN_FAILURE_MESSAGE_LENGTH),
+      ...(typeof payload.retryable === "boolean" ? { retryable: payload.retryable } : {}),
+      ...(typeof payload.sessionUsable === "boolean" ? { sessionUsable: payload.sessionUsable } : {}),
       ...(completedAt !== undefined ? { completedAt } : {}),
       ...(durationMs !== undefined ? { durationMs } : {}),
       ...diagnosticFields({ ...payload }),

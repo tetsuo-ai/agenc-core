@@ -1103,8 +1103,49 @@ describe("strict canonical journal contract", () => {
     ).toBe(false);
   });
 
+  it("accepts the turn_changes payloads a turn writes", () => {
+    const files = [
+      { path: "src/math.js", op: "modified", added: 1, removed: 1 },
+      { path: "logo.png", op: "created", added: 0, removed: 0, binary: true },
+    ];
+    expect(isCanonicalEventPayload("turn_changes", { turnId: "turn-1", from: "checkpoint", files })).toBe(true);
+    expect(
+      isCanonicalEventPayload("turn_changes", {
+        turnId: "turn-1",
+        from: "checkpoint",
+        files,
+        diff: "--- a/src/math.js\n+++ b/src/math.js\n",
+        diffTruncated: true,
+      }),
+    ).toBe(true);
+    expect(
+      isCanonicalEventPayload("turn_changes", {
+        turnId: "turn-1",
+        from: "checkpoint",
+        files: [],
+        skipped: true,
+        note: "Workspace scan limit reached.",
+      }),
+    ).toBe(true);
+    expect(
+      isCanonicalEventPayload("turn_changes", {
+        turnId: "turn-1",
+        from: "checkpoint",
+        files: [{ path: "a", op: "renamed", added: 0, removed: 0 }],
+      }),
+    ).toBe(false);
+    expect(
+      isCanonicalEventPayload("turn_changes", {
+        turnId: "turn-1",
+        from: "checkpoint",
+        files: [{ path: "a", op: "modified", added: -1, removed: 0 }],
+      }),
+    ).toBe(false);
+    expect(isCanonicalEventPayload("turn_changes", { turnId: "turn-1", from: "git", files: [] })).toBe(false);
+  });
+
   it("keeps an exhaustive fail-closed schema for every known event discriminant", () => {
-    expect(KNOWN_EVENT_TYPES.size).toBe(89);
+    expect(KNOWN_EVENT_TYPES.size).toBe(90);
     expect(CANONICAL_EVENT_SCHEMA_TYPES).toEqual([...KNOWN_EVENT_TYPES].sort());
     expect(CANONICAL_EVENT_SCHEMA_TYPES).toEqual(
       expect.arrayContaining([
@@ -1112,6 +1153,7 @@ describe("strict canonical journal contract", () => {
         "run_resumed",
         "session_usage",
         "elicitation_closed",
+        "turn_changes",
       ]),
     );
     const eventsWithoutRequiredFields = new Set([

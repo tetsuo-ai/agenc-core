@@ -1,3 +1,4 @@
+import { transcriptV3Turns } from "../transcript-v3.js";
 import { attachmentCaption } from "../../tui/user-facing-tool-text.js";
 import { hasRuntimeHistoryWrapper, RUNTIME_NOTE_PLACEHOLDER, userFacingHistoryText } from "../../session/user-facing-history-text.js";
 import { PendingEffectReviews } from "../../session/pending-effect-reviews.js";
@@ -369,7 +370,7 @@ export function sessionTranscriptV2FromRollout(
   runId: string,
   activeTurn?: { readonly turnId: string; readonly clientMessageId?: string },
   artifactSessionDir?: string,
-  options: { readonly includeCompleteMessages?: boolean; readonly publishTextArtifact?: (bytes: Buffer) => string } = {},
+  options: { readonly schemaVersion?: 2 | 3; readonly includeCompleteMessages?: boolean; readonly publishTextArtifact?: (bytes: Buffer) => string } = {},
 ): SessionTranscriptV2Result {
   const reviews = new PendingEffectReviews();
   for (const item of items) {
@@ -724,7 +725,8 @@ export function sessionTranscriptV2FromRollout(
       ? activeTurn
       : { turnId: activeTurn.turnId, clientMessageId: currentClientMessageId };
   const snapshot: SessionTranscriptV2Result = {
-    schemaVersion: 2,
+    schemaVersion: options.schemaVersion === 3 ? 3 : 2,
+    ...(options.schemaVersion === 3 ? transcriptV3Turns(items, boundaryIndex) : {}),
     pendingEffectReviews: reviews.reviews,
     sessionId,
     runId,
