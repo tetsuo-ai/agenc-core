@@ -256,7 +256,7 @@ import {
   type StateFreePageReclaim,
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
-import { isRolloutInProject, isSplitRunStray } from "../state/split-run.js";
+import { isRolloutInOwnProject, runsBoundOnlyElsewhere, splitRunStrayDatabases } from "../state/split-run.js";
 
 import { logsDatabaseFilesAreAbsent } from "../state/logs-availability.js";
 
@@ -2528,6 +2528,45 @@ function savedSessionListingKey(projectDir: string, runId: string): string {
   return `${projectDir}\0${runId}`;
 }
 
+/**
+ * Mark the saved sessions of a split run's strays (state/split-run.ts), which
+ * `session.list` leaves out: a split chat was listed once from each database,
+ * and the second database's rows name no folder. Never the chat's only saved
+ * session: a stray is left out only while the database that holds the
+ * rollout lists the run too. Leaving a row out is only de-duplication, so a
+ * database that cannot be read leaves the listing as it was.
+ */
+function markSplitRunStrays(
+  listings: Map<string, AgenCDaemonSavedSessionListing>,
+  recoveredRuns: readonly RecoveredAgentRun[],
+  candidates: readonly { readonly paths: StateDatabasePaths; readonly runId: string }[],
+  allPaths: readonly StateDatabasePaths[],
+): void {
+  const strayKeys = new Set<string>();
+  try {
+    const straysByRun = new Map<string, ReadonlySet<string>>();
+    for (const { paths, runId } of candidates) {
+      if (!runsBoundOnlyElsewhere(paths, [runId]).has(runId)) continue;
+      let strays = straysByRun.get(runId);
+      if (strays === undefined) {
+        strays = splitRunStrayDatabases(runId, allPaths);
+        straysByRun.set(runId, strays);
+      }
+      if (strays.has(paths.stateDbPath)) strayKeys.add(savedSessionListingKey(paths.projectDir, runId));
+    }
+  } catch {
+    return;
+  }
+  for (const run of recoveredRuns) {
+    const key = savedSessionListingKey(run.projectDir, run.id);
+    const listing = listings.get(key);
+    if (listing === undefined || !strayKeys.has(key)) continue;
+    const listedElsewhere = recoveredRuns.some((other) =>
+      other.id === run.id && !strayKeys.has(savedSessionListingKey(other.projectDir, other.id)));
+    if (listedElsewhere) listings.set(key, { ...listing, splitRunStray: true });
+  }
+}
+
 /** @internal Exported for startup recovery boundary tests. */
 export function discoverAgenCDaemonStartupState(
   daemonHome: string,
@@ -2574,7 +2613,7 @@ export function discoverAgenCDaemonStartupState(
           ...(row.thread_model !== null ? { model: row.thread_model } : {}),
           ...(row.thread_model_provider !== null ? { modelProvider: row.thread_model_provider } : {}),
         });
-        if (row.thread_rollout_path === null || !isRolloutInProject(row.thread_rollout_path, row.id, paths.projectDir)) {
+        if (row.thread_rollout_path === null || !isRolloutInOwnProject(row.thread_rollout_path, row.id, paths.projectDir)) {
           strayCandidates.push({ paths, runId: row.id });
         }
       }
@@ -2582,13 +2621,7 @@ export function discoverAgenCDaemonStartupState(
       reader.close();
     }
   }
-  if (listings !== undefined) {
-    for (const { paths, runId } of strayCandidates) {
-      const key = savedSessionListingKey(paths.projectDir, runId);
-      const listing = listings.get(key);
-      if (listing !== undefined && isSplitRunStray(paths, runId, allPaths)) listings.set(key, { ...listing, splitRunStray: true });
-    }
-  }
+  if (listings !== undefined) markSplitRunStrays(listings, recoveredRuns, strayCandidates, allPaths);
   return { recoveredAt: new Date().toISOString(), recoveredRuns,
     recoveredToolCalls: [], warnings: [], recoveryExclusions: [] };
 }

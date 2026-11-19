@@ -10,7 +10,7 @@
  * Run inspection reads such a run from the project that holds its rollout,
  * and leaves the other databases' rows out.
  */
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 import type BetterSqlite3 from "better-sqlite3";
@@ -25,6 +25,8 @@ interface RunRolloutBindings {
   readonly sources: ReadonlySet<string>;
   /** Every binding names a rollout in this database's own project. */
   readonly ownProject: boolean;
+  /** Every binding names a rollout outside this database's own project. */
+  readonly elsewhere: boolean;
   /** Every binding is the run's own journal, not a child's. */
   readonly ownRun: boolean;
   /**
@@ -76,31 +78,57 @@ export function splitRunStrays(
 }
 
 /**
- * Whether this database's rows of the run are a split run's strays, the
- * rows the split run's reader leaves out: the rule of {@link splitRunStrays}
- * over every database of `allPaths` that holds canonical state of the run.
- * Cheap for any other database: unless every journal binding of the run in
- * it names a rollout outside its own project, no other database is opened.
+ * Of these run ids, those whose every journal binding in this database names
+ * a rollout outside its own project. Only such a database can be a split
+ * run's stray (its bindings name the rollout in the first project), so only
+ * for these is {@link splitRunStrayDatabases} worth its reads. One read of
+ * this database, whatever the number of runs.
  */
-export function isSplitRunStray(
+export function runsBoundOnlyElsewhere(
   paths: StateDatabasePaths,
+  runIds: readonly string[],
+): ReadonlySet<string> {
+  if (runIds.length === 0 || !existsSync(paths.stateDbPath)) return new Set();
+  return withReadonlyStateDatabase(paths, (db) => new Set(runIds.filter((runId) => {
+    const binding = readRunRolloutBindings(db, paths, runId);
+    return binding.sources.size > 0 && binding.elsewhere;
+  })));
+}
+
+/**
+ * The databases (by state database path) whose rows of the run the split
+ * run's reader leaves out: the rule of {@link splitRunStrays} over every
+ * database of `allPaths` that holds canonical state of the run. Empty when
+ * the run is not split that way. It reads every database, so a caller keeps
+ * the answer for the run rather than asking again.
+ */
+export function splitRunStrayDatabases(
   runId: string,
   allPaths: readonly StateDatabasePaths[],
-): boolean {
-  if (!existsSync(paths.stateDbPath)) return false;
-  const bindsElsewhere = withReadonlyStateDatabase(paths, (db) => {
-    const binding = readRunRolloutBindings(db, paths, runId);
-    return binding.sources.size > 0 && !binding.ownProject;
-  });
-  if (!bindsElsewhere) return false;
+): ReadonlySet<string> {
   const seen = new Set<string>();
   const canonical = allPaths.filter((candidate) => {
     if (seen.has(candidate.stateDbPath) || !existsSync(candidate.stateDbPath)) return false;
     seen.add(candidate.stateDbPath);
     return withReadonlyStateDatabase(candidate, (db) => hasCanonicalRunState(db, runId));
   });
-  return splitRunStrays(canonical.map((candidate) => ({ paths: candidate })), runId)
-    ?.some((stray) => stray.stateDbPath === paths.stateDbPath) === true;
+  return new Set((splitRunStrays(canonical.map((paths) => ({ paths })), runId) ?? []).map((stray) => stray.stateDbPath));
+}
+
+/**
+ * A rollout of the run in this project, by path or, when AGENC_HOME was
+ * reached by another path, by real path. Never true of a split run's stray
+ * row, which names the rollout in the first project, so a listing skips the
+ * split rule for every row it is true of.
+ */
+export function isRolloutInOwnProject(rolloutPath: string, runId: string, projectDir: string): boolean {
+  if (isRolloutInProject(rolloutPath, runId, projectDir)) return true;
+  const real = (path: string): string | undefined => {
+    try { return realpathSync(path); } catch { return undefined; }
+  };
+  const rollout = real(rolloutPath);
+  const project = real(projectDir);
+  return rollout !== undefined && project !== undefined && isRolloutInProject(rollout, runId, project);
 }
 
 /** The database holds canonical (journal) state of the run: an epoch, a terminal, an effect or a binding. */
@@ -145,7 +173,7 @@ function readRunRolloutBindings(
   paths: StateDatabasePaths,
   runId: string,
 ): RunRolloutBindings {
-  const none = { paths, sources: new Set<string>(), ownProject: false, ownRun: false, epochsCovered: false, threadRollouts: [] };
+  const none = { paths, sources: new Set<string>(), ownProject: false, elsewhere: false, ownRun: false, epochsCovered: false, threadRollouts: [] };
   if (!tableExists(db, "run_journal_bindings")) return none;
   const rows = db.prepare<[string], { epoch: number; child_run_id: string; session_id: string; source_path: string }>(
     `SELECT epoch, child_run_id, session_id, source_path FROM run_journal_bindings
@@ -167,6 +195,7 @@ function readRunRolloutBindings(
     paths,
     sources: new Set(rows.map((row) => resolve(row.source_path))),
     ownProject: rows.every((row) => isRolloutInProject(row.source_path, row.session_id, paths.projectDir)),
+    elsewhere: rows.every((row) => !isRolloutInProject(row.source_path, row.session_id, paths.projectDir)),
     ownRun: rows.every((row) => row.child_run_id === runId && row.session_id === runId),
     epochsCovered,
     threadRollouts: [thread?.rollout_path, thread?.archived_rollout_path]

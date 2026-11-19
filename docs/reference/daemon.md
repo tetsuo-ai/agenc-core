@@ -1484,10 +1484,12 @@ A chat split across project databases by an earlier resume (see the run
 inspection section) is listed from the database that holds its rollout only.
 The other databases' saved session and thread row are the rows run inspection
 leaves out of the split run, and `session.list` leaves them out by the same
-rule. Before this, such a chat was listed four times after a daemon restart,
-and the two newest rows named no folder. Any other run with rows in more than
-one database is listed as before. Only the listing changes: those rows stay on
-disk, and the saved session stays registered for its restore.
+rule. Before this, such a chat was listed once from each database after a
+daemon restart (up to four rows), and the second database's rows named no
+folder. A chat's only saved session is never left out, and a database that
+cannot be read leaves the listing as it was. Any other run with rows in more
+than one database is listed as before. Only the listing changes: those rows
+stay on disk, and the saved session stays registered for its restore.
 
 `health.ready` reports `restoringSessions`, the number of saved sessions not
 restored yet. It stays above zero until each one is requested. At shutdown
