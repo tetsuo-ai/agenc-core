@@ -89,6 +89,8 @@ import { getClientRenderingSection } from "./client-rendering.js";
 import { isLightPrintRun } from "./light-print.js";
 import { escalationStaysConfined } from "../sandbox/escalation/confinement.js";
 import { resourceLimitsLine } from "../utils/resource-limits.js";
+import { readGitHeadBranch } from "./git-head-branch.js";
+import type { PromptEnvironment } from "../session/prompt-environment.js";
 import {
   getLeanActionsSection,
   getLeanAgentToolSection,
@@ -557,13 +559,23 @@ export async function resolveMemoryOnRequest(session: SystemPromptSessionSnapsho
   }
 }
 
-// Re-export for the env helper's use; kept internal so callers don't
-// depend on node:child_process directly.
-function readGitBranch(
+/**
+ * What `git rev-parse --abbrev-ref HEAD` prints for `cwd`, or null when git
+ * fails there. Read from the repository files (git-head-branch.ts), so the
+ * line is the same on every read: the sandboxed spawn with its 1 s timeout
+ * blocked the event loop and printed `<not a git repository>` whenever it ran
+ * late on a loaded machine. Only a repository layout that reader does not
+ * model (reftable, unknown extensions, ref lookup changed by config) still
+ * asks git. Sessions without a sandbox broker never read it.
+ */
+export function readGitBranch(
   cwd: string,
   sandboxExecutionBroker?: SandboxExecutionBrokerLike,
 ): string | null {
   if (sandboxExecutionBroker === undefined) return null;
+  const head = readGitHeadBranch(cwd);
+  if (head.kind === "branch") return head.name;
+  if (head.kind === "none") return null;
   try {
     const preparedSpawn = sandboxExecutionBroker.prepareSpawn("tool", {
       program: "git",
@@ -602,6 +614,11 @@ export interface EnvInfoInputs {
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
   /** UTC calendar date (YYYY-MM-DD); defaults to today. */
   readonly currentDate?: string;
+  /**
+   * The branch to print, null for `<not a git repository>`. Present for a
+   * conversation's recorded branch (prompt-environment.ts); absent reads it.
+   */
+  readonly gitBranch?: string | null;
 }
 
 /**
@@ -616,7 +633,9 @@ export function promptCurrentDateLine(currentDate?: string): string {
 /** env_info_simple — cwd, model, git branch, OS, date. AgenC-original. */
 export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
   const { model, provider, cwd } = inputs;
-  const branch = readGitBranch(cwd, inputs.sandboxExecutionBroker);
+  const branch = inputs.gitBranch !== undefined
+    ? inputs.gitBranch
+    : readGitBranch(cwd, inputs.sandboxExecutionBroker);
   // The first two lines below carry an explicit <cwd>...</cwd> anchor and a
   // disambiguation note. Agent-tree identifiers such as `/root/task1` are
   // not files; absolute Linux paths under `/root` are filesystem paths.
@@ -818,6 +837,11 @@ export interface SystemPromptSessionSnapshot {
 
 export interface AssembleSystemPromptOpts {
   readonly lightProfile?: boolean;
+  /**
+   * The conversation's recorded date and branch for the session tail. Absent:
+   * today's date (from ctx) and a fresh branch read.
+   */
+  readonly promptEnvironment?: PromptEnvironment;
   /** Captured session services that affect prompt assembly. */
   readonly session: SystemPromptSessionSnapshot;
   /** Per-turn immutable context. */
@@ -911,6 +935,7 @@ function compactSystemPromptSnapshot(
   ctx: TurnContext,
   enabledTools: ReadonlySet<string>,
   outputStyle: OutputStyleInput | null = null,
+  currentDate: string | undefined = ctx.currentDate,
 ): AssembledSystemPrompt {
   const style = getOutputStyleSection(outputStyle);
   return fixedSystemPromptSnapshot(
@@ -943,7 +968,7 @@ function compactSystemPromptSnapshot(
       `- Answer in the user's language. Be direct and concise: lead with the result, skip preambles.`,
       ``,
       `CWD: ${ctx.cwd}`,
-      `Date: ${ctx.currentDate ?? "unknown"}`,
+      `Date: ${currentDate ?? "unknown"}`,
       ...(style === null ? [] : ["", style]),
     ].join("\n"),
   );
@@ -986,6 +1011,7 @@ export async function assembleSystemPromptSnapshot(
           opts.ctx,
           opts.enabledToolNames ?? new Set(),
           opts.outputStyle ?? null,
+          opts.promptEnvironment?.currentDate ?? opts.ctx.currentDate,
         ),
       );
     case "coordinator": {
@@ -1031,6 +1057,8 @@ export async function assembleBaseInstructionsForModel(params: {
   readonly permissionContext: ToolPermissionContext | null;
   readonly profile: SystemPromptProfile;
   readonly configSnapshot?: ReturnType<ConfigStore["current"]>;
+  /** The conversation's recorded date and branch (prompt-environment.ts). */
+  readonly promptEnvironment?: PromptEnvironment;
 }): Promise<string> {
   const enabledToolNames = new Set(
     params.registry.tools.map((tool) => tool.name),
@@ -1054,6 +1082,7 @@ export async function assembleBaseInstructionsForModel(params: {
     ...(params.promptIdentity !== undefined
       ? { promptIdentity: params.promptIdentity } : {}),
     permissionContext: params.permissionContext,
+    ...(params.promptEnvironment !== undefined ? { promptEnvironment: params.promptEnvironment } : {}),
     autonomousMode: params.ctx.config.autonomousMode === true,
     outputStyle: await resolveOutputStyleFromSession(
       params.session,
@@ -1208,7 +1237,12 @@ export async function assembleSystemPrompt(
     ...(session.services?.sandboxExecutionBroker !== undefined
       ? { sandboxExecutionBroker: session.services.sandboxExecutionBroker }
       : {}),
-    ...(ctx.currentDate !== undefined ? { currentDate: ctx.currentDate } : {}),
+    ...(opts.promptEnvironment !== undefined
+      ? {
+          currentDate: opts.promptEnvironment.currentDate,
+          ...(opts.promptEnvironment.gitBranch !== undefined ? { gitBranch: opts.promptEnvironment.gitBranch } : {}),
+        }
+      : ctx.currentDate !== undefined ? { currentDate: ctx.currentDate } : {}),
   };
   // Managed routing is resolved later by the delegated concrete adapter.
   const lightRequest = resolveLightRequest(session, envInfoInputs.provider);
