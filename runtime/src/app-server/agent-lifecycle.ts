@@ -44,6 +44,7 @@ import {
 
 import { AsyncLock } from "../utils/async-lock.js";
 import { canonicalRolloutHoldsNoInput } from "../session/rollout-input.js";
+import type { TurnAdviceReader } from "../session/turn-advice.js";
 import { UNUSED_TUI_PREWARM_STOP_REASON } from "./agent-stop-reasons.js";
 import {
   captureRecoverableCommandEnvironment,
@@ -4495,6 +4496,8 @@ export class AgenCDaemonAgentManager {
     readonly methodName?: "message.send" | "message.stream";
     /** Set only by authenticated daemon ingress, never by RPC payload metadata. */
     readonly localMcpAccess?: boolean;
+    /** Who reads the advice of this prompt's turn (`session/turn-advice.ts`). */
+    readonly adviceReader?: TurnAdviceReader;
   }): Promise<AgenCBackgroundAgentMessageResult> {
     const methodName = params.methodName ?? "message.stream";
     if (this.#sessionManager === undefined) {
@@ -4562,6 +4565,7 @@ export class AgenCDaemonAgentManager {
           ? { skillInvocation: params.skillInvocation }
           : {}),
         ...(params.localMcpAccess !== undefined ? { localMcpAccess: params.localMcpAccess } : {}),
+        ...(params.adviceReader !== undefined ? { adviceReader: params.adviceReader } : {}),
         ...(params.userPromptText !== undefined ? { userPromptText: params.userPromptText } : {}),
         ...(params.displayUserMessage !== undefined
           ? { displayUserMessage: params.displayUserMessage }

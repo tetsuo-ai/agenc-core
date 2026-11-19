@@ -15,6 +15,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { redactSecrets } from "../secrets/sanitizer.js";
 import type { PluginSettingsService } from "../plugins/settings-service.js";
 import type { PluginSettingsResult } from "./protocol/index.js";
+import type { TurnAdviceReader } from "../session/turn-advice.js";
 import { sessionMcpAttachmentIssue } from "../mcp-client/local-control.js";
 import { isAbsolute } from "node:path";
 import type { WhisperService } from "../audio/whisper.js";
@@ -131,6 +132,8 @@ import {
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
   AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY,
   AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
+  AGENC_SLASH_COMMAND_ADVICE_CAPABILITY,
+  AGENC_COMPACT_ACTION_ADVICE_CAPABILITY,
   AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY,
   MAX_SESSION_SHELL_COMMAND_UTF8_BYTES,
   MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
@@ -1935,6 +1938,7 @@ export class AgenCDaemonJsonRpcDispatcher {
             AGENC_DAEMON_METHOD_CAPABILITIES_KEY
           ]["session.transcript.v2"] === true,
           connection.remoteAccess === undefined,
+          turnAdviceReaderOf(connection),
         );
       case "message.stream":
         return this.#streamMessage(
@@ -1945,6 +1949,7 @@ export class AgenCDaemonJsonRpcDispatcher {
             AGENC_DAEMON_METHOD_CAPABILITIES_KEY
           ]["session.transcript.v2"] === true,
           connection.remoteAccess === undefined,
+          turnAdviceReaderOf(connection),
         );
       case "thread/realtime/start":
         return successResponse(
@@ -2652,6 +2657,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     signal: AbortSignal,
     identitySafeCancellation: boolean,
     localMcpAccess: boolean,
+    adviceReader: TurnAdviceReader,
   ): Promise<AgenCDaemonResponse> {
     const sendParams = validateMessageSendParams(params);
     const messageId = sendParams.clientMessageId ?? this.#createMessageId();
@@ -2673,6 +2679,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           acceptedAt,
           methodName: "message.send",
           localMcpAccess,
+          adviceReader,
           ...(sendParams.ifBusy !== undefined
             ? { ifBusy: sendParams.ifBusy }
             : {}),
@@ -2706,6 +2713,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     signal: AbortSignal,
     identitySafeCancellation: boolean,
     localMcpAccess: boolean,
+    adviceReader: TurnAdviceReader,
   ): Promise<AgenCDaemonResponse> {
     const streamParams = validateMessageStreamParams(params);
     const messageId = streamParams.clientMessageId ?? this.#createMessageId();
@@ -2731,6 +2739,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           streamId,
           acceptedAt,
           localMcpAccess,
+          adviceReader,
           ...(streamParams.ifBusy !== undefined
             ? { ifBusy: streamParams.ifBusy }
             : {}),
@@ -3128,6 +3137,19 @@ function methodSupportsRequestCancellation(
     method === "message.stream" ||
     method === "message.send"
   );
+}
+
+/**
+ * Who reads the advice of a turn this connection prompts: the TUI, which
+ * declares it runs slash commands; a client that offers Compact itself; or
+ * any other client. A remote connection initializes with no client
+ * capabilities, so it is a plain client.
+ */
+function turnAdviceReaderOf(connection: AgenCDaemonJsonRpcConnection): TurnAdviceReader {
+  const capabilities = connection.initializeState?.clientCapabilities;
+  if (capabilities?.[AGENC_SLASH_COMMAND_ADVICE_CAPABILITY] === true) return "tui";
+  if (capabilities?.[AGENC_COMPACT_ACTION_ADVICE_CAPABILITY] === true) return "client_with_compact";
+  return "client";
 }
 
 function objectParams(params: unknown): JsonObject {

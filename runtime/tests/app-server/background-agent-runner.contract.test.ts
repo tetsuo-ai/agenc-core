@@ -86,6 +86,7 @@ import { resolveRoutinePermissionGrant } from "../routines/permission-authority.
 import type { CsvAgentJobsRepositoryProvider } from "./csv-agent-jobs-authority.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { turnAdviceReader } from "../session/turn-advice.js";
 import type {
   PermissionContextPreparedUpdate,
   PermissionContextPublication,
@@ -10712,6 +10713,62 @@ describe("AgenC delegate background-agent runner", () => {
       await connection.close();
       await dispatcher.close();
       await h.runner.stopAgent("session-compact-rpc", "test_cleanup");
+    }
+  });
+
+  it("[managed-thread] gives each turn's advice to the client that prompted it", async () => {
+    const { runner, control, session, configStore } = makeTopLevelRunner({ conversationId: "session-advice-reader" });
+    await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+    // Not started by the TUI: a plain client until a prompt says otherwise.
+    expect(turnAdviceReader(session as never)).toBe("client");
+    let submitDriver: (message: string, options?: unknown) => Promise<void> = async () => { throw new Error("driver missing"); };
+    Object.assign(session, {
+      newDefaultTurn: () => ({}),
+      installTurnDriverHooks: (hooks: { submit: typeof submitDriver }) => { submitDriver = hooks.submit; },
+    });
+    const readers: string[] = [];
+    const runTurnFn = vi.fn(async function* (turnSession: unknown) {
+      readers.push(turnAdviceReader(turnSession as never));
+    });
+    __installDaemonTurnDriverHooksForTest(session as never, configStore as never, runTurnFn as never);
+    control.sendInput.mockImplementation(async (...invocation: unknown[]) => {
+      await submitDriver(invocation[1] as string, invocation[2]);
+    });
+    const sessions = new AgenCDaemonSessionManager();
+    const manager = new AgenCDaemonAgentManager({ runner, sessionManager: sessions });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: sessions });
+    await sessions.restoreSession({ sessionId: "advice-client", agentId: "session-advice-reader", status: "waiting", createdAt: "2026-11-19T00:00:00.000Z" });
+    await manager.restoreAgent({ agentId: "session-advice-reader", objective: "passive", startedAt: "2026-11-19T00:00:00.000Z", lastActiveAt: "2026-11-19T00:00:00.000Z", sessionIds: ["advice-client"], runtimeAvailable: true });
+    const connect = async (capabilities: Record<string, boolean>) => {
+      const connection = dispatcher.createConnection();
+      await connection.dispatch({ jsonrpc: "2.0", id: "initialize", method: "initialize", params: { protocol: { version: "1.2.0" }, capabilities } });
+      return connection;
+    };
+    const tui = await connect({ "turn.advice.slashCommands.v1": true });
+    const desktop = await connect({ "turn.advice.compactAction.v1": true });
+    const sdk = await connect({});
+    try {
+      for (const [connection, name] of [[tui, "tui"], [sdk, "sdk"], [desktop, "desktop"], [tui, "tui-again"]] as const) {
+        const result = await connection.dispatch({ jsonrpc: "2.0", id: name, method: "message.stream", params: {
+          sessionId: "advice-client", content: `prompt from ${name}`, clientMessageId: `advice-${name}`, streamId: `stream-${name}`,
+        } });
+        expect(result, name).not.toHaveProperty("error");
+      }
+    } finally {
+      for (const connection of [tui, desktop, sdk]) await connection.close();
+      await dispatcher.close();
+      await runner.stopAgent("session-advice-reader", "test_cleanup");
+    }
+    expect(readers).toEqual(["tui", "client", "client_with_compact", "tui"]);
+  });
+
+  it("[managed-thread] marks a session the TUI started as read by the TUI", async () => {
+    const { runner, session } = makeTopLevelRunner({ conversationId: "session-advice-tui" });
+    await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [], metadata: { mode: "tui" } });
+    try {
+      expect(turnAdviceReader(session as never)).toBe("tui");
+    } finally {
+      await runner.stopAgent("session-advice-tui", "test_cleanup");
     }
   });
 

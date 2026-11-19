@@ -29,6 +29,7 @@ import type {
 import type { Event } from "../../session/event-log.js";
 import type { SessionSubmitOptions } from "../../session/autonomous-mode.js";
 import type { SkillInvocationSettings } from "../../session/skill-invocation.js";
+import type { TurnAdviceReader } from "../../session/turn-advice.js";
 import type {
   SessionElicitationResponseParams,
 } from "../../elicitation/respond.js";
@@ -317,6 +318,8 @@ export interface AgenCBackgroundAgentMessageParams {
   readonly ifBusy?: "reject";
   /** Trusted daemon connection provenance; omitted/internal/autonomous ingress fails closed. */
   readonly localMcpAccess?: boolean;
+  /** Who reads the advice of this prompt's turn; omitted by internal ingress, which keeps the session's reader. */
+  readonly adviceReader?: TurnAdviceReader;
 }
 
 export interface AgenCBackgroundAgentMessageResult {

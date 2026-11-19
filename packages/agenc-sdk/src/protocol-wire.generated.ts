@@ -70,6 +70,9 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * answering with the context tokens before and after. A client finds it in
  * `daemon.methods`; it is not gated by the negotiated version, since nothing
  * the daemon sends asks a client to call it.
+ * It also reads two optional client capabilities that only word the advice
+ * of a context-full failure: `turn.advice.slashCommands.v1` (the TUI) and
+ * `turn.advice.compactAction.v1` (a client that offers Compact itself).
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */

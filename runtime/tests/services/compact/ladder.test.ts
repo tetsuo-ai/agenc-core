@@ -132,16 +132,20 @@ describe("describeCompactionDecline", () => {
 });
 
 describe("compactionExhaustedReasonText", () => {
-  test("interactive turns hint at /compact; unattended turns do not", () => {
+  test("only the TUI is told to run /compact; other clients get plain words or nothing", () => {
     const exhausted = {
       tiersAttempted: ["aggressive_summary", "emergency_local"] as const,
       lastSamplePromptTokens: 3100,
       limit: 2048,
     };
-    expect(compactionExhaustedReasonText({ ...exhausted, interactive: false }))
+    expect(compactionExhaustedReasonText({ ...exhausted, reader: "none" }))
       .toBe("compact_ladder_exhausted: tiers=[aggressive_summary,emergency_local]; lastSamplePromptTokens=3100 limit=2048");
-    expect(compactionExhaustedReasonText({ ...exhausted, interactive: true }))
+    expect(compactionExhaustedReasonText({ ...exhausted, reader: "tui" }))
       .toBe("compact_ladder_exhausted: tiers=[aggressive_summary,emergency_local]; lastSamplePromptTokens=3100 limit=2048; run /compact to retry manually");
+    expect(compactionExhaustedReasonText({ ...exhausted, reader: "client" }))
+      .toBe("compact_ladder_exhausted: tiers=[aggressive_summary,emergency_local]; lastSamplePromptTokens=3100 limit=2048; compact the conversation, then retry");
+    expect(compactionExhaustedReasonText({ ...exhausted, reader: "client_with_compact" }))
+      .toBe("compact_ladder_exhausted: tiers=[aggressive_summary,emergency_local]; lastSamplePromptTokens=3100 limit=2048");
   });
 
   test("a ladder that never started names the skip, not an empty tier list", () => {
@@ -150,9 +154,9 @@ describe("compactionExhaustedReasonText", () => {
       lastSamplePromptTokens: 4000,
       limit: 2048,
     };
-    expect(compactionExhaustedReasonText({ ...skipped, interactive: false }))
+    expect(compactionExhaustedReasonText({ ...skipped, reader: "none" }))
       .toBe("mid_turn_compact_skipped: lastSamplePromptTokens=4000 limit=2048");
-    expect(compactionExhaustedReasonText({ ...skipped, interactive: true }))
+    expect(compactionExhaustedReasonText({ ...skipped, reader: "tui" }))
       .toBe("mid_turn_compact_skipped: lastSamplePromptTokens=4000 limit=2048; run /compact to retry manually");
   });
 });

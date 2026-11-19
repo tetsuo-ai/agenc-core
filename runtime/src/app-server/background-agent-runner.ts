@@ -153,6 +153,7 @@ import type {
 import { isSelectableHistoryUserMessage, normalizeHistoryMessages, splitActiveHistory } from "../session/session.js";
 import type { Event } from "../session/event-log.js";
 import { respondToSessionElicitation } from "../elicitation/respond.js";
+import { setTurnAdviceReader } from "../session/turn-advice.js";
 import type {
   AgentStatus as DaemonAgentStatus,
   JsonObject,
@@ -633,6 +634,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       bootstrap.session,
     );
     installDaemonTurnDriverHooks(bootstrap.session, bootstrap.configStore);
+    // The TUI starts its sessions with mode "tui"; any other client is not
+    // the TUI until a prompt it sends says otherwise.
+    setTurnAdviceReader(bootstrap.session, params.metadata?.mode === "tui" ? "tui" : "client");
 
     let authorityOwner: ActiveBackgroundAgent | undefined;
     let uninstallPermissionAuthorityCoordinator = (): void => {};
@@ -1210,6 +1214,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           bootstrap.session,
         );
         installDaemonTurnDriverHooks(bootstrap.session, bootstrap.configStore);
+        setTurnAdviceReader(bootstrap.session, params.metadata?.mode === "tui" ? "tui" : "client");
         uninstallPermissionAuthorityCoordinator =
           installDaemonPermissionAuthorityCoordinator(
             bootstrap,
@@ -2375,6 +2380,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         }
         active.bootstrap.rolloutStore.assertModelExecutionAllowed?.();
         active.messageSubmission = submission;
+        // The client of this prompt reads its turn's advice; set as the turn
+        // starts, so prompts queued from different clients each get their own.
+        if (params.adviceReader !== undefined) {
+          setTurnAdviceReader(active.bootstrap.session, params.adviceReader);
+        }
         try {
           return await this.#executeAgentMessageSubmission(
             active,

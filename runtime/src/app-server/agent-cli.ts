@@ -32,6 +32,7 @@ import { resolveAgenCDaemonRequestTimeoutMs } from "./daemon-request-policy.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
+  AGENC_SLASH_COMMAND_ADVICE_CAPABILITY,
   JSON_RPC_VERSION,
   type AgentAttachParams,
   type AgentAttachResult,
@@ -442,7 +443,8 @@ export async function createConnectedAgenCJsonLineDaemonTuiClient(
       protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       clientName: "agenc-agent-tui",
       authCookie,
-      capabilities: {},
+      // The TUI runs /compact and /clear: a turn it prompts may name them.
+      capabilities: { [AGENC_SLASH_COMMAND_ADVICE_CAPABILITY]: true },
     },
   });
 }

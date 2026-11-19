@@ -80,6 +80,9 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * answering with the context tokens before and after. A client finds it in
  * `daemon.methods`; it is not gated by the negotiated version, since nothing
  * the daemon sends asks a client to call it.
+ * It also reads two optional client capabilities that only word the advice
+ * of a context-full failure: `turn.advice.slashCommands.v1` (the TUI) and
+ * `turn.advice.compactAction.v1` (a client that offers Compact itself).
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
@@ -120,6 +123,20 @@ export const AGENC_PENDING_APPROVALS_LIST_CAPABILITY =
 /** Client understands the cross-provider disclosure and explicit approval marker. */
 export const AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY =
   "approvals.cross_provider_spawn.v1" as const;
+/**
+ * A client that runs Core's slash commands (the TUI). A turn it prompted may
+ * end with advice that names /compact and /clear; any other client gets the
+ * same advice in plain words.
+ */
+export const AGENC_SLASH_COMMAND_ADVICE_CAPABILITY =
+  "turn.advice.slashCommands.v1" as const;
+/**
+ * A client that offers Compact itself when a turn ends because the
+ * conversation no longer fits (`turn_failed` code `compact_failed`): a turn
+ * it prompted ends without advice.
+ */
+export const AGENC_COMPACT_ACTION_ADVICE_CAPABILITY =
+  "turn.advice.compactAction.v1" as const;
 /**
  * `message.stream` accepts `skillInvocation` (protocol 1.35): a daemon without
  * it refuses the whole request when the field is present.

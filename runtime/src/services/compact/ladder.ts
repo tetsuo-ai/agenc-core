@@ -22,6 +22,7 @@
  */
 
 import type { CompactionCannotReduceError, CompactionFailureReason } from "./transaction-types.js";
+import type { TurnAdviceReader } from "../../session/turn-advice.js";
 
 export type CompactionLadderTier = "standard" | "aggressive_summary" | "emergency_local";
 
@@ -143,17 +144,30 @@ export function describeCompactionDecline(decline: CompactionDecline): string {
   );
 }
 
-/** Terminal text for a turn whose compaction ladder ran out of tiers. */
+/**
+ * Terminal text for a turn whose compaction ladder ran out of tiers. Only the
+ * TUI is told to run /compact; another daemon client gets the same advice in
+ * plain words, and a client that offers Compact itself, or a session nobody
+ * answers, gets none (see `session/turn-advice.ts`).
+ */
 export function compactionExhaustedReasonText(params: {
   readonly tiersAttempted: readonly CompactionLadderTier[];
   readonly lastSamplePromptTokens: number;
   readonly limit: number;
-  readonly interactive: boolean;
+  readonly reader: TurnAdviceReader | "none";
 }): string {
   const measure = `lastSamplePromptTokens=${params.lastSamplePromptTokens} limit=${params.limit}`;
   const base =
     params.tiersAttempted.length > 0
       ? `compact_ladder_exhausted: tiers=[${params.tiersAttempted.join(",")}]; ${measure}`
       : `mid_turn_compact_skipped: ${measure}`;
-  return params.interactive ? `${base}; run /compact to retry manually` : base;
+  switch (params.reader) {
+    case "tui":
+      return `${base}; run /compact to retry manually`;
+    case "client":
+      return `${base}; compact the conversation, then retry`;
+    case "client_with_compact":
+    case "none":
+      return base;
+  }
 }

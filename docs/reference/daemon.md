@@ -1515,6 +1515,23 @@ as do normal model-admission checks.
 | Post-tool checkpoint | After the outer token gate, compact returns no committed result, except a safely deferred `no_shrink`. | `warning` cause `mid_turn_compact_failed`, then `turn_failed` code `compact_failed` |
 | Provider context refusal (413) | Every compaction ladder tier declined the bounded collapse, or the collapse was already attempted for this overflow. A tier that declines steps down first (`warning` cause `auto_compact_degraded`, prefixed `reactive_recovery/in_turn`). | `warning` cause `context_collapse_ladder_exhausted` (when tiers ran), then `error` cause `prompt_too_long_exhausted` |
 
+#### Advice in a context-full failure
+
+A `compact_failed` message that says the conversation is too large for the
+next reply ends with advice worded for whoever reads it
+(`runtime/src/session/turn-advice.ts`). The reader is the client that
+prompted the turn, as it declared itself in `initialize`; before any prompt it
+is the client that started the session (`metadata.mode: "tui"` for the TUI):
+
+| Reader | Client capability | Advice |
+| --- | --- | --- |
+| The TUI | `turn.advice.slashCommands.v1` | `Run /compact to retry, or start a new conversation with /clear.` (with a larger model too when even the shortened request cannot fit) |
+| A client that offers Compact itself | `turn.advice.compactAction.v1` | None: the client shows its own action (Desktop's Compact runs `session.compact`) |
+| Any other client | neither | `Compact the conversation and retry, or start a new conversation.` (with a larger model too, as above) |
+
+A session nobody answers (`nonInteractive`, such as `agenc -p`) gets no
+advice, as before. The capabilities only change wording; they grant nothing.
+
 Keep-alive (interactive / desktop / `keepAlive` subagent) sessions
 stay promptable. A later `message.send` can start a new turn. The
 daemon-backed `--print` / `--no-tui` path exits 1 for this `turn_failed`.
