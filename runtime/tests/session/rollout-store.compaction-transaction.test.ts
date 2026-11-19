@@ -51,7 +51,10 @@ import {
   digestWithDomain,
   sha256Hex,
 } from "../../src/services/compact/summary-v1.js";
-import { readCompactionRolloutPayload } from "../../src/session/compaction-event-reader.js";
+import {
+  CompactionRecordDamagedError,
+  readCompactionRolloutPayload,
+} from "../../src/session/compaction-event-reader.js";
 import { serializeRolloutItem } from "../../src/session/rollout-item.js";
 import {
   compactActiveHistoryEntries,
@@ -1101,6 +1104,69 @@ describe("RolloutStore transactional compaction", () => {
       ).toBe(false);
     } finally {
       reopened.close();
+    }
+  });
+
+  it("refuses a chat whose stored summary fails its digest in one plain sentence, and opens the others", () => {
+    const cwd = createTestWorkspace();
+    temporaryWorkspaces.push(cwd);
+    const store = openStore("damaged-summary", {}, cwd);
+    const rolloutPath = store.rolloutPath;
+    try {
+      const transaction = commitSmallCompaction(store, "damaged-summary-attempt");
+      store.markProjectionComplete(transaction.intent.attempt_id);
+      store.markCleanupComplete(transaction.intent.attempt_id);
+    } finally {
+      store.close();
+    }
+    // What Core before w21 wrote (w20-polish): the summary digested over the
+    // summarizer's words, stored by the payload writer with them redacted.
+    rewriteManifestCommit(rolloutPath, (commit) => {
+      const { summary_sha256: _digest, ...withoutDigest } = commit.summary;
+      const summary = summaryDigestedAsGiven({
+        ...withoutDigest,
+        body: {
+          ...commit.summary.body,
+          narrative: "continue at the next token: suspension bridge load path",
+        },
+      });
+      return {
+        summary,
+        summaryDag: commit.summary_dag,
+        replacementHistory: commit.replacement_history.map((message) =>
+          message.compactionHistory === undefined
+            ? message
+            : {
+                ...message,
+                compactionHistory: {
+                  ...message.compactionHistory,
+                  summary_sha256: summary.summary_sha256,
+                },
+              }
+        ),
+      };
+    });
+    expect(readFileSync(rolloutPath, "utf8")).toContain("token: [REDACTED_SECRET]");
+    let refusal: unknown;
+    try {
+      openStore("damaged-summary", { resume: true }, cwd).close();
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(CompactionRecordDamagedError);
+    expect((refusal as Error).message).toBe(
+      "This chat cannot be opened because the summary saved when it was compacted is damaged.",
+    );
+    expect((refusal as CompactionRecordDamagedError).attemptId).toBe("damaged-summary-attempt");
+    expect((refusal as CompactionRecordDamagedError).code).toBe("COMPACTION_RECORD_DAMAGED");
+
+    // Another chat in the same home opens, compacts and reads back.
+    const other = openStore("healthy-neighbour");
+    try {
+      commitSmallCompaction(other, "healthy-neighbour-attempt");
+      expect(other.readAll().some((item) => item.type === "compaction_committed")).toBe(true);
+    } finally {
+      other.close();
     }
   });
 

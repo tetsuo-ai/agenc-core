@@ -118,6 +118,7 @@ import {
   readCompactionPersistedIntentV1,
   readCompactionPersistedRollbackCommittedV1,
   readCompactionRolloutPayload,
+  readStoredCompactionCommit,
 } from "./compaction-event-reader.js";
 import { DegradedStore } from "./degraded-store.js";
 import { isUnsupportedDirectorySync } from "../utils/durable-atomic-file.js";
@@ -1527,7 +1528,7 @@ function hydrateManifestCompactionItems(
       if (intent === undefined) {
         throw new Error("manifest compaction commit has no hydrated intent");
       }
-      const payload = readCompactionRolloutPayload("compaction_committed", {
+      const payload = readStoredCompactionCommit({
         format_version: persisted.format_version,
         minimum_reader_runtime: persisted.minimum_reader_runtime,
         attempt_id: persisted.attempt_id,
