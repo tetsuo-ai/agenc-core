@@ -178,7 +178,7 @@ Linked worktrees, including worktrees of a bare repository, need at least one
 of those default-branch refs in their shared Git repository. A bare mirror
 that stores the upstream branch only under a custom name will fail the
 baseline contract with `could not resolve the repository default branch`.
-An absent `origin/HEAD` alone is harmless when another listed ref exists.
+`origin/HEAD` is never consulted on this line.
 Provision `refs/remotes/origin/core-desktop` from the independently verified
 upstream branch before running the contract, for example in an isolated clone:
 
@@ -213,17 +213,16 @@ baselines are therefore bound to `core-desktop` itself, never to `main` or
 `origin/HEAD` (which names `main` in an ordinary clone), and the contract
 test fails if that binding is lost. A change to a file in a benchmark's
 module closure (or to the harness) leaves the contract red until the
-baseline is recaptured for the line's own head:
+baseline is recaptured for the line's own head, the way a `main` release
+recaptures after it lands:
 
-1. In an isolated clone checked out at the change's final commit `X`, set
-   `refs/remotes/origin/core-desktop` to `X` (the commit about to be
-   published), install and build as a `main` release recapture does, and
-   capture with the pinned toolchain and the default `--source-revision HEAD`.
-2. Commit only `baseline.v1.json` and `baseline.v1.md` on top of `X`.
-3. Push both commits to `core-desktop` together. From then on every clone
-   checks `X` against the real `origin/core-desktop`; until that push the
-   contract stops at `benchmark source revision is not an ancestor of the
-   default branch`.
+1. In an isolated clone, fetch the published branch into
+   `refs/remotes/origin/core-desktop` and check out that commit.
+2. Install and build as a `main` release recapture does, and capture with
+   the pinned toolchain and the default `--source-revision HEAD`.
+3. Commit only `baseline.v1.json` and `baseline.v1.md` on top of that commit
+   and land it on `core-desktop`. The captured revision is already published,
+   so any merge method keeps it reachable.
 
 When `main` is merged into `core-desktop` on purpose, keep this line's
 `BENCHMARK_DEFAULT_BRANCH` and recapture after the merge.
