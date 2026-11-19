@@ -333,7 +333,7 @@ LF is the same delimiter rather than an empty extra frame. The SDK socket and
 subprocess transports share that rule and `AGENC_SDK_MAX_FRAME_BYTES`.
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
-- Protocol version constant: **`1.16.0`**
+- Protocol version constant: **`1.37.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).
 - Clients send `initialize` with the protocol version. Negotiation compares the
   numeric major and minor versions: the server accepts the same major when the
@@ -376,6 +376,15 @@ subprocess transports share that rule and `AGENC_SDK_MAX_FRAME_BYTES`.
 - Protocol 1.16 adds `project.trustStatus` and `project.trust`. A client that
   negotiates 1.15 or older sees both advertised `false` and gets
   `METHOD_NOT_FOUND`, so it keeps whatever it did before.
+- Protocol 1.37 adds `session.compact` (see
+  [Compacting a session](#compacting-a-session)). The timeline capabilities
+  (`turn.failure.v1`, `turn.usage.v1`, `transcript.tools.v3`,
+  `transcript.plans.v3`, `tool.progress.shell.v1`, `turn.changes.v1` and
+  `turn.diff.read.v1`, with `session.turn.diff`) take no protocol version: a
+  client asks for them in its own `initialize`
+  ([timeline-core-contract.md](../../runtime/docs/timeline-core-contract.md)).
+  Neither does the `partial` mark on run inspection answers for a split run,
+  an additive response field.
 
 ### Public methods (`AGENC_DAEMON_METHODS`)
 

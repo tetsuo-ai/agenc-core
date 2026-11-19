@@ -517,7 +517,7 @@ evidence shape (`toolCallId`, `disposition`, `evidenceRef`, and
 `evidenceSha256`), and partial mixtures are rejected. An earlier-shape request
 leaves durable effects unchanged in `remaining`.
 
-Protocol version constant: **`1.9.0`**
+Protocol version constant: **`1.37.0`**
 (`AGENC_SDK_DAEMON_PROTOCOL_VERSION`). Handshake rules and
 `PROTOCOL_VERSION_UNSUPPORTED` live in [daemon.md](reference/daemon.md).
 The SDK retries initialization at a daemon running protocol 1.0 through 1.8 and
