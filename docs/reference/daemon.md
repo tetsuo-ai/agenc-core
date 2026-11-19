@@ -1276,7 +1276,8 @@ A `RUN_ID_AMBIGUOUS` error says why in its `data`: next to
 | `admission_record_limit` | The run's rollout holds more admission records than one read checks (100,000). |
 
 The field is additive and takes no protocol version. An older daemon sends no
-`reason`, and a client treats a reason it does not know like none.
+`reason`, nor does a daemon that could not work the reason out (a database it
+cannot read); a client treats a reason it does not know like none.
 
 The full persistence, replay, gap, effect, migration, and crash semantics are
 documented in
@@ -1486,8 +1487,10 @@ The other databases' saved session and thread row are the rows run inspection
 leaves out of the split run, and `session.list` leaves them out by the same
 rule. Before this, such a chat was listed once from each database after a
 daemon restart (up to four rows), and the second database's rows named no
-folder. A chat's only saved session is never left out, and a database that
-cannot be read leaves the listing as it was. Any other run with rows in more
+folder. A stray saved session is left out only while the database that holds
+the rollout lists a saved session of the run, and a database that cannot be
+read leaves the listing as it was (the daemon says so once on stderr). Any
+other run with rows in more
 than one database is listed as before. Only the listing changes: those rows
 stay on disk, and the saved session stays registered for its restore.
 
