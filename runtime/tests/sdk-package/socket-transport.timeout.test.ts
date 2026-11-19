@@ -30,7 +30,7 @@ describe.skipIf(process.platform === "win32")(
       }
     });
 
-    it("keeps full-turn message RPCs alive for hours while control RPCs retain their timeout", async () => {
+    it("keeps full-turn message RPCs and compactions alive past the control timeout, which other control RPCs keep", async () => {
       root = await mkdtemp(join(tmpdir(), "agenc-sdk-socket-"));
       const socketPath = join(root, "daemon.sock");
       server = createServer((socket) => {
@@ -78,6 +78,30 @@ describe.skipIf(process.platform === "win32")(
       await expect(fullTurn).resolves.toMatchObject({
         result: { messageId: "message_1" },
       });
+
+      // A compaction summarizes the conversation with the model before it answers.
+      vi.useFakeTimers();
+      let compacted = false;
+      const compaction = transport.request({
+        jsonrpc: "2.0",
+        id: "compact",
+        method: "session.compact",
+        params: { sessionId: "session_1" },
+      });
+      void compaction.finally(() => {
+        compacted = true;
+      });
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+      expect(compacted).toBe(false);
+      vi.useRealTimers();
+      serverSocket!.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: "compact",
+          result: { sessionId: "session_1", ok: true, tokensBefore: 64_000, tokensAfter: 4_096 },
+        })}\n`,
+      );
+      await expect(compaction).resolves.toMatchObject({ result: { ok: true, tokensAfter: 4_096 } });
 
       vi.useFakeTimers();
       const control = transport.request({
