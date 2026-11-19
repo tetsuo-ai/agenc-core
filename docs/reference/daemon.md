@@ -377,7 +377,8 @@ subprocess transports share that rule and `AGENC_SDK_MAX_FRAME_BYTES`.
   negotiates 1.15 or older sees both advertised `false` and gets
   `METHOD_NOT_FOUND`, so it keeps whatever it did before.
 - Protocol 1.37 adds `session.compact` (see
-  [Compacting a session](#compacting-a-session)). The timeline capabilities
+  [Compacting a session](#compacting-a-session)); `daemon.methods` lists it
+  whatever version the client negotiated. The timeline capabilities
   (`turn.failure.v1`, `turn.usage.v1`, `transcript.tools.v3`,
   `transcript.plans.v3`, `tool.progress.shell.v1`, `turn.changes.v1` and
   `turn.diff.read.v1`, with `session.turn.diff`) take no protocol version: a

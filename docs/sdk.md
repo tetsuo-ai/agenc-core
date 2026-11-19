@@ -520,7 +520,7 @@ leaves durable effects unchanged in `remaining`.
 Protocol version constant: **`1.37.0`**
 (`AGENC_SDK_DAEMON_PROTOCOL_VERSION`). Handshake rules and
 `PROTOCOL_VERSION_UNSUPPORTED` live in [daemon.md](reference/daemon.md).
-The SDK retries initialization at a daemon running protocol 1.0 through 1.8 and
+The SDK retries initialization at the older 1.x version a daemon reports and
 uses advertised capabilities for additive fallbacks. Protocol 1.6 made the
 owning runtime options and live run-settings snapshot required in `agent.attach`.
 Protocol 1.7 adds required inactive auto availability and exact-workspace bypass
