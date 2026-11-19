@@ -423,7 +423,7 @@ export class AgenCDaemonRunInspectionService {
     const canonicalMatches = matches.filter((match) => match.canonical);
     if (canonicalMatches.length === 0 && matches.length === 1) return matches[0]!;
     if (canonicalMatches.length !== 1) {
-      throw ambiguousRunOwner(runId, countRunJournalHomes(canonicalMatches, runId) > 1 ? "duplicate_run_id" : "project_split");
+      throw ambiguousRunOwner(runId, journalHomes(canonicalMatches, runId) > 1 ? "duplicate_run_id" : "project_split");
     }
     const canonical = canonicalMatches[0]!;
     this.#refreshStatusProjection(canonical.paths, runId, observedStop);
@@ -447,6 +447,9 @@ export class AgenCDaemonRunInspectionService {
     const owner: LocatedRun | undefined = authority.owner === undefined
       ? admissionMatches.length === 1 ? admissionMatches[0] : undefined
       : declaredOwnerPaths === undefined ? undefined : { paths: declaredOwnerPaths };
+    // Rows of the run in another database, and no one database that owns its
+    // admission: the records are split across databases.
+    if (owner === undefined && authority.owner === undefined) throw ambiguousRunOwner(runId, "project_split");
     if (owner === undefined || !authority.identitiesValid) throw ambiguousRunOwner(runId, "admission_owner_unproved");
     if (matches.some((match) => match.paths.stateDbPath !== canonical.paths.stateDbPath && match.paths.stateDbPath !== owner.paths.stateDbPath)) {
       throw ambiguousRunOwner(runId, "project_split");
@@ -547,6 +550,19 @@ function proveCompactionAdmissions(
     });
   }
   if (events.some((event) => proven.get(String(event.eventId)) !== 1)) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+}
+
+/**
+ * How many databases hold their own journal of the run, to tell two chats
+ * with one id from a split. The reason is a best effort and the refusal is
+ * not: a database that cannot be read counts for nothing.
+ */
+function journalHomes(canonicalMatches: readonly { readonly paths: StateDatabasePaths }[], runId: string): number {
+  try {
+    return countRunJournalHomes(canonicalMatches, runId);
+  } catch {
+    return 0;
+  }
 }
 
 /** The most admission records of a run's rollout that one read checks. */
