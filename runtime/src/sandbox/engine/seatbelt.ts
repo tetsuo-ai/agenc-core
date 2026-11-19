@@ -13,6 +13,7 @@ import {
   type SpawnOptions,
 } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   PROTECTED_METADATA_PATH_NAMES,
@@ -85,6 +86,20 @@ const PROXY_URL_ENV_KEYS = [
 
 export const MACOS_PATH_TO_SEATBELT_EXECUTABLE = "/usr/bin/sandbox-exec";
 
+/**
+ * The keychain files stay out of reach of a sandboxed command. The network
+ * section allows the security server for TLS, and with the keychain files
+ * readable that also let a command read any keychain item the security tool
+ * may read, and ask for any other: macOS then shows a prompt for the login
+ * password, which securityd raises and no rule for the command can stop
+ * (measured on macOS 27.2). TLS keeps working without them. A command that
+ * needs a keychain item runs after an approved escalation.
+ */
+export const MACOS_SEATBELT_KEYCHAIN_POLICY = `; no keychain: a keychain prompt asks for the login password
+(deny file-read* file-write*
+  (subpath (param "KEYCHAIN_HOME_DIR"))
+  (subpath "/Library/Keychains"))`;
+
 export interface CreateSeatbeltCommandArgsParams {
   readonly command: readonly string[];
   readonly fileSystemSandboxPolicy: FileSystemSandboxPolicy;
@@ -96,6 +111,8 @@ export interface CreateSeatbeltCommandArgsParams {
   readonly extraAllowUnixSockets?: readonly string[];
   /** Opt-in GPU compute (Metal) — see {@link MACOS_SEATBELT_GPU_POLICY}. */
   readonly allowGpu?: boolean;
+  /** The home folder whose keychain files are denied (see {@link MACOS_SEATBELT_KEYCHAIN_POLICY}); defaults to the user's. */
+  readonly keychainHome?: string;
   /**
    * The command launches Chromium for the Browser tool. See
    * {@link MACOS_SEATBELT_CHROMIUM_POLICY}. `bundleIdentifier` is the
@@ -324,6 +341,7 @@ export function createSeatbeltCommandArgs(
     denyReadPolicy,
     reservedWritePolicy,
     networkPolicy,
+    MACOS_SEATBELT_KEYCHAIN_POLICY,
   ];
   if (includePlatformDefaults(fileSystemSandboxPolicy)) {
     policySections.push(getMacosRestrictedReadOnlyPlatformDefaults());
@@ -357,6 +375,7 @@ export function createSeatbeltCommandArgs(
     ...macosDirParams(),
     ...unixSocketDirParams(proxy),
     ...chromiumParams,
+    ["KEYCHAIN_HOME_DIR", normalizePathForPolicy(path.join(args.keychainHome ?? os.homedir(), "Library", "Keychains"))] as const,
   ];
   return [
     "-p",
