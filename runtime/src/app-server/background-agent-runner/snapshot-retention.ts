@@ -7,6 +7,7 @@
 import type { ManagedThread } from "../../agents/thread-manager.js";
 import type { AdmissionToolCharges } from "../../budget/admission-types.js";
 import { EVENT_GAP_EVENT } from "../../contracts/run-contracts.js";
+import type { CostSidecar } from "../../session/cost.js";
 
 import {
   positiveSequence,
@@ -136,11 +137,11 @@ function terminalUsageForActiveAgent(
   active: ActiveBackgroundAgent,
 ): AgentTerminalUsage {
   const live = managedTokenUsage(active.thread);
-  const cost = agentCostSnapshot(active, live);
+  const { usage, ...cost } = agentCostSnapshot(active, live);
   return {
-    inputTokens: finiteNumber(live.inputTokens),
-    outputTokens: finiteNumber(live.outputTokens),
-    totalTokens: finiteNumber(live.totalTokens),
+    inputTokens: finiteNumber(usage.inputTokens),
+    outputTokens: finiteNumber(usage.outputTokens),
+    totalTokens: finiteNumber(usage.totalTokens),
     ...cost,
   };
 }
@@ -173,36 +174,42 @@ function sessionToolCharges(
  * part (history coverage and prices) and is also false when the tool charges
  * could not be read. A tool that reports no price (a free local tool, or a
  * configured search endpoint) adds nothing and does not change it.
+ *
+ * `usage` is the token count the cost covers. The live counter holds only
+ * what this process ran, so when the sidecar's restored totals cover a
+ * resumed session's history it is the sidecar's whole-session count;
+ * otherwise it is the live counter.
  */
 function agentCostSnapshot(
   active: ActiveBackgroundAgent,
   live: ManagedTokenUsageShape,
-): Pick<AgentTerminalUsage, "costUsd" | "costKnown" | "costEstimated"> {
+): Pick<AgentTerminalUsage, "costUsd" | "costKnown" | "costEstimated"> & {
+  readonly usage: ManagedTokenUsageShape;
+} {
   const sidecar = active.bootstrap.session.services.costSidecar;
   if (sidecar === undefined) {
-    return { costUsd: 0, costKnown: false };
+    return { usage: live, costUsd: 0, costKnown: false };
   }
   try {
     const modelCostUsd = sidecar.getTotalCostUsd();
     if (!Number.isFinite(modelCostUsd) || modelCostUsd < 0) {
-      return { costUsd: 0, costKnown: false };
+      return { usage: live, costUsd: 0, costKnown: false };
     }
     const sidecarUsage = sidecar.getSessionTotals();
     const state = active.bootstrap.session.state?.unsafePeek?.();
-    const resumedWithHistoricalUsage =
-      (state as { initialTokenUsage?: unknown } | undefined)
-        ?.initialTokenUsage !== undefined;
-    const coversLiveUsage =
-      sidecarUsage.inputTokens === live.inputTokens &&
-      sidecarUsage.outputTokens === live.outputTokens &&
-      sidecarUsage.totalTokens === live.totalTokens;
+    const baseline = resumedCostBaseline(state, sidecar);
+    // Known only when the sidecar priced exactly the calls this process
+    // made on top of the history it restored.
+    const coversSessionUsage =
+      baseline !== null &&
+      sidecarUsage.inputTokens - baseline.inputTokens === live.inputTokens &&
+      sidecarUsage.outputTokens - baseline.outputTokens === live.outputTokens &&
+      sidecarUsage.totalTokens - baseline.totalTokens === live.totalTokens;
     const tools = sessionToolCharges(active.bootstrap.session);
     return {
+      usage: coversSessionUsage ? sidecarUsage : live,
       costUsd: modelCostUsd + (tools?.costUsd ?? 0),
-      costKnown:
-        !resumedWithHistoricalUsage &&
-        coversLiveUsage &&
-        tools !== null,
+      costKnown: coversSessionUsage && tools !== null,
       ...(sidecar.hasUnknownModelCost() ? { costEstimated: true } : {}),
     };
   } catch {
@@ -210,8 +217,50 @@ function agentCostSnapshot(
     // not reprice cumulative mixed-model usage as though it all belonged to
     // the currently selected model; zero plus an explicit unknown marker is
     // safer than a fabricated historical amount.
-    return { costUsd: 0, costKnown: false };
+    return { usage: live, costUsd: 0, costKnown: false };
   }
+}
+
+const NO_HISTORY: ManagedTokenUsageShape = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+
+/**
+ * The usage the cost sidecar carried in from this session's saved totals
+ * on resume, when those totals account for every call the resumed rollout
+ * recorded. Zero for a session with no recorded history. Null when the
+ * history's cost is not covered: nothing was restored, or an earlier run
+ * ended before its totals were saved, so they fall short of the rollout.
+ */
+function resumedCostBaseline(
+  state: unknown,
+  sidecar: Partial<Pick<CostSidecar, "getRestoredSessionTotals">>,
+): ManagedTokenUsageShape | null {
+  const resumed = state as {
+    readonly initialTokenUsage?: unknown;
+    readonly resumedHistoryTokenUsage?: {
+      readonly promptTokens: number;
+      readonly completionTokens: number;
+      readonly totalTokens: number;
+    };
+  } | undefined;
+  const recorded = resumed?.resumedHistoryTokenUsage;
+  if (recorded === undefined) {
+    // History seeded by a path that did not total it cannot be checked.
+    return resumed?.initialTokenUsage === undefined ? NO_HISTORY : null;
+  }
+  const restored = sidecar.getRestoredSessionTotals?.() ?? null;
+  if (
+    restored === null ||
+    restored.inputTokens !== recorded.promptTokens ||
+    restored.outputTokens !== recorded.completionTokens ||
+    restored.totalTokens !== recorded.totalTokens
+  ) {
+    return null;
+  }
+  return {
+    inputTokens: restored.inputTokens,
+    outputTokens: restored.outputTokens,
+    totalTokens: restored.totalTokens,
+  };
 }
 
 const MAX_RETAINED_SHELL_EXECUTIONS = 256;

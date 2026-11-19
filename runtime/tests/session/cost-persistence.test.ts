@@ -701,6 +701,40 @@ describe("CostSidecar.restoreSessionCostsForSession", () => {
     expect(dirty.restoreSessionCostsForSession("one")).toBe(false);
   });
 
+  test("reports the restored baseline apart from usage this process adds", async () => {
+    const projectDir = makeProjectDir();
+    const usage = {
+      inputTokens: 400, outputTokens: 40, cacheReadTokens: 0, cacheCreationTokens: 0,
+      reasoningOutputTokens: 0, webSearchRequests: 0, totalTokens: 440,
+    };
+    const perModel = [{ model: "gpt-4o", provider: "openai", ...usage, turns: 1, costUsd: 0.04 }];
+    // Legacy records restore an aggregate baseline, current ones per-model buckets.
+    for (const modelUsage of [undefined, perModel]) {
+      const record = { sessionId: "baseline", startedAtMs: 1, endedAtMs: 2, usage, costUsd: 0.04 };
+      writeFileSync(join(projectDir, COST_TOTALS_FILENAME), JSON.stringify({
+        version: COST_TOTALS_SCHEMA_VERSION,
+        totalUsage: usage,
+        totalCostUsd: 0.04,
+        sessions: [modelUsage === undefined ? record : { ...record, modelUsage }],
+        updatedAtMs: 3,
+      } satisfies CostTotalsFile));
+      const sidecar = new CostSidecar({
+        projectDir, sessionId: "baseline", defaultProvider: "openai", defaultModel: "gpt-4o",
+      });
+      await sidecar.loadFromDisk();
+      expect(sidecar.getRestoredSessionTotals()).toBeNull();
+      expect(sidecar.restoreSessionCostsForSession("baseline")).toBe(true);
+      sidecar.onEvent({
+        id: "more", seq: 1,
+        msg: { type: "token_count", payload: { promptTokens: 100, completionTokens: 10, totalTokens: 110 } },
+      });
+      expect(sidecar.getRestoredSessionTotals()).toMatchObject({ inputTokens: 400, outputTokens: 40, totalTokens: 440 });
+      expect(sidecar.getSessionTotals()).toMatchObject({ inputTokens: 500, outputTokens: 50, totalTokens: 550 });
+      sidecar.reset();
+      expect(sidecar.getRestoredSessionTotals()).toBeNull();
+    }
+  });
+
   test("missing restored session still becomes the active save target", async () => {
     const projectDir = makeProjectDir();
     writeFileSync(

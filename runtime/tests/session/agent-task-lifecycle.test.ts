@@ -9,6 +9,7 @@ import {
   latestPersistedAgentTask,
   maybePrewarmAgentTaskRegistration,
   recordInitialHistoryOnResume,
+  recordedTokenUsageFromRollout,
   restorePersistedAgentTask,
   type RegisteredAgentTask,
   type SessionAgentTask,
@@ -422,6 +423,39 @@ describe("agent task lifecycle", () => {
           (w.message ?? "").includes("grok-4-fast"),
       ),
     ).toBe(true);
+  });
+
+  it("recordedTokenUsageFromRollout sums every token_count and resume seeds the sum", async () => {
+    const usage = (seq: number, promptTokens: number, completionTokens: number): RolloutItem => ({
+      type: "event_msg",
+      payload: {
+        id: `usage-${seq}`,
+        seq,
+        msg: {
+          type: "token_count",
+          payload: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens },
+        },
+      },
+    });
+    const rollout: RolloutItem[] = [
+      usage(1, 1_200, 30),
+      { type: "response_item", payload: { role: "user", content: "next" } },
+      usage(2, 1_400, 20),
+    ];
+    const recorded = { promptTokens: 2_600, completionTokens: 50, totalTokens: 2_650 };
+    expect(recordedTokenUsageFromRollout(rollout)).toEqual(recorded);
+    expect(recordedTokenUsageFromRollout([])).toBeUndefined();
+
+    const session = buildSession();
+    await recordInitialHistoryOnResume(session, rollout, { currentModel: "grok-4-fast" });
+    const seeded = await session.state.with((state) => ({
+      last: state.initialTokenUsage,
+      recorded: state.resumedHistoryTokenUsage,
+    }));
+    expect(seeded).toEqual({
+      last: { promptTokens: 1_400, completionTokens: 20, totalTokens: 1_420 },
+      recorded,
+    });
   });
 
   it("recordInitialHistoryOnResume is quiet when model matches", async () => {

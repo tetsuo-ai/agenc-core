@@ -341,6 +341,17 @@ export interface SessionState {
     readonly webSearchRequests?: number;
   };
   /**
+   * Sum of every `token_count` the resumed rollout recorded, seeded on
+   * resume next to `initialTokenUsage`. The daemon's usage snapshot
+   * compares the cost totals restored from disk against it, so a resumed
+   * session's cost counts as known only when it covers the whole history.
+   */
+  resumedHistoryTokenUsage?: {
+    readonly promptTokens: number;
+    readonly completionTokens: number;
+    readonly totalTokens: number;
+  };
+  /**
    * Cross-turn cumulative token usage. This is the authoritative source
    * for the mid-turn compact gate's total-usage versus auto-compact-limit
    * check. The writer in `stream-model.ts` element-wise accumulates every
