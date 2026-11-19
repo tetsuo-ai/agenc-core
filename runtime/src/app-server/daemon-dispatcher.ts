@@ -5744,15 +5744,16 @@ function mapDispatchError(
   if (error instanceof AgenCSessionLifecycleError) {
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
-  if (error instanceof CompactionRecordDamagedError) {
+  const damaged = damagedCompactionRecordIn(error);
+  if (damaged !== undefined) {
     // One chat's stored summary fails its digest check. The client gets the
     // plain sentence and a stable code; the cause stays in the daemon log.
     console.error(
-      `agenc: compaction ${error.attemptId} cannot be read: ${
-        error.cause instanceof Error ? error.cause.message : String(error.cause)
+      `agenc: compaction ${damaged.attemptId} cannot be read: ${
+        damaged.cause instanceof Error ? damaged.cause.message : String(damaged.cause)
       }`,
     );
-    return errorResponse(id, -32000, error.message, { code: error.code });
+    return errorResponse(id, -32000, damaged.message, { code: damaged.code });
   }
   // The daemon owns a bounded console sink. Keep internal handler failures
   // diagnosable there, including their stack, without logging request params.
@@ -5765,6 +5766,25 @@ function mapDispatchError(
     -32603,
     error instanceof Error ? error.message : String(error),
   );
+}
+
+/**
+ * The damaged-record refusal, also inside the wrappers a failed restore adds
+ * (an AggregateError with its cleanup failures, or a cause).
+ */
+function damagedCompactionRecordIn(
+  error: unknown,
+): CompactionRecordDamagedError | undefined {
+  const pending: unknown[] = [error];
+  for (let visited = 0; pending.length > 0 && visited < 16; visited += 1) {
+    const current = pending.shift();
+    if (current instanceof CompactionRecordDamagedError) return current;
+    if (current instanceof AggregateError) pending.push(...current.errors);
+    if (current instanceof Error && current.cause !== undefined) {
+      pending.push(current.cause);
+    }
+  }
+  return undefined;
 }
 
 function errorResponse(

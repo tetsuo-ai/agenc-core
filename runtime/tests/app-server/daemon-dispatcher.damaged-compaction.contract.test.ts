@@ -45,4 +45,41 @@ describe("a chat whose stored compaction summary is damaged", () => {
       errors.mockRestore();
     }
   });
+
+  it("finds the refusal inside the AggregateError of a restore whose cleanup also failed", async () => {
+    const damaged = new CompactionRecordDamagedError("compact-damaged", {
+      cause: new CompactionTransactionError(
+        "digest_invalid",
+        "compaction summary digest does not match its RFC 8785 preimage",
+      ),
+    });
+    const getSessionTranscriptV2 = vi.fn(async () => {
+      throw new AggregateError(
+        [damaged, new Error("failed restore cleanup timed out")],
+        "restored canonical session conv-1 cleanup failed after restore failure",
+      );
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const connection = new AgenCDaemonJsonRpcDispatcher({
+        agentManager: { getSessionTranscriptV2 } as never,
+      }).createConnection();
+      await connection.dispatch({
+        jsonrpc: "2.0", id: "init", method: "initialize",
+        params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION } },
+      });
+      await expect(connection.dispatch({
+        jsonrpc: "2.0", id: "read", method: "session.transcript.v2",
+        params: { sessionId: "damaged" },
+      })).resolves.toMatchObject({
+        error: {
+          code: -32000,
+          message: "This chat cannot be opened because the summary saved when it was compacted is damaged.",
+          data: { code: "COMPACTION_RECORD_DAMAGED" },
+        },
+      });
+    } finally {
+      errors.mockRestore();
+    }
+  });
 });
