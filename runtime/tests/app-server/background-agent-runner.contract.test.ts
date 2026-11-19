@@ -12823,6 +12823,54 @@ describe("AgenC delegate background-agent runner", () => {
     expect(await tokenUsage()).toMatchObject({ inputTokens: 500, costKnown: false });
   });
 
+  it("[managed-thread] reports a session revived after a crash whole, from its admission ledger", async () => {
+    // The daemon died after the last clean stop, so the saved cost record
+    // covers 1,200 of the 2,000 input tokens the rollout recorded. The
+    // admission ledger settled every call. This process ran 500 more.
+    const { runner, session, sessionState } = makeTopLevelRunner({
+      conversationId: "session-crash-accounting",
+      totalTokenUsage: () => ({ inputTokens: 500, outputTokens: 20, totalTokens: 520 }),
+    });
+    Object.assign(session.services, {
+      costSidecar: {
+        getTotalCostUsd: () => 0.003,
+        getSessionTotals: () => ({ inputTokens: 1_700, outputTokens: 60, totalTokens: 1_760 }),
+        getRestoredSessionTotals: () => ({ inputTokens: 1_200, outputTokens: 40, totalTokens: 1_240 }),
+        hasUnknownModelCost: () => false,
+      },
+    });
+    type Counts = { inputTokens: number; outputTokens: number; totalTokens: number };
+    const state = sessionState as typeof sessionState & {
+      initialTokenUsage?: unknown;
+      resumedHistoryTokenUsage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+      resumedLedgerUsage?: Counts;
+    };
+    state.initialTokenUsage = { promptTokens: 800, completionTokens: 40, totalTokens: 840 };
+    state.resumedHistoryTokenUsage = { promptTokens: 2_000, completionTokens: 80, totalTokens: 2_080 };
+    state.resumedLedgerUsage = { inputTokens: 2_000, outputTokens: 80, totalTokens: 2_080 };
+    await runner.startAgent({ objective: "crash accounting", unattendedAllow: [], unattendedDeny: [] });
+    const getDirectUsageSummary = vi.fn(() => ({
+      runId: "session-crash-accounting", sequence: 9, inputTokens: 2_500, outputTokens: 100, totalTokens: 2_600,
+      costUsd: 0.0071, modelCalls: 5, hasUnknownCost: false, heldCostUsd: 0, models: [], agents: [],
+    }));
+    const services = session.services as { executionAdmission?: Record<string, unknown> };
+    if (services.executionAdmission !== undefined) {
+      services.executionAdmission.getDirectUsageSummary = getDirectUsageSummary;
+    } else {
+      Object.assign(services, { executionAdmission: { getDirectUsageSummary } });
+    }
+
+    const snapshot = await runner.snapshotAgentSession(
+      "session-crash-accounting",
+      { sessionId: "session-crash-accounting" },
+    );
+
+    expect(snapshot.tokenUsage).toEqual({
+      inputTokens: 2_500, outputTokens: 100, totalTokens: 2_600, costUsd: 0.0071, costKnown: true,
+    });
+    expect(getDirectUsageSummary).toHaveBeenCalled();
+  });
+
   it("[managed-thread] inspects and stops a real child process through session RPC without consuming its output", async () => {
     const agentId = "process-owner-agent";
     const sessionId = "process-owner-session";

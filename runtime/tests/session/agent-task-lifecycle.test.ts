@@ -458,6 +458,42 @@ describe("agent task lifecycle", () => {
     });
   });
 
+  it("resume seeds what the admission ledger holds of the run next to the recorded sum", async () => {
+    const rollout: RolloutItem[] = [{
+      type: "event_msg",
+      payload: {
+        id: "usage-1",
+        seq: 1,
+        msg: { type: "token_count", payload: { promptTokens: 1_200, completionTokens: 30, totalTokens: 1_230 } },
+      },
+    }];
+    const ledgerOf = (getDirectUsageSummary: () => unknown) => buildSession({
+      services: { executionAdmission: { getDirectUsageSummary } } as unknown as Partial<SessionServices>,
+    });
+    const seeded = async (session: Session) => session.state.with((state) => state.resumedLedgerUsage);
+    const summary = vi.fn(() => ({
+      runId: "conv-agent-task", sequence: 4, inputTokens: 1_250, outputTokens: 30, totalTokens: 1_280,
+      costUsd: 0.0004, modelCalls: 2, hasUnknownCost: false, heldCostUsd: 0, models: [], agents: [],
+    }));
+
+    const session = ledgerOf(summary);
+    await recordInitialHistoryOnResume(session, rollout, { currentModel: "grok-4-fast" });
+    expect(await seeded(session)).toEqual({ inputTokens: 1_250, outputTokens: 30, totalTokens: 1_280 });
+
+    // Nothing to check without recorded usage, and nothing seeded when the
+    // ledger cannot be read.
+    summary.mockClear();
+    const fresh = ledgerOf(summary);
+    await recordInitialHistoryOnResume(fresh, [], { currentModel: "grok-4-fast" });
+    expect(summary).not.toHaveBeenCalled();
+    expect(await seeded(fresh)).toBeUndefined();
+    const closed = ledgerOf(() => { throw new Error("kernel closed"); });
+    await recordInitialHistoryOnResume(closed, rollout, { currentModel: "grok-4-fast" });
+    expect(await seeded(closed)).toBeUndefined();
+    expect(await closed.state.with((state) => state.resumedHistoryTokenUsage))
+      .toEqual({ promptTokens: 1_200, completionTokens: 30, totalTokens: 1_230 });
+  });
+
   it("recordInitialHistoryOnResume is quiet when model matches", async () => {
     const session = buildSession({
       services: {

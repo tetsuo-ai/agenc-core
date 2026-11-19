@@ -352,6 +352,17 @@ export interface SessionState {
     readonly totalTokens: number;
   };
   /**
+   * What the admission ledger held of this session's own run when it
+   * resumed, before this process added a call, seeded next to
+   * `resumedHistoryTokenUsage`. The usage snapshot takes the session's cost
+   * from the ledger and counts it known only when this covers the history.
+   */
+  resumedLedgerUsage?: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+  };
+  /**
    * Cross-turn cumulative token usage. This is the authoritative source
    * for the mid-turn compact gate's total-usage versus auto-compact-limit
    * check. The writer in `stream-model.ts` element-wise accumulates every

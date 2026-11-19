@@ -298,10 +298,11 @@ export function recordedTokenUsageFromRollout(
  *      active model.
  *   3. **Token-info seed.** Sets `initialTokenUsage` on session state
  *      from the last persisted `token_count` event so UIs display
- *      cumulative usage immediately after resume, and
- *      `resumedHistoryTokenUsage` from the sum of all of them so the
- *      usage snapshot can check that restored cost totals cover the
- *      whole history.
+ *      cumulative usage immediately after resume,
+ *      `resumedHistoryTokenUsage` from the sum of all of them, and
+ *      `resumedLedgerUsage` from what the admission ledger holds of the
+ *      run before this process adds a call, so the usage snapshot can
+ *      check that its cost covers the whole history.
  *
  * Callers (bootstrap.ts resume branch) pass the rollout items read
  * from the JSONL file plus the already-computed `previousTurnSettings`
@@ -352,6 +353,7 @@ export async function recordInitialHistoryOnResume(
   // 3. Seed token_info so downstream UIs see persisted usage.
   const info = lastTokenInfoFromRollout(rolloutItems);
   const recorded = recordedTokenUsageFromRollout(rolloutItems);
+  const ledger = recorded === undefined ? undefined : ledgerUsageOfRun(session);
   if (info !== undefined || recorded !== undefined) {
     await session.state.with((s) => {
       if (info !== undefined) {
@@ -359,7 +361,28 @@ export async function recordInitialHistoryOnResume(
           info;
       }
       if (recorded !== undefined) s.resumedHistoryTokenUsage = recorded;
+      if (ledger !== undefined) s.resumedLedgerUsage = ledger;
     });
+  }
+}
+
+/**
+ * What the session's admission ledger holds of its own run, or undefined
+ * without a ledger or when it cannot be read.
+ */
+function ledgerUsageOfRun(
+  session: Session,
+): SessionState["resumedLedgerUsage"] | undefined {
+  try {
+    const summary = session.services.executionAdmission?.getDirectUsageSummary?.();
+    if (summary === undefined) return undefined;
+    return {
+      inputTokens: summary.inputTokens,
+      outputTokens: summary.outputTokens,
+      totalTokens: summary.totalTokens,
+    };
+  } catch {
+    return undefined;
   }
 }
 
