@@ -49,7 +49,7 @@ function replayAll(service: AgenCDaemonRunInspectionService, runId = RUN_ID) {
   }
 }
 
-const refused = expect.objectContaining({ code: "RUN_ID_AMBIGUOUS" });
+const refused = expect.objectContaining({ code: "RUN_ID_AMBIGUOUS", reason: "admission_owner_unproved" });
 
 function expectRefused(service: AgenCDaemonRunInspectionService, runId = RUN_ID): void {
   for (const read of [

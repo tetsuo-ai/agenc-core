@@ -482,7 +482,10 @@ content hashes. A run split across project databases by an earlier resume is
 read from the project that holds its rollout, and every answer's
 `source.partial` (`reason: "split_run"`, `omittedProjectDirs`) says so: the
 replay is complete, but the admission summary and `durableRun` leave out those
-databases.
+databases. A run inspection call that fails with `RUN_ID_AMBIGUOUS` says why in
+the error's `data.reason` (`RunInspectionErrorData`, `RunIdAmbiguousReason`):
+`project_split`, `duplicate_run_id`, `admission_owner_unproved` or
+`admission_record_limit`. Older daemons send no reason.
 
 ## Daemon method surface (54 methods)
 

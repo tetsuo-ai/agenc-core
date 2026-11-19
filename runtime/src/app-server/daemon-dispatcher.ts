@@ -16,7 +16,7 @@ import { ROUTINE_SESSION_PREPARE_CAPABILITY, type RoutineSessionPreparation } fr
 import { createHash, randomUUID } from "node:crypto";
 import { redactSecrets } from "../secrets/sanitizer.js";
 import type { PluginSettingsService } from "../plugins/settings-service.js";
-import type { PluginSettingsResult } from "./protocol/index.js";
+import type { PluginSettingsResult, RunInspectionErrorData } from "./protocol/index.js";
 import type { TurnAdviceReader } from "../session/turn-advice.js";
 import { sessionMcpAttachmentIssue } from "../mcp-client/local-control.js";
 import { isAbsolute } from "node:path";
@@ -5836,7 +5836,11 @@ function mapDispatchError(
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   if (error instanceof AgenCDaemonRunInspectionError) {
-    return errorResponse(id, -32602, error.message, { code: error.code });
+    const data: RunInspectionErrorData = {
+      code: error.code,
+      ...(error.reason !== undefined ? { reason: error.reason } : {}),
+    };
+    return errorResponse(id, -32602, error.message, data);
   }
   if (error instanceof AgenCDaemonWorkflowStartError) {
     return errorResponse(id, -32602, error.message, { code: error.code });

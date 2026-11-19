@@ -74,6 +74,21 @@ export function splitRunStrays(
   return strays.every(boundToHomeRollout) ? strays.map((stray) => stray.paths) : undefined;
 }
 
+/**
+ * How many of these databases hold a journal of the run in their own
+ * project, the way the database that holds a split run's rollout does. More
+ * than one is two chats with one run id, not a split.
+ */
+export function countRunJournalHomes(
+  canonicalMatches: readonly { readonly paths: StateDatabasePaths }[],
+  runId: string,
+): number {
+  return canonicalMatches.filter((match) => withReadonlyStateDatabase(match.paths, (db) => {
+    const binding = readRunRolloutBindings(db, match.paths, runId);
+    return binding.sources.size > 0 && binding.ownProject;
+  })).length;
+}
+
 function readRunRolloutBindings(
   db: BetterSqlite3.Database,
   paths: StateDatabasePaths,

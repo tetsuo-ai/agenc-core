@@ -294,7 +294,7 @@ describe("a run split across two project databases by an earlier resume", () => 
     await splitTheRun();
     expect(() => replayAll(inspection())).not.toThrow();
     recordThreadRow(join(folderProject, "sessions", RUN_ID, "rollout-elsewhere.jsonl"));
-    expect(() => inspection().replay({ runId: RUN_ID })).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS" }));
+    expect(() => inspection().replay({ runId: RUN_ID })).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS", reason: "project_split" }));
   });
 
   it("still refuses a second rollout of the same run id in another project", async () => {
@@ -313,7 +313,7 @@ describe("a run split across two project databases by an earlier resume", () => 
       () => service.status({ runId: RUN_ID }),
       () => service.evidence({ runId: RUN_ID }),
     ]) {
-      expect(read).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS" }));
+      expect(read).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS", reason: "duplicate_run_id" }));
     }
   });
 
@@ -329,7 +329,7 @@ describe("a run split across two project databases by an earlier resume", () => 
       driver.close();
     }
     expect(projectsHoldingTheRun()).toHaveLength(3);
-    expect(() => inspection().status({ runId: RUN_ID })).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS" }));
-    expect(() => inspection().replay({ runId: RUN_ID })).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS" }));
+    expect(() => inspection().status({ runId: RUN_ID })).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS", reason: "project_split" }));
+    expect(() => inspection().replay({ runId: RUN_ID })).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS", reason: "project_split" }));
   });
 });
