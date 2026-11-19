@@ -3,21 +3,49 @@ import { basename } from "node:path";
 import { parseShellCommand } from "../shell-command/parser.js";
 import { shellRestrictionParts } from "./shell-restrictions.js";
 
-interface ProcessRow { readonly pid: number; readonly ppid: number; readonly name: string }
+interface ProcessRow {
+  readonly pid: number;
+  readonly ppid: number;
+  readonly name: string;
+  /** The full command line, where the probe reads one (Darwin). */
+  readonly command?: string;
+}
 export interface SelfTerminationProbe {
   readonly pid: number;
   readonly processes: () => readonly ProcessRow[];
   readonly matchingPids: (args: readonly string[]) => readonly number[];
 }
 
+// Linux AgenC processes carry a native title ("agenc", "agenc-launcher",
+// "agenc-process-owner-watchdog"). Darwin AgenC processes keep their real
+// argv, because a title write there lets ps and pgrep print environment
+// strings (see bin/agenc.ts). They are recognized by the CLI entry script or
+// the owner watchdog script in the command line instead.
+const AGENC_PROCESS_NAME = /^agenc(?:$|[- ])/;
+const AGENC_ENTRY_SCRIPT = /[\\/]bin[\\/]agenc(?:\.[mc]?js)?(?=\s|$)/;
+const AGENC_OWNER_WATCHDOG = "agenc-process-owner-watchdog";
+
+function isAgenCProcess(row: ProcessRow): boolean {
+  if (AGENC_PROCESS_NAME.test(row.name)) return true;
+  return row.command !== undefined &&
+    (AGENC_ENTRY_SCRIPT.test(row.command) || row.command.includes(AGENC_OWNER_WATCHDOG));
+}
+
 const nativeProbe: SelfTerminationProbe = {
   pid: process.pid,
-  processes: () => execFileSync("/bin/ps", ["-axo", "pid=,ppid=,comm="],
-    { encoding: "utf8", timeout: 1_000, maxBuffer: 2 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] })
-    .trim().split("\n").flatMap(line => {
-      const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
-      return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), name: basename(match[3]!) }] : [];
-    }),
+  processes: () => {
+    const commandLines = process.platform === "darwin";
+    return execFileSync("/bin/ps", commandLines ? ["-axww", "-o", "pid=,ppid=,args="] : ["-axo", "pid=,ppid=,comm="],
+      { encoding: "utf8", timeout: 1_000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] })
+      .trim().split("\n").flatMap(line => {
+        const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
+        if (!match) return [];
+        const [pid, ppid, value] = [Number(match[1]), Number(match[2]), match[3]!];
+        return [commandLines
+          ? { pid, ppid, name: basename(value.split(" ", 1)[0]!), command: value }
+          : { pid, ppid, name: basename(value) }];
+      });
+  },
   // Use pkill's native regular expressions without executing a shell or signal.
   matchingPids: args => {
     try {
@@ -34,7 +62,7 @@ export function selfTerminationRisk(command: string, probe: SelfTerminationProbe
   if (probe === nativeProbe && process.platform === "win32") return null;
   let rows: readonly ProcessRow[];
   try { rows = probe.processes(); } catch { return null; }
-  const protectedPids = new Set(rows.filter(row => /^agenc(?:$|[- ])/.test(row.name)).map(row => row.pid));
+  const protectedPids = new Set(rows.filter(isAgenCProcess).map(row => row.pid));
   protectedPids.add(probe.pid);
   const parents = new Map(rows.map(row => [row.pid, row.ppid]));
   let ancestor = probe.pid;
