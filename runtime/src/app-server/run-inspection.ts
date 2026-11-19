@@ -433,7 +433,7 @@ export class AgenCDaemonRunInspectionService {
     // another project, wrote rows of the run into that project's database
     // too. When all of them are bound to the run's rollout, read the project
     // that holds the rollout, leave the strays out and mark the answer partial.
-    const strays = splitRunStrays(matches.filter((match) => match.canonical), runId);
+    const strays = readSplitRunStrays(matches.filter((match) => match.canonical), runId);
     const isStray = (paths: StateDatabasePaths): boolean =>
       strays?.some((stray) => stray.stateDbPath === paths.stateDbPath) === true;
     const partial: RunPartialAnswer | undefined = strays === undefined ? undefined : {
@@ -446,7 +446,8 @@ export class AgenCDaemonRunInspectionService {
     const canonicalMatches = kept.filter((match) => match.canonical);
     if (canonicalMatches.length === 0 && kept.length === 1) return kept[0]!;
     if (canonicalMatches.length !== 1) {
-      throw ambiguousRunOwner(runId, journalHomes(canonicalMatches, runId) > 1 ? "duplicate_run_id" : "project_split");
+      const homes = journalHomes(canonicalMatches, runId);
+      throw ambiguousRunOwner(runId, homes === undefined ? undefined : homes > 1 ? "duplicate_run_id" : "project_split");
     }
     const canonical = canonicalMatches[0]!;
     this.#refreshStatusProjection(canonical.paths, runId, observedStop);
@@ -470,9 +471,11 @@ export class AgenCDaemonRunInspectionService {
     const owner: LocatedRun | undefined = authority.owner === undefined
       ? admissionMatches.length === 1 ? admissionMatches[0] : undefined
       : declaredOwnerPaths === undefined ? undefined : { paths: declaredOwnerPaths };
-    // Rows of the run in another database, and no one database that owns its
-    // admission: the records are split across databases.
-    if (owner === undefined && authority.owner === undefined) throw ambiguousRunOwner(runId, "project_split");
+    // Rows of the run in another database, and no admission records anywhere
+    // to name an owner: the records are split across databases.
+    if (owner === undefined && authority.owner === undefined && admissionMatches.length === 0) {
+      throw ambiguousRunOwner(runId, "project_split");
+    }
     if (owner === undefined || !authority.identitiesValid) throw ambiguousRunOwner(runId, "admission_owner_unproved");
     if (kept.some((match) => match.paths.stateDbPath !== canonical.paths.stateDbPath && match.paths.stateDbPath !== owner.paths.stateDbPath)) {
       throw ambiguousRunOwner(runId, "project_split");
@@ -576,15 +579,31 @@ function proveCompactionAdmissions(
 }
 
 /**
- * How many databases hold their own journal of the run, to tell two chats
- * with one id from a split. The reason is a best effort and the refusal is
- * not: a database that cannot be read counts for nothing.
+ * The split run reader's strays. A database whose bindings cannot be read
+ * makes it no split, so the run is refused as before instead of failing the
+ * read with that error.
  */
-function journalHomes(canonicalMatches: readonly { readonly paths: StateDatabasePaths }[], runId: string): number {
+function readSplitRunStrays(
+  canonicalMatches: readonly { readonly paths: StateDatabasePaths }[],
+  runId: string,
+): readonly StateDatabasePaths[] | undefined {
+  try {
+    return splitRunStrays(canonicalMatches, runId);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * How many databases hold their own journal of the run, to tell two chats
+ * with one id from a split; undefined when that cannot be read. The reason is
+ * a best effort and the refusal is not.
+ */
+function journalHomes(canonicalMatches: readonly { readonly paths: StateDatabasePaths }[], runId: string): number | undefined {
   try {
     return countRunJournalHomes(canonicalMatches, runId);
   } catch {
-    return 0;
+    return undefined;
   }
 }
 
@@ -598,10 +617,11 @@ const AMBIGUOUS_RUN_ID_REASONS: Readonly<Record<RunIdAmbiguousReason, string>> =
   admission_record_limit: `its rollout holds more than ${MAX_RUN_ADMISSION_RECORDS} admission records`,
 };
 
-function ambiguousRunOwner(runId: string, reason: RunIdAmbiguousReason): AgenCDaemonRunInspectionError {
+/** Without a reason when it could not be worked out: a client then words it as an older daemon's refusal. */
+function ambiguousRunOwner(runId: string, reason: RunIdAmbiguousReason | undefined): AgenCDaemonRunInspectionError {
   return new AgenCDaemonRunInspectionError(
     "RUN_ID_AMBIGUOUS",
-    `run id ${runId} has conflicting or unproved journal/admission owners: ${AMBIGUOUS_RUN_ID_REASONS[reason]}`,
+    `run id ${runId} has conflicting or unproved journal/admission owners${reason === undefined ? "" : `: ${AMBIGUOUS_RUN_ID_REASONS[reason]}`}`,
     reason,
   );
 }
