@@ -1,5 +1,6 @@
 import { hasRuntimeHistoryWrapper, userFacingHistoryText } from "../session/user-facing-history-text.js";
 import { promoteOneShotRun, selectRelaxedOneShot } from "../durability/one-shot-durability.js";
+import { rolloutProjectDir } from "../session/rollout-project.js";
 /**
  * In-memory daemon lifecycle for user-started background agents.
  *
@@ -1284,6 +1285,13 @@ export class AgenCDaemonAgentManager {
           ? { canonicalRolloutIno: started.rolloutIno }
           : {}),
       };
+      // The run's journal lives in the project that holds its rollout. Record
+      // the daemon's own rows for it there too: found again from the folder
+      // (default root markers, the daemon's HOME), the project can differ.
+      const stateProjectDir =
+        (started.rolloutPath !== undefined
+          ? rolloutProjectDir(started.rolloutPath, this.#agencHome)
+          : undefined) ?? retainedAgent?.stateProjectDir;
       const agent: MutableAgent = {
         agentId: started.agentId,
         ...(started.runtimeGenerationId !== undefined
@@ -1305,9 +1313,7 @@ export class AgenCDaemonAgentManager {
         logSessionIds: retainedAgent?.logSessionIds.slice() ?? [],
         cwd,
         metadata: agentMetadata,
-        ...(retainedAgent?.stateProjectDir !== undefined
-          ? { stateProjectDir: retainedAgent.stateProjectDir }
-          : {}),
+        ...(stateProjectDir !== undefined ? { stateProjectDir } : {}),
       };
 
       let createdLifecycleSessionId: string | undefined;
