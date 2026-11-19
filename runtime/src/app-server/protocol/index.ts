@@ -76,10 +76,14 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * event, which names the closed request by its event id. Both are sent only to
  * clients that negotiated 1.36, which use them to close elicitation prompts
  * that are no longer pending.
+ * 1.37 adds `session.compact`: the TUI's `/compact` for one idle session,
+ * answering with the context tokens before and after. A client finds it in
+ * `daemon.methods`; it is not gated by the negotiated version, since nothing
+ * the daemon sends asks a client to call it.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.36.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.37.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -206,6 +210,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.detach",
   "session.terminate",
   "session.clear",
+  "session.compact",
   "session.snapshot",
   "session.processes.list",
   "session.processes.stop",
@@ -875,6 +880,14 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "Clear a daemon-owned session's conversation history.",
+  },
+  "session.compact": {
+    method: "session.compact",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Compact an idle daemon-owned session's conversation the way the TUI's /compact does.",
   },
   "session.snapshot": {
     method: "session.snapshot",
@@ -1935,6 +1948,11 @@ export interface SessionTerminateParams extends JsonObject {
 }
 
 export interface SessionClearParams extends JsonObject {
+  readonly sessionId: string;
+}
+
+/** `session.compact`: the session whose whole active conversation is compacted. */
+export interface SessionCompactParams extends JsonObject {
   readonly sessionId: string;
 }
 
@@ -3004,6 +3022,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"session.detach", SessionDetachParams>
   | AgenCDaemonRequestWithParams<"session.terminate", SessionTerminateParams>
   | AgenCDaemonRequestWithParams<"session.clear", SessionClearParams>
+  | AgenCDaemonRequestWithParams<"session.compact", SessionCompactParams>
   | AgenCDaemonRequestWithParams<"session.snapshot", SessionSnapshotParams>
   | AgenCDaemonRequestWithParams<"session.processes.list", SessionProcessesListParams>
   | AgenCDaemonRequestWithParams<"session.processes.stop", SessionProcessesStopParams>
@@ -3806,6 +3825,27 @@ export interface SessionClearResult extends JsonObject {
   readonly clearedAt: string;
 }
 
+/**
+ * `session.compact`. `ok: false` changed nothing: `code` `ACTIVE_TURN` while a
+ * turn runs or a prompt waits to start, or the compaction's own refusal
+ * (`MESSAGE_NOT_FOUND` for a conversation with nothing to compact,
+ * `ROLLOUT_UNAVAILABLE`, `ROLLOUT_DEGRADED`, `ABORTED`).
+ */
+export interface SessionCompactResult extends JsonObject {
+  readonly sessionId: string;
+  readonly ok: boolean;
+  /** The active conversation's context tokens before compaction, as the compaction measured them. */
+  readonly tokensBefore?: number;
+  /** The same measure of the compacted conversation. */
+  readonly tokensAfter?: number;
+  /** The durable compaction's rollback ID (`session.rollbackCompaction`). */
+  readonly attemptId?: string;
+  /** The text the TUI's /compact prints for this compaction. */
+  readonly displayText?: string;
+  readonly code?: string;
+  readonly message?: string;
+}
+
 export interface SessionResolveToolCallResult extends JsonObject {
   readonly sessionId: string;
   readonly resolved: readonly {
@@ -4190,6 +4230,9 @@ export interface SessionPartialCompactFromMessageResult extends JsonObject {
   readonly eventAlreadyEmitted: boolean;
   readonly attemptId?: string;
   readonly displayText?: string;
+  /** The compacted span's context tokens before and after, as the compaction measured them. */
+  readonly preCompactTokens?: number;
+  readonly postCompactTokens?: number;
   readonly code?: string;
   readonly message?: string;
   readonly event?: JsonObject;
@@ -4702,6 +4745,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.detach": SessionDetachResult;
   readonly "session.terminate": SessionTerminateResult;
   readonly "session.clear": SessionClearResult;
+  readonly "session.compact": SessionCompactResult;
   readonly "session.snapshot": SessionSnapshotResult;
   readonly "session.processes.list": SessionProcessesListResult;
   readonly "session.processes.stop": SessionProcessesStopResult;

@@ -1793,6 +1793,9 @@ export type SessionPartialCompactFromMessageResult =
       readonly replacementHistory: readonly LLMMessage[];
       readonly attemptId?: string;
       readonly displayText: string;
+      /** The compacted span's context tokens before and after, as the compaction measured them. */
+      readonly preCompactTokens?: number;
+      readonly postCompactTokens?: number;
     }
   | {
       readonly ok: false;
@@ -4317,6 +4320,10 @@ export class Session {
         compactionResult,
       });
       if (commitFailure !== null) return commitFailure;
+      const preCompactTokens = compactionResult.preCompactTokenCount;
+      const postCompactTokens =
+        compactionResult.truePostCompactTokenCount ??
+        compactionResult.postCompactTokenCount;
 
       return {
         ok: true,
@@ -4326,6 +4333,8 @@ export class Session {
         replacementHistory,
         ...(attemptId !== undefined ? { attemptId } : {}),
         displayText,
+        ...(preCompactTokens !== undefined ? { preCompactTokens } : {}),
+        ...(postCompactTokens !== undefined ? { postCompactTokens } : {}),
       };
     } catch (error) {
       if (abortController.signal.aborted) {

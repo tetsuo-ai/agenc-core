@@ -2590,6 +2590,51 @@ describe("Session.partialCompactFromMessage", () => {
     }
   });
 
+  it("returns the context tokens before and after that its durable commit records", async () => {
+    const sourceHistory: LLMMessage[] = [
+      { role: "user", content: `first request\n${verboseHistoryText("first-detail")}` },
+      { role: "assistant", content: `first answer\n${verboseHistoryText("first-answer")}` },
+      { role: "user", content: `second request\n${verboseHistoryText("second-detail")}` },
+      { role: "assistant", content: `second answer\n${verboseHistoryText("second-answer")}` },
+    ];
+    const harness = createCompactionTransactionHarness(sourceHistory, {
+      sessionId: "conv-test",
+    });
+    const session = buildSession({
+      modelInfo: { ...mkModelInfo(), slug: "grok-4.5" },
+      services: {
+        provider: harness.provider,
+        executionAdmission: harness.session.services.executionAdmission,
+        admissionRequired: true,
+      },
+    });
+    attachCompactionSession(session, harness);
+    try {
+      await session.state.with((state) => {
+        state.history = sourceHistory;
+      });
+
+      // What the TUI's /compact and session.compact ask for: everything from
+      // the first active message.
+      const result = await session.partialCompactFromMessage({
+        messageOrdinal: 0,
+        direction: "from",
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.message);
+      const committed = harness.store.readAll().flatMap((item) =>
+        item.type === "compaction_committed" ? [item.payload.accounting] : []);
+      expect(committed).toHaveLength(1);
+      expect(result.preCompactTokens).toBe(committed[0]!.source_tokens);
+      expect(result.postCompactTokens).toBe(committed[0]!.candidate_tokens);
+      expect(result.postCompactTokens).toBeGreaterThan(0);
+      expect(result.preCompactTokens).toBeGreaterThan(result.postCompactTokens!);
+    } finally {
+      harness.close();
+    }
+  });
+
   it("preserves multimodal kept messages when compacting from a later message", async () => {
     const documentPart: LLMContentPart = {
       type: "document",

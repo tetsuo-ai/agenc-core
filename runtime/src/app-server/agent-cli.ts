@@ -224,6 +224,7 @@ const UNBOUNDED_DAEMON_METHODS: ReadonlySet<AgenCDaemonKnownMethod> = new Set([
   "session.setPermissionMode",
   // Compact and rewind can run model summarization over large transcripts.
   "session.partialCompactFromMessage",
+  "session.compact",
   "session.rollbackCompaction",
   "session.extendCompactionRollbackRetention",
   "session.rewindConversationToMessage",

@@ -39,6 +39,7 @@ import type {
   MessageContent,
   PermissionListResult,
   SessionMcpServerConfig,
+  SessionCompactResult,
   SessionPartialCompactFromMessageParams,
   SessionPartialCompactFromMessageResult,
   SessionRollbackCompactionResult,
@@ -383,6 +384,11 @@ export interface AgenCBackgroundAgentPartialCompactParams {
   readonly signal?: AbortSignal;
 }
 
+export interface AgenCBackgroundAgentCompactSessionParams {
+  readonly sessionId: string;
+  readonly signal?: AbortSignal;
+}
+
 export interface AgenCBackgroundAgentRollbackCompactionParams {
   readonly sessionId: string;
   readonly attemptId: string;
@@ -607,6 +613,11 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentPartialCompactParams,
   ): Promise<SessionPartialCompactFromMessageResult>;
+  /** `session.compact`: the TUI's `/compact` for an idle session. */
+  compactAgentSession?(
+    agentId: string,
+    params: AgenCBackgroundAgentCompactSessionParams,
+  ): Promise<SessionCompactResult>;
   rollbackCompaction?(
     agentId: string,
     params: AgenCBackgroundAgentRollbackCompactionParams,

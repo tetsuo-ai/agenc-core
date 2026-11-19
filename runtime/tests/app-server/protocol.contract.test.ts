@@ -117,6 +117,7 @@ const expectedMethods = [
   "session.detach",
   "session.terminate",
   "session.clear",
+  "session.compact",
   "session.snapshot",
   "session.processes.list",
   "session.processes.stop",
@@ -249,7 +250,7 @@ function compileDefinitionValidator(
 
 describe("AgenC daemon protocol surface", () => {
   it("defines the current live attach-settings contract", () => {
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.36.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.37.0");
 
     const status: AgenCDaemonInternalResultByMethod["session.hooks.status"] = {
       sessionId: "session-bare",

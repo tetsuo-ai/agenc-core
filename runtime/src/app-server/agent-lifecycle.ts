@@ -119,6 +119,8 @@ import type {
   SessionCancelTurnResult,
   SessionClearParams,
   SessionClearResult,
+  SessionCompactParams,
+  SessionCompactResult,
   SessionMcpAddServerParams,
   SessionMcpAddServerResult,
   SessionMcpStatusParams,
@@ -4060,6 +4062,36 @@ export class AgenCDaemonAgentManager {
     });
   }
 
+  /**
+   * `session.compact`: the TUI's `/compact` for one session. The runner
+   * refuses it with `ACTIVE_TURN` while a turn runs.
+   */
+  async compactSession(
+    params: SessionCompactParams,
+    signal?: AbortSignal,
+  ): Promise<SessionCompactResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.compact requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.compactAgentSession === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.compact requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowCompactSession: true },
+    );
+    return await this.#runner.compactAgentSession(agentId, {
+      sessionId: params.sessionId,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
   async rollbackCompaction(
     params: SessionRollbackCompactionParams,
   ): Promise<SessionRollbackCompactionResult> {
@@ -4666,6 +4698,7 @@ export class AgenCDaemonAgentManager {
       readonly allowElicitationResponse?: boolean;
       readonly allowListPermissions?: boolean;
       readonly allowPartialCompact?: boolean;
+      readonly allowCompactSession?: boolean;
       readonly allowCompactionOperator?: boolean;
       readonly allowConversationRewind?: boolean;
       readonly allowMcpStatus?: boolean;
@@ -4712,6 +4745,9 @@ export class AgenCDaemonAgentManager {
     const hasPartialCompactRunner =
       options.allowPartialCompact === true &&
       this.#runner?.partialCompactFromMessage !== undefined;
+    const hasCompactSessionRunner =
+      options.allowCompactSession === true &&
+      this.#runner?.compactAgentSession !== undefined;
     const hasCompactionOperatorRunner =
       options.allowCompactionOperator === true &&
       this.#runner?.rollbackCompaction !== undefined &&
@@ -4784,6 +4820,7 @@ export class AgenCDaemonAgentManager {
       !hasClearSessionRunner &&
       !hasPermissionListRunner &&
       !hasPartialCompactRunner &&
+      !hasCompactSessionRunner &&
       !hasCompactionOperatorRunner &&
       !hasConversationRewindRunner &&
       !hasMcpStatusRunner &&

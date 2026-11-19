@@ -194,6 +194,7 @@ import {
   type SessionResolveToolCallLegacyParams,
   type SessionResolveToolCallParams,
   type SessionClearParams,
+  type SessionCompactParams,
   type SessionMcpStatusParams,
   type SessionMcpAddServerParams,
   type SessionMcpServerConfig,
@@ -414,6 +415,7 @@ function buildServerCapabilities(
     "session.detach": hasMethod(sessionManager, "detachSession"),
     "session.terminate": hasMethod(sessionManager, "terminateSession"),
     "session.clear": hasMethod(agentManager, "clearSessionHistory"),
+    "session.compact": hasMethod(agentManager, "compactSession"),
     "session.snapshot": hasMethod(agentManager, "snapshotSession"),
     "session.processes.list": hasMethod(agentManager, "listSessionProcesses"),
     "session.processes.stop": hasMethod(agentManager, "stopSessionProcess"),
@@ -610,6 +612,7 @@ export interface AgenCDaemonDispatcherOptions {
   > & {
     readonly listSessionProcesses?: AgenCDaemonAgentManager["listSessionProcesses"];
     readonly stopSessionProcess?: AgenCDaemonAgentManager["stopSessionProcess"];
+    readonly compactSession?: AgenCDaemonAgentManager["compactSession"];
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
     readonly pendingElicitations?: AgenCDaemonAgentManager["pendingElicitations"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
@@ -757,6 +760,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   > & {
     readonly listSessionProcesses?: AgenCDaemonAgentManager["listSessionProcesses"];
     readonly stopSessionProcess?: AgenCDaemonAgentManager["stopSessionProcess"];
+    readonly compactSession?: AgenCDaemonAgentManager["compactSession"];
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
     readonly pendingElicitations?: AgenCDaemonAgentManager["pendingElicitations"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
@@ -1614,6 +1618,17 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.clearSessionHistory(
             validateSessionClearParams(params),
+          ),
+        );
+      case "session.compact":
+        if (this.#agentManager.compactSession === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(
+          id,
+          await this.#agentManager.compactSession(
+            validateSessionCompactParams(params),
+            signal,
           ),
         );
       case "session.snapshot":
@@ -3106,6 +3121,7 @@ function methodSupportsRequestCancellation(
     method === "csvJob.review.show" ||
     method === "csvJob.review.resolve" ||
     method === "session.partialCompactFromMessage" ||
+    method === "session.compact" ||
     method === "session.rewindConversationToMessage" ||
     method === "session.shell.execute" ||
     method === "session.statusLine.execute" ||
@@ -4045,6 +4061,15 @@ function validateSessionClearParams(params: JsonObject): SessionClearParams {
   });
   validateRequiredString(validated, "session.clear", "sessionId");
   return validated as SessionClearParams;
+}
+
+function validateSessionCompactParams(params: JsonObject): SessionCompactParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.compact",
+    stringFields: ["sessionId"],
+  });
+  validateRequiredString(validated, "session.compact", "sessionId");
+  return validated as SessionCompactParams;
 }
 
 function validateSessionSnapshotParams(
