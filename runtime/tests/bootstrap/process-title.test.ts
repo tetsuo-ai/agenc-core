@@ -1,5 +1,5 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { extname, join, relative } from "node:path";
+import { extname, join, relative, sep } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -42,7 +42,7 @@ function titleWriteSites(): string[] {
       const extension = extname(entry.name);
       if (!entry.isFile() || !(SOURCE_EXTENSIONS.has(extension) || (inBin && extension === ""))) continue;
       const count = readFileSync(path, "utf8").match(TITLE_WRITE)?.length ?? 0;
-      if (count > 0) sites.push(`${relative(root, path)}: ${count}`);
+      if (count > 0) sites.push(`${relative(root, path).split(sep).join("/")}: ${count}`);
     }
   };
   for (const sourceRoot of SHIPPED_SOURCE_ROOTS) visit(join(root, sourceRoot), sourceRoot.endsWith("/bin"));
