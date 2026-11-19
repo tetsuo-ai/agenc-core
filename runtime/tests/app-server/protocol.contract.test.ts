@@ -210,6 +210,7 @@ const expectedInternalMethods = [
   "session.mcp.reconnectServer",
   "session.mcp.enableServer",
   "session.mcp.disableServer",
+  "session.mcp.removeServer",
 ] as const;
 
 function readProtocolSchema(): ProtocolSchema {
