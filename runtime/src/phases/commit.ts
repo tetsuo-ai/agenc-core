@@ -10,10 +10,9 @@
  *      final text before the next iteration, without re-inserting
  *      renderer-only summaries into model-visible history.
  *
- *   2. **Compaction boundary** — if this iteration ran auto-compact
- *      successfully (tracking.compacted && turnCounter === 0), emit a
- *      `context_compacted` event so the rollout sidecar (T6) can stamp
- *      the boundary marker.
+ *   2. **Compaction boundary**: an automatic compaction reports its
+ *      `context_compacted` boundary where it commits; this phase emits
+ *      it only for a commit whose caller did not.
  *
  *   3. **Stop gate** — when the turn is about to terminate naturally
  *      (no tool calls, no transition), invoke stop hooks. Blocking
@@ -34,7 +33,7 @@
 import { basename } from "node:path";
 
 import type { Session } from "../session/session.js";
-import { isSelectableHistoryUserMessage, splitActiveHistory } from "../session/session.js";
+import { emitAutoCompactBoundary } from "../session/auto-compact-boundary.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type {
   AssistantMessage,
@@ -464,37 +463,10 @@ export async function commit(
   // constructs a fresh one (matches AgenC query.ts:572).
   state.streamingToolExecutor = null;
 
-  // ── 2. Compaction boundary — if this iteration's tracking state
-  //      records a successful compact (compacted=true, turnCounter=0
-  //      was reset by the AgenC compact adapter), emit a typed boundary
-  //      marker so the rollout sidecar (T6) can stamp it.
-  const tracking = state.autoCompactTracking;
-  if (tracking && tracking.compacted && tracking.turnCounter === 0) {
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
-        type: "context_compacted",
-        payload: {
-          summary: `auto-compact boundary (turnId=${tracking.turnId})`,
-          activeUserMessageIds: splitActiveHistory(state.messages).activeHistory.flatMap((message) =>
-            isSelectableHistoryUserMessage(message) &&
-            typeof message.runtimeOnly?.responseItemId === "string"
-              ? [message.runtimeOnly.responseItemId] : []),
-        },
-      },
-    });
-    // T6 I-24b: re-append session metadata so --resume readers that
-    // scan the last 16KB of the rollout still find the session
-    // header even after many compacts have pushed it out of range.
-    session.rolloutStore?.store.reAppendSessionMetadata();
-    // Mark the boundary as consumed so subsequent iterations don't
-    // re-emit until the next successful compact mutates the turnId.
-    state.autoCompactTracking = {
-      ...tracking,
-      // advance turnCounter so the marker only fires once per boundary
-      turnCounter: 1,
-    };
-  }
+  // ── 2. Compaction boundary: an automatic compaction reports its
+  //      typed boundary where it commits (run-turn-compaction.ts). This
+  //      is the fallback for a commit whose caller did not report it.
+  emitAutoCompactBoundary(state, session);
 
   // ── 3. Stop gate — only evaluate when the turn is about to
   //      terminate naturally (no tool calls pending, no recovery
