@@ -23,6 +23,10 @@ import {
   COMPACTION_ROLLBACK_RETENTION_MS,
   COMPACTION_SOURCE_DIGEST_DOMAIN,
   COMPACTION_SUMMARY_DAG_DIGEST_DOMAIN,
+  COMPACTION_SUMMARY_DIGEST_DOMAIN,
+  COMPACTION_SUMMARY_KIND,
+  COMPACTION_SUMMARY_VERSION,
+  CompactionTransactionError,
   type CompactionIntentV1,
   type CompactionCommittedV1,
   type CompactionActiveHistoryEntryV1,
@@ -42,8 +46,10 @@ import {
   type RolloutSpanRefV1,
 } from "../../src/services/compact/transaction-types.js";
 import {
+  canonicalizeJson,
   createCompactionSummaryV1,
   digestWithDomain,
+  sha256Hex,
 } from "../../src/services/compact/summary-v1.js";
 import { readCompactionRolloutPayload } from "../../src/session/compaction-event-reader.js";
 import { serializeRolloutItem } from "../../src/session/rollout-item.js";
@@ -1056,6 +1062,46 @@ describe("RolloutStore transactional compaction", () => {
     expect(() => openStore("commit-tamper", { resume: true }, cwd)).toThrow(
       /payload chunk|digest|manifest/i,
     );
+  });
+
+  it("refuses a commit whose stored payloads would not read back as committed", () => {
+    // w20-polish: a summary digested over words the rollout's secret redaction
+    // then replaced ("token: suspension") was committed, and every later load of
+    // the session failed its digest check. The commit point now reads the
+    // commit back from its stored payloads first.
+    const cwd = createTestWorkspace();
+    temporaryWorkspaces.push(cwd);
+    const store = openStore("stored-changed", {}, cwd);
+    let refusal: unknown;
+    try {
+      try {
+        commitSmallCompaction(store, "stored-changed-attempt", undefined, [], false, {
+          narrative: "continue at the next token: suspension bridge load path",
+          digestAsGiven: true,
+        });
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(CompactionTransactionError);
+      expect((refusal as CompactionTransactionError).reason).toBe("commit_failed");
+      expect((refusal as Error).message).toMatch(/would not read back/u);
+      expect(
+        readTestRolloutRows(store.rolloutPath).some(
+          (row) => row.type === "compaction_committed",
+        ),
+      ).toBe(false);
+      expect(() => store.readAll()).not.toThrow();
+    } finally {
+      store.close();
+    }
+    const reopened = openStore("stored-changed", { resume: true }, cwd);
+    try {
+      expect(
+        reopened.readAll().some((item) => item.type === "compaction_committed"),
+      ).toBe(false);
+    } finally {
+      reopened.close();
+    }
   });
 
   it("rejects valid-JSON rollback source-history tampering on restart", () => {
@@ -3163,6 +3209,11 @@ function commitSmallCompaction(
   beforeCommit?: () => void,
   replacementTail: readonly CompactionCommittedV1["replacement_history"][number][] = [],
   automatic = false,
+  summaryOptions: {
+    readonly narrative?: string;
+    /** Digest the body as given, as createCompactionSummaryV1 did before w21. */
+    readonly digestAsGiven?: boolean;
+  } = {},
 ): {
   readonly prepared: CompactionPreparedSourceV1;
   readonly intent: CompactionIntentV1;
@@ -3213,19 +3264,31 @@ function commitSmallCompaction(
       message_sources: prepared.message_source_refs,
     }),
   };
-  const summary = createCompactionSummaryV1({
-    stage: "final",
-    attemptId,
-    policyDigest: intent.policy_digest,
-    accountingRef: intent.accounting_ref,
-    sourceRefs: [sourceRef],
-    body: {
-      narrative: "source summary",
-      facts: [],
-      open_actions: [],
-      tool_pairs: [],
-    },
-  });
+  const narrative = summaryOptions.narrative ?? "source summary";
+  const summary = summaryOptions.digestAsGiven === true
+    ? summaryDigestedAsGiven({
+        version: COMPACTION_SUMMARY_VERSION,
+        kind: COMPACTION_SUMMARY_KIND,
+        stage: "final",
+        attempt_id: attemptId,
+        policy_digest: intent.policy_digest,
+        accounting_ref: intent.accounting_ref,
+        source_refs: [sourceRef],
+        body: { narrative, facts: [], open_actions: [], tool_pairs: [] },
+      })
+    : createCompactionSummaryV1({
+        stage: "final",
+        attemptId,
+        policyDigest: intent.policy_digest,
+        accountingRef: intent.accounting_ref,
+        sourceRefs: [sourceRef],
+        body: {
+          narrative,
+          facts: [],
+          open_actions: [],
+          tool_pairs: [],
+        },
+      });
   const dagWithoutDigest = {
     reduction_fan_in: 8,
     maximum_levels: 1,
@@ -3254,7 +3317,7 @@ function commitSmallCompaction(
     },
     {
       role: "user" as const,
-      content: "source summary",
+      content: narrative,
       compactionHistory: {
         version: 1 as const,
         kind: "summary" as const,
@@ -3289,6 +3352,18 @@ function commitSmallCompaction(
     }),
   });
   return { prepared, intent, committedAtMs };
+}
+
+/** A summary digested over the body as given, whatever the rollout would store. */
+function summaryDigestedAsGiven(
+  withoutDigest: Omit<CompactionSummaryV1, "summary_sha256">,
+): CompactionSummaryV1 {
+  return {
+    ...withoutDigest,
+    summary_sha256: sha256Hex(
+      `${COMPACTION_SUMMARY_DIGEST_DOMAIN}${canonicalizeJson(withoutDigest)}`,
+    ),
+  };
 }
 
 function sourcePayloadBundles(
