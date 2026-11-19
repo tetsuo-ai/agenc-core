@@ -422,6 +422,9 @@ export type RunEvidenceBundle = Wire.RunEvidenceBundle;
 
 export type RunDurableRecord = Wire.RunDurableRecord;
 
+/** Present on a run inspection source when the answer leaves out records of a split run. */
+export type RunPartialAnswer = Wire.RunPartialAnswer;
+
 export type RunStateSource = Wire.RunStateSource;
 
 export type RunAdmissionSourceAvailability =

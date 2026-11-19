@@ -478,7 +478,11 @@ the execution-admission journal; its source declares
 other runs. `run.evidence` declares
 `workflowEvidenceIncluded: true` for canonical journal pages and `false` for
 that compatibility source, together with an explicit completeness value and
-content hashes.
+content hashes. A run split across project databases by an earlier resume is
+read from the project that holds its rollout, and every answer's
+`source.partial` (`reason: "split_run"`, `omittedProjectDirs`) says so: the
+replay is complete, but the admission summary and `durableRun` leave out those
+databases.
 
 ## Daemon method surface (54 methods)
 
