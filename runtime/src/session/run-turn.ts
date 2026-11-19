@@ -3082,6 +3082,11 @@ async function* runTurnKernelInner(
     persistNewResponseItems();
     emitTurnCheckpoint("iteration", { force: true });
   };
+  // The boundary of an automatic compaction is reported once: checkpoint the
+  // turn after it, so a turn resumed after a crash does not report it again.
+  const onCompactionReported = (): void => {
+    emitTurnCheckpoint("iteration", { force: true });
+  };
   const persistTurnRolloutBaseline = (): void => {
     if (rolloutPersistenceSuspended()) return;
     session.rolloutStore?.appendRollout({
@@ -3624,6 +3629,7 @@ async function* runTurnKernelInner(
       await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
         onAdvisoryRefusal: deferCompactionRefusal,
         onDurableHistoryReplaced: onCompactionReplacedHistory,
+        onCompactionReported: onCompactionReported,
       });
     }
   } catch (error) {
@@ -4059,6 +4065,7 @@ async function* runTurnKernelInner(
                   querySource: turnQuerySource,
                   durableMessageCount: compactionDurableCount(),
                   onDurableHistoryReplaced: onCompactionReplacedHistory,
+                  onCompactionReported: onCompactionReported,
                   ...(mandatory ? {} : { onAdvisoryRefusal: deferCompactionRefusal }),
                   onStructuralDecline: (decline) => { structuralDecline = decline; },
                   propagateErrors: true,
