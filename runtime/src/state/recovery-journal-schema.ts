@@ -1,4 +1,5 @@
 import { isPromptCacheState } from "../session/prompt-cache-state.js";
+import { isPromptCacheDelta } from "../session/prompt-cache-deltas.js";
 import { readReasoningCapPolicy, type ReasoningCapPolicyState } from "../session/reasoning-cap-policy.js";
 import type { EventMsg } from "../session/event-log.js";
 import type { DisplayAttachment } from "../mcp-client/display-attachments.js";
@@ -1680,6 +1681,7 @@ const ROLLOUT_PAYLOAD_VALIDATORS = defineRolloutPayloadValidators({
       memoryExtraction: isSessionMemoryExtractionState,
       promptCache: nullable(isPromptCacheState),
       coreCatalog: oneOf("expanded"),
+      promptCacheDelta: isPromptCacheDelta,
       userStop: objectShape({ stopped: isBoolean, generation: isNonNegativeInteger }),
     },
   ),

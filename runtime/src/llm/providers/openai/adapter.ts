@@ -75,6 +75,7 @@ import { sharedPrefixTailEnabled } from "../../wire/shared-prefix-tail.js";
 import { createProviderToolNameWireLookup, decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { parseProviderJson } from "../../wire/parse-json.js";
 import {
+  customToolCallItemIdKey,
   functionCallFromCustomToolCall,
   functionCallsFromCustomToolCalls,
   itemIdRecord,
@@ -1881,6 +1882,7 @@ export class OpenAIProvider implements LLMProvider {
     | "declareNonStrictTools"
     | "appendOnlyContext"
     | "freeformApplyPatch"
+    | "interruptedTurnNoteInPlace"
   > {
     if (this.name === "openai") {
       // OpenAI's own models only (GPT-5 and later take custom tools).
@@ -1888,8 +1890,8 @@ export class OpenAIProvider implements LLMProvider {
         ? { freeformApplyPatch: true as const } : {};
       // The ChatGPT backend is not verified for the other fields and keeps
       // its request shape.
-      return this.isChatGptBackend() ? freeform
-        : { declareNonStrictTools: true, appendOnlyContext: true, ...freeform };
+      return this.isChatGptBackend() ? { ...freeform, interruptedTurnNoteInPlace: true }
+        : { declareNonStrictTools: true, appendOnlyContext: true, ...freeform, interruptedTurnNoteInPlace: true };
     }
     if (this.name !== "meta") return {};
     const effort = resolveReasoningEffort({ provider: this.name, model });
@@ -1906,6 +1908,17 @@ export class OpenAIProvider implements LLMProvider {
    */
   exportFunctionCallItemIds(): readonly (readonly [string, string])[] {
     return this.functionCallItemIds.snapshotFor(this.name);
+  }
+
+  /**
+   * The issued ids of these calls, function or custom, under the keys the
+   * id map keeps them (prompt-cache-deltas.ts saves them as they happen).
+   */
+  functionCallItemIdsFor(callIds: readonly string[]): readonly (readonly [string, string])[] {
+    return callIds.flatMap((callId) => [callId, customToolCallItemIdKey(callId)].flatMap((key) => {
+      const itemId = this.functionCallItemIds.get(this.name, key);
+      return itemId === undefined ? [] : [[key, itemId] as const];
+    }));
   }
 
   get functionCallItemIdsScope(): string {
