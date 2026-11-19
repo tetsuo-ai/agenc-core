@@ -1,3 +1,4 @@
+import { logForDebugging } from "../utils/debug.js";
 import type { Session } from "./session.js";
 
 // Display invalidation follows actual Session construction. Review authority
@@ -21,7 +22,14 @@ export function watchChildEffectReviews(parent: Session, child: Session): () => 
       const seen = new Set<Session>();
       for (let owner: Session | undefined = parent; owner !== undefined && !seen.has(owner); owner = parents.get(owner)) {
         seen.add(owner);
-        for (const listener of listeners.get(owner) ?? []) listener();
+        for (const listener of listeners.get(owner) ?? []) {
+          // A microtask throw is an uncaughtException, which ends the daemon.
+          try { listener(); } catch (error) {
+            logForDebugging(`Child effect review listener failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`, { level: "error" });
+          }
+        }
       }
     });
   });
