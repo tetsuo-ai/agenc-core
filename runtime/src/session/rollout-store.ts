@@ -169,6 +169,7 @@ import {
   readCompactionPersistedIntentV1,
   readCompactionPersistedRollbackCommittedV1,
   readCompactionRolloutPayload,
+  type CompactionRolloutPayload,
 } from "./compaction-event-reader.js";
 import {
   compactActiveHistoryEntries,
@@ -495,19 +496,18 @@ function requireCompactionPayloadBundle(
 }
 
 /**
- * The commit as a later load hydrates it, from the stored payloads, must pass
- * the strict reader and carry the commit digest its pin records.
+ * The commit as every later load hydrates it: the stored, redacted payloads
+ * read through the strict reader.
  */
-function assertCommitReadsBack(
+function readCommitBack(
   committed: CompactionCommittedV1,
-  commitSha256: string,
   stored: {
     readonly summary: unknown;
     readonly summary_dag: unknown;
     readonly replacement_history: unknown;
   },
-): void {
-  let readBack: unknown;
+): CompactionCommittedV1 {
+  let readBack: CompactionRolloutPayload;
   try {
     readBack = readCompactionRolloutPayload("compaction_committed", {
       ...committed,
@@ -520,15 +520,13 @@ function assertCommitReadsBack(
       { cause: error },
     );
   }
-  if (
-    digestSourceWithDomain(COMPACTION_ACCOUNTING_DIGEST_DOMAIN, readBack) !==
-      commitSha256
-  ) {
+  if (!("replacement_history" in readBack)) {
     throw new CompactionTransactionError(
       "commit_failed",
-      "compaction commit would read back changed from its stored payloads; history was not changed",
+      "compaction commit did not read back inline from its stored payloads; history was not changed",
     );
   }
+  return readBack as CompactionCommittedV1;
 }
 
 function persistedCompactionSource(
@@ -1552,7 +1550,7 @@ export class RolloutStore {
       );
     }
     this.assertCompactionCommitFresh(input.intent);
-    const committed: CompactionCommittedV1 = {
+    const runtimeCommitted: CompactionCommittedV1 = {
       format_version: COMPACTION_EVENT_FORMAT_VERSION,
       minimum_reader_runtime: input.accounting.savings_policy === "manual_proportional"
         ? MANUAL_PROPORTIONAL_COMPACTION_READER_RUNTIME : COMPACTION_MINIMUM_READER_RUNTIME,
@@ -1571,42 +1569,43 @@ export class RolloutStore {
       replacement_history: input.replacement_history,
       cleanup_state: "pending",
     };
-    const commitSha256 = digestSourceWithDomain(
-      COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
-      committed,
-    );
-    readCompactionRolloutPayload("compaction_committed", committed);
+    readCompactionRolloutPayload("compaction_committed", runtimeCommitted);
     const storedSummary = requireCompactionPayloadBundle(commitBundles.final_summary, {
-      attemptId: committed.attempt_id,
+      attemptId: runtimeCommitted.attempt_id,
       payloadKind: "final_summary",
-      recordedAtMs: committed.recorded_at_ms,
-      expectedValue: committed.summary,
+      recordedAtMs: runtimeCommitted.recorded_at_ms,
+      expectedValue: runtimeCommitted.summary,
       failureStage: "commit_failed",
     });
     const storedSummaryDag = requireCompactionPayloadBundle(commitBundles.summary_dag, {
-      attemptId: committed.attempt_id,
+      attemptId: runtimeCommitted.attempt_id,
       payloadKind: "summary_dag",
-      recordedAtMs: committed.recorded_at_ms,
-      expectedValue: committed.summary_dag,
+      recordedAtMs: runtimeCommitted.recorded_at_ms,
+      expectedValue: runtimeCommitted.summary_dag,
       failureStage: "commit_failed",
     });
     const storedReplacementHistory = requireCompactionPayloadBundle(commitBundles.replacement_history, {
-      attemptId: committed.attempt_id,
+      attemptId: runtimeCommitted.attempt_id,
       payloadKind: "replacement_history",
-      recordedAtMs: committed.recorded_at_ms,
-      expectedValue: committed.replacement_history,
+      recordedAtMs: runtimeCommitted.recorded_at_ms,
+      expectedValue: runtimeCommitted.replacement_history,
       failureStage: "commit_failed",
     });
     // Every later load reads this commit from the redacted payloads above, and
     // the canonical scan binds rollback, release and retention events to the
-    // digest of what it read. Read it the same way before the commit point: a
-    // commit no later load could read, or one that would read back changed,
-    // fails here with the history unchanged instead of locking the session.
-    assertCommitReadsBack(committed, commitSha256, {
+    // digest of what it read. From here on the commit is that stored form: it
+    // is what gets pinned, checkpointed and handed back to the session, so the
+    // session continues with exactly what a reopen reads. A commit no later
+    // load could read fails here, with the history unchanged.
+    const committed = readCommitBack(runtimeCommitted, {
       summary: storedSummary,
       summary_dag: storedSummaryDag,
       replacement_history: storedReplacementHistory,
     });
+    const commitSha256 = digestSourceWithDomain(
+      COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
+      committed,
+    );
     const sourceBundles = this.compactionSourcePayloadBundles.get(
       committed.attempt_id,
     );
