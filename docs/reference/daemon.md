@@ -1193,7 +1193,8 @@ A `RUN_ID_AMBIGUOUS` error says why in its `data`: next to
 | `admission_record_limit` | The run's rollout holds more admission records than one read checks (100,000). |
 
 The field is additive and takes no protocol version. An older daemon sends no
-`reason`, and a client treats a reason it does not know like none.
+`reason`, nor does a daemon that could not work the reason out (a database it
+cannot read); a client treats a reason it does not know like none.
 
 The full persistence, replay, gap, effect, migration, and crash semantics are
 documented in
