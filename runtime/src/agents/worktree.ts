@@ -376,6 +376,12 @@ export interface WorktreeHandle {
   readonly branch: string;
   readonly gitRoot: string;
   readonly created: boolean;
+  /**
+   * The folder that holds the worktree, when this call made it: it did not
+   * exist before. Passing it to `removeAgentWorktree` takes it back once it
+   * is empty, as a failed attempt already does.
+   */
+  readonly createdWorkspaceRoot?: string;
 }
 
 export interface GetOrCreateOpts {
@@ -529,7 +535,13 @@ export async function getOrCreateWorktree(
       );
     }
 
-    return { path, branch, gitRoot: opts.gitRoot, created: true };
+    return {
+      path,
+      branch,
+      gitRoot: opts.gitRoot,
+      created: true,
+      ...(failedAttempt.workspaceRootExisted ? {} : { createdWorkspaceRoot: workspaceRoot }),
+    };
   });
 }
 
@@ -1030,6 +1042,12 @@ export interface RemoveWorktreeOpts {
   readonly onSparseCheckoutOrphaned?: (detail: string) => void;
   /** Optional callback for I-34 prune-failed warning. */
   readonly onPruneFailed?: (detail: string) => void;
+  /**
+   * The folder Core made to hold this worktree
+   * (`WorktreeHandle.createdWorkspaceRoot`). Removed after the worktree when
+   * it is the worktree's parent and a real, empty directory.
+   */
+  readonly createdWorkspaceRoot?: string;
   readonly sandboxExecutionBroker: SandboxExecutionBrokerLike;
 }
 
@@ -1109,6 +1127,16 @@ export async function removeAgentWorktree(
       opts.onPruneFailed?.(
         `prune exited ${prune.code}: ${prune.stderr.trim()}`,
       );
+    }
+
+    // Core made the folder for this worktree, so it goes too once nothing
+    // else is in it. Anything there before, or still holding another
+    // worktree or a file, stays.
+    if (
+      opts.createdWorkspaceRoot !== undefined &&
+      resolvePath(dirname(opts.path)) === resolvePath(opts.createdWorkspaceRoot)
+    ) {
+      removeEmptyDirectory(opts.createdWorkspaceRoot);
     }
   });
 }

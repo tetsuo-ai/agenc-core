@@ -1000,3 +1000,81 @@ describe("isWorktreeStale", () => {
     expect(isWorktreeStale(join(tmp, "missing"))).toBe(false);
   });
 });
+
+describe("the workspace folder Core makes for a worktree", () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "agenc-worktree-folder-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  const remove = (handle: Awaited<ReturnType<typeof getOrCreateWorktree>>, createdWorkspaceRoot = handle.createdWorkspaceRoot) =>
+    removeAgentWorktree({
+      path: handle.path,
+      branch: handle.branch,
+      gitRoot: handle.gitRoot,
+      ...(createdWorkspaceRoot !== undefined ? { createdWorkspaceRoot } : {}),
+    });
+
+  it("is named on the handle only by the call that made it", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const first = await getOrCreateWorktree({ gitRoot: repo, slug: "m5-first" });
+    expect(first.createdWorkspaceRoot).toBe(join(repo, ".agenc-worktrees"));
+    const second = await getOrCreateWorktree({ gitRoot: repo, slug: "m5-second" });
+    expect(second.created).toBe(true);
+    expect(second).not.toHaveProperty("createdWorkspaceRoot");
+    const resumed = await getOrCreateWorktree({ gitRoot: repo, slug: "m5-first" });
+    expect(resumed.created).toBe(false);
+    expect(resumed).not.toHaveProperty("createdWorkspaceRoot");
+  });
+
+  it("goes with the last worktree in it when Core made it", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const handle = await getOrCreateWorktree({ gitRoot: repo, slug: "m5-done" });
+    await remove(handle);
+    expect(existsSync(handle.path)).toBe(false);
+    expect(existsSync(join(repo, ".agenc-worktrees"))).toBe(false);
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" })).toBe("");
+  });
+
+  it("stays while it holds another worktree or a file, and when it is not the worktree's folder", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const root = join(repo, ".agenc-worktrees");
+    const made = await getOrCreateWorktree({ gitRoot: repo, slug: "m5-made" });
+    const other = await getOrCreateWorktree({ gitRoot: repo, slug: "m5-other" });
+    await remove(made);
+    expect(existsSync(made.path)).toBe(false);
+    expect(existsSync(join(other.path, "README.md"))).toBe(true);
+
+    const again = await getOrCreateWorktree({ gitRoot: repo, slug: "m5-again" });
+    await remove(other);
+    writeFileSync(join(root, "notes.txt"), "mine\n");
+    await remove(again, root);
+    expect(readFileSync(join(root, "notes.txt"), "utf8")).toBe("mine\n");
+
+    const elsewhere = join(tmpRoot, "empty-elsewhere");
+    mkdirSync(elsewhere);
+    rmSync(join(root, "notes.txt"));
+    const last = await getOrCreateWorktree({ gitRoot: repo, slug: "m5-last" });
+    await remove(last, elsewhere);
+    expect(existsSync(elsewhere)).toBe(true);
+    expect(existsSync(root)).toBe(true);
+  });
+
+  it("is left alone when it was there before", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    mkdirSync(join(repo, ".agenc-worktrees"));
+    const handle = await getOrCreateWorktree({ gitRoot: repo, slug: "m5-kept" });
+    expect(handle).not.toHaveProperty("createdWorkspaceRoot");
+    await remove(handle);
+    expect(existsSync(join(repo, ".agenc-worktrees"))).toBe(true);
+  });
+});

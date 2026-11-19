@@ -382,6 +382,9 @@ export async function checkBaseMovement(opts: {
       gitRoot: spec.repoPath,
       path: probe.path,
       branch: probe.branch,
+      ...(probe.createdWorkspaceRoot !== undefined
+        ? { createdWorkspaceRoot: probe.createdWorkspaceRoot }
+        : {}),
       sandboxExecutionBroker: broker,
     });
   }
@@ -467,6 +470,11 @@ async function removeRunWorktree(
       gitRoot: opts.handle.gitRoot,
       path: opts.handle.path,
       branch: opts.handle.branch,
+      // The `.agenc-worktrees/` folder the run's worktree step made, if it
+      // did, goes once it is empty.
+      ...(opts.handle.createdWorkspaceRoot !== undefined
+        ? { createdWorkspaceRoot: opts.handle.createdWorkspaceRoot }
+        : {}),
       sandboxExecutionBroker: opts.broker,
     });
   } catch (error) {
