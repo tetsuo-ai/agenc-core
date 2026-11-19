@@ -951,6 +951,12 @@ interface LockRecord {
    */
   readonly startNs: string;
   readonly acquiredAtIso: string;
+  /**
+   * Linux kernel boot id at acquisition. `process.hrtime` restarts with the
+   * monotonic clock at boot, so `startNs` is only comparable within one boot.
+   * Absent on other platforms and in locks written before this field existed.
+   */
+  readonly bootId?: string;
 }
 
 /**
@@ -964,10 +970,11 @@ interface LockRecord {
  *     volume hardlinks; we fall back to `openSync(path, 'wx')` which
  *     is itself atomic on NTFS.
  *
- *   - Identity record: `{pid, startNs, acquiredAtIso}`. Live PIDs are
+ *   - Identity record: `{pid, startNs, acquiredAtIso, bootId?}`. Live PIDs are
  *     protected unless both legacy acquisition clocks prove that a
- *     same-PID record predates this process. This handles a daemon PID
- *     reused after restart without admitting another store in the daemon.
+ *     same-PID record predates this process, or that it was written under
+ *     an earlier kernel boot. This handles a daemon PID reused after restart
+ *     or reboot without admitting another store in the daemon.
  *
  *   - No `proper-lockfile` dep, no `fs-ext` native binding. Adding a
  *     dep for this was considered and rejected because (a) the
@@ -1044,6 +1051,7 @@ export class SessionLock {
       pid: process.pid,
       startNs: this.startNs,
       acquiredAtIso: new Date().toISOString(),
+      ...(lockProcessBootId !== undefined ? { bootId: lockProcessBootId } : {}),
     };
     const payload = `${JSON.stringify(record)}\n`;
     const tmpPath = `${this.lockPath}.${process.pid}.${this.startNs}.tmp`;
@@ -1173,6 +1181,7 @@ export class SessionLock {
             typeof parsed.acquiredAtIso === "string"
               ? parsed.acquiredAtIso
               : "",
+          ...(typeof parsed.bootId === "string" ? { bootId: parsed.bootId } : {}),
         };
       }
       return null;
@@ -1235,11 +1244,25 @@ const lockProcessStartMonotonicLowerBound =
   lockProcessMonotonicSample - BigInt(Math.ceil(lockProcessUptime * 1e9)) - 1_000_000_000n;
 const lockProcessStartWallLowerBound =
   lockProcessWallSample - lockProcessUptime * 1_000 - 1_000;
+// The kernel boot id changes on every boot; hrtime stamps from another boot
+// say nothing about this process because the monotonic clock restarted.
+const lockProcessBootId = readLockBootId();
+
+function readLockBootId(): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  try {
+    const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return bootId.length > 0 ? bootId : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 type SessionLockHolder = {
   readonly pid?: unknown;
   readonly startNs?: unknown;
   readonly acquiredAtIso?: unknown;
+  readonly bootId?: unknown;
 };
 
 /** PID equality alone cannot establish ownership after a cold daemon restart. */
@@ -1257,6 +1280,15 @@ function sessionLockPredatesCurrentProcess(record: SessionLockHolder): boolean {
     typeof record.acquiredAtIso !== "string"
   ) {
     return false;
+  }
+  // A lock written under an earlier kernel boot cannot belong to this process,
+  // even when the previous boot ran long enough for its hrtime stamp to exceed
+  // ours. Without a boot id on both sides, keep comparing the clocks below.
+  if (
+    typeof record.bootId === "string" && record.bootId.length > 0 &&
+    lockProcessBootId !== undefined
+  ) {
+    if (record.bootId !== lockProcessBootId) return true;
   }
   const stamp = /^(\d{1,16})-(\d{1,24})$/u.exec(record.startNs);
   if (stamp === null) return false;
