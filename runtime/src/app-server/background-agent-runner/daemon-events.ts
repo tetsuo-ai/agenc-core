@@ -746,6 +746,7 @@ const CANONICAL_CORE_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   "tool_call_started",
   "tool_call_completed",
   "turn_started",
+  "turn_changes",
   "turn_complete",
   "turn_aborted",
   "turn_failed",

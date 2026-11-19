@@ -1,3 +1,4 @@
+import { liveShellProgressEnabled } from "./live-shell-progress.js";
 import { validateToolCall } from "../llm/types.js";
 import type { Tool } from "../tools/types.js";
 import { filesystemRootsForDispatch } from "../tools/filesystem-dispatch-roots.js";
@@ -84,6 +85,12 @@ export async function* runMinimalTurn(
   let handoff = false;
   let modelCalls = 0;
   const observations: EventMsg[] = [];
+  const liveProgress = liveShellProgressEnabled();
+  const observe = (msg: EventMsg): void => {
+    if (liveProgress && ["tool_call_started", "tool_progress", "tool_call_completed"].includes(msg.type)) {
+      session.emit({ id: session.nextInternalSubId(), msg });
+    } else observations.push(msg);
+  };
   const responses: LLMResponse[] = [];
   let usage: LLMUsage = UNKNOWN_USAGE;
   let lastResponseUsage: LLMUsage | undefined;
@@ -182,7 +189,7 @@ export async function* runMinimalTurn(
         let isError = false;
         let metadata: Record<string, unknown> | undefined;
         const started = performance.now();
-        observations.push({ type: "tool_call_started", payload: { callId: call.id, toolName: call.name, args: call.arguments } });
+        observe({ type: "tool_call_started", payload: { callId: call.id, toolName: call.name, args: call.arguments } });
         try {
           const result = await session.services.registry.dispatch(call, {
             prepareArguments: (args, selectedTool) => {
@@ -192,7 +199,7 @@ export async function* runMinimalTurn(
               });
               const authority = sessionDispatchAuthority(session, session.services.configStore?.homeContext.path, true);
               authority.__onProgress = (event: { chunk: string; stream?: "stdout" | "stderr" }) => {
-                  observations.push({ type: "tool_progress", payload: {
+                  observe({ type: "tool_progress", payload: {
                     callId: call.id, toolName: call.name, ...event,
                   } });
               };
@@ -226,7 +233,7 @@ export async function* runMinimalTurn(
         const elapsed = performance.now() - started;
         const validationOnly = metadata?.kind === "input_validation";
         if (validationOnly) metadata = { ...metadata, validationDurationMs: elapsed };
-        observations.push({ type: "tool_call_completed", payload: {
+        observe({ type: "tool_call_completed", payload: {
           callId: call.id, toolName: call.name, result: content, isError, ...(metadata ? { metadata } : {}), durationMs: validationOnly ? 0 : elapsed,
         } });
         completedToolCallIds.push(call.id);

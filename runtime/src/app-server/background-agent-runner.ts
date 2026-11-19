@@ -2982,6 +2982,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     const submitOptions: DaemonHumanSessionSubmitOptions = {
       clientMessageId: params.messageId,
+      ...(params.includeToolProgress === true ? { includeToolProgress: true } : {}),
+      ...(params.turnChanges !== undefined ? { turnChanges: params.turnChanges } : {}),
       ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
       ...(params.skillInvocation !== undefined
         ? { skillInvocation: params.skillInvocation }
@@ -3506,7 +3508,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
   async getAgentSessionTranscriptV2(
     agentId: string,
-    params: { readonly sessionId: string; readonly includeCompleteMessages?: boolean },
+    params: { readonly sessionId: string; readonly schemaVersion?: 2 | 3; readonly includeCompleteMessages?: boolean },
   ): Promise<SessionTranscriptV2Result> {
     const active = this.#active.get(agentId);
     if (active === undefined || !isRunnableActiveAgent(active)) {
@@ -3533,7 +3535,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               : {}),
           },
       active.bootstrap.rolloutStore.store?.sessionDir,
-      { includeCompleteMessages: params.includeCompleteMessages },
+      { includeCompleteMessages: params.includeCompleteMessages, schemaVersion: params.schemaVersion },
     );
     const descendantReviews = this.#descendantEffectReviews(active);
     const reviews = [...(snapshot.pendingEffectReviews ?? []), ...descendantReviews];
@@ -6500,6 +6502,8 @@ function installDaemonTurnDriverHooks(
           // excluded by rootHumanTurnText below.
           querySource: "sdk",
           exactOutput: opts?.exactOutput,
+          ...(opts?.includeToolProgress === true ? { includeToolProgress: true } : {}),
+          ...(opts?.turnChanges !== undefined ? { turnChanges: opts.turnChanges } : {}),
           displayUserMessage: null,
           ...(rootHumanTurnText !== undefined && opts?.clientMessageId !== undefined
             ? { seedUserMessageRuntimeOnly: {

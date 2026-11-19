@@ -302,6 +302,8 @@ export interface AgenCBackgroundAgentSessionEventBinding {
 }
 
 export interface AgenCBackgroundAgentMessageParams {
+  readonly includeToolProgress?: boolean;
+  readonly turnChanges?: { readonly includeDiff?: boolean };
   readonly exactOutput?: boolean;
   /** Settings of the skill the user started this turn with (`message.stream`). */
   readonly skillInvocation?: SkillInvocationSettings;
@@ -574,7 +576,7 @@ export interface AgenCBackgroundAgentRunner {
   ): Promise<SessionTranscriptResult>;
   getAgentSessionTranscriptV2?(
     agentId: string,
-    params: { readonly sessionId: string; readonly includeCompleteMessages?: boolean },
+    params: { readonly sessionId: string; readonly schemaVersion?: 2 | 3; readonly includeCompleteMessages?: boolean },
   ): Promise<SessionTranscriptV2Result>;
   resolveLiveEffectReview?(
     agentId: string,

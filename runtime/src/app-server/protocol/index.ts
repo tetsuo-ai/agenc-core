@@ -212,6 +212,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.goal",
   "session.transcript",
   "session.transcript.v2",
+  "session.turn.diff",
   "session.artifact.read",
   "session.cancelTurn",
   "session.resolveToolCall",
@@ -289,6 +290,13 @@ export type AgenCDaemonMethodCapabilities = JsonObject & {
 };
 
 export type AgenCDaemonServerCapabilities = JsonObject & {
+  readonly "turn.failure.v1"?: true;
+  readonly "turn.usage.v1"?: true;
+  readonly "transcript.tools.v3"?: true;
+  readonly "transcript.plans.v3"?: true;
+  readonly "tool.progress.shell.v1"?: true;
+  readonly "turn.changes.v1"?: true;
+  readonly "turn.diff.read.v1"?: true;
   readonly [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: AgenCDaemonMethodCapabilities;
   readonly [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]?: true;
   readonly [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]?: true;
@@ -921,6 +929,13 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description:
       "Read an identity-bearing, sequence-watermarked transcript projection suitable for atomic snapshot-plus-live reconciliation.",
+  },
+  "session.turn.diff": {
+    method: "session.turn.diff",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Read one bounded immutable file diff from an opted-in turn checkpoint.",
   },
   "session.artifact.read": {
     method: "session.artifact.read",
@@ -2385,6 +2400,8 @@ export type MessageContentBlock =
 export type MessageContent = string | readonly MessageContentBlock[];
 
 export interface MessageSendParams extends JsonObject {
+  readonly turnChanges?: { readonly includeDiff?: boolean };
+  readonly includeToolProgress?: boolean;
   readonly sessionId: string;
   readonly content: MessageContent;
   readonly clientMessageId?: string;
@@ -3013,6 +3030,7 @@ export type AgenCDaemonRequest =
       "session.transcript.v2",
       SessionTranscriptV2Params
     >
+  | AgenCDaemonRequestWithParams<"session.turn.diff", SessionTurnDiffParams>
   | AgenCDaemonRequestWithParams<"session.artifact.read", SessionArtifactReadParams>
   | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams>
   | AgenCDaemonRequestWithParams<
@@ -3925,7 +3943,24 @@ export interface SessionTranscriptParams extends JsonObject {
   readonly sessionId: string;
 }
 
+export interface SessionTurnDiffParams extends JsonObject {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly path: string;
+}
+export interface SessionTurnDiffResult extends JsonObject {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly path: string;
+  readonly diff?: string;
+  readonly binary?: true;
+  readonly diffTruncated?: true;
+  readonly unavailable?: true;
+  readonly note?: string;
+}
+
 export interface SessionTranscriptV2Params extends JsonObject {
+  readonly schemaVersion?: 2 | 3;
   readonly sessionId: string;
 }
 
@@ -4102,7 +4137,34 @@ export interface SessionTranscriptV2Result extends JsonObject {
   readonly pendingEffectReviews?: readonly PendingEffectReview[];
   /** Active selectable canonical user IDs; archived display rows are not targets. */
   readonly activeUserMessageIds?: readonly string[];
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 2 | 3;
+  /** Present only when schemaVersion 3 was requested. No tool outputs. */
+  readonly turns?: readonly {
+    readonly turnId: string;
+    readonly plan?: { readonly planItemId: string; readonly title: string; readonly text: string; readonly state: "running" | "done"; readonly truncated?: boolean };
+    readonly todos?: readonly { readonly text: string; readonly state: "pending" | "running" | "done" }[];
+    readonly todosTruncated?: boolean;
+    /** Values recorded by Core at completion, never reconstructed from session totals. */
+    readonly usage?: {
+      readonly mark: "reported" | "missing";
+      readonly input?: number; readonly output?: number; readonly cached?: number; readonly reasoning?: number;
+      readonly costUsd?: number; readonly billedEstimateUsd?: number; readonly planCalls?: number;
+    };
+    /** Checkpoint summary only. Diff text is fetched separately. */
+    readonly changes?: {
+      readonly turnId: string; readonly from: "checkpoint";
+      readonly files: readonly { readonly path: string; readonly op: "created" | "modified" | "deleted"; readonly added: number; readonly removed: number; readonly binary?: boolean }[];
+      readonly skipped?: boolean; readonly note?: string; readonly filesTruncated?: true;
+    };
+    readonly toolCalls: readonly {
+      readonly callId: string;
+      readonly toolName: string;
+      readonly inputDigest: { readonly [key: string]: string };
+      readonly isError?: boolean;
+      readonly durationMs?: number;
+    }[];
+  }[];
+  readonly turnsTruncated?: boolean;
   readonly sessionId: string;
   readonly runId: string;
   readonly historyEpoch: string;
@@ -4708,6 +4770,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.goal": SessionGoalResult;
   readonly "session.transcript": SessionTranscriptResult;
   readonly "session.transcript.v2": SessionTranscriptV2Result;
+  readonly "session.turn.diff": SessionTurnDiffResult;
   readonly "session.artifact.read": SessionArtifactReadResult;
   readonly "session.cancelTurn": SessionCancelTurnResult;
   readonly "session.resolveToolCall": SessionResolveToolCallResult;

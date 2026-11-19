@@ -1,3 +1,4 @@
+import type { SessionTurnDiffResult } from "./protocol.js";
 /**
  * Typed AgenC daemon client for embedders.
  *
@@ -347,6 +348,8 @@ export interface AgencCreateSessionParams extends SessionCreateParams {
 }
 
 export interface AgencPromptOptions {
+  readonly turnChanges?: { readonly includeDiff?: boolean };
+  readonly includeToolProgress?: boolean;
   readonly signal?: AbortSignal;
   /** Stable caller identity used for idempotent retry and event correlation. */
   readonly clientMessageId?: string;
@@ -529,10 +532,16 @@ export class AgencSession {
   }
 
   /** Identity-bearing transcript (`session.transcript.v2`). Requires protocol 1.2. */
-  transcriptV2(): Promise<SessionTranscriptV2Result> {
+  transcriptV2(options: { schemaVersion?: 2 | 3 } = {}): Promise<SessionTranscriptV2Result> {
     return this.#client.request("session.transcript.v2", {
       sessionId: this.sessionId,
+      ...(options.schemaVersion !== undefined ? { schemaVersion: options.schemaVersion } : {}),
     });
+  }
+
+  /** One cached file patch. Requires turn.changes.v1 and turn.diff.read.v1. */
+  turnFileDiff(turnId: string, path: string): Promise<SessionTurnDiffResult> {
+    return this.#client.request("session.turn.diff", { sessionId: this.sessionId, turnId, path });
   }
 
   /** Live turn count and token usage (`session.snapshot`). */
@@ -1644,6 +1653,8 @@ export class AgencClient {
         sessionId,
         content: dispatchedContent,
         clientMessageId,
+        ...(options.turnChanges !== undefined ? { turnChanges: options.turnChanges } : {}),
+        ...(options.includeToolProgress !== undefined ? { includeToolProgress: options.includeToolProgress } : {}),
         ...(options.ifBusy !== undefined ? { ifBusy: options.ifBusy } : {}),
         ...(options.metadata !== undefined
           ? { metadata: options.metadata }

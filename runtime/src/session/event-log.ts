@@ -149,6 +149,7 @@ export interface TurnStartedEvent {
 }
 
 export interface TurnCompleteEvent {
+  readonly usage?: import("./turn-usage.js").TurnUsage;
   readonly usableFinalAnswer?: boolean;
   readonly turnId: string;
   /** Agent-assignment correlation id, when this is a reusable worker turn. */
@@ -1317,6 +1318,7 @@ export type EventMsg =
       readonly payload: SubagentTurnOutcomeEvent;
     }
   | { readonly type: "subagent_funds_notice"; readonly payload: SubagentFundsNoticeEvent }
+  | { readonly type: "turn_changes"; readonly payload: import("./workspace-changes.js").TurnChanges }
   | { readonly type: "turn_complete"; readonly payload: TurnCompleteEvent }
   | { readonly type: "turn_aborted"; readonly payload: TurnAbortedEvent }
   | { readonly type: "turn_failed"; readonly payload: TurnFailedEvent }
@@ -1585,6 +1587,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "subagent_task_admitted",
     "subagent_turn_outcome",
     "subagent_funds_notice",
+    "turn_changes",
     "turn_complete",
     "turn_aborted",
     "turn_failed",
@@ -1657,6 +1660,7 @@ const DURABLE_EVENT_TYPES = Object.freeze(
     "history_cleared",
     "transcript_epoch",
     "message_submission",
+    "turn_changes",
     "turn_complete",
     "turn_aborted",
     "turn_failed",
