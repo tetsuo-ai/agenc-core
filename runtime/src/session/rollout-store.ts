@@ -58,7 +58,6 @@ import {
   type RolloutItem,
 } from "./rollout-item.js";
 import {
-  getProjectDir,
   SessionStore,
   SessionStoreFlushScheduler,
   type AppendOptions,
@@ -67,7 +66,8 @@ import {
   type SessionStoreOpts,
 } from "./session-store.js";
 import {
-  openStateDatabases,
+  openStateDatabasePaths,
+  stateDatabasePathsForProjectDir,
   StateSqliteReader,
   STATE_DATABASE_FILENAME,
   LOGS_DATABASE_FILENAME,
@@ -800,6 +800,12 @@ export class RolloutStore {
   private readonly suspendedResumeReason: RunResumeReason;
   private readonly existingRolloutAtConstruction: boolean;
   readonly projectRootMarkers?: readonly string[];
+  /**
+   * The project whose state database holds this run: the one beside its
+   * session directory. A resumed run names its rollout, and so its project;
+   * finding the project again from the folder can name another one.
+   */
+  readonly stateProjectDir: string;
   private readonly threadSpawnEdgePath: string;
   private readonly stateDriver: StateSqliteDriver;
   private readonly threadSpawnEdgeRepo: ThreadSpawnEdgeRepository;
@@ -883,14 +889,17 @@ export class RolloutStore {
       this.store.sessionDir,
       "thread-spawn-edges.json",
     );
-    this.stateDriver = openStateDatabases({
-      cwd: opts.cwd,
-      agencHome: this.store.agencHome,
-      durabilityRunId: opts.sessionId,
-      projectRootMarkers: opts.projectRootMarkers,
+    // A run's state lives beside its canonical rollout. Found again from the
+    // folder on resume, the project was another one once a root marker above
+    // the folder came or went, or under another HOME, and the run's state
+    // split between two databases (RUN_ID_AMBIGUOUS on every later read).
+    this.stateProjectDir = dirname(dirname(this.store.sessionDir));
+    this.stateDriver = openStateDatabasePaths(
+      stateDatabasePathsForProjectDir(this.stateProjectDir),
+      opts.sessionId,
       // Rollout authority uses state; open logs only if a caller needs them.
-      deferLogs: true,
-    });
+      { deferLogs: true },
+    );
     this.threadSpawnEdgeRepo = new ThreadSpawnEdgeRepository(this.stateDriver);
     this.runDurabilityRepo = new StateRunDurabilityRepository(this.stateDriver);
     this.compactionRetentionRepo = new CompactionRetentionRepository(
@@ -4045,7 +4054,7 @@ export class RolloutStore {
         liveSource.store.scanCanonicalChunks(64 * 1_024 * 1_024, consume);
         return true;
       } }),
-      projectDir: getProjectDir(this.store.cwd, this.projectRootMarkers, this.store.agencHome),
+      projectDir: this.stateProjectDir,
       projectsDir: join(this.store.agencHome, "projects"),
       bindings: this.runDurabilityRepo.listJournalBindings(childThreadId),
       ...(deadline === undefined ? {} : { deadline }),
@@ -4090,8 +4099,7 @@ export class RolloutStore {
     // terminal evidence; never mount or restore its session. Ambiguous or
     // oversized discovery withholds root continuation.
     const projectsDir = join(this.store.agencHome, "projects");
-    const rootProjectDir = getProjectDir(this.store.cwd,
-      this.projectRootMarkers, this.store.agencHome);
+    const rootProjectDir = this.stateProjectDir;
     const dir = opendirSync(projectsDir);
     let discovered = false;
     let visited = 0;
@@ -4278,11 +4286,7 @@ export class RolloutStore {
       return true;
     }
 
-    const projectDir = getProjectDir(
-      this.store.cwd,
-      this.projectRootMarkers,
-      this.store.agencHome,
-    );
+    const projectDir = this.stateProjectDir;
     for (const binding of this.runDurabilityRepo.listJournalBindings(
       runId,
       epoch,

@@ -1165,6 +1165,14 @@ does not dispatch work, publish events, or rewrite the journal. If one run id
 exists in multiple project databases, the methods fail with
 `RUN_ID_AMBIGUOUS` instead of choosing silently.
 
+A session's state lives in the project that holds its rollout
+(`projects/<project>/sessions/<id>/`). A resumed session stays there even when
+its folder would now resolve to another project: a root marker added in or
+above the folder or removed, a daemon with another `HOME` (the marker search
+stops there), or `project_root_markers` in config. Before this, such a resume
+wrote a second project database and the run answered `RUN_ID_AMBIGUOUS` from
+then on; a run already split that way still does.
+
 The full persistence, replay, gap, effect, migration, and crash semantics are
 documented in
 [`../design/durable-runs-effects-events.md`](../design/durable-runs-effects-events.md).

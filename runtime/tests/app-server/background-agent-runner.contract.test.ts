@@ -1,4 +1,5 @@
 import * as oneShotDurability from "../../src/durability/one-shot-durability.js";
+import { getProjectDir } from "../../src/session/session-store.js";
 import { ModelRegistry, modelRegistryEntryToModelInfo } from "../../src/llm/model-registry.js";
 import { ModelMetadataResolver } from "../../src/llm/model-metadata.js";
 import { OpenRouterCatalog } from "../../src/llm/registry/openrouter-live-catalog.js";
@@ -669,6 +670,10 @@ function makeTopLevelRunner(opts: {
   };
   const rolloutStore = {
     rolloutPath: `/tmp/${opts.conversationId}.jsonl`,
+    // As a new RolloutStore: the project of the session's folder under its own home.
+    get stateProjectDir(): string {
+      return getProjectDir(workspaceRoot, undefined, configStore.homeContext.path);
+    },
     readAll: () => [...rolloutItems],
     appendRollout: vi.fn((item: RolloutItem, _options?: { readonly durable?: boolean }) => {
       rolloutItems.push(item);
