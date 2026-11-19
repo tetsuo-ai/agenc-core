@@ -1193,6 +1193,23 @@ async function tryRunSamplingRequest(
   return finishSamplingRequest(state, ctx, session, signal, events, streamModelError, stallRetryStarted);
 }
 
+/**
+ * A reply that ended without completing (at a tool call the output limit cut,
+ * with a sample that only reasoned, or with an empty continuation) is
+ * committed once, as a message of its own. Its text is already in the
+ * model's history. Returns the committed text.
+ */
+function commitEndedReply(state: TurnState, session: Session): string | undefined {
+  const ended = state.endedReplyText;
+  state.endedReplyText = undefined;
+  if (ended === undefined || ended.length === 0) return undefined;
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: { type: "agent_message", payload: { message: ended } },
+  });
+  return ended;
+}
+
 async function finishSamplingRequest(
   state: TurnState,
   ctx: TurnContext,
@@ -1216,8 +1233,16 @@ async function finishSamplingRequest(
       undefined;
   }
 
-  const assistantText = state.assistantMessages.at(-1)?.text ?? "";
-  if (assistantText.length > 0) {
+  const endedBefore = commitEndedReply(state, session);
+  if (endedBefore !== undefined) events.push({ type: "assistant_text", content: endedBefore });
+  const sample = state.assistantMessages.at(-1);
+  let assistantText = sample?.text ?? "";
+  // A sample cut by the output limit is not a message of its own: recovery
+  // samples it again, carries its text into the message that completes the
+  // reply, or commits it on its own where the reply stops. Only an exhausted
+  // recovery ends the reply with it (below).
+  const cutByOutputLimit = sample !== undefined && isWithheldMaxOutputTokens(sample);
+  if (assistantText.length > 0 && !cutByOutputLimit) {
     events.push({ type: "assistant_text", content: assistantText });
   }
 
@@ -1230,6 +1255,8 @@ async function finishSamplingRequest(
   }
   if (streamModelError && taskBudgetOf(session)?.reached) throw streamModelError;
   await postSampleRecovery(state, ctx, session, signal);
+  const endedAfter = commitEndedReply(state, session);
+  if (endedAfter !== undefined) events.push({ type: "assistant_text", content: endedAfter });
 
   // If recovery applied a transition (any of I-10's triggers fired),
   // swallow the stream error and let the outer loop re-enter
@@ -1253,6 +1280,12 @@ async function finishSamplingRequest(
     isWithheldMaxOutputTokens(lastAssistant);
   if (unrecoveredMaxOutputTokens) {
     discardExecutorForMaxOutputTokens(session, state, { appendCompletedHistory: true });
+    // The reply ends cut: its earlier parts, then this one.
+    assistantText = (state.continuedReplyText ?? "") + assistantText;
+    state.continuedReplyText = undefined;
+    if (assistantText.length > 0) {
+      events.push({ type: "assistant_text", content: assistantText });
+    }
   }
 
   // Phase 4: continuation nudge.
@@ -2913,17 +2946,32 @@ async function* runTurnKernelInner(
               state.truncatedToolCallNames = response.finishReason === "length"
                 ? [...(response.incompleteToolCalls ?? []), ...response.toolCalls].map(call => call.name)
                 : undefined;
+              state.cutReplyText = response.finishReason === "length" &&
+                response.toolCalls.length === 0 && (response.incompleteToolCalls ?? []).length === 0
+                ? state.assistantMessages[0]!.text : undefined;
               state.messages.push({ role: "assistant", content: response.content,
                 ...(response.providerContextHistory !== undefined ? { providerContextHistory: response.providerContextHistory } : {}),
                 ...(response.providerReasoningContent !== undefined ? { providerReasoningContent: response.providerReasoningContent } : {}),
                 ...(response.providerReasoningProvenance !== undefined ? { providerReasoningProvenance: response.providerReasoningProvenance } : {}),
               });
+              const carriedBefore = state.continuedReplyText ?? "";
               await postSampleRecovery(state, ctx, session, signal);
               if (state.transition === undefined) {
                 throw new Error(response.finishReason === "length"
                   ? "The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete."
                   : state.assistantMessages.at(-1)?.text || `Model stopped with ${response.finishReason}`);
               }
+              // Fast mode streamed nothing. Show the part recovery keeps for
+              // the reply before its continuation streams after it, or the
+              // reply that stopped here as a message of its own.
+              const carried = (state.continuedReplyText ?? "").slice(carriedBefore.length);
+              if (carried.length > 0) {
+                session.emit({ id: session.nextInternalSubId(), msg: {
+                  type: "agent_message_delta", payload: { delta: carried },
+                } });
+              }
+              const ended = commitEndedReply(state, session);
+              if (ended !== undefined) yield { type: "assistant_text", content: ended };
               // Recovery has already prepared the next input. Consume this
               // transition before entering the ordinary sampling loop.
               state.transition = undefined;
@@ -3535,8 +3583,12 @@ async function* runTurnKernelInner(
     await drainInFlight(state, ctx, session);
     const partialText = state.assistantMessages.at(-1)?.text;
     if (partialText) lastContent = partialText;
+    // The history already holds the earlier parts of a continued reply: its
+    // copy of the summary restates only the last sample, as before.
+    const keptContent = state.continuedReplyPart !== undefined && partialText
+      ? taskBudget!.summary(state.continuedReplyPart) : undefined;
     lastContent = taskBudget!.summary(lastContent);
-    state.messages.push({ role: "assistant", content: lastContent });
+    state.messages.push({ role: "assistant", content: keptContent ?? lastContent });
     opts.assistantOutputSink?.reset();
     opts.assistantOutputSink?.writeCanonicalDelta(lastContent);
     session.emit({ id: session.nextInternalSubId(), msg: {

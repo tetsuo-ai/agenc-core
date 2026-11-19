@@ -359,11 +359,15 @@ function buildTerminalHookContext(
   const history = rest.map((message, index) =>
     legacyMessageFromLlm(message, index, toolResultErrors),
   );
+  const last = state.assistantMessages.length - 1;
   const assistantMessages = state.assistantMessages.map((assistant, index) =>
     legacyMessageFromAssistant(
-      assistant,
+      // The prompt already holds the earlier parts of a continued reply.
+      index === last && state.continuedReplyPart !== undefined
+        ? { ...assistant, text: state.continuedReplyPart }
+        : assistant,
       index,
-      index === state.assistantMessages.length - 1
+      index === last
         ? state.lastResponseUsage
         : undefined,
     ),
