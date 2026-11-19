@@ -494,6 +494,43 @@ function requireCompactionPayloadBundle(
   return value;
 }
 
+/**
+ * The commit as a later load hydrates it, from the stored payloads, must pass
+ * the strict reader and carry the commit digest its pin records.
+ */
+function assertCommitReadsBack(
+  committed: CompactionCommittedV1,
+  commitSha256: string,
+  stored: {
+    readonly summary: unknown;
+    readonly summary_dag: unknown;
+    readonly replacement_history: unknown;
+  },
+): void {
+  let readBack: unknown;
+  try {
+    readBack = readCompactionRolloutPayload("compaction_committed", {
+      ...committed,
+      ...stored,
+    });
+  } catch (error) {
+    throw new CompactionTransactionError(
+      "commit_failed",
+      "compaction commit would not read back from its stored payloads; history was not changed",
+      { cause: error },
+    );
+  }
+  if (
+    digestSourceWithDomain(COMPACTION_ACCOUNTING_DIGEST_DOMAIN, readBack) !==
+      commitSha256
+  ) {
+    throw new CompactionTransactionError(
+      "commit_failed",
+      "compaction commit would read back changed from its stored payloads; history was not changed",
+    );
+  }
+}
+
 function persistedCompactionSource(
   source: CompactionSourceAuthorityV1,
   activeHistoryRefsBundle: CompactionPayloadBundleV1,
@@ -1548,26 +1585,36 @@ export class RolloutStore {
       committed,
     );
     readCompactionRolloutPayload("compaction_committed", committed);
-    requireCompactionPayloadBundle(commitBundles.final_summary, {
+    const storedSummary = requireCompactionPayloadBundle(commitBundles.final_summary, {
       attemptId: committed.attempt_id,
       payloadKind: "final_summary",
       recordedAtMs: committed.recorded_at_ms,
       expectedValue: committed.summary,
       failureStage: "commit_failed",
     });
-    requireCompactionPayloadBundle(commitBundles.summary_dag, {
+    const storedSummaryDag = requireCompactionPayloadBundle(commitBundles.summary_dag, {
       attemptId: committed.attempt_id,
       payloadKind: "summary_dag",
       recordedAtMs: committed.recorded_at_ms,
       expectedValue: committed.summary_dag,
       failureStage: "commit_failed",
     });
-    requireCompactionPayloadBundle(commitBundles.replacement_history, {
+    const storedReplacementHistory = requireCompactionPayloadBundle(commitBundles.replacement_history, {
       attemptId: committed.attempt_id,
       payloadKind: "replacement_history",
       recordedAtMs: committed.recorded_at_ms,
       expectedValue: committed.replacement_history,
       failureStage: "commit_failed",
+    });
+    // Every later load reads this commit from the redacted payloads above, and
+    // the canonical scan binds rollback, release and retention events to the
+    // digest of what it read. Read it the same way before the commit point: a
+    // commit no later load could read, or one that would read back changed,
+    // fails here with the history unchanged instead of locking the session.
+    assertCommitReadsBack(committed, commitSha256, {
+      summary: storedSummary,
+      summary_dag: storedSummaryDag,
+      replacement_history: storedReplacementHistory,
     });
     const sourceBundles = this.compactionSourcePayloadBundles.get(
       committed.attempt_id,
