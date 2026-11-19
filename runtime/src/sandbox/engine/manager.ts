@@ -38,8 +38,10 @@ import {
   createLinuxSandboxCommandArgsForPermissionProfile,
 } from "./landlock.js";
 import {
+  MACOS_PATH_TO_SEATBELT_EXECUTABLE,
   chromiumBundleIdentifier,
   createSeatbeltCommandArgs,
+  createUnsandboxedCommandArgs,
   darwinUserTempDir,
 } from "./seatbelt.js";
 import { isWsl1 } from "./bwrap.js";
@@ -103,7 +105,12 @@ export class SandboxManager {
     let appliedFileSystemPolicy = fileSystem;
     switch (request.sandbox) {
       case "none":
-        command = argv;
+        // Outside AgenC's sandbox a command on macOS still opens no window or
+        // dialog and starts nothing outside it. The Browser tool's Chromium
+        // needs the window server, and confines its own pages.
+        command = platform === "darwin" && request.chromiumBrowser !== true
+          ? [MACOS_PATH_TO_SEATBELT_EXECUTABLE, ...createUnsandboxedCommandArgs(argv)]
+          : argv;
         break;
       case "macos_seatbelt":
         if (platform !== "darwin") {

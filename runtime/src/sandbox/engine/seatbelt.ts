@@ -100,6 +100,40 @@ export const MACOS_SEATBELT_KEYCHAIN_POLICY = `; no keychain: a keychain prompt 
   (subpath (param "KEYCHAIN_HOME_DIR"))
   (subpath "/Library/Keychains"))`;
 
+/**
+ * The profile a command runs in on macOS when it runs outside AgenC's
+ * sandbox (full access, an approved escalation). Everything is allowed but
+ * what opens a window or a dialog that takes typing, or starts a program
+ * outside this profile: the window server (its own windows and dialogs, such
+ * as osascript's display dialog), the system's alerts (CFUserNotification,
+ * which needs no window server and can carry a password field), Touch ID and
+ * password sheets, LaunchServices (open, whose program would be launchd's,
+ * with nothing denied), Apple Events (which start an app that is not
+ * running), and authorization rights (the administrator password prompt).
+ * Measured on macOS 27.2: each of them fails at once with nothing on the
+ * screen, and ordinary work, network and files keep working. A program in it
+ * cannot start a sandbox of its own (macOS refuses a second one).
+ */
+export const MACOS_UNSANDBOXED_COMMAND_POLICY = `(version 1)
+(allow default)
+(deny mach-lookup
+  (global-name "com.apple.windowserver.active")
+  (global-name "com.apple.windowserver")
+  (global-name "com.apple.UNCUserNotification")
+  (global-name "com.apple.UNCUserNotificationAgent")
+  (global-name "com.apple.CoreAuthentication.agent")
+  (global-name "com.apple.CoreAuthentication.agent.libxpc")
+  (global-name "com.apple.CoreAuthentication.daemon")
+  (global-name "com.apple.CoreAuthentication.daemon.libxpc"))
+(deny lsopen)
+(deny appleevent-send)
+(deny authorization-right-obtain)`;
+
+/** sandbox-exec arguments for a command outside AgenC's sandbox: {@link MACOS_UNSANDBOXED_COMMAND_POLICY}. */
+export function createUnsandboxedCommandArgs(command: readonly string[]): string[] {
+  return ["-p", MACOS_UNSANDBOXED_COMMAND_POLICY, "--", ...command];
+}
+
 export interface CreateSeatbeltCommandArgsParams {
   readonly command: readonly string[];
   readonly fileSystemSandboxPolicy: FileSystemSandboxPolicy;
