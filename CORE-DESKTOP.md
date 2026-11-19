@@ -24,6 +24,12 @@ at `647d4c4a4` (runtime 0.19.38) on 2026-11-19.
   `packaging/private-core-source.json` (agenc-desktop). The pin's
   `runtimeVersion` is the `version` in `runtime/package.json` at that commit.
 - Never force-push this branch, and never rewrite its history.
+- FND benchmark baselines (`runtime/benchmarks/fnd/`) are captured for this
+  branch's own head and checked against `origin/core-desktop`, never `main`
+  (`BENCHMARK_DEFAULT_BRANCH` in `provenance.mjs`; the FND contract test fails
+  without it). A change to a file a benchmark loads leaves that test red until
+  this branch recaptures: see "The core-desktop line" in
+  `runtime/benchmarks/fnd/README.md`.
 
 ## History
 

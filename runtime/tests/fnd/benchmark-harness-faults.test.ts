@@ -55,6 +55,7 @@ import {
 import {
   assertBindingsStable,
   assertCleanBenchmarkWorktree,
+  BENCHMARK_DEFAULT_BRANCH,
   bindProductionModuleClosures,
   captureBenchmarkProvenance,
   collectNormalizedFileBindings,
@@ -1922,7 +1923,7 @@ describe("FND benchmark harness fault contracts", () => {
     }
   }, PROVENANCE_CASE_TIMEOUT_MS);
 
-  test("resolves the default branch from origin/main without local main", () => {
+  test("resolves the default branch from origin/core-desktop without a local core-desktop", () => {
     const fixture = createProvenanceFixture();
     try {
       const defaultRevision = resolveDefaultBranchRevision(
@@ -1931,11 +1932,11 @@ describe("FND benchmark harness fault contracts", () => {
       runGit(fixture.repositoryRoot, ["branch", "-m", "topic"]);
       runGit(fixture.repositoryRoot, [
         "update-ref",
-        "refs/remotes/origin/main",
+        `refs/remotes/origin/${BENCHMARK_DEFAULT_BRANCH}`,
         defaultRevision,
       ]);
       expect(resolveDefaultBranchSelector(fixture.repositoryRoot)).toBe(
-        "refs/remotes/origin/main",
+        `refs/remotes/origin/${BENCHMARK_DEFAULT_BRANCH}`,
       );
       expect(resolveDefaultBranchRevision(fixture.repositoryRoot)).toBe(
         defaultRevision,
@@ -1944,6 +1945,84 @@ describe("FND benchmark harness fault contracts", () => {
       rmSync(fixture.repositoryRoot, { force: true, recursive: true });
     }
   });
+
+  test("binds provenance to the core-desktop line, never to main or origin/HEAD", () => {
+    // core-desktop is never merged into main (CORE-DESKTOP.md), so main can never
+    // hold this line's production sources: its baselines are bound to core-desktop.
+    expect(BENCHMARK_DEFAULT_BRANCH).toBe("core-desktop");
+    const fixture = createProvenanceFixture();
+    try {
+      const options = provenanceOptions(fixture.repositoryRoot);
+      const forkRevision = readGitText(fixture.repositoryRoot, [
+        "rev-parse",
+        "HEAD",
+      ]);
+      runGit(fixture.repositoryRoot, ["branch", "main", forkRevision]);
+      runGit(fixture.repositoryRoot, [
+        "update-ref",
+        "refs/remotes/origin/main",
+        forkRevision,
+      ]);
+      runGit(fixture.repositoryRoot, [
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+      ]);
+      writeFileSync(
+        fixture.dependencyPath,
+        "export const dependency = 2;\n",
+        "utf8",
+      );
+      runGit(fixture.repositoryRoot, ["add", "source/dependency.ts"]);
+      runGit(fixture.repositoryRoot, [
+        "-c",
+        "user.name=AgenC Test",
+        "-c",
+        "user.email=test@agenc.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "line change",
+      ]);
+      const lineRevision = readGitText(fixture.repositoryRoot, [
+        "rev-parse",
+        "HEAD",
+      ]);
+      runGit(fixture.repositoryRoot, [
+        "update-ref",
+        "refs/remotes/origin/core-desktop",
+        lineRevision,
+      ]);
+
+      expect(resolveDefaultBranchSelector(fixture.repositoryRoot)).toBe(
+        "refs/remotes/origin/core-desktop",
+      );
+      expect(resolveDefaultBranchRevision(fixture.repositoryRoot)).toBe(
+        lineRevision,
+      );
+      expect(() =>
+        captureBenchmarkProvenance({
+          ...options,
+          sourceRevision: lineRevision,
+        }),
+      ).not.toThrow();
+
+      // Without the line's branch there is no default branch: main never stands in.
+      runGit(fixture.repositoryRoot, ["checkout", "--quiet", "--detach"]);
+      runGit(fixture.repositoryRoot, [
+        "update-ref",
+        "-d",
+        "refs/remotes/origin/core-desktop",
+      ]);
+      runGit(fixture.repositoryRoot, ["branch", "-D", "core-desktop"]);
+      expect(() =>
+        resolveDefaultBranchSelector(fixture.repositoryRoot),
+      ).toThrow(/could not resolve the repository default branch/u);
+    } finally {
+      rmSync(fixture.repositoryRoot, { force: true, recursive: true });
+    }
+  }, PROVENANCE_CASE_TIMEOUT_MS);
 
   test("fresh-clone bundle keeps the default branch and drops dangling commits", () => {
     const fixture = createProvenanceFixture();
@@ -1958,7 +2037,7 @@ describe("FND benchmark harness fault contracts", () => {
       const defaultRevision = resolveDefaultBranchRevision(
         fixture.repositoryRoot,
       );
-      expect(defaultSelector).toMatch(/^refs\/heads\/(?:main|master)$/u);
+      expect(defaultSelector).toBe(`refs/heads/${BENCHMARK_DEFAULT_BRANCH}`);
 
       writeFileSync(join(fixture.repositoryRoot, "dangling.txt"), "x\n", "utf8");
       runGit(fixture.repositoryRoot, ["add", "dangling.txt"]);
@@ -2026,9 +2105,12 @@ describe("FND benchmark harness fault contracts", () => {
           "-g",
           "-1",
           "--format=%gn <%ge>",
-          "refs/heads/main",
+          `refs/heads/${BENCHMARK_DEFAULT_BRANCH}`,
         ]),
       ).toBe("AgenC Benchmark Harness <benchmark@agenc.invalid>");
+      expect(
+        readGitText(cloneRoot, ["symbolic-ref", "refs/remotes/origin/HEAD"]),
+      ).toBe(`refs/remotes/origin/${BENCHMARK_DEFAULT_BRANCH}`);
       expect(readGitText(cloneRoot, ["rev-parse", "HEAD"])).toBe(headRevision);
       expect(
         spawnSync("git", ["cat-file", "-e", `${danglingRevision}^{commit}`], {
@@ -2102,7 +2184,7 @@ function createProvenanceFixture(): {
     "source/ignored.ts\n",
     "utf8",
   );
-  runGit(repositoryRoot, ["init"]);
+  runGit(repositoryRoot, ["init", `--initial-branch=${BENCHMARK_DEFAULT_BRANCH}`]);
   runGit(repositoryRoot, [
     "add",
     ".gitignore",

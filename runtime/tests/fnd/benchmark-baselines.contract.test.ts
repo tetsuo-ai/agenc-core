@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +19,7 @@ import {
 } from "../../benchmarks/fnd/contract.mjs";
 import { describeFixture } from "../../benchmarks/fnd/fixtures.mjs";
 import {
+  BENCHMARK_DEFAULT_BRANCH,
   collectNormalizedFileBindings,
   verifyCheckedBenchmarkProvenance,
 } from "../../benchmarks/fnd/provenance.mjs";
@@ -129,6 +130,15 @@ describe("FND benchmark baseline contract", () => {
       timeout: PLAN_RUNNER_TIMEOUT_MS,
     });
     expect(second).toBe(first);
+  });
+
+  test("checks this line's baselines against core-desktop, never main", () => {
+    // CORE-DESKTOP.md: core-desktop is never merged into main, so a baseline for
+    // this line's sources is captured for its own head and must stay reachable
+    // from origin/core-desktop. A main merge that brought main's binding back
+    // would leave every later pinned change unrecapturable here.
+    expect(existsSync(join(REPOSITORY_ROOT, "CORE-DESKTOP.md"))).toBe(true);
+    expect(BENCHMARK_DEFAULT_BRANCH).toBe("core-desktop");
   });
 
   test("binds every measured point to its generated fixture and production source", () => {
