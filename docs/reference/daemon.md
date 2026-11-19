@@ -1163,15 +1163,27 @@ projection from its canonical active or archived JSONL source and recovers any
 missing v15 effect or terminal projection. This repair writes indexes/state but
 does not dispatch work, publish events, or rewrite the journal. If one run id
 exists in multiple project databases, the methods fail with
-`RUN_ID_AMBIGUOUS` instead of choosing silently.
+`RUN_ID_AMBIGUOUS` instead of choosing silently, except for a run split by an
+earlier resume, which they read and mark partial (below).
 
 A session's state lives in the project that holds its rollout
 (`projects/<project>/sessions/<id>/`). A resumed session stays there even when
 its folder would now resolve to another project: a root marker added in or
 above the folder or removed, a daemon with another `HOME` (the marker search
 stops there), or `project_root_markers` in config. Before this, such a resume
-wrote a second project database and the run answered `RUN_ID_AMBIGUOUS` from
-then on; a run already split that way still does.
+wrote its new epoch, journal binding and admission records into a second
+project database while it kept appending to the rollout.
+
+The four methods read a run split that way from the project that holds its
+rollout, when every journal binding and thread row in the other databases
+names that same rollout and none of their epoch-scoped rows starts before
+their first binding. The answer is then partial: its `source.partial` is
+`{ reason: "split_run", omittedProjectDirs }`, naming the databases it leaves
+out. The replay is complete, since it reads the rollout. The admission summary
+leaves out those databases' records, `durableRun` is the first project's run
+row, and `run.evidence` reports completeness `partial`. Nothing is moved or
+deleted. Any other run with state in more than one database still fails with
+`RUN_ID_AMBIGUOUS`.
 
 The full persistence, replay, gap, effect, migration, and crash semantics are
 documented in

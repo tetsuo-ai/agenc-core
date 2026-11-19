@@ -3443,12 +3443,28 @@ export interface RunDurableRecord extends JsonObject {
   readonly metadata?: JsonObject;
 }
 
+/**
+ * Marks an inspection answer as partial. `split_run`: a resume found the run's
+ * project again from its folder, got another project, and wrote rows of the
+ * run into that project's database too. Those rows are bound to the run's
+ * rollout, so the answer reads the project that holds the rollout: the replay
+ * is complete, but the records in `omittedProjectDirs` are left out (their
+ * admission records, and the daemon's run row there: `durableRun` is the
+ * first project's).
+ */
+export interface RunPartialAnswer extends JsonObject {
+  readonly reason: "split_run";
+  readonly omittedProjectDirs: readonly string[];
+}
+
 export interface RunStateSource extends JsonObject {
   readonly kind: "existing_state_database";
   readonly projectDir: string;
   readonly admissionProjectDir?: string;
   readonly admissionLastSequence?: number;
   readonly readonly: true;
+  /** Present only when the answer leaves out records of the run. */
+  readonly partial?: RunPartialAnswer;
 }
 
 export interface RunAdmissionSourceAvailability extends JsonObject {
@@ -3651,6 +3667,8 @@ export interface RunJournalReplaySource extends JsonObject {
   readonly canonical: "rollout_jsonl";
   readonly projection: "thread_rollout_items";
   readonly projectDir: string;
+  /** Present only for a split run. The replay still reads the whole rollout. */
+  readonly partial?: RunPartialAnswer;
 }
 
 export interface RunAdmissionReplaySource extends JsonObject {
@@ -3658,6 +3676,8 @@ export interface RunAdmissionReplaySource extends JsonObject {
   readonly available: boolean;
   readonly sequenceScope: "project_state_database";
   readonly projectDir: string;
+  /** Present only when the answer leaves out records of the run. */
+  readonly partial?: RunPartialAnswer;
 }
 
 export type RunReplaySource = RunJournalReplaySource | RunAdmissionReplaySource;
@@ -3688,6 +3708,8 @@ export interface RunEvidenceSource extends JsonObject {
   readonly admissionJournal: boolean;
   readonly workflowEvidenceIncluded: boolean;
   readonly completeness: RunEvidenceCompleteness;
+  /** Present only when the answer leaves out records of the run. */
+  readonly partial?: RunPartialAnswer;
 }
 
 export interface RunEvidenceCursor extends JsonObject {

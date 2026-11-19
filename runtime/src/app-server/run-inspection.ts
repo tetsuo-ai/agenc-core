@@ -3,7 +3,7 @@ export { AgenCDaemonRunInspectionError, type AgenCDaemonRunInspectionErrorCode }
 import { ALL_PERMISSION_MODES, type InternalPermissionMode } from "../types/permissions.js";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { openSqliteDatabase } from "../state/sqlite-engine.js";
 import type BetterSqlite3 from "better-sqlite3";
@@ -14,6 +14,7 @@ import type {
   RunEvidenceBundle,
   RunEvidenceParams,
   RunEvidenceResult,
+  RunPartialAnswer,
   RunReplayParams,
   RunReplayResult,
   RunResultParams,
@@ -89,6 +90,8 @@ interface LocatedRun {
     readonly summary: RunStatusResult["admission"];
     readonly lastSequence: number;
   };
+  /** Set when other project databases hold stray rows of this split run. */
+  readonly partial?: RunPartialAnswer;
 }
 
 interface RunTerminalRow {
@@ -225,9 +228,12 @@ export class AgenCDaemonRunInspectionService {
     const limit = normalizeReplayLimit(params.limit);
     const located = this.#locate(runId);
     refreshRunJournalProjection(located.paths, runId);
-    return withReadonlyStateDatabase(located.paths, (db) =>
+    const page = withReadonlyStateDatabase(located.paths, (db) =>
       buildRunReplay(db, located, runId, afterSequence, limit),
     );
+    return located.partial === undefined
+      ? page
+      : { ...page, source: { ...page.source, partial: located.partial } };
   }
 
   result(params: RunResultParams): RunResultResult {
@@ -264,7 +270,7 @@ export class AgenCDaemonRunInspectionService {
             usage: parseRunUsage(durableTerminal.usage_json),
             lastSequence: durableTerminal.last_sequence,
           },
-          source: runStateSource(located.paths, located.admission),
+          source: runStateSource(located),
         };
       }
       if (run === undefined) {
@@ -287,7 +293,7 @@ export class AgenCDaemonRunInspectionService {
           available: false,
           reason: "terminal_output_not_persisted_in_existing_state",
         },
-        source: runStateSource(located.paths, located.admission),
+        source: runStateSource(located),
       };
     });
   }
@@ -323,7 +329,8 @@ export class AgenCDaemonRunInspectionService {
             ? "admission_source_unavailable"
             : replay.gap !== null
               ? "journal_gap"
-            : afterSequence > 0 || replay.hasMore || located.admission !== undefined
+            : afterSequence > 0 || replay.hasMore || located.admission !== undefined ||
+                located.partial !== undefined
               ? "partial"
               : "complete";
         const bundleDocument = {
@@ -332,6 +339,7 @@ export class AgenCDaemonRunInspectionService {
             ? "canonical_run_journal"
             : "existing_m3_admission_state",
           completeness,
+          ...(located.partial !== undefined ? { partial: located.partial } : {}),
           afterSequence,
           nextAfterSequence: replay.nextAfterSequence,
           runStateSha256,
@@ -340,7 +348,7 @@ export class AgenCDaemonRunInspectionService {
           gapSha256,
           eventHashes,
           ...(located.admission !== undefined
-            ? { admissionSource: runStateSource(located.paths, located.admission) }
+            ? { admissionSource: runStateSource(located) }
             : {}),
         } as const;
         const bundle = workflowEvidenceBundle(this.#agencHome, db, runId);
@@ -360,6 +368,7 @@ export class AgenCDaemonRunInspectionService {
             admissionJournal: status.admission.sources.journal,
             workflowEvidenceIncluded: canonicalJournal,
             completeness,
+            ...(located.partial !== undefined ? { partial: located.partial } : {}),
           },
           cursor: {
             afterSequence,
@@ -418,18 +427,32 @@ export class AgenCDaemonRunInspectionService {
         `no durable run or admission state found for id: ${runId}`,
       );
     }
-    const canonicalMatches = matches.filter((match) => match.canonical);
-    if (canonicalMatches.length === 0 && matches.length === 1) return matches[0]!;
+    // A resume that found the run's project again from its folder, and got
+    // another project, wrote rows of the run into that project's database
+    // too. When all of them are bound to the run's rollout, read the project
+    // that holds the rollout, leave the strays out and mark the answer partial.
+    const strays = splitRunStrays(matches.filter((match) => match.canonical), runId);
+    const isStray = (paths: StateDatabasePaths): boolean =>
+      strays?.some((stray) => stray.stateDbPath === paths.stateDbPath) === true;
+    const partial: RunPartialAnswer | undefined = strays === undefined ? undefined : {
+      reason: "split_run",
+      omittedProjectDirs: strays.map((stray) => stray.projectDir).sort(),
+    };
+    const marked = (located: LocatedRun): LocatedRun =>
+      partial === undefined ? located : { ...located, partial };
+    const kept = matches.filter((match) => !isStray(match.paths));
+    const canonicalMatches = kept.filter((match) => match.canonical);
+    if (canonicalMatches.length === 0 && kept.length === 1) return kept[0]!;
     if (canonicalMatches.length !== 1) throw ambiguousRunOwner(runId);
     const canonical = canonicalMatches[0]!;
     this.#refreshStatusProjection(canonical.paths, runId, observedStop);
     const authority = withReadonlyStateDatabase(canonical.paths, (db) => readRunAdmissionAuthority(db, runId));
-    if (matches.length === 1 && authority.owner === undefined) return canonical;
-    const admissionMatches = matches.filter((match) => match.hasAdmission);
-    const declaredOwners = authority.owner === undefined ? [] : discovered.filter((paths) =>
+    if (kept.length === 1 && authority.owner === undefined) return marked(canonical);
+    const admissionMatches = kept.filter((match) => match.hasAdmission);
+    const declaredOwners = authority.owner === undefined ? [] : discovered.filter((paths) => !isStray(paths) && (
       paths.projectDir === authority.owner?.workspaceId || withReadonlyStateDatabase(paths, (db) =>
         hasDeclaredAdmissionWorkspace(db, authority.owner!, runId),
-      ),
+      )),
     );
     if (declaredOwners.length > 1) throw ambiguousRunOwner(runId);
     const declaredOwnerPaths = declaredOwners[0];
@@ -437,7 +460,7 @@ export class AgenCDaemonRunInspectionService {
       ? admissionMatches.length === 1 ? admissionMatches[0] : undefined
       : declaredOwnerPaths === undefined ? undefined : { paths: declaredOwnerPaths };
     if (owner === undefined || !authority.identitiesValid) throw ambiguousRunOwner(runId);
-    if (matches.some((match) => match.paths.stateDbPath !== canonical.paths.stateDbPath && match.paths.stateDbPath !== owner.paths.stateDbPath)) throw ambiguousRunOwner(runId);
+    if (kept.some((match) => match.paths.stateDbPath !== canonical.paths.stateDbPath && match.paths.stateDbPath !== owner.paths.stateDbPath)) throw ambiguousRunOwner(runId);
     const admission = withReadonlyStateDatabase(owner.paths, (db) => db.transaction(() => {
       verifyRunAdmissionAuthority(db, authority, runId);
       const runIds = collectRunTreeIds(db, runId);
@@ -448,8 +471,116 @@ export class AgenCDaemonRunInspectionService {
         : 0;
       return { paths: owner.paths, summary: admissionSummary(db, runId), lastSequence };
     })());
-    return owner.paths.stateDbPath === canonical.paths.stateDbPath ? canonical : { ...canonical, admission };
+    return marked(owner.paths.stateDbPath === canonical.paths.stateDbPath ? canonical : { ...canonical, admission });
   }
+}
+
+/** What one project database holds of a run's journal bindings. */
+interface RunRolloutBindings {
+  readonly paths: StateDatabasePaths;
+  /** The bound rollouts, resolved; empty when there is no readable binding. */
+  readonly sources: ReadonlySet<string>;
+  /** Every binding names a rollout in this database's own project. */
+  readonly ownProject: boolean;
+  /** Every binding is the run's own journal, not a child's. */
+  readonly ownRun: boolean;
+  /**
+   * Every epoch-scoped row of the run starts at or after its first binding.
+   * A binding names the rollout an epoch was opened in; later epochs (a
+   * reopened run) continue in that rollout without a binding of their own.
+   */
+  readonly epochsCovered: boolean;
+  /** The rollouts the run's thread row names, resolved. */
+  readonly threadRollouts: readonly string[];
+}
+
+const MAX_SPLIT_RUN_BINDINGS = 32;
+const EPOCH_SCOPED_RUN_TABLES = [
+  "run_lifecycle_epochs",
+  "run_terminal_results",
+  "run_effects",
+  "run_suspensions",
+  "run_runtime_settings",
+] as const;
+
+/**
+ * The stray databases of a split run, or undefined when the run is not split
+ * that way. A resume found the run's project again from its folder (a root
+ * marker above it came or went, or the daemon ran with another HOME), got
+ * another project, and wrote its new epoch, journal binding and admission
+ * records into that project's database while it kept appending to its
+ * rollout. Exactly one database must hold the run's rollout in its own
+ * project; every other database's bindings, and its thread row, must name
+ * that same rollout, and its epoch-scoped rows must start at or after its
+ * first binding.
+ */
+function splitRunStrays(
+  canonicalMatches: readonly { readonly paths: StateDatabasePaths }[],
+  runId: string,
+): readonly StateDatabasePaths[] | undefined {
+  if (canonicalMatches.length < 2) return undefined;
+  const bindings = canonicalMatches.map((match) =>
+    withReadonlyStateDatabase(match.paths, (db) => readRunRolloutBindings(db, match.paths, runId)),
+  );
+  const homes = bindings.filter((binding) => binding.sources.size > 0 && binding.ownProject);
+  if (homes.length !== 1) return undefined;
+  const home = homes[0]!;
+  const strays = bindings.filter((binding) => binding !== home);
+  const boundToHomeRollout = (stray: RunRolloutBindings): boolean =>
+    stray.sources.size > 0 && stray.ownRun && stray.epochsCovered &&
+    [...stray.sources, ...stray.threadRollouts].every((source) => home.sources.has(source));
+  return strays.every(boundToHomeRollout) ? strays.map((stray) => stray.paths) : undefined;
+}
+
+function readRunRolloutBindings(
+  db: BetterSqlite3.Database,
+  paths: StateDatabasePaths,
+  runId: string,
+): RunRolloutBindings {
+  const none = { paths, sources: new Set<string>(), ownProject: false, ownRun: false, epochsCovered: false, threadRollouts: [] };
+  if (!tableExists(db, "run_journal_bindings")) return none;
+  const rows = db.prepare<[string], { epoch: number; child_run_id: string; session_id: string; source_path: string }>(
+    `SELECT epoch, child_run_id, session_id, source_path FROM run_journal_bindings
+     WHERE run_id = ? LIMIT ${MAX_SPLIT_RUN_BINDINGS + 1}`,
+  ).all(runId);
+  if (rows.length === 0 || rows.length > MAX_SPLIT_RUN_BINDINGS) return none;
+  const firstBoundEpoch = Math.min(...rows.map((row) => row.epoch));
+  const epochsCovered = EPOCH_SCOPED_RUN_TABLES.every((table) =>
+    !tableExists(db, table) || !columnExists(db, table, "epoch") ||
+    (db.prepare<[string], { first: number | null }>(`SELECT MIN(epoch) AS first FROM ${table} WHERE run_id = ?`)
+      .get(runId)?.first ?? firstBoundEpoch) >= firstBoundEpoch,
+  );
+  const thread = tableExists(db, "threads")
+    ? db.prepare<[string], ThreadRolloutRow>(
+        "SELECT rollout_path, archived_rollout_path FROM threads WHERE thread_id = ? LIMIT 1",
+      ).get(runId)
+    : undefined;
+  return {
+    paths,
+    sources: new Set(rows.map((row) => resolve(row.source_path))),
+    ownProject: rows.every((row) => isRolloutInProject(row.source_path, row.session_id, paths.projectDir)),
+    ownRun: rows.every((row) => row.child_run_id === runId && row.session_id === runId),
+    epochsCovered,
+    threadRollouts: [thread?.rollout_path, thread?.archived_rollout_path]
+      .filter((path): path is string => typeof path === "string" && path.length > 0)
+      .map((path) => resolve(path)),
+  };
+}
+
+interface ThreadRolloutRow {
+  readonly rollout_path: string | null;
+  readonly archived_rollout_path: string | null;
+}
+
+/** A canonical rollout file of `sessionId` in this project's sessions or archived_sessions folder. */
+function isRolloutInProject(sourcePath: string, sessionId: string, projectDir: string): boolean {
+  const source = resolve(sourcePath);
+  const file = basename(source);
+  if (!file.startsWith("rollout-") || !file.endsWith(".jsonl")) return false;
+  if (sessionId.length === 0 || basename(sessionId) !== sessionId) return false;
+  const project = resolve(projectDir);
+  return dirname(source) === join(project, "sessions", sessionId) ||
+    dirname(source) === join(project, "archived_sessions", sessionId);
 }
 
 interface RunAdmissionAuthority {
@@ -608,7 +739,7 @@ function buildRunStatus(
           : "agent_run",
     ...(run !== undefined ? { durableRun: durableRunFromRow(run) } : {}),
     admission,
-    source: runStateSource(located.paths, located.admission),
+    source: runStateSource(located),
     ...(workflow !== undefined ? { workflow } : {}),
   };
 }
@@ -1444,7 +1575,7 @@ function terminalOutcome(status: string): RunResultResult["outcome"] {
   return "failed";
 }
 
-function runStateSource(paths: StateDatabasePaths, admission?: LocatedRun["admission"]): RunStatusResult["source"] {
+function runStateSource({ paths, admission, partial }: LocatedRun): RunStatusResult["source"] {
   return {
     kind: "existing_state_database",
     projectDir: paths.projectDir,
@@ -1452,6 +1583,7 @@ function runStateSource(paths: StateDatabasePaths, admission?: LocatedRun["admis
       ? { admissionProjectDir: admission.paths.projectDir, admissionLastSequence: admission.lastSequence }
       : {}),
     readonly: true,
+    ...(partial !== undefined ? { partial } : {}),
   };
 }
 
