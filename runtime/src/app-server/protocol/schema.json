@@ -79,6 +79,7 @@
     "session.goal",
     "session.transcript",
     "session.transcript.v2",
+    "session.turn.diff",
     "session.artifact.read",
     "session.cancelTurn",
     "session.resolveToolCall",
@@ -2973,10 +2974,41 @@
         "sessionId": {
           "type": "string",
           "minLength": 1
+        },
+        "schemaVersion": {
+          "enum": [
+            2,
+            3
+          ]
         }
       },
       "required": [
         "sessionId"
+      ]
+    },
+    "SessionTurnDiffParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "path"
       ]
     },
     "SessionArtifactReadParams": {
@@ -3405,6 +3437,12 @@
         },
         "metadata": {
           "$ref": "#/definitions/JsonObject"
+        },
+        "includeToolProgress": {
+          "type": "boolean"
+        },
+        "turnChanges": {
+          "$ref": "#/definitions/MessageTurnChanges"
         }
       },
       "required": [
@@ -3436,12 +3474,27 @@
         },
         "skillInvocation": {
           "$ref": "#/definitions/MessageSkillInvocation"
+        },
+        "includeToolProgress": {
+          "type": "boolean"
+        },
+        "turnChanges": {
+          "$ref": "#/definitions/MessageTurnChanges"
         }
       },
       "required": [
         "sessionId",
         "content"
       ]
+    },
+    "MessageTurnChanges": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "includeDiff": {
+          "type": "boolean"
+        }
+      }
     },
     "MessageSkillInvocation": {
       "description": "Protocol 1.35: settings of a skill the user invoked by name, for that turn only. Sent only to a daemon advertising the message.stream.skillInvocation capability.",
@@ -5152,6 +5205,9 @@
           "$ref": "#/definitions/SessionTranscriptV2Request"
         },
         {
+          "$ref": "#/definitions/SessionTurnDiffRequest"
+        },
+        {
           "$ref": "#/definitions/SessionArtifactReadRequest"
         },
         {
@@ -6435,6 +6491,30 @@
         },
         "params": {
           "$ref": "#/definitions/SessionTranscriptV2Params"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "SessionTurnDiffRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.turn.diff"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionTurnDiffParams"
         }
       },
       "required": [
