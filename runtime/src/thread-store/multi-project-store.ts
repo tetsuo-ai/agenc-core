@@ -13,7 +13,7 @@ import { Buffer } from "node:buffer";
 import { lstatSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ThreadId } from "../agents/registry.js";
-import { isRolloutInOwnProject, runsBoundOnlyElsewhere, splitRunStrayDatabases } from "../state/split-run.js";
+import { isRolloutInOwnProject, NOT_SPLIT, runsBoundOnlyElsewhere, splitRunDatabases, type SplitRunDatabases } from "../state/split-run.js";
 import type { StateDatabasePaths } from "../state/database-paths.js";
 import { discoverStateDatabasePaths, resolveStateDatabasePaths, stateDatabasePathsForProjectDir } from "../state/sqlite-driver.js";
 import {
@@ -49,6 +49,8 @@ export interface MultiProjectFileThreadStoreOpts {
   readonly agencHome: string;
   readonly defaultModelProviderId?: string;
   readonly deferPrimary?: boolean;
+  /** Where to say that a listing could not check split-run rows (once per project or run). */
+  readonly warn?: (message: string) => void;
 }
 
 export class MultiProjectFileThreadStore implements ThreadStore {
@@ -58,6 +60,8 @@ export class MultiProjectFileThreadStore implements ThreadStore {
   readonly #primaryProjectDir: string;
   readonly #byProjectDir = new Map<string, FileThreadStore>();
   readonly #knownProjectDirs = new Set<string>();
+  readonly #warn: (message: string) => void;
+  readonly #warnedSplitRunChecks = new Set<string>();
   #sortedProjectDirs: readonly string[] | undefined;
   #projectIndexByDir: ReadonlyMap<string, number> | undefined;
   #projectsDirectoryMtimeMs: number | null | undefined;
@@ -67,6 +71,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
     this.#agencHome = opts.agencHome;
     this.#primaryCwd = opts.primaryCwd;
     this.#defaultModelProviderId = opts.defaultModelProviderId;
+    this.#warn = opts.warn ?? (() => {});
     this.#primaryProjectDir = resolveStateDatabasePaths({
       cwd: opts.primaryCwd,
       agencHome: opts.agencHome,
@@ -174,7 +179,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
       // Project counts are typically small; recovery already scans all DBs.
       const items: StoredThread[] = [];
       const seen = new Set<string>();
-      const straysByRun = new Map<string, ReadonlySet<string>>();
+      const splitsByRun = new Map<string, SplitRunDatabases>();
       for (const store of this.#allStores()) {
         let cursor: string | undefined;
         do {
@@ -193,7 +198,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
               : {}),
             ...(cursor !== undefined ? { cursor } : {}),
           });
-          for (const item of this.#withoutSplitRunStrays(store.getProjectDir(), page.items, straysByRun)) {
+          for (const item of this.#withoutSplitRunStrays(store.getProjectDir(), page.items, splitsByRun)) {
             if (seen.has(item.threadId)) continue;
             seen.add(item.threadId);
             items.push(item);
@@ -269,7 +274,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
     }
 
     const items: StoredThread[] = [];
-    const straysByRun = new Map<string, ReadonlySet<string>>();
+    const splitsByRun = new Map<string, SplitRunDatabases>();
     let projectsVisited = 0;
     while (
       projectIndex < projectDirs.length &&
@@ -299,7 +304,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
             : {}),
           ...(threadCursor !== undefined ? { cursor: threadCursor } : {}),
         });
-        const kept = this.#withoutSplitRunStrays(projectDir, page.items, straysByRun);
+        const kept = this.#withoutSplitRunStrays(projectDir, page.items, splitsByRun);
         items.push(...kept);
         nextCursor = page.nextCursor;
         if (nextCursor === undefined || kept.length === page.items.length || items.length >= pageSize ||
@@ -474,35 +479,51 @@ export class MultiProjectFileThreadStore implements ThreadStore {
    * mistake also holds a thread row of the chat, naming the chat's rollout in
    * the first project and no folder, so the chat was listed twice. A row that
    * names a rollout in its own project is never one and costs no read; the
-   * rule is worked out once per run per listing (`straysByRun`). Leaving a
-   * row out is only de-duplication: a database that cannot be read lists as
-   * before.
+   * rule is worked out once per run per listing (`splitsByRun`), a failure
+   * included. Leaving a row out is only de-duplication: a database that
+   * cannot be read lists as before, and the store says so once.
    */
   #withoutSplitRunStrays(
     projectDir: string,
     items: readonly StoredThread[],
-    straysByRun: Map<string, ReadonlySet<string>>,
+    splitsByRun: Map<string, SplitRunDatabases>,
   ): StoredThread[] {
     const unsure = items.filter((item) =>
       item.rolloutPath === undefined || !isRolloutInOwnProject(item.rolloutPath, item.threadId, projectDir));
     if (unsure.length === 0) return [...items];
     const paths = stateDatabasePathsForProjectDir(projectDir);
-    const leftOut = new Set<string>();
+    let elsewhere: ReadonlySet<string>;
     try {
-      let allPaths: readonly StateDatabasePaths[] | undefined;
-      for (const runId of runsBoundOnlyElsewhere(paths, unsure.map((item) => item.threadId))) {
-        let strays = straysByRun.get(runId);
-        if (strays === undefined) {
-          allPaths ??= this.#boundedProjectDirs().map(stateDatabasePathsForProjectDir);
-          strays = splitRunStrayDatabases(runId, allPaths);
-          straysByRun.set(runId, strays);
-        }
-        if (strays.has(paths.stateDbPath)) leftOut.add(runId);
-      }
-    } catch {
+      elsewhere = runsBoundOnlyElsewhere(paths, unsure.map((item) => item.threadId));
+    } catch (error) {
+      this.#warnSplitRunCheck(projectDir, error);
       return [...items];
     }
+    const leftOut = new Set<string>();
+    let allPaths: readonly StateDatabasePaths[] | undefined;
+    for (const runId of elsewhere) {
+      let split = splitsByRun.get(runId);
+      if (split === undefined) {
+        allPaths ??= this.#boundedProjectDirs().map(stateDatabasePathsForProjectDir);
+        try {
+          split = splitRunDatabases(runId, allPaths);
+        } catch (error) {
+          this.#warnSplitRunCheck(runId, error);
+          split = NOT_SPLIT;
+        }
+        splitsByRun.set(runId, split);
+      }
+      if (split.strays.has(paths.stateDbPath)) leftOut.add(runId);
+    }
     return items.filter((item) => !leftOut.has(item.threadId));
+  }
+
+  /** Once per project or run for this store: the split-run check failed, so its rows are listed as before. */
+  #warnSplitRunCheck(subject: string, error: unknown): void {
+    if (this.#warnedSplitRunChecks.has(subject)) return;
+    this.#warnedSplitRunChecks.add(subject);
+    this.#warn(`session.list could not check split-run rows of ${subject}, so they are listed as before: ${
+      error instanceof Error ? error.message : String(error)}`);
   }
 
   #boundedProjectDirs(): readonly string[] {

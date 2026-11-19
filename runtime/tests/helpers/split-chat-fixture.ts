@@ -31,6 +31,8 @@ export interface SplitChatOptions {
   readonly runId?: string;
   /** The daemon run row's status in the first project (default `suspended`, a saved session). */
   readonly firstStatus?: string;
+  /** The first project's run row names no daemon session (null): `session.list` never lists such a saved session. */
+  readonly firstSessionId?: string | null;
   /** The daemon run row's status in the second project (default `suspended`). */
   readonly strayStatus?: string;
 }
@@ -65,12 +67,12 @@ export async function splitChat(root: string, options: SplitChatOptions = {}): P
       kernel.close();
     }
   };
-  const recordRows = (sessionId: string, status: string, thread: { readonly cwd?: string }): void => {
+  const recordRows = (sessionId: string | null, status: string, thread: { readonly cwd?: string }): void => {
     const driver = sqliteDriver.openStateDatabases({ cwd: workspace, agencHome: home });
     try {
       const now = new Date().toISOString();
       upsertAgentRun(driver, { id: runId, objective: "Interactive session", status, startedAt: now,
-        lastActiveAt: now, currentSessionId: sessionId });
+        lastActiveAt: now, ...(sessionId !== null ? { currentSessionId: sessionId } : {}) });
       new StateThreadRepository(driver).upsertThread({ threadId: runId, createdAt: now, updatedAt: now, rolloutPath,
         model: "base-model", modelProvider: "grok", ...thread });
     } finally {
@@ -82,7 +84,7 @@ export async function splitChat(root: string, options: SplitChatOptions = {}): P
   const first = new RolloutStore(storeOptions);
   first.open(openMeta());
   rolloutPath = first.rolloutPath;
-  recordRows("session-1", options.firstStatus ?? "suspended", { cwd: workspace });
+  recordRows(options.firstSessionId === undefined ? "session-1" : options.firstSessionId, options.firstStatus ?? "suspended", { cwd: workspace });
   await admittedModelCall(first, 10);
   first.close();
 

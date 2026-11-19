@@ -81,7 +81,7 @@ export function splitRunStrays(
  * Of these run ids, those whose every journal binding in this database names
  * a rollout outside its own project. Only such a database can be a split
  * run's stray (its bindings name the rollout in the first project), so only
- * for these is {@link splitRunStrayDatabases} worth its reads. One read of
+ * for these is {@link splitRunDatabases} worth its reads. One read of
  * this database, whatever the number of runs.
  */
 export function runsBoundOnlyElsewhere(
@@ -95,24 +95,38 @@ export function runsBoundOnlyElsewhere(
   })));
 }
 
+/** The databases of a split run, by state database path. */
+export interface SplitRunDatabases {
+  /** The database that holds the run's rollout; absent when the run is not split. */
+  readonly home?: string;
+  /** The databases whose rows of the run the split run's reader leaves out; empty when it is not split. */
+  readonly strays: ReadonlySet<string>;
+}
+
+/** A run that is not split (or whose split could not be read): nothing is left out. */
+export const NOT_SPLIT: SplitRunDatabases = Object.freeze({ strays: new Set<string>() });
+
 /**
- * The databases (by state database path) whose rows of the run the split
- * run's reader leaves out: the rule of {@link splitRunStrays} over every
- * database of `allPaths` that holds canonical state of the run. Empty when
- * the run is not split that way. It reads every database, so a caller keeps
- * the answer for the run rather than asking again.
+ * The rule of {@link splitRunStrays} over every database of `allPaths` that
+ * holds canonical state of the run: the database that holds its rollout and
+ * the ones whose rows the split run's reader leaves out. It reads every
+ * database, so a caller keeps the answer for the run rather than asking again.
  */
-export function splitRunStrayDatabases(
+export function splitRunDatabases(
   runId: string,
   allPaths: readonly StateDatabasePaths[],
-): ReadonlySet<string> {
+): SplitRunDatabases {
   const seen = new Set<string>();
   const canonical = allPaths.filter((candidate) => {
     if (seen.has(candidate.stateDbPath) || !existsSync(candidate.stateDbPath)) return false;
     seen.add(candidate.stateDbPath);
     return withReadonlyStateDatabase(candidate, (db) => hasCanonicalRunState(db, runId));
   });
-  return new Set((splitRunStrays(canonical.map((paths) => ({ paths })), runId) ?? []).map((stray) => stray.stateDbPath));
+  const strays = splitRunStrays(canonical.map((paths) => ({ paths })), runId);
+  if (strays === undefined) return NOT_SPLIT;
+  const strayPaths = new Set(strays.map((stray) => stray.stateDbPath));
+  const home = canonical.find((candidate) => !strayPaths.has(candidate.stateDbPath));
+  return { ...(home !== undefined ? { home: home.stateDbPath } : {}), strays: strayPaths };
 }
 
 /**
