@@ -13,7 +13,8 @@ import { Buffer } from "node:buffer";
 import { lstatSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ThreadId } from "../agents/registry.js";
-import { discoverStateDatabasePaths, resolveStateDatabasePaths } from "../state/sqlite-driver.js";
+import { isRolloutInProject, isSplitRunStray } from "../state/split-run.js";
+import { discoverStateDatabasePaths, resolveStateDatabasePaths, stateDatabasePathsForProjectDir } from "../state/sqlite-driver.js";
 import {
   FileThreadStore,
   type AppendThreadItemsParams,
@@ -188,7 +189,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
               : {}),
             ...(cursor !== undefined ? { cursor } : {}),
           });
-          for (const item of page.items) {
+          for (const item of this.#withoutSplitRunStrays(store.getProjectDir(), page.items)) {
             if (seen.has(item.threadId)) continue;
             seen.add(item.threadId);
             items.push(item);
@@ -288,7 +289,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
           : {}),
         ...(threadCursor !== undefined ? { cursor: threadCursor } : {}),
       });
-      items.push(...page.items);
+      items.push(...this.#withoutSplitRunStrays(projectDir, page.items));
       projectsVisited += 1;
 
       if (page.nextCursor !== undefined) {
@@ -450,6 +451,23 @@ export class MultiProjectFileThreadStore implements ThreadStore {
 
   #assertOpen(): void {
     if (this.#closed) throw new ThreadStoreInvalidRequestError("multi-project thread store is closed");
+  }
+
+  /**
+   * Leave out the thread rows of a split run's strays (state/split-run.ts),
+   * the rows run inspection leaves out: the database a resume wrote by
+   * mistake also holds a thread row of the chat, naming the chat's rollout in
+   * the first project and no folder, so the chat was listed twice. A row that
+   * names a rollout in its own project is never one, and costs no read.
+   */
+  #withoutSplitRunStrays(projectDir: string, items: readonly StoredThread[]): StoredThread[] {
+    const paths = stateDatabasePathsForProjectDir(projectDir);
+    let allPaths: readonly ReturnType<typeof stateDatabasePathsForProjectDir>[] | undefined;
+    return items.filter((item) => {
+      if (item.rolloutPath !== undefined && isRolloutInProject(item.rolloutPath, item.threadId, projectDir)) return true;
+      allPaths ??= this.#boundedProjectDirs().map(stateDatabasePathsForProjectDir);
+      return !isSplitRunStray(paths, item.threadId, allPaths);
+    });
   }
 
   #boundedProjectDirs(): readonly string[] {

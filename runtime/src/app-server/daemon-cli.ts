@@ -256,6 +256,7 @@ import {
   type StateFreePageReclaim,
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
+import { isRolloutInProject, isSplitRunStray } from "../state/split-run.js";
 
 import { logsDatabaseFilesAreAbsent } from "../state/logs-availability.js";
 
@@ -1068,6 +1069,7 @@ async function runAgenCDaemonForegroundLocked(
       listUnopenedSavedSessions = () => startupRestores.unsettledTargets().flatMap(({ run }) => {
         if (run.currentSessionId === undefined) return [];
         const listing = savedSessionListings.get(savedSessionListingKey(run.projectDir, run.id));
+        if (listing?.splitRunStray === true) return [];
         return [{
           sessionId: run.currentSessionId,
           agentId: run.id,
@@ -2513,6 +2515,12 @@ export interface AgenCDaemonSavedSessionListing {
   readonly cwd?: string;
   readonly model?: string;
   readonly modelProvider?: string;
+  /**
+   * The row is a split run's stray, which run inspection leaves out
+   * (state/split-run.ts): `session.list` leaves it out too. A split chat
+   * was listed once from each database, and the stray's rows name no folder.
+   */
+  readonly splitRunStray?: true;
 }
 
 /** Key of {@link AgenCDaemonSavedSessionListing} entries: project and run id. */
@@ -2527,7 +2535,11 @@ export function discoverAgenCDaemonStartupState(
   listings?: Map<string, AgenCDaemonSavedSessionListing>,
 ): DaemonStartupRecoveryReport {
   const recoveredRuns: RecoveredAgentRun[] = [];
-  for (const paths of discoverExistingAgenCDaemonStateDatabasePaths(daemonHome, cwd)) {
+  const allPaths = discoverExistingAgenCDaemonStateDatabasePaths(daemonHome, cwd);
+  // Runs whose thread row names no rollout in their own project: the only
+  // ones that can be a split run's strays.
+  const strayCandidates: { readonly paths: StateDatabasePaths; readonly runId: string }[] = [];
+  for (const paths of allPaths) {
     // No migrations, retention, journal scans or snapshot payloads here.
     // These rows only reserve ids in the restore gate; they have no execution
     // authority until recoverAgenCDaemonStartupState validates their project.
@@ -2539,8 +2551,10 @@ export function discoverAgenCDaemonStartupState(
         id: string; objective: string; status: RecoveredAgentRun["status"];
         started_at: string; last_active_at: string; current_session_id: string | null;
         thread_cwd: string | null; thread_model: string | null; thread_model_provider: string | null;
+        thread_rollout_path: string | null;
       }>(`SELECT runs.id, runs.objective, runs.status, runs.started_at, runs.last_active_at,
                  runs.current_session_id,
+                 durable.rollout_path AS thread_rollout_path,
                  COALESCE(durable.cwd, live.cwd) AS thread_cwd,
                  COALESCE(durable.model, live.model) AS thread_model,
                  COALESCE(durable.model_provider, live.model_provider) AS thread_model_provider
@@ -2560,9 +2574,19 @@ export function discoverAgenCDaemonStartupState(
           ...(row.thread_model !== null ? { model: row.thread_model } : {}),
           ...(row.thread_model_provider !== null ? { modelProvider: row.thread_model_provider } : {}),
         });
+        if (row.thread_rollout_path === null || !isRolloutInProject(row.thread_rollout_path, row.id, paths.projectDir)) {
+          strayCandidates.push({ paths, runId: row.id });
+        }
       }
     } finally {
       reader.close();
+    }
+  }
+  if (listings !== undefined) {
+    for (const { paths, runId } of strayCandidates) {
+      const key = savedSessionListingKey(paths.projectDir, runId);
+      const listing = listings.get(key);
+      if (listing !== undefined && isSplitRunStray(paths, runId, allPaths)) listings.set(key, { ...listing, splitRunStray: true });
     }
   }
   return { recoveredAt: new Date().toISOString(), recoveredRuns,

@@ -10,6 +10,7 @@
  * Run inspection reads such a run from the project that holds its rollout,
  * and leaves the other databases' rows out.
  */
+import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 import type BetterSqlite3 from "better-sqlite3";
@@ -75,6 +76,56 @@ export function splitRunStrays(
 }
 
 /**
+ * Whether this database's rows of the run are a split run's strays, the
+ * rows the split run's reader leaves out: the rule of {@link splitRunStrays}
+ * over every database of `allPaths` that holds canonical state of the run.
+ * Cheap for any other database: unless every journal binding of the run in
+ * it names a rollout outside its own project, no other database is opened.
+ */
+export function isSplitRunStray(
+  paths: StateDatabasePaths,
+  runId: string,
+  allPaths: readonly StateDatabasePaths[],
+): boolean {
+  if (!existsSync(paths.stateDbPath)) return false;
+  const bindsElsewhere = withReadonlyStateDatabase(paths, (db) => {
+    const binding = readRunRolloutBindings(db, paths, runId);
+    return binding.sources.size > 0 && !binding.ownProject;
+  });
+  if (!bindsElsewhere) return false;
+  const seen = new Set<string>();
+  const canonical = allPaths.filter((candidate) => {
+    if (seen.has(candidate.stateDbPath) || !existsSync(candidate.stateDbPath)) return false;
+    seen.add(candidate.stateDbPath);
+    return withReadonlyStateDatabase(candidate, (db) => hasCanonicalRunState(db, runId));
+  });
+  return splitRunStrays(canonical.map((candidate) => ({ paths: candidate })), runId)
+    ?.some((stray) => stray.stateDbPath === paths.stateDbPath) === true;
+}
+
+/** The database holds canonical (journal) state of the run: an epoch, a terminal, an effect or a binding. */
+export function hasCanonicalRunState(
+  db: BetterSqlite3.Database,
+  runId: string,
+): boolean {
+  for (const [table, column] of [
+    ["run_lifecycle_epochs", "run_id"],
+    ["run_terminal_results", "run_id"],
+    ["run_effects", "run_id"],
+    ["run_journal_bindings", "run_id"],
+  ] as const) {
+    if (!tableExists(db, table)) continue;
+    const row = db
+      .prepare<[string], { readonly present: number }>(
+        `SELECT 1 AS present FROM ${table} WHERE ${column} = ? LIMIT 1`,
+      )
+      .get(runId);
+    if (row !== undefined) return true;
+  }
+  return false;
+}
+
+/**
  * How many of these databases hold a journal of the run in their own
  * project, the way the database that holds a split run's rollout does. More
  * than one is two chats with one run id, not a split.
@@ -130,7 +181,7 @@ interface ThreadRolloutRow {
 }
 
 /** A canonical rollout file of `sessionId` in this project's sessions or archived_sessions folder. */
-function isRolloutInProject(sourcePath: string, sessionId: string, projectDir: string): boolean {
+export function isRolloutInProject(sourcePath: string, sessionId: string, projectDir: string): boolean {
   const source = resolve(sourcePath);
   const file = basename(source);
   if (!file.startsWith("rollout-") || !file.endsWith(".jsonl")) return false;

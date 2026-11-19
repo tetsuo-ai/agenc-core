@@ -42,7 +42,7 @@ import {
   openStateDatabasePaths,
   type StateDatabasePaths,
 } from "../state/sqlite-driver.js";
-import { countRunJournalHomes, splitRunStrays } from "../state/split-run.js";
+import { countRunJournalHomes, hasCanonicalRunState, splitRunStrays } from "../state/split-run.js";
 import { recoverCanonicalRunJournalForRun } from "../state/startup-run-journal-recovery.js";
 import { buildCanonicalRunReplay } from "./run-journal-replay.js";
 import { readWorkflowStepEvidence } from "./workflow/steps.js";
@@ -670,27 +670,6 @@ function hasDeclaredAdmissionWorkspace(
     `SELECT 1 AS present FROM agent_jobs
      WHERE admission_workspace_id = ? AND admission_run_id IN (?, ?) LIMIT 1`,
   ).get(owner.workspaceId, runId, owner.parentRunId ?? runId) !== undefined;
-}
-
-function hasCanonicalRunState(
-  db: BetterSqlite3.Database,
-  runId: string,
-): boolean {
-  for (const [table, column] of [
-    ["run_lifecycle_epochs", "run_id"],
-    ["run_terminal_results", "run_id"],
-    ["run_effects", "run_id"],
-    ["run_journal_bindings", "run_id"],
-  ] as const) {
-    if (!tableExists(db, table)) continue;
-    const row = db
-      .prepare<[string], { readonly present: number }>(
-        `SELECT 1 AS present FROM ${table} WHERE ${column} = ? LIMIT 1`,
-      )
-      .get(runId);
-    if (row !== undefined) return true;
-  }
-  return false;
 }
 
 function buildRunStatus(
