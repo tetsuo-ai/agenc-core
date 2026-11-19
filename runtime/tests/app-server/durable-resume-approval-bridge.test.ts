@@ -1291,6 +1291,129 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
     }
   }, 60_000);
 
+  /**
+   * A revived session finishes its stopped turn by itself; a prompt queued
+   * while that continuation's model call is out replaces it. The seeded turn
+   * stopped at an iteration boundary with no call left open, so no handoff
+   * holds the prompt back. A real provider request ends when its signal
+   * aborts, as this stub's first request does: cut there, the call was held
+   * as unknown for good (cancelled_after_dispatch:replaced).
+   */
+  async function replaceContinuationOnTheWire(heldAnswer: Record<string, unknown>) {
+    const firstModelEntered = Promise.withResolvers<void>();
+    const answerFirstModel = Promise.withResolvers<void>();
+    const state = { modelRequests: 0, firstRequestCut: false as boolean, firstCutReason: undefined as unknown };
+    const usage = { promptTokens: 1_000, completionTokens: 100, totalTokens: 1_100,
+      availability: "reported" as const, provenance: "provider" as const };
+    const send = async (options?: LLMChatOptions) => {
+      if (state.modelRequests++ === 0) {
+        firstModelEntered.resolve();
+        await new Promise<void>((resolve, reject) => {
+          const signal = options?.signal;
+          const cut = () => {
+            state.firstRequestCut = true;
+            state.firstCutReason = signal?.reason;
+            reject(signal?.reason ?? new Error("aborted"));
+          };
+          if (signal?.aborted) { cut(); return; }
+          signal?.addEventListener("abort", cut, { once: true });
+          void answerFirstModel.promise.then(() => {
+            signal?.removeEventListener("abort", cut);
+            resolve();
+          });
+        });
+        return { model: "", finishReason: "stop" as const, usage, ...heldAnswer };
+      }
+      return { content: "ok", toolCalls: [], model: "", finishReason: "stop" as const, usage };
+    };
+    const providerMod = await import("../../src/llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(() => ({
+      name: "stub",
+      getExecutionProfile: async (options?: LLMChatOptions) => ({ provider: "stub",
+        model: options?.model ?? "base-model", supportsMaxOutputTokens: true,
+        maxOutputTokens: 8192, usageReporting: "authoritative" }),
+      chat: async (_messages: unknown, options?: LLMChatOptions) => send(options),
+      chatStream: async (_messages: unknown, _onChunk: unknown, options?: LLMChatOptions) => send(options),
+    }) as never);
+    stubProviderAndMcp();
+    let booted: LocalRuntimeBootstrap | undefined;
+    const runner = makeRunner((bootstrap) => { booted = bootstrap; });
+    const until = async (done: () => boolean, what: string, ms = 10_000) => {
+      const deadline = Date.now() + ms;
+      while (!done()) {
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
+    await expect(runner.restoreAgent(restoreParams())).resolves.toBe(true);
+    await Promise.race([firstModelEntered.promise,
+      new Promise((_resolve, reject) => setTimeout(() => reject(new Error("resumed model did not start")), 5_000))]);
+    const next = runner.submitAgentMessage(CONVERSATION_ID, {
+      sessionId: CONVERSATION_ID, content: "Follow up", originalContent: "Follow up",
+      messageId: "replace-continuation", streamId: "replace-continuation",
+      acceptedAt: new Date().toISOString(),
+    });
+    next.catch(() => undefined);
+    // The replacement reaches the continuation while its call is out.
+    const held = () => (booted!.session as unknown as { replacedModelCalls?: { size: number } }).replacedModelCalls?.size ?? 0;
+    await until(() => state.firstRequestCut || held() > 0, "the replacement to reach the continuation's call");
+    expect(state.modelRequests).toBe(1);
+    const admission = booted!.session.services.executionAdmission!;
+    const ledgerRows = () => admission.getDirectUsageSummary!();
+    const events = () => booted!.rolloutStore.readAll().flatMap((item) => item.type === "event_msg" ? [item.payload.msg] : []);
+    return { runner, booted: booted!, next, answerFirstModel, state, held, until, ledgerRows, events };
+  }
+
+  it("settles a replaced continuation's model call so the session's cost stays known", async () => {
+    const run = await replaceContinuationOnTheWire({ content: "", toolCalls: [
+      { id: "held-read", name: "FileRead", arguments: JSON.stringify({ file_path: "never-read.txt" }) },
+    ] });
+    try {
+      run.answerFirstModel.resolve();
+      await expect(run.next).resolves.toMatchObject({ disposition: "started" });
+      // Both calls settled, priced or held: the continuation's and the new turn's.
+      await run.until(() => {
+        const settled = run.ledgerRows();
+        return run.state.modelRequests >= 2 && settled.modelCalls + (settled.unpricedCallCount ?? 0) >= 2;
+      }, "both model calls to settle");
+      const usage = run.ledgerRows();
+      expect((usage.unpricedCalls ?? []).map((call) => call.reason)).toEqual([]);
+      expect(usage).toMatchObject({ hasUnknownCost: false, modelCalls: 2, inputTokens: 2_000, outputTokens: 200 });
+      expect(run.state.firstRequestCut).toBe(false);
+      const events = run.events();
+      // The held answer asked for a tool; the replaced turn ran none.
+      expect(events.some((msg) => msg.type === "tool_call_started" && msg.payload.callId === "held-read")).toBe(false);
+      // The new turn started only once the continuation's call had settled.
+      const aborted = events.findIndex((msg) => msg.type === "turn_aborted" && msg.payload.turnId === TURN_ID);
+      const nextStarted = events.findIndex((msg, index) => index > aborted && msg.type === "turn_started");
+      expect(aborted).toBeGreaterThan(-1);
+      expect(nextStarted).toBeGreaterThan(aborted);
+    } finally {
+      run.answerFirstModel.resolve();
+      await run.runner.stopAgent(CONVERSATION_ID).catch(() => undefined);
+    }
+  }, 60_000);
+
+  it("lets a Stop during that wait cut the held call at once", async () => {
+    const run = await replaceContinuationOnTheWire({ content: "late", toolCalls: [] });
+    try {
+      expect(run.held()).toBe(1);
+      const stopAt = Date.now();
+      const stop = run.booted.session.abortAllTasks("interrupted");
+      await run.until(() => run.state.firstRequestCut, "the Stop to reach the held call", 3_000);
+      expect(Date.now() - stopAt).toBeLessThan(3_000);
+      expect(run.state.firstCutReason).toMatchObject({ reason: "interrupted" });
+      await stop;
+      expect(run.held()).toBe(0);
+      await run.until(() => (run.ledgerRows().unpricedCalls ?? []).length > 0, "the cut call's ledger row");
+      expect((run.ledgerRows().unpricedCalls ?? []).map((call) => call.reason))
+        .toEqual(["cancelled_after_dispatch:interrupted"]);
+    } finally {
+      run.answerFirstModel.resolve();
+      await run.runner.stopAgent(CONVERSATION_ID).catch(() => undefined);
+    }
+  }, 60_000);
+
   it("drives the recovered turn only once a client can answer its approvals", async () => {
     await stubProvider();
     stubProviderAndMcp();
