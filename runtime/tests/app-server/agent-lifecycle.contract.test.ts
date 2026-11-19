@@ -7948,6 +7948,8 @@ describe("AgenC background agent lifecycle", () => {
           streamId: "portal-message-1",
           acceptedAt: "2026-05-01T12:10:02.000Z",
           localMcpAccess: true,
+          // A client that declared no slash commands reads plain advice.
+          adviceReader: "client",
         },
       },
     ]);
@@ -7989,7 +7991,7 @@ describe("AgenC background agent lifecycle", () => {
     expect(submitted).toHaveBeenCalledExactlyOnceWith("agent_remote_portal", {
       sessionId: "session_remote_portal", content: "remote request", originalContent: "remote request",
       messageId: "remote-message", streamId: "remote-message", acceptedAt: "2026-09-09T00:00:01.000Z",
-      ifBusy: "reject", localMcpAccess: false,
+      ifBusy: "reject", localMcpAccess: false, adviceReader: "client",
     });
     // The real browser boundary is stricter than generic daemon ingress:
     // metadata cannot spoof provenance, and streaming RPC is not admitted.
@@ -8304,6 +8306,7 @@ describe("AgenC background agent lifecycle", () => {
           streamId: "portal-structured",
           acceptedAt: "2026-05-01T12:20:02.000Z",
           localMcpAccess: true,
+          adviceReader: "client",
         },
       },
     ]);

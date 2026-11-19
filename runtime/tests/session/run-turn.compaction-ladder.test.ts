@@ -8,6 +8,7 @@ import type { AutoCompactResult } from "../../src/session/run-turn-compaction.js
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import { bypassFastModeEnabled } from "../../src/one-shot-fast-mode.js";
 import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
+import { setTurnAdviceReader } from "../../src/session/turn-advice.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 
 afterEach(() => {
@@ -211,6 +212,64 @@ describe("degraded compaction ladder", () => {
     const failed = exercise.events.find((event) => event.msg.type === "turn_failed");
     expect(failed?.msg).toMatchObject({ payload: { message: expect.stringContaining("The conversation is too large") } });
     expect(JSON.stringify(failed?.msg)).toContain("Run /compact to retry");
+  });
+
+  // Two ways a turn ends compact_failed: every tier declined and even the
+  // shortened request cannot fit (the long text), or compaction declined
+  // without a reason (the short text).
+  const contextFull = [
+    ["every tier declined", (args: readonly unknown[]) =>
+      args[4] === "before_last_user_message" ? noShrink() : { wasCompacted: false }],
+    ["compaction declined without a reason", () => ({ wasCompacted: false })],
+  ] as const;
+
+  test("a daemon client is told the same recovery in plain words, never /compact or /clear", async () => {
+    const said: string[] = [];
+    for (const [, decline] of contextFull) {
+      const exercise = createToolExercise({ assistantPressure: true });
+      setTurnAdviceReader(exercise.session, "client");
+      setAutoCompactImplForTests(vi.fn(async (...args: unknown[]) => decline(args)));
+
+      await drain(runTurn(exercise.session, exercise.ctx, "finish the implementation"));
+
+      const failed = exercise.events.find((event) => event.msg.type === "turn_failed");
+      expect(failed?.msg).toMatchObject({ payload: { code: "compact_failed" } });
+      expect(JSON.stringify(failed?.msg)).not.toMatch(/\/compact|\/clear/u);
+      said.push((failed?.msg as { payload: { message: string } }).payload.message);
+    }
+    expect(said[0]).toMatch(/^The conversation is too large for the next reply: it needs about [\d,]+ tokens, more than the 4,096-token context window allows with room for a reply, even with every tool result shortened\. Compact the conversation and retry, start a new conversation, or use a model with a larger context window\.$/u);
+    expect(said[1]).toBe("The conversation is too large for the next reply. Compact the conversation and retry, or start a new conversation.");
+  });
+
+  test("a client that offers Compact itself gets the reason with no advice", async () => {
+    const said: string[] = [];
+    for (const [, decline] of contextFull) {
+      const exercise = createToolExercise({ assistantPressure: true });
+      setTurnAdviceReader(exercise.session, "client_with_compact");
+      setAutoCompactImplForTests(vi.fn(async (...args: unknown[]) => decline(args)));
+
+      await drain(runTurn(exercise.session, exercise.ctx, "finish the implementation"));
+
+      const failed = exercise.events.find((event) => event.msg.type === "turn_failed");
+      expect(failed?.msg).toMatchObject({ payload: { code: "compact_failed" } });
+      said.push((failed?.msg as { payload: { message: string } }).payload.message);
+    }
+    expect(said[0]).toMatch(/^The conversation is too large for the next reply: it needs about [\d,]+ tokens, more than the 4,096-token context window allows with room for a reply, even with every tool result shortened\.$/u);
+    expect(said[1]).toBe("The conversation is too large for the next reply. ");
+  });
+
+  test("the TUI keeps its own words for both endings", async () => {
+    const said: string[] = [];
+    for (const [, decline] of contextFull) {
+      const exercise = createToolExercise({ assistantPressure: true });
+      setAutoCompactImplForTests(vi.fn(async (...args: unknown[]) => decline(args)));
+
+      await drain(runTurn(exercise.session, exercise.ctx, "finish the implementation"));
+
+      said.push((exercise.events.find((event) => event.msg.type === "turn_failed")?.msg as { payload: { message: string } }).payload.message);
+    }
+    expect(said[0]).toMatch(/^The conversation is too large for the next reply: it needs about [\d,]+ tokens, more than the 4,096-token context window allows with room for a reply, even with every tool result shortened\. Run \/compact to retry, start a new conversation with \/clear, or use a model with a larger context window\.$/u);
+    expect(said[1]).toBe("The conversation is too large for the next reply. Run /compact to retry, or start a new conversation with /clear.");
   });
 
   test("a provider-side failure skips the second summarizer pass and goes straight to the emergency tier", async () => {

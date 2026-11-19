@@ -47,6 +47,7 @@ import {
 
 import { AsyncLock } from "../utils/async-lock.js";
 import { canonicalRolloutHoldsNoInput } from "../session/rollout-input.js";
+import type { TurnAdviceReader } from "../session/turn-advice.js";
 import { UNUSED_TUI_PREWARM_STOP_REASON } from "./agent-stop-reasons.js";
 import {
   captureRecoverableCommandEnvironment,
@@ -126,6 +127,8 @@ import type {
   SessionCancelTurnResult,
   SessionClearParams,
   SessionClearResult,
+  SessionCompactParams,
+  SessionCompactResult,
   SessionMcpAddServerParams,
   SessionMcpAddServerResult,
   SessionMcpStatusParams,
@@ -4089,6 +4092,36 @@ export class AgenCDaemonAgentManager {
     });
   }
 
+  /**
+   * `session.compact`: the TUI's `/compact` for one session. The runner
+   * refuses it with `ACTIVE_TURN` while a turn runs.
+   */
+  async compactSession(
+    params: SessionCompactParams,
+    signal?: AbortSignal,
+  ): Promise<SessionCompactResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.compact requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.compactAgentSession === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.compact requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowCompactSession: true },
+    );
+    return await this.#runner.compactAgentSession(agentId, {
+      sessionId: params.sessionId,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
   async rollbackCompaction(
     params: SessionRollbackCompactionParams,
   ): Promise<SessionRollbackCompactionResult> {
@@ -4494,6 +4527,8 @@ export class AgenCDaemonAgentManager {
     readonly methodName?: "message.send" | "message.stream";
     /** Set only by authenticated daemon ingress, never by RPC payload metadata. */
     readonly localMcpAccess?: boolean;
+    /** Who reads the advice of this prompt's turn (`session/turn-advice.ts`). */
+    readonly adviceReader?: TurnAdviceReader;
   }): Promise<AgenCBackgroundAgentMessageResult> {
     const methodName = params.methodName ?? "message.stream";
     if (this.#sessionManager === undefined) {
@@ -4563,6 +4598,7 @@ export class AgenCDaemonAgentManager {
           ? { skillInvocation: params.skillInvocation }
           : {}),
         ...(params.localMcpAccess !== undefined ? { localMcpAccess: params.localMcpAccess } : {}),
+        ...(params.adviceReader !== undefined ? { adviceReader: params.adviceReader } : {}),
         ...(params.userPromptText !== undefined ? { userPromptText: params.userPromptText } : {}),
         ...(params.displayUserMessage !== undefined
           ? { displayUserMessage: params.displayUserMessage }
@@ -4699,6 +4735,7 @@ export class AgenCDaemonAgentManager {
       readonly allowElicitationResponse?: boolean;
       readonly allowListPermissions?: boolean;
       readonly allowPartialCompact?: boolean;
+      readonly allowCompactSession?: boolean;
       readonly allowCompactionOperator?: boolean;
       readonly allowConversationRewind?: boolean;
       readonly allowMcpStatus?: boolean;
@@ -4745,6 +4782,9 @@ export class AgenCDaemonAgentManager {
     const hasPartialCompactRunner =
       options.allowPartialCompact === true &&
       this.#runner?.partialCompactFromMessage !== undefined;
+    const hasCompactSessionRunner =
+      options.allowCompactSession === true &&
+      this.#runner?.compactAgentSession !== undefined;
     const hasCompactionOperatorRunner =
       options.allowCompactionOperator === true &&
       this.#runner?.rollbackCompaction !== undefined &&
@@ -4817,6 +4857,7 @@ export class AgenCDaemonAgentManager {
       !hasClearSessionRunner &&
       !hasPermissionListRunner &&
       !hasPartialCompactRunner &&
+      !hasCompactSessionRunner &&
       !hasCompactionOperatorRunner &&
       !hasConversationRewindRunner &&
       !hasMcpStatusRunner &&

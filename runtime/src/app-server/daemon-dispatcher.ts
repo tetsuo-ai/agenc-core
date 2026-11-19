@@ -17,6 +17,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { redactSecrets } from "../secrets/sanitizer.js";
 import type { PluginSettingsService } from "../plugins/settings-service.js";
 import type { PluginSettingsResult } from "./protocol/index.js";
+import type { TurnAdviceReader } from "../session/turn-advice.js";
 import { sessionMcpAttachmentIssue } from "../mcp-client/local-control.js";
 import { isAbsolute } from "node:path";
 import type { WhisperService } from "../audio/whisper.js";
@@ -133,6 +134,8 @@ import {
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
   AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY,
   AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
+  AGENC_SLASH_COMMAND_ADVICE_CAPABILITY,
+  AGENC_COMPACT_ACTION_ADVICE_CAPABILITY,
   AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY,
   MAX_SESSION_SHELL_COMMAND_UTF8_BYTES,
   MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
@@ -196,6 +199,7 @@ import {
   type SessionResolveToolCallLegacyParams,
   type SessionResolveToolCallParams,
   type SessionClearParams,
+  type SessionCompactParams,
   type SessionMcpStatusParams,
   type SessionMcpAddServerParams,
   type SessionMcpServerConfig,
@@ -416,6 +420,7 @@ function buildServerCapabilities(
     "session.detach": hasMethod(sessionManager, "detachSession"),
     "session.terminate": hasMethod(sessionManager, "terminateSession"),
     "session.clear": hasMethod(agentManager, "clearSessionHistory"),
+    "session.compact": hasMethod(agentManager, "compactSession"),
     "session.snapshot": hasMethod(agentManager, "snapshotSession"),
     "session.processes.list": hasMethod(agentManager, "listSessionProcesses"),
     "session.processes.stop": hasMethod(agentManager, "stopSessionProcess"),
@@ -621,6 +626,7 @@ export interface AgenCDaemonDispatcherOptions {
   > & {
     readonly listSessionProcesses?: AgenCDaemonAgentManager["listSessionProcesses"];
     readonly stopSessionProcess?: AgenCDaemonAgentManager["stopSessionProcess"];
+    readonly compactSession?: AgenCDaemonAgentManager["compactSession"];
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
     readonly pendingElicitations?: AgenCDaemonAgentManager["pendingElicitations"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
@@ -769,6 +775,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   > & {
     readonly listSessionProcesses?: AgenCDaemonAgentManager["listSessionProcesses"];
     readonly stopSessionProcess?: AgenCDaemonAgentManager["stopSessionProcess"];
+    readonly compactSession?: AgenCDaemonAgentManager["compactSession"];
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
     readonly pendingElicitations?: AgenCDaemonAgentManager["pendingElicitations"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
@@ -1628,6 +1635,17 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateSessionClearParams(params),
           ),
         );
+      case "session.compact":
+        if (this.#agentManager.compactSession === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(
+          id,
+          await this.#agentManager.compactSession(
+            validateSessionCompactParams(params),
+            signal,
+          ),
+        );
       case "session.snapshot":
         return successResponse(
           id,
@@ -1942,6 +1960,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           ]["session.transcript.v2"] === true,
           connection.remoteAccess === undefined,
           connection,
+          turnAdviceReaderOf(connection),
         );
       case "message.stream":
         return this.#streamMessage(
@@ -1953,6 +1972,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           ]["session.transcript.v2"] === true,
           connection.remoteAccess === undefined,
           connection,
+          turnAdviceReaderOf(connection),
         );
       case "thread/realtime/start":
         return successResponse(
@@ -2661,6 +2681,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     identitySafeCancellation: boolean,
     localMcpAccess: boolean,
     connection: AgenCDaemonJsonRpcConnection,
+    adviceReader: TurnAdviceReader,
   ): Promise<AgenCDaemonResponse> {
     const sendParams = validateMessageSendParams(params);
     const messageId = sendParams.clientMessageId ?? this.#createMessageId();
@@ -2687,6 +2708,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           acceptedAt,
           methodName: "message.send",
           localMcpAccess,
+          adviceReader,
           ...(sendParams.ifBusy !== undefined
             ? { ifBusy: sendParams.ifBusy }
             : {}),
@@ -2721,6 +2743,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     identitySafeCancellation: boolean,
     localMcpAccess: boolean,
     connection: AgenCDaemonJsonRpcConnection,
+    adviceReader: TurnAdviceReader,
   ): Promise<AgenCDaemonResponse> {
     const streamParams = validateMessageStreamParams(params);
     const messageId = streamParams.clientMessageId ?? this.#createMessageId();
@@ -2751,6 +2774,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           streamId,
           acceptedAt,
           localMcpAccess,
+          adviceReader,
           ...(streamParams.ifBusy !== undefined
             ? { ifBusy: streamParams.ifBusy }
             : {}),
@@ -3152,12 +3176,26 @@ function methodSupportsRequestCancellation(
     method === "csvJob.review.show" ||
     method === "csvJob.review.resolve" ||
     method === "session.partialCompactFromMessage" ||
+    method === "session.compact" ||
     method === "session.rewindConversationToMessage" ||
     method === "session.shell.execute" ||
     method === "session.statusLine.execute" ||
     method === "message.stream" ||
     method === "message.send"
   );
+}
+
+/**
+ * Who reads the advice of a turn this connection prompts: the TUI, which
+ * declares it runs slash commands; a client that offers Compact itself; or
+ * any other client. A remote connection initializes with no client
+ * capabilities, so it is a plain client.
+ */
+function turnAdviceReaderOf(connection: AgenCDaemonJsonRpcConnection): TurnAdviceReader {
+  const capabilities = connection.initializeState?.clientCapabilities;
+  if (capabilities?.[AGENC_SLASH_COMMAND_ADVICE_CAPABILITY] === true) return "tui";
+  if (capabilities?.[AGENC_COMPACT_ACTION_ADVICE_CAPABILITY] === true) return "client_with_compact";
+  return "client";
 }
 
 function objectParams(params: unknown): JsonObject {
@@ -4091,6 +4129,15 @@ function validateSessionClearParams(params: JsonObject): SessionClearParams {
   });
   validateRequiredString(validated, "session.clear", "sessionId");
   return validated as SessionClearParams;
+}
+
+function validateSessionCompactParams(params: JsonObject): SessionCompactParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.compact",
+    stringFields: ["sessionId"],
+  });
+  validateRequiredString(validated, "session.compact", "sessionId");
+  return validated as SessionCompactParams;
 }
 
 function validateSessionSnapshotParams(

@@ -157,10 +157,12 @@ import type {
 import { isSelectableHistoryUserMessage, normalizeHistoryMessages, splitActiveHistory } from "../session/session.js";
 import type { Event } from "../session/event-log.js";
 import { respondToSessionElicitation } from "../elicitation/respond.js";
+import { setTurnAdviceReader } from "../session/turn-advice.js";
 import type {
   AgentStatus as DaemonAgentStatus,
   JsonObject,
   PermissionListResult,
+  SessionCompactResult,
   SessionPartialCompactFromMessageResult,
   SessionRollbackCompactionResult,
   SessionExtendCompactionRollbackRetentionResult,
@@ -253,6 +255,7 @@ import type {
   AgenCBackgroundAgentMcpAddServerParams,
   AgenCBackgroundAgentMcpServerByNameParams,
   AgenCBackgroundAgentPartialCompactParams,
+  AgenCBackgroundAgentCompactSessionParams,
   AgenCBackgroundAgentRollbackCompactionParams,
   AgenCBackgroundAgentExtendCompactionRetentionParams,
   AgenCBackgroundAgentConversationRewindParams,
@@ -403,6 +406,7 @@ export type {
   AgenCBackgroundAgentMcpAddServerParams,
   AgenCBackgroundAgentMcpServerByNameParams,
   AgenCBackgroundAgentPartialCompactParams,
+  AgenCBackgroundAgentCompactSessionParams,
   AgenCBackgroundAgentRollbackCompactionParams,
   AgenCBackgroundAgentExtendCompactionRetentionParams,
   AgenCBackgroundAgentConversationRewindParams,
@@ -634,6 +638,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       bootstrap.session,
     );
     installDaemonTurnDriverHooks(bootstrap.session, bootstrap.configStore);
+    // The TUI starts its sessions with mode "tui"; any other client is not
+    // the TUI until a prompt it sends says otherwise.
+    setTurnAdviceReader(bootstrap.session, params.metadata?.mode === "tui" ? "tui" : "client");
 
     let authorityOwner: ActiveBackgroundAgent | undefined;
     let uninstallPermissionAuthorityCoordinator = (): void => {};
@@ -1211,6 +1218,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           bootstrap.session,
         );
         installDaemonTurnDriverHooks(bootstrap.session, bootstrap.configStore);
+        setTurnAdviceReader(bootstrap.session, params.metadata?.mode === "tui" ? "tui" : "client");
         uninstallPermissionAuthorityCoordinator =
           installDaemonPermissionAuthorityCoordinator(
             bootstrap,
@@ -2376,6 +2384,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         }
         active.bootstrap.rolloutStore.assertModelExecutionAllowed?.();
         active.messageSubmission = submission;
+        // The client of this prompt reads its turn's advice; set as the turn
+        // starts, so prompts queued from different clients each get their own.
+        if (params.adviceReader !== undefined) {
+          setTurnAdviceReader(active.bootstrap.session, params.adviceReader);
+        }
         try {
           return await this.#executeAgentMessageSubmission(
             active,
@@ -3797,6 +3810,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ...(result.displayText !== undefined
           ? { displayText: result.displayText }
           : {}),
+        ...(result.preCompactTokens !== undefined
+          ? { preCompactTokens: result.preCompactTokens }
+          : {}),
+        ...(result.postCompactTokens !== undefined
+          ? { postCompactTokens: result.postCompactTokens }
+          : {}),
         event: result.event as unknown as JsonObject,
       };
     }
@@ -3808,6 +3827,54 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       message: result.ok
         ? "No replacement event was produced."
         : result.message,
+    };
+  }
+
+  /**
+   * `session.compact`: what the TUI's `/compact` asks of a daemon session
+   * (`session.partialCompactFromMessage` from the first active message), run
+   * through that same method so there is one compaction path. It refuses
+   * while a turn runs or a prompt waits to start, before touching history.
+   */
+  async compactAgentSession(
+    agentId: string,
+    params: AgenCBackgroundAgentCompactSessionParams,
+  ): Promise<SessionCompactResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const busy: SessionCompactResult = {
+      sessionId: params.sessionId,
+      ok: false,
+      code: "ACTIVE_TURN",
+      message: "Cannot compact right now: a turn is running. Wait for it to finish, then compact.",
+    };
+    if (isClearInFlight(active)) return busy;
+    const result = await this.partialCompactFromMessage(agentId, {
+      sessionId: params.sessionId,
+      messageOrdinal: 0,
+      direction: "from",
+      ...(params.signal !== undefined ? { signal: params.signal } : {}),
+    });
+    if (!result.ok) {
+      // A turn that started after the check above is refused inside the
+      // session; say it the same way.
+      if (result.code === "ACTIVE_TURN") return busy;
+      return {
+        sessionId: params.sessionId,
+        ok: false,
+        ...(result.code !== undefined ? { code: result.code } : {}),
+        ...(result.message !== undefined ? { message: result.message } : {}),
+      };
+    }
+    return {
+      sessionId: params.sessionId,
+      ok: true,
+      ...(result.preCompactTokens !== undefined ? { tokensBefore: result.preCompactTokens } : {}),
+      ...(result.postCompactTokens !== undefined ? { tokensAfter: result.postCompactTokens } : {}),
+      ...(result.attemptId !== undefined ? { attemptId: result.attemptId } : {}),
+      ...(result.displayText !== undefined ? { displayText: result.displayText } : {}),
     };
   }
 

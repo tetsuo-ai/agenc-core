@@ -351,6 +351,7 @@ export type {
 } from "./run-turn-compaction.js";
 
 import { taskBudgetOf, continueInteractiveTaskBudget, interactiveTaskBudget } from "./task-budget.js";
+import { contextFullAdvice, turnAdviceReader, type TurnAdviceReader } from "./turn-advice.js";
 import { StepLimitTrail, stepLimitReminder, stepLimitWrapup, STEP_LIMIT_WRAPUP_INSTRUCTION } from "./step-limit-wrapup.js";
 
 export interface RunTurnOptions {
@@ -1707,7 +1708,7 @@ function emitContextFitNotice(
   });
 }
 
-function contextTooSmallMessage(pressure: PreparedRequestContextPressure, nonInteractive: boolean): string {
+function contextTooSmallMessage(pressure: PreparedRequestContextPressure, reader: TurnAdviceReader | "none"): string {
   const needed = Number.isFinite(pressure.inputTokens)
     ? `about ${Math.round(pressure.inputTokens).toLocaleString("en-US")} tokens`
     : "more tokens than can be counted";
@@ -1716,7 +1717,7 @@ function contextTooSmallMessage(pressure: PreparedRequestContextPressure, nonInt
     : "the context window";
   return `The conversation is too large for the next reply: it needs ${needed}, more than ${window} ` +
     "allows with room for a reply, even with every tool result shortened." +
-    (nonInteractive ? "" : " Run /compact to retry, start a new conversation with /clear, or use a model with a larger context window.");
+    contextFullAdvice(reader, "full");
 }
 
 async function preparedRequestContextPressure(
@@ -4034,7 +4035,7 @@ async function* runTurnKernelInner(
             }
             if (fitted.kind === "too_small") {
               throw new DeferredCompactionError(contextTooSmallMessage(
-                fitted.pressure, session.services?.runtimeOptions?.nonInteractive === true,
+                fitted.pressure, turnAdviceReader(session),
               ));
             }
             // The shortened request is dispatched as is; the next sample makes
@@ -4102,7 +4103,7 @@ async function* runTurnKernelInner(
               // A disabled gate or missing owner is not an exhausted attempt.
               throw new DeferredCompactionError(
                 "The conversation is too large for the next reply. " +
-                  (session.services?.runtimeOptions?.nonInteractive !== true ? "Run /compact to retry, or start a new conversation with /clear." : ""),
+                  contextFullAdvice(turnAdviceReader(session), "short"),
               );
             }
             const current = await requestPressure();
@@ -4129,7 +4130,7 @@ async function* runTurnKernelInner(
             if (structuralDecline === undefined) {
               throw new DeferredCompactionError(
                 "The conversation is too large for the next reply. " +
-                  (session.services?.runtimeOptions?.nonInteractive !== true ? "Run /compact to retry, or start a new conversation with /clear." : ""),
+                  contextFullAdvice(turnAdviceReader(session), "short"),
               );
             }
             // The fit re-measures every shortened request; this count only

@@ -396,6 +396,7 @@ Never retry after admission may have arrived.
 | `csvJob.review.list` / `csvJob.review.show` / `csvJob.review.resolve`                                       | Inspect and settle durable CSV batch-review items                                                                  |
 | `session.create` / `session.list` / `session.attach` / `session.detach`                                     | Session lifecycle                                                                                                  |
 | `session.terminate` / `session.clear` / `session.snapshot` / `session.transcript` / `session.transcript.v2` | Session control and identity-bearing history sync                                                                  |
+| `session.compact`                                                                                           | Compact an idle session's conversation the way the TUI's `/compact` does, and return the context tokens before and after. See [Compacting a session](#compacting-a-session) (protocol 1.37) |
 | `session.cancelTurn`                                                                                        | Abort the current turn, optionally only when `expectedTurnId` still matches                                        |
 | `session.resolveToolCall`                                                                                   | Resolve a tool call whose durable outcome requires review                                                          |
 | `session.mcp.status`                                                                                        | Read the owning session's revisioned, credential-free MCP status projection                                        |
@@ -454,6 +455,35 @@ reviews are still pending. See
 [durable-runs-effects-events.md](../design/durable-runs-effects-events.md#resume-and-effect-review)
 and
 [provider-aware-token-accounting.md](../design/provider-aware-token-accounting.md#session-context-estimate).
+
+#### Compacting a session
+
+`session.compact { sessionId }` runs the TUI's `/compact` on a daemon-owned
+session: the runner calls `session.partialCompactFromMessage` with
+`messageOrdinal: 0` and `direction: "from"`, the same request the TUI sends,
+so the session gets the same durable compaction, rollback attempt ID,
+`transcript_epoch` and `history_replaced` events. There is no second
+compaction path.
+
+A success answers `{ sessionId, ok: true, tokensBefore, tokensAfter,
+attemptId, displayText }`. The token counts are the compaction's own measure
+of the active conversation before and after; `attemptId` is what
+`session.rollbackCompaction` takes, and `displayText` is the text `/compact`
+prints. Nothing changes when the answer is `ok: false`, with a `code` and a
+`message`:
+
+- `ACTIVE_TURN`: a turn is running, a prompt was accepted and has not started,
+  a shell command runs, or a tool call is open. Compact once the turn ends.
+- `MESSAGE_NOT_FOUND`: the active conversation has nothing to compact.
+- `ROLLOUT_UNAVAILABLE` or `ROLLOUT_DEGRADED`: the session has no healthy
+  durable history to compact.
+- `ABORTED`: the request was cancelled (`request.cancel`) before it finished.
+
+A compaction that cannot shrink the conversation fails the request with its
+reason. The method is advertised in `daemon.methods` whenever the daemon's
+runner can compact, whatever protocol version the client negotiated: nothing
+the daemon sends asks a client to call it, so a client that does not know it
+never does. A remote browser connection is not offered it.
 
 #### Session mode (Light)
 
@@ -1522,6 +1552,23 @@ as do normal model-admission checks.
 | Pre-sampling | Thrown compact only. A no-op continues the turn. | `warning` cause `pre_sampling_compact_failed`, then `turn_failed` code `compact_failed` |
 | Post-tool checkpoint | After the outer token gate, compact returns no committed result, except a safely deferred `no_shrink`. | `warning` cause `mid_turn_compact_failed`, then `turn_failed` code `compact_failed` |
 | Provider context refusal (413) | Every compaction ladder tier declined the bounded collapse, or the collapse was already attempted for this overflow. A tier that declines steps down first (`warning` cause `auto_compact_degraded`, prefixed `reactive_recovery/in_turn`). | `warning` cause `context_collapse_ladder_exhausted` (when tiers ran), then `error` cause `prompt_too_long_exhausted` |
+
+#### Advice in a context-full failure
+
+A `compact_failed` message that says the conversation is too large for the
+next reply ends with advice worded for whoever reads it
+(`runtime/src/session/turn-advice.ts`). The reader is the client that
+prompted the turn, as it declared itself in `initialize`; before any prompt it
+is the client that started the session (`metadata.mode: "tui"` for the TUI):
+
+| Reader | Client capability | Advice |
+| --- | --- | --- |
+| The TUI | `turn.advice.slashCommands.v1` | `Run /compact to retry, or start a new conversation with /clear.` (with a larger model too when even the shortened request cannot fit) |
+| A client that offers Compact itself | `turn.advice.compactAction.v1` | None: the client shows its own action (Desktop's Compact runs `session.compact`) |
+| Any other client | neither | `Compact the conversation and retry, or start a new conversation.` (with a larger model too, as above) |
+
+A session nobody answers (`nonInteractive`, such as `agenc -p`) gets no
+advice, as before. The capabilities only change wording; they grant nothing.
 
 Keep-alive (interactive / desktop / `keepAlive` subagent) sessions
 stay promptable. A later `message.send` can start a new turn. The

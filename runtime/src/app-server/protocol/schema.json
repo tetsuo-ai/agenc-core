@@ -3,7 +3,7 @@
   "$id": "urn:agenc:app-server:protocol",
   "title": "AgenC Daemon JSON-RPC Protocol",
   "description": "Initial AgenC daemon JSON-RPC method surface.",
-  "x-agenc-protocol-version": "1.36.0",
+  "x-agenc-protocol-version": "1.37.0",
   "x-agenc-package": {
     "name": "@tetsuo-ai/protocol",
     "export": "./daemon-json-rpc.schema.json"
@@ -73,6 +73,7 @@
     "session.detach",
     "session.terminate",
     "session.clear",
+    "session.compact",
     "session.snapshot",
     "session.processes.list",
     "session.processes.stop",
@@ -2810,6 +2811,19 @@
         "sessionId"
       ]
     },
+    "SessionCompactParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sessionId"
+      ]
+    },
     "SessionSnapshotParams": {
       "type": "object",
       "additionalProperties": false,
@@ -5187,6 +5201,9 @@
           "$ref": "#/definitions/SessionClearRequest"
         },
         {
+          "$ref": "#/definitions/SessionCompactRequest"
+        },
+        {
           "$ref": "#/definitions/SessionSnapshotRequest"
         },
         {
@@ -6347,6 +6364,30 @@
         },
         "params": {
           "$ref": "#/definitions/SessionClearParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "SessionCompactRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.compact"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionCompactParams"
         }
       },
       "required": [

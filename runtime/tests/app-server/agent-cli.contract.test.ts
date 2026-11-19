@@ -1151,6 +1151,8 @@ autostart = false
         streamId: "stream_socket",
         acceptedAt: "2026-05-01T12:00:03.500Z",
         localMcpAccess: true,
+        // The TUI's own client declared it runs /compact and /clear.
+        adviceReader: "tui",
       },
     ]);
     await expect(sessionManager.getSession("session_1")).resolves.toMatchObject(

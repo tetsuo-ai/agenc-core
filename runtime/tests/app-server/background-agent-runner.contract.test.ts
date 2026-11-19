@@ -87,6 +87,7 @@ import { resolveRoutinePermissionGrant } from "../routines/permission-authority.
 import type { CsvAgentJobsRepositoryProvider } from "./csv-agent-jobs-authority.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { turnAdviceReader } from "../session/turn-advice.js";
 import type {
   PermissionContextPreparedUpdate,
   PermissionContextPublication,
@@ -4962,6 +4963,108 @@ describe("AgenC delegate background-agent runner", () => {
       clearCurrentRuntimeSession(otherSessionA);
       clearCurrentRuntimeSession(otherSessionB);
       await runner.stopAgent("session-scoped-compact").catch(() => undefined);
+    }
+  });
+
+  it("compacts a session with the TUI's /compact request and answers the tokens before and after", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-compact",
+      scopedTurnCancellation: true,
+    });
+    const attemptId = "compact-0a8d6a35-5f4c-4c1a-9a43-6b9a3f7d2e10";
+    const replacementEvent = {
+      id: "history-replaced-session-compact",
+      type: "history_replaced" as const,
+      acceptedAt: "2026-11-19T00:00:00.000Z",
+      payload: { reason: "partial_compact" as const, messages: [] },
+    };
+    const partialCompactFromMessage = vi.fn(async () => ({
+      ok: true,
+      sessionId: "session-compact",
+      eventAlreadyEmitted: false as const,
+      event: replacementEvent,
+      attemptId,
+      replacementHistory: [],
+      displayText: `Conversation compacted\nRollback attempt ID: ${attemptId}`,
+      preCompactTokens: 118_400,
+      postCompactTokens: 9_216,
+    }));
+    Object.assign(session, { partialCompactFromMessage });
+    const emitted: unknown[] = [];
+    const started = await runner.startAgent({
+      objective: "compact like /compact",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents(started.agentId, {
+      sessionId: "session-compact",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+    try {
+      await expect(
+        runner.compactAgentSession?.(started.agentId, { sessionId: "session-compact" }),
+      ).resolves.toEqual({
+        sessionId: "session-compact",
+        ok: true,
+        tokensBefore: 118_400,
+        tokensAfter: 9_216,
+        attemptId,
+        displayText: `Conversation compacted\nRollback attempt ID: ${attemptId}`,
+      });
+      // The daemon TUI's /compact: everything from the first active message.
+      expect(partialCompactFromMessage).toHaveBeenCalledExactlyOnceWith({
+        messageOrdinal: 0,
+        direction: "from",
+      });
+      // Clients see the compaction exactly as after /compact.
+      expect(emitted.map((event) => (event as { params: { event: { type: string } } }).params.event.type))
+        .toEqual(["transcript_epoch", "history_replaced"]);
+    } finally {
+      await runner.stopAgent(started.agentId).catch(() => undefined);
+    }
+  });
+
+  it("refuses to compact while a turn runs and leaves the conversation alone", async () => {
+    const h = makeTopLevelRunner({ conversationId: "session-compact-busy", scopedTurnCancellation: true });
+    const partialCompactFromMessage = vi.fn(async () => ({
+      ok: false as const,
+      sessionId: "session-compact-busy",
+      eventAlreadyEmitted: false as const,
+      code: "ACTIVE_TURN" as const,
+      message: "Cannot summarize right now: a turn is currently in flight.",
+    }));
+    Object.assign(h.session, { partialCompactFromMessage });
+    const started = await h.runner.startAgent({
+      objective: "compact while busy",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    const refusal = {
+      sessionId: "session-compact-busy",
+      ok: false,
+      code: "ACTIVE_TURN",
+      message: "Cannot compact right now: a turn is running. Wait for it to finish, then compact.",
+    };
+    try {
+      h.setActiveTurn("turn-in-flight");
+      await expect(
+        h.runner.compactAgentSession?.(started.agentId, { sessionId: "session-compact-busy" }),
+      ).resolves.toEqual(refusal);
+      expect(partialCompactFromMessage).not.toHaveBeenCalled();
+      // A turn that starts after the runner's check is refused inside the
+      // session; the answer reads the same.
+      h.setActiveTurn(null);
+      await expect(
+        h.runner.compactAgentSession?.(started.agentId, { sessionId: "session-compact-busy" }),
+      ).resolves.toEqual(refusal);
+      expect(partialCompactFromMessage).toHaveBeenCalledOnce();
+    } finally {
+      await h.runner.stopAgent(started.agentId).catch(() => undefined);
     }
   });
 
@@ -10545,6 +10648,133 @@ describe("AgenC delegate background-agent runner", () => {
     }
     expect(runTurnFn).toHaveBeenCalledWith(expect.anything(), expect.anything(), content,
       expect.objectContaining({ rootHumanTurnText: content, displayUserMessage: null }));
+  });
+
+  it("[managed-thread] answers session.compact through the daemon's own handler and refuses it mid-turn", async () => {
+    const h = makeTopLevelRunner({ conversationId: "session-compact-rpc", scopedTurnCancellation: true });
+    const attemptId = "compact-5b1f0c2e-7d3a-4e6b-8c9d-0e1f2a3b4c5d";
+    const partialCompactFromMessage = vi.fn(async () => ({
+      ok: true,
+      sessionId: "session-compact-rpc",
+      eventAlreadyEmitted: false as const,
+      event: {
+        id: "history-replaced-compact-rpc",
+        type: "history_replaced" as const,
+        acceptedAt: "2026-11-19T00:00:00.000Z",
+        payload: { reason: "partial_compact" as const, messages: [] },
+      },
+      attemptId,
+      replacementHistory: [],
+      displayText: `Conversation compacted\nRollback attempt ID: ${attemptId}`,
+      preCompactTokens: 64_000,
+      postCompactTokens: 4_096,
+    }));
+    Object.assign(h.session, { partialCompactFromMessage });
+    await h.runner.startAgent({ objective: "passive", deferInitialTurn: true, unattendedAllow: [], unattendedDeny: [] });
+    const sessions = new AgenCDaemonSessionManager();
+    const manager = new AgenCDaemonAgentManager({ runner: h.runner, sessionManager: sessions });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: sessions });
+    const connection = dispatcher.createConnection();
+    await sessions.restoreSession({ sessionId: "compact-client", agentId: "session-compact-rpc", status: "waiting", createdAt: "2026-11-19T00:00:00.000Z" });
+    await manager.restoreAgent({ agentId: "session-compact-rpc", objective: "passive", startedAt: "2026-11-19T00:00:00.000Z", lastActiveAt: "2026-11-19T00:00:00.000Z", sessionIds: ["compact-client"], runtimeAvailable: true });
+    const compact = (id: string, params: Record<string, unknown>) =>
+      connection.dispatch({ jsonrpc: "2.0", id, method: "session.compact", params });
+    try {
+      // Desktop negotiates protocol 1.28 and still finds the method.
+      await expect(connection.dispatch({ jsonrpc: "2.0", id: "initialize", method: "initialize", params: { protocol: { version: "1.28.0" } } }))
+        .resolves.toMatchObject({ result: { capabilities: { "daemon.methods": { "session.compact": true } } } });
+      await expect(compact("compact", { sessionId: "compact-client" })).resolves.toEqual({
+        jsonrpc: "2.0",
+        id: "compact",
+        result: {
+          sessionId: "compact-client",
+          ok: true,
+          tokensBefore: 64_000,
+          tokensAfter: 4_096,
+          attemptId,
+          displayText: `Conversation compacted\nRollback attempt ID: ${attemptId}`,
+        },
+      });
+      expect(partialCompactFromMessage).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ messageOrdinal: 0, direction: "from" }),
+      );
+
+      h.setActiveTurn("turn-running");
+      await expect(compact("busy", { sessionId: "compact-client" })).resolves.toEqual({
+        jsonrpc: "2.0",
+        id: "busy",
+        result: {
+          sessionId: "compact-client",
+          ok: false,
+          code: "ACTIVE_TURN",
+          message: "Cannot compact right now: a turn is running. Wait for it to finish, then compact.",
+        },
+      });
+      await expect(compact("malformed", { sessionId: "" })).resolves.toMatchObject({ id: "malformed", error: { code: -32602 } });
+      await expect(compact("extra", { sessionId: "compact-client", messageOrdinal: 3 })).resolves.toMatchObject({ id: "extra", error: { code: -32602 } });
+      expect(partialCompactFromMessage).toHaveBeenCalledOnce();
+    } finally {
+      h.setActiveTurn(null);
+      await connection.close();
+      await dispatcher.close();
+      await h.runner.stopAgent("session-compact-rpc", "test_cleanup");
+    }
+  });
+
+  it("[managed-thread] gives each turn's advice to the client that prompted it", async () => {
+    const { runner, control, session, configStore } = makeTopLevelRunner({ conversationId: "session-advice-reader" });
+    await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+    // Not started by the TUI: a plain client until a prompt says otherwise.
+    expect(turnAdviceReader(session as never)).toBe("client");
+    let submitDriver: (message: string, options?: unknown) => Promise<void> = async () => { throw new Error("driver missing"); };
+    Object.assign(session, {
+      newDefaultTurn: () => ({}),
+      installTurnDriverHooks: (hooks: { submit: typeof submitDriver }) => { submitDriver = hooks.submit; },
+    });
+    const readers: string[] = [];
+    const runTurnFn = vi.fn(async function* (turnSession: unknown) {
+      readers.push(turnAdviceReader(turnSession as never));
+    });
+    __installDaemonTurnDriverHooksForTest(session as never, configStore as never, runTurnFn as never);
+    control.sendInput.mockImplementation(async (...invocation: unknown[]) => {
+      await submitDriver(invocation[1] as string, invocation[2]);
+    });
+    const sessions = new AgenCDaemonSessionManager();
+    const manager = new AgenCDaemonAgentManager({ runner, sessionManager: sessions });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: sessions });
+    await sessions.restoreSession({ sessionId: "advice-client", agentId: "session-advice-reader", status: "waiting", createdAt: "2026-11-19T00:00:00.000Z" });
+    await manager.restoreAgent({ agentId: "session-advice-reader", objective: "passive", startedAt: "2026-11-19T00:00:00.000Z", lastActiveAt: "2026-11-19T00:00:00.000Z", sessionIds: ["advice-client"], runtimeAvailable: true });
+    const connect = async (capabilities: Record<string, boolean>) => {
+      const connection = dispatcher.createConnection();
+      await connection.dispatch({ jsonrpc: "2.0", id: "initialize", method: "initialize", params: { protocol: { version: "1.2.0" }, capabilities } });
+      return connection;
+    };
+    const tui = await connect({ "turn.advice.slashCommands.v1": true });
+    const desktop = await connect({ "turn.advice.compactAction.v1": true });
+    const sdk = await connect({});
+    try {
+      for (const [connection, name] of [[tui, "tui"], [sdk, "sdk"], [desktop, "desktop"], [tui, "tui-again"]] as const) {
+        const result = await connection.dispatch({ jsonrpc: "2.0", id: name, method: "message.stream", params: {
+          sessionId: "advice-client", content: `prompt from ${name}`, clientMessageId: `advice-${name}`, streamId: `stream-${name}`,
+        } });
+        expect(result, name).not.toHaveProperty("error");
+      }
+    } finally {
+      for (const connection of [tui, desktop, sdk]) await connection.close();
+      await dispatcher.close();
+      await runner.stopAgent("session-advice-reader", "test_cleanup");
+    }
+    expect(readers).toEqual(["tui", "client", "client_with_compact", "tui"]);
+  });
+
+  it("[managed-thread] marks a session the TUI started as read by the TUI", async () => {
+    const { runner, session } = makeTopLevelRunner({ conversationId: "session-advice-tui" });
+    await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [], metadata: { mode: "tui" } });
+    try {
+      expect(turnAdviceReader(session as never)).toBe("tui");
+    } finally {
+      await runner.stopAgent("session-advice-tui", "test_cleanup");
+    }
   });
 
   it("[managed-thread] replays a legacy hook-block error as session-only after attach", async () => {

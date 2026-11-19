@@ -58,6 +58,8 @@ const READY_POLL_MS = 50;
 const UNBOUNDED_DAEMON_METHODS: ReadonlySet<AgencDaemonMethod> = new Set([
   "message.send",
   "message.stream",
+  // A compaction summarizes the whole conversation with the model first.
+  "session.compact",
 ]);
 
 export class RetiredConfigDirError extends Error {
