@@ -11,6 +11,7 @@
  * no longer split a run; a run split before stays split, so inspection reads
  * the project that holds its rollout and says the answer is partial.
  */
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -42,6 +43,7 @@ let rolloutPath = "";
 let sequence = 0;
 let firstProject = "";
 let folderProject = "";
+let attempts: string[] = [];
 
 beforeEach(() => {
   root = mkdtempSync(join(canonicalTmpdir(), "agenc-split-run-"));
@@ -50,6 +52,7 @@ beforeEach(() => {
   workspace = join(root, "site", "app");
   mkdirSync(workspace, { recursive: true });
   sequence = 0;
+  attempts = [];
 });
 
 afterEach(() => {
@@ -67,8 +70,12 @@ function openMeta() {
     source: "interactive-root" as const, agencVersion: VERSION, model: "base-model", modelProvider: "grok" };
 }
 
-/** One admitted model call, recorded where `cwd` resolves and mirrored into the rollout like a session does. */
-async function admittedModelCall(store: RolloutStore, inputTokens: number): Promise<void> {
+/**
+ * One admitted model call, recorded where `cwd` resolves and mirrored into the rollout like a session does.
+ * `compact`: then one compaction call, admitted as services/compact admits it (its own `compact-<uuid>` run,
+ * a child of the chat's run, in the same session) and mirrored into the rollout too.
+ */
+async function admittedModelCall(store: RolloutStore, inputTokens: number, compact = false): Promise<void> {
   const kernel = new ExecutionAdmissionKernel({ agencHome: home, ownerId: "split-run-test", ownerPid: process.pid });
   try {
     const client = kernel.bindClient({ cwd: workspace, scope: { runId: RUN_ID, sessionId: RUN_ID, autonomous: false },
@@ -77,11 +84,24 @@ async function admittedModelCall(store: RolloutStore, inputTokens: number): Prom
       maxOutputTokens: 5, maxCostUsd: 0.1 });
     client.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
     client.reconcile(lease.reservation.reservationId, { inputTokens, outputTokens: 1, costUsd: 0.01 });
-    for (const event of client.replayJournal?.() ?? []) {
-      sequence += 1;
-      store.append({ id: event.eventId, eventId: event.eventId, seq: sequence,
-        msg: { type: "execution_admission", payload: event } }, { durable: true });
-    }
+    const mirror = (events: readonly { readonly eventId: string }[]): void => {
+      for (const event of events) {
+        sequence += 1;
+        store.append({ id: event.eventId, eventId: event.eventId, seq: sequence,
+          msg: { type: "execution_admission", payload: event } }, { durable: true });
+      }
+    };
+    mirror(client.replayJournal?.() ?? []);
+    if (!compact) return;
+    const attemptId = `compact-${randomUUID()}`;
+    const attempt = client.forSession({ runId: attemptId, sessionId: RUN_ID, parentRunId: RUN_ID });
+    const call = await attempt.acquire({ stepId: `compact:${attemptId}:1`, kind: "model_turn", sessionId: RUN_ID,
+      maxInputTokens: 100, maxOutputTokens: 5, maxCostUsd: 0.1 });
+    attempt.markDispatched(call.reservation.reservationId, { boundary: "provider_wire" });
+    attempt.reconcile(call.reservation.reservationId, { inputTokens: 30, outputTokens: 1, costUsd: 0.01 });
+    mirror(attempt.replayJournal?.() ?? []);
+    attempt.release?.();
+    attempts.push(attemptId);
   } finally {
     kernel.close();
   }
@@ -116,13 +136,13 @@ function recordThreadRow(threadRolloutPath: string): void {
  * the database of the project found again from the folder. `stopped`: turn 1
  * ended the run, so the resume reopened it into a new epoch.
  */
-async function splitTheRun(options: { readonly stopped?: boolean } = {}): Promise<void> {
+async function splitTheRun(options: { readonly stopped?: boolean; readonly compact?: boolean } = {}): Promise<void> {
   firstProject = sqliteDriver.resolveStateDatabasePaths({ cwd: workspace, agencHome: home }).projectDir;
   const first = new RolloutStore(storeOptions());
   first.open(openMeta());
   rolloutPath = first.rolloutPath;
   recordDaemonRun("running", "session-1");
-  await admittedModelCall(first, 10);
+  await admittedModelCall(first, 10, options.compact === true);
   if (options.stopped === true) {
     sequence += 1;
     first.append({ id: "turn-1-terminal", eventId: "turn-1-terminal", seq: sequence, msg: { type: "run_terminal", payload: {
@@ -149,7 +169,7 @@ async function splitTheRun(options: { readonly stopped?: boolean } = {}): Promis
     item.type === "event_msg" && typeof (item.payload as { seq?: unknown }).seq === "number" ? [(item.payload as { seq: number }).seq] : []));
   recordThreadRow(rolloutPath);
   recordDaemonRun("running", "session-2");
-  await admittedModelCall(resumed, 20);
+  await admittedModelCall(resumed, 20, options.compact === true);
   resumed.close();
   recordDaemonRun("completed", "session-2");
 }
@@ -241,6 +261,33 @@ describe("a run split across two project databases by an earlier resume", () => 
     expect(replay.events.map((event) => event.kind)).toEqual(expect.arrayContaining(["run_terminal", "run_reopened"]));
     expect(service.status({ runId: RUN_ID })).toMatchObject({ terminal: false, source: { projectDir: firstProject } });
     expect(rowsOf(folderProject)).toEqual(stray);
+  });
+
+  it("reads a split chat that Core compacted before and after the split, partial", async () => {
+    await splitTheRun({ compact: true });
+    // Each period's compaction was admitted where that period's admission went.
+    const journalRuns = (projectDir: string) => {
+      const db = new Database(sqliteDriver.stateDatabasePathsForProjectDir(projectDir).stateDbPath, { readonly: true, fileMustExist: true });
+      try {
+        return (db.prepare("SELECT DISTINCT run_id FROM execution_admission_journal WHERE run_id LIKE 'compact-%'").all() as { run_id: string }[])
+          .map((row) => row.run_id);
+      } finally {
+        db.close();
+      }
+    };
+    expect(journalRuns(firstProject)).toEqual([attempts[0]]);
+    expect(journalRuns(folderProject)).toEqual([attempts[1]]);
+    const service = inspection();
+    const replay = replayAll(service);
+    const partial = { reason: "split_run", omittedProjectDirs: [folderProject] };
+    expect(replay.source).toMatchObject({ projectDir: firstProject, partial });
+    expect([...new Set(replay.events.filter((event) => event.kind === "execution_admission")
+      .map((event) => String((event.payload as { runId?: unknown }).runId)))]).toEqual([RUN_ID, attempts[0], attempts[1]]);
+    // The admission summary counts the first project only: its turn and its compaction.
+    const status = service.status({ runId: RUN_ID });
+    expect(status.source).toMatchObject({ projectDir: firstProject, partial });
+    expect(status.admission).toMatchObject({ reservationCount: 2, actualTokens: 11 + 31 });
+    expect(service.evidence({ runId: RUN_ID }).source).toMatchObject({ completeness: "partial", partial });
   });
 
   it("still refuses when the other project's thread row names another rollout", async () => {

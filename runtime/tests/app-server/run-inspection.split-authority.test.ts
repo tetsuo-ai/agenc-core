@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgenCDaemonRunInspectionService } from "../../src/app-server/run-inspection.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import type { ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
+import type { AdmissionJournalEvent } from "../../src/budget/admission-types.js";
 import { RolloutStore } from "../../src/session/rollout-store.js";
 import { openStateDatabases, type StateSqliteDriver } from "../../src/state/sqlite-driver.js";
 
@@ -42,11 +44,32 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-async function seedSplitRun(options: { legacy?: boolean; owner?: string; corruptEvent?: boolean; omitEvents?: boolean; beforeAdmission?: boolean } = {}): Promise<void> {
+async function seedSplitRun(options: { legacy?: boolean; owner?: string; corruptEvent?: boolean; omitEvents?: boolean; beforeAdmission?: boolean; compaction?: boolean } = {}): Promise<void> {
   if (!options.beforeAdmission) {
     const lease = await client.acquire({ stepId: "model:1", kind: "model_turn", maxInputTokens: 10, maxOutputTokens: 5, maxCostUsd: 0.1 });
     client.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
     client.reconcile(lease.reservation.reservationId, { inputTokens: 4, outputTokens: 2, costUsd: 0.03 });
+  }
+  // A compaction of the child, admitted as services/compact admits it: its own
+  // compact-<uuid> run, a child of the child's run, in the child's session.
+  const compaction: AdmissionJournalEvent[] = [];
+  if (options.compaction) {
+    // A real parent session has admitted its own work before its child's child.
+    const rootClient = kernel.bindClient({
+      cwd: join(root, "parent"),
+      scope: { runId: "parent-run", sessionId: "parent-run", autonomous: false },
+      budget: { runMaxCostUsd: 1 },
+    });
+    const rootLease = await rootClient.acquire({ stepId: "root", kind: "spawn", maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 });
+    rootClient.markDispatched(rootLease.reservation.reservationId, { boundary: "child_agent" });
+    rootClient.reconcile(rootLease.reservation.reservationId, { inputTokens: 0, outputTokens: 0, costUsd: 0 });
+    const attemptId = `compact-${randomUUID()}`;
+    const attempt = client.forSession({ runId: attemptId, sessionId: RUN_ID, parentRunId: RUN_ID });
+    const lease = await attempt.acquire({ stepId: `compact:${attemptId}:1`, kind: "model_turn", sessionId: RUN_ID, maxInputTokens: 10, maxOutputTokens: 5, maxCostUsd: 0.1 });
+    attempt.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+    attempt.reconcile(lease.reservation.reservationId, { inputTokens: 3, outputTokens: 1, costUsd: 0.01 });
+    compaction.push(...attempt.replayJournal?.() ?? []);
+    attempt.release?.();
   }
   const store = new RolloutStore({ cwd: join(root, "worktree"), agencHome: home, sessionId: RUN_ID, agencVersion: "0.17.0", sessionTempRoot: join(root, "session-tmp") });
   store.open({
@@ -57,6 +80,10 @@ async function seedSplitRun(options: { legacy?: boolean; owner?: string; corrupt
   for (const event of options.omitEvents ? [] : client.replayJournal?.() ?? []) {
     sequence += 1;
     store.append({ id: event.eventId, eventId: event.eventId, seq: sequence, msg: { type: "execution_admission", payload: options.corruptEvent ? { ...event, stepId: "forged-step" } : event } }, { durable: true });
+  }
+  for (const event of compaction) {
+    sequence += 1;
+    store.append({ id: event.eventId, eventId: event.eventId, seq: sequence, msg: { type: "execution_admission", payload: event } }, { durable: true });
   }
   store.append({ id: "split-terminal", eventId: "split-terminal", seq: sequence + 1, msg: { type: "run_terminal", payload: {
     runId: RUN_ID, epoch: store.runEpoch, status: "failed", exitCode: 1, stopReason: "budget_exhausted", finalMessage: "child failed truthfully", usage: null,
@@ -109,10 +136,21 @@ describe("split canonical journal and admission ownership", () => {
     expect(reverse.status({ runId: RUN_ID })).toEqual(status);
   });
 
+  it("proves a worktree child's compaction against its declared admission owner", async () => {
+    await seedSplitRun({ compaction: true });
+    const status = service.status({ runId: RUN_ID });
+    // The child's call and its compaction's, both in the parent's database.
+    expect(status).toMatchObject({ admission: { reservationCount: 2, actualCostUsd: 0.04 }, source: { projectDir: child.projectDir, admissionProjectDir: parent.projectDir } });
+    expect(service.replay({ runId: RUN_ID }).events.filter((event) => event.kind === "execution_admission")).toHaveLength(8);
+  });
+
   it.each([
     { owner: "/outside/owner" },
     { corruptEvent: true },
     { legacy: true, omitEvents: true },
+    // A compaction proves no admission owner: without the child's own events
+    // an undeclared owner stays unproved.
+    { legacy: true, omitEvents: true, compaction: true },
   ])("refuses unproved or conflicting ownership %j", async (options) => {
     await seedSplitRun(options);
     expect(() => service.replay({ runId: RUN_ID })).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS" }));

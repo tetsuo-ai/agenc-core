@@ -1249,6 +1249,20 @@ row, and `run.evidence` reports completeness `partial`. Nothing is moved or
 deleted. Any other run with state in more than one database still fails with
 `RUN_ID_AMBIGUOUS`.
 
+A session's rollout also holds the admission events of its own compaction
+attempts. Core admits each attempt under its own run id, `compact-<uuid>`, as
+an admission child of the session's run, with one step per summarizer call
+(`compact:<attempt run id>:<call>`). The four methods accept such an event only
+when an admission journal proves it: the database that holds the run's
+admission (or, for a split run, one of the databases it leaves out) has its
+journal row, the row is the event, and the row's admission job is that
+attempt's step, a child of this run in this session. These events are never
+the run's own admission events, so they prove no admission owner. The admission
+summary counts the attempts as it counts any admission child of the run. Any
+other run's admission event in the rollout still fails with
+`RUN_ID_AMBIGUOUS`. Before this, every read of a chat that had compacted failed
+that way.
+
 The full persistence, replay, gap, effect, migration, and crash semantics are
 documented in
 [`../design/durable-runs-effects-events.md`](../design/durable-runs-effects-events.md).
