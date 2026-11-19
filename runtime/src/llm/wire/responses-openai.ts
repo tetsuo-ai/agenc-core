@@ -43,6 +43,7 @@ import {
 } from "./responses-openai-freeform.js";
 import { toOpenAIResponsesTools } from "./tools.js";
 import { withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
+import { INTERRUPTED_TURN_NOTE_LEAD } from "../../prompts/interrupted-turn-note.js";
 import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
@@ -56,6 +57,13 @@ import { resolveRegisteredModelCatalogEntry } from "../registry/model-catalog.js
 
 export interface OpenAIResponsesRequestOptions {
   readonly model: string;
+  /**
+   * OpenAI only: the interrupted-turn note of a durable resume
+   * (prompts/interrupted-turn-note.ts) goes where it sits, as a runtime
+   * reminder, instead of into `instructions` with the other developer
+   * messages, where it changed the cached prefix from its first byte.
+   */
+  readonly interruptedTurnNoteInPlace?: boolean;
   /** Platform OpenAI only; other Responses providers keep their wire contract. */
   readonly appendOnlyContext?: boolean;
   readonly messages: readonly LLMMessage[];
@@ -556,6 +564,11 @@ export function buildOpenAIResponsesRequest(
   // permission section) becomes the FIRST input item below. Both are the same
   // on every request of a session, so each request extends the previous one
   // byte for byte and the provider reads all of it from cache.
+  const conversationStart = messages.findIndex((message) =>
+    message.role !== "system" && message.role !== "developer");
+  const notesInPlace = new Set(input.interruptedTurnNoteInPlace !== true || conversationStart < 0 ? []
+    : messages.filter((message, index) => index > conversationStart && message.role === "developer" &&
+      messageTextContent(message.content).startsWith(INTERRUPTED_TURN_NOTE_LEAD)));
   const {
     staticPrefix: staticSystemPrompt,
     sessionSuffix: sessionSystemPrompt,
@@ -571,7 +584,7 @@ export function buildOpenAIResponsesRequest(
     sessionSystemPrompt,
     ...messages
       .filter((message) =>
-        message.role === "system" || message.role === "developer"
+        (message.role === "system" || message.role === "developer") && !notesInPlace.has(message)
       )
       .map((message) => messageTextContent(message.content))
       .map((text) => text.trim()),
@@ -593,6 +606,11 @@ export function buildOpenAIResponsesRequest(
 
   for (const [index, message] of messages.entries()) {
     responseInput.push(...(context.before.get(index) ?? []));
+    if (notesInPlace.has(message)) {
+      responseInput.push({ type: "message", role: "user", content: [{ type: "input_text",
+        text: `<system-reminder>\n${messageTextContent(message.content).trim()}\n</system-reminder>` }] });
+      continue;
+    }
     if (message.role === "system" || message.role === "developer") continue;
 
     if (message.role === "assistant") {
