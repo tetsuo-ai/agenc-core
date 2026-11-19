@@ -543,6 +543,57 @@ describe("recoverDaemonStateOnStartup", () => {
     });
   });
 
+  it("projects a run terminal's cost marks with its usage", () => {
+    const runId = "run-terminal-cost-marks";
+    insertAgentRun({ id: runId, objective: "keep cost marks", status: "running", currentSessionId: runId });
+    const usage = {
+      inputTokens: 5_100, outputTokens: 90, totalTokens: 5_190,
+      costUsd: 0.000423876, costKnown: false, costEstimated: true,
+    };
+    bindRunJournal(runId, writeRunJournal(runId, [stoppedTerminal(runId, usage)]));
+
+    expect(recoverDaemonStateOnStartup(driver).recoveryExclusions).toEqual([]);
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(runId)?.usage,
+    ).toEqual(usage);
+  });
+
+  it("does not defer a run its daemon stopped during a turn", () => {
+    // A graceful stop during a turn records the cancelled terminal with the
+    // session's usage, cost marks included. The next start projects the same
+    // terminal from the rollout and must find it equal, not "a different
+    // terminal result" that defers the run as a projection failure.
+    const runId = "run-stopped-mid-turn";
+    insertAgentRun({ id: runId, objective: "stopped mid turn", status: "running", currentSessionId: runId });
+    const usage = {
+      inputTokens: 7_271, outputTokens: 120, totalTokens: 7_391,
+      costUsd: 0.001242972, costKnown: true,
+    };
+    const terminal = stoppedTerminal(runId, usage);
+    bindRunJournal(runId, writeRunJournal(runId, [terminal]));
+    new StateRunDurabilityRepository(driver).recordTerminalResult({
+      epoch: 1,
+      eventId: terminal.eventId!,
+      result: {
+        runId, status: "cancelled", exitCode: null, stopReason: "daemon_shutdown",
+        finalMessage: null, usage, lastSequence: 1, finishedAt: "2026-05-01T00:06:00.000Z",
+      },
+    });
+    // The shutdown's snapshot flush then writes the session's row as open,
+    // so the next start projects the run again.
+    driver.prepareState("UPDATE agent_runs SET status = 'running' WHERE id = ?").run(runId);
+
+    const report = recoverDaemonStateOnStartup(driver, {
+      now: () => "2026-05-01T00:20:00.000Z",
+    });
+
+    expect(report.recoveryExclusions).toEqual([]);
+    expect(agentRunStatus(runId)).toBe("cancelled");
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(runId),
+    ).toMatchObject({ status: "cancelled", usage });
+  });
+
   it("does not invent terminal output for an offline cancelled run with no canonical journal", () => {
     insertAgentRun({
       id: "run-offline-cancel-no-writer",
@@ -2030,6 +2081,30 @@ function projectedRolloutRows(sourcePath: string): number {
       )
       .get(sourcePath)?.count ?? 0
   );
+}
+
+/** The cancelled terminal a daemon stop records, with the session's usage. */
+function stoppedTerminal(runId: string, usage: Record<string, unknown>): Event {
+  const eventId = `run-terminal:${runId}:1`;
+  return {
+    eventId,
+    id: eventId,
+    seq: 1,
+    msg: {
+      type: "run_terminal",
+      payload: {
+        runId,
+        epoch: 1,
+        status: "cancelled",
+        exitCode: null,
+        stopReason: "daemon_shutdown",
+        finalMessage: null,
+        usage,
+        lastSequenceBeforeTerminal: null,
+        finishedAt: "2026-05-01T00:06:00.000Z",
+      },
+    },
+  } as Event;
 }
 
 function writeRunJournal(runId: string, events: readonly Event[]): string {
