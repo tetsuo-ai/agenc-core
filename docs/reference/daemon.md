@@ -940,7 +940,8 @@ notice types they do not know.
 A client that sends `schemaVersion: 3` (the daemon advertises
 `transcript.tools.v3` and `transcript.plans.v3`) gets the same answer with
 `schemaVersion: 3` and `turns`: for each visible turn, its tool calls (name,
-the fields that name the call's target, error and duration, never outputs),
+the fields that name the call's target, for `apply_patch` the files its patch
+names, error and duration, never outputs),
 its plan and to-do list, the usage Core recorded when it ended and its
 workspace change summary. Without the field the answer stays schema 2. The
 other timeline capabilities (`turn.failure.v1`, `turn.usage.v1`,
