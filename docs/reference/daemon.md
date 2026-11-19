@@ -1812,6 +1812,17 @@ Automatic continuation is limited to a root whose descendant edges are all
 closed with recorded terminal outcomes. Turns with unfinished workers use the
 ordinary bootstrap dangling-call pairing, do not restore descendant sessions,
 and wait for an explicit new turn. Resuming worker turns is follow-up work.
+A prompt that arrives while such a continuation runs replaces it. When the
+continuation's model call is already on the wire, the new turn waits for that
+call to finish, at most 30 seconds, and the continuation then stops without
+using the answer: the call settles in the admission ledger with the usage the
+provider reported, so the session's cost stays known. Cutting it would leave
+the ledger holding the call as `held_unknown`
+(`cancelled_after_dispatch:replaced`), and `costKnown` false from then on. A
+call still out after 30 seconds is cut as before. Every other stop (an
+interrupt, a daemon shutdown, a provider switch) cuts the call at once, also
+while the new turn waits for it, and a sub-agent's turn that inherits the
+`replaced` reason is never held.
 See the canonical
 [resume outcome table](../design/durable-runs-effects-events.md#resume-outcomes).
 
