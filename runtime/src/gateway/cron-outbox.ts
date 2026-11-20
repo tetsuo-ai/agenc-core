@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  durableCronDispatchSupported,
+  durableCronDispatchUnsupported,
   mutateCronFile,
   nextCronRunMs,
   readCronFile,
@@ -83,6 +85,7 @@ export class CronDeliveryOutboxStore {
   constructor(readonly workspaceDir: string) {}
 
   async schedule(): Promise<readonly { taskId: string; at: number }[]> {
+    if (!durableCronDispatchSupported()) throw durableCronDispatchUnsupported();
     const state = await readCronFile(this.workspaceDir);
     return state.tasks.filter((task) => task.deliver !== undefined).flatMap((task) => {
       const active = state.deliveryOutbox?.occurrences.find(

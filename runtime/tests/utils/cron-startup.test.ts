@@ -21,6 +21,23 @@ beforeEach(async () => {
 afterEach(async () => { await rm(workspace, { recursive: true, force: true }); });
 const read = async (assertActive = () => {}) =>
   (await import("../../src/utils/cron-startup.js")).readStartupCronTasks(workspace, assertActive);
+// Off Linux no scheduler arms a stored record, so startup reports it instead.
+const expectDelegated = async () => {
+  if (process.platform === "linux") {
+    expect(await read()).toEqual([{ id: "persisted" }]);
+  } else {
+    await expect(read()).rejects.toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
+  }
+};
+const withPlatform = async (value: NodeJS.Platform, run: () => Promise<void>) => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...platform, value });
+  try {
+    await run();
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+};
 const record = async (contents = "{\"tasks\":[]}") => {
   await mkdir(join(workspace, ".agenc"), { mode: 0o700 });
   await writeFile(join(workspace, ".agenc", "scheduled_tasks.json"), contents);
@@ -36,18 +53,18 @@ describe("cron startup absence boundary", () => {
   });
   it.each(["", "{}", "malformed", '{"tasks":[{"id":"real"}]}'])("delegates every existing record unchanged: %s", async contents => {
     await record(contents);
-    expect(await read()).toEqual([{ id: "persisted" }]);
+    await expectDelegated();
     expect(deferred.read).toHaveBeenCalledExactlyOnceWith(workspace);
   });
   it.skipIf(process.platform === "win32")("delegates an unsafe directory to the original confined reader", async () => {
     await mkdir(join(workspace, "other"));
     await symlink(join(workspace, "other"), join(workspace, ".agenc"));
-    expect(await read()).toEqual([{ id: "persisted" }]);
+    await expectDelegated();
     expect(deferred.read).toHaveBeenCalledOnce();
   });
   it("delegates unsafe workspace permissions even with no record", async () => {
     await chmod(workspace, 0o777);
-    expect(await read()).toEqual([{ id: "persisted" }]);
+    await expectDelegated();
     expect(deferred.read).toHaveBeenCalledOnce();
   });
   it.each(["DESCRIPTOR_UNSUPPORTED", "EIO", "EACCES"])("delegates uncertain confinement (%s) to the original reader", async code => {
@@ -55,8 +72,25 @@ describe("cron startup absence boundary", () => {
     vi.spyOn(storage, "withCronStorageDirectory").mockRejectedValue(
       Object.assign(new Error("probe unavailable"), { code }),
     );
-    expect(await read()).toEqual([{ id: "persisted" }]);
+    await expectDelegated();
     expect(deferred.read).toHaveBeenCalledExactlyOnceWith(workspace);
+  });
+  it("returns stored records for dispatch on linux", async () => {
+    await record('{"tasks":[{"id":"real"}]}');
+    await withPlatform("linux", async () => {
+      expect(await read()).toEqual([{ id: "persisted" }]);
+    });
+  });
+  it.each(["win32", "darwin"] as const)("reports stored records instead of arming them on %s", async platform => {
+    await record('{"tasks":[{"id":"real"}]}');
+    await withPlatform(platform, async () => {
+      await expect(read()).rejects.toMatchObject({
+        code: "DESCRIPTOR_UNSUPPORTED",
+        message: expect.stringContaining(`not on ${platform}`),
+      });
+      deferred.read.mockResolvedValue([]);
+      expect(await read()).toEqual([]);
+    });
   });
   it("propagates deferred module failure for persisted state", async () => {
     await record();

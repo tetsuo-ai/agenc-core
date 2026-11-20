@@ -52,6 +52,7 @@ export function renderListResultMessage(output: ListOutput): React.ReactNode {
   return <MessageResponse>
       {output.jobs.map(j => <Text key={j.id}>
           <Text bold>{j.id}</Text> <Text dimColor>{j.humanSchedule}</Text>
+          {j.dormant === true ? <Text dimColor> (dormant: not scheduled on this host)</Text> : null}
         </Text>)}
     </MessageResponse>;
 }
