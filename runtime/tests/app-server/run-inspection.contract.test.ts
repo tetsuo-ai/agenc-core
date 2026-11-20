@@ -455,6 +455,7 @@ describe("durable run inspection", () => {
       ).toThrowError(
         expect.objectContaining<AgenCDaemonRunInspectionError>({
           code: "RUN_ID_AMBIGUOUS",
+          reason: "project_split",
         }),
       );
     } finally {

@@ -658,7 +658,8 @@ across project databases by an earlier resume is read from the project that
 holds its rollout when the other databases' rows are all bound to that same
 rollout; `source.partial` then names the databases left out, whose admission
 records and run row the answer does not use. Conflicting owners still fail with
-`RUN_ID_AMBIGUOUS`; changing cwd does not select an owner.
+`RUN_ID_AMBIGUOUS`, and the message says why (the error's `reason`, listed
+in [daemon.md](daemon.md)); changing cwd does not select an owner.
 
 ---
 

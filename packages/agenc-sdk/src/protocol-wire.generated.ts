@@ -3629,6 +3629,33 @@ export interface RunAdmissionJournalEvent extends JsonObject {
     readonly details?: JsonObject;
 }
 
+/** `data.code` of a failed run.status, run.replay, run.result or run.evidence. */
+export type RunInspectionErrorCode = "INVALID_ARGUMENT" | "RUN_ID_AMBIGUOUS" | "RUN_NOT_FOUND" | "RUN_NOT_TERMINAL";
+
+/**
+ * Why run inspection answered `RUN_ID_AMBIGUOUS`, so a client can word each
+ * case:
+ * - `project_split`: the run's records are in more than one project database,
+ *   and not in the shape of a split the daemon reads (see `RunPartialAnswer`);
+ * - `duplicate_run_id`: more than one project database holds its own journal
+ *   of this run id: two chats with one id;
+ * - `admission_owner_unproved`: the run's journal names an admission owner or
+ *   holds an admission event that no admission journal proves, or another
+ *   run's admission event;
+ * - `admission_record_limit`: the run's rollout holds more admission records
+ *   than one read checks (100,000).
+ * Additive: an older daemon sends no reason, and a client treats a reason it
+ * does not know like none.
+ */
+export type RunIdAmbiguousReason = "project_split" | "duplicate_run_id" | "admission_owner_unproved" | "admission_record_limit";
+
+/** The error `data` of a failed run.status, run.replay, run.result or run.evidence. */
+export interface RunInspectionErrorData extends JsonObject {
+    readonly code: RunInspectionErrorCode;
+    /** With `RUN_ID_AMBIGUOUS` only, from a daemon that says why. */
+    readonly reason?: RunIdAmbiguousReason;
+}
+
 type PublicRequestForMethod<Method, Request = AgenCDaemonRequest> =
   Request extends { readonly method: infer Names }
     ? Method extends Names

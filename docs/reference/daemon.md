@@ -385,7 +385,8 @@ subprocess transports share that rule and `AGENC_SDK_MAX_FRAME_BYTES`.
   client asks for them in its own `initialize`
   ([timeline-core-contract.md](../../runtime/docs/timeline-core-contract.md)).
   Neither does the `partial` mark on run inspection answers for a split run,
-  an additive response field.
+  an additive response field, nor the `reason` in the data of a
+  `RUN_ID_AMBIGUOUS` error, an additive error field.
 
 ### Public methods (`AGENC_DAEMON_METHODS`)
 
@@ -1249,6 +1250,35 @@ row, and `run.evidence` reports completeness `partial`. Nothing is moved or
 deleted. Any other run with state in more than one database still fails with
 `RUN_ID_AMBIGUOUS`.
 
+A session's rollout also holds the admission events of its own compaction
+attempts. Core admits each attempt under its own run id, `compact-<uuid>`, as
+an admission child of the session's run, with one step per summarizer call
+(`compact:<attempt run id>:<call>`). The four methods accept such an event only
+when an admission journal proves it: the database that holds the run's
+admission (or, for a split run, one of the databases it leaves out) has its
+journal row, the row is the event, and the row's admission job is that
+attempt's step, a child of this run in this session. These events are never
+the run's own admission events, so they prove no admission owner. The admission
+summary counts the attempts as it counts any admission child of the run. Any
+other run's admission event in the rollout still fails with
+`RUN_ID_AMBIGUOUS`. Before this, every read of a chat that had compacted failed
+that way.
+
+A `RUN_ID_AMBIGUOUS` error says why in its `data`: next to
+`code: "RUN_ID_AMBIGUOUS"` it carries `reason` (`RunInspectionErrorData` and
+`RunIdAmbiguousReason` in the protocol), so a client can word each case:
+
+| `reason` | The case |
+| --- | --- |
+| `project_split` | The run's records are in more than one project database, and not in the shape of a split run that the methods read. |
+| `duplicate_run_id` | More than one project database holds its own journal of this run id: two chats with one id. |
+| `admission_owner_unproved` | The run's journal names an admission owner, or holds an admission event, that no admission journal proves, or it holds another run's admission event. |
+| `admission_record_limit` | The run's rollout holds more admission records than one read checks (100,000). |
+
+The field is additive and takes no protocol version. An older daemon sends no
+`reason`, nor does a daemon that could not work the reason out (a database it
+cannot read); a client treats a reason it does not know like none.
+
 The full persistence, replay, gap, effect, migration, and crash semantics are
 documented in
 [`../design/durable-runs-effects-events.md`](../design/durable-runs-effects-events.md).
@@ -1450,6 +1480,19 @@ workspace and model from its thread row, plus `metadata.recovery.loaded:
 false`. Its durable thread row from the thread store on disk is listed as
 before. Listing never loads a session. `agent.list` returns only published
 agents. Health session counts include only sessions loaded in the daemon.
+
+A chat split across project databases by an earlier resume (see the run
+inspection section) is listed from the database that holds its rollout only.
+The other databases' saved session and thread row are the rows run inspection
+leaves out of the split run, and `session.list` leaves them out by the same
+rule. Before this, such a chat was listed once from each database after a
+daemon restart (up to four rows), and the second database's rows named no
+folder. A stray saved session is left out only while the database that holds
+the rollout lists a saved session of the run, and a database that cannot be
+read leaves the listing as it was (the daemon says so once on stderr). Any
+other run with rows in more
+than one database is listed as before. Only the listing changes: those rows
+stay on disk, and the saved session stays registered for its restore.
 
 `health.ready` reports `restoringSessions`, the number of saved sessions not
 restored yet. It stays above zero until each one is requested. At shutdown

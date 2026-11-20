@@ -256,6 +256,7 @@ import {
   type StateFreePageReclaim,
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
+import { isRolloutInOwnProject, NOT_SPLIT, runsBoundOnlyElsewhere, splitRunDatabases, type SplitRunDatabases } from "../state/split-run.js";
 
 import { logsDatabaseFilesAreAbsent } from "../state/logs-availability.js";
 
@@ -679,7 +680,8 @@ async function runAgenCDaemonForegroundLocked(
       ? recoverAgenCDaemonStartupState(authStartup.daemonHome, process.cwd(), activeConfig,
           message => io.stderr.write(`agenc: ${message}\n`),
           distVersion !== null ? `${distVersion.runtimeVersion}+${distVersion.commit}+${distVersion.buildTime}` : undefined)
-      : discoverAgenCDaemonStartupState(authStartup.daemonHome, process.cwd(), savedSessionListings);
+      : discoverAgenCDaemonStartupState(authStartup.daemonHome, process.cwd(), savedSessionListings,
+          message => io.stderr.write(`agenc: ${message}\n`));
     reportAgenCDaemonStartupRecovery(io, startupRecovery);
     writeAgenCDaemonStartupDebug(
       host,
@@ -705,6 +707,7 @@ async function runAgenCDaemonForegroundLocked(
       primaryCwd,
       agencHome: authStartup.daemonHome,
       deferPrimary: options.startupRestoreMode !== "background",
+      warn: (message) => io.stderr.write(`agenc: ${message}\n`),
     });
     cleanup.register("daemon-thread-store", async () => {
       threadStore.close();
@@ -1068,6 +1071,7 @@ async function runAgenCDaemonForegroundLocked(
       listUnopenedSavedSessions = () => startupRestores.unsettledTargets().flatMap(({ run }) => {
         if (run.currentSessionId === undefined) return [];
         const listing = savedSessionListings.get(savedSessionListingKey(run.projectDir, run.id));
+        if (listing?.splitRunStray === true) return [];
         return [{
           sessionId: run.currentSessionId,
           agentId: run.id,
@@ -2513,6 +2517,12 @@ export interface AgenCDaemonSavedSessionListing {
   readonly cwd?: string;
   readonly model?: string;
   readonly modelProvider?: string;
+  /**
+   * The row is a split run's stray, which run inspection leaves out
+   * (state/split-run.ts): `session.list` leaves it out too. A split chat
+   * was listed once from each database, and the stray's rows name no folder.
+   */
+  readonly splitRunStray?: true;
 }
 
 /** Key of {@link AgenCDaemonSavedSessionListing} entries: project and run id. */
@@ -2520,14 +2530,77 @@ function savedSessionListingKey(projectDir: string, runId: string): string {
   return `${projectDir}\0${runId}`;
 }
 
+/**
+ * Mark the saved sessions of a split run's strays (state/split-run.ts), which
+ * `session.list` leaves out: a split chat was listed once from each database,
+ * and the second database's rows name no folder. Never the chat's only listed
+ * saved session: a stray is left out only while the database that holds the
+ * rollout has a saved session of the run that the listing shows (one with a
+ * daemon session id). Leaving a row out is only de-duplication, so a database
+ * that cannot be read leaves the listing as it was, and says so once.
+ */
+function markSplitRunStrays(
+  listings: Map<string, AgenCDaemonSavedSessionListing>,
+  recoveredRuns: readonly RecoveredAgentRun[],
+  candidates: readonly { readonly paths: StateDatabasePaths; readonly runId: string }[],
+  allPaths: readonly StateDatabasePaths[],
+  warn: (message: string) => void,
+): void {
+  const byDatabase = new Map<string, { readonly paths: StateDatabasePaths; readonly runIds: string[] }>();
+  for (const { paths, runId } of candidates) {
+    const entry = byDatabase.get(paths.stateDbPath) ?? { paths, runIds: [] };
+    entry.runIds.push(runId);
+    byDatabase.set(paths.stateDbPath, entry);
+  }
+  const splits = new Map<string, SplitRunDatabases>();
+  const strayKeys = new Set<string>();
+  for (const { paths, runIds } of byDatabase.values()) {
+    let elsewhere: ReadonlySet<string>;
+    try {
+      elsewhere = runsBoundOnlyElsewhere(paths, runIds);
+    } catch (error) {
+      warn(`saved sessions in ${paths.projectDir} are listed without the split-run check: ${formatCleanupError(error)}`);
+      continue;
+    }
+    for (const runId of elsewhere) {
+      let split = splits.get(runId);
+      if (split === undefined) {
+        try {
+          split = splitRunDatabases(runId, allPaths);
+        } catch (error) {
+          warn(`run ${runId} is listed without the split-run check: ${formatCleanupError(error)}`);
+          split = NOT_SPLIT;
+        }
+        splits.set(runId, split);
+      }
+      if (split.strays.has(paths.stateDbPath)) strayKeys.add(savedSessionListingKey(paths.projectDir, runId));
+    }
+  }
+  const stateDbOf = new Map(allPaths.map((paths) => [paths.projectDir, paths.stateDbPath]));
+  for (const run of recoveredRuns) {
+    const key = savedSessionListingKey(run.projectDir, run.id);
+    const listing = listings.get(key);
+    if (listing === undefined || !strayKeys.has(key)) continue;
+    const home = splits.get(run.id)?.home;
+    const homeListed = home !== undefined && recoveredRuns.some((other) =>
+      other.id === run.id && other.currentSessionId !== undefined && stateDbOf.get(other.projectDir) === home);
+    if (homeListed) listings.set(key, { ...listing, splitRunStray: true });
+  }
+}
+
 /** @internal Exported for startup recovery boundary tests. */
 export function discoverAgenCDaemonStartupState(
   daemonHome: string,
   cwd: string,
   listings?: Map<string, AgenCDaemonSavedSessionListing>,
+  warn: (message: string) => void = () => {},
 ): DaemonStartupRecoveryReport {
   const recoveredRuns: RecoveredAgentRun[] = [];
-  for (const paths of discoverExistingAgenCDaemonStateDatabasePaths(daemonHome, cwd)) {
+  const allPaths = discoverExistingAgenCDaemonStateDatabasePaths(daemonHome, cwd);
+  // Runs whose thread row names no rollout in their own project: the only
+  // ones that can be a split run's strays.
+  const strayCandidates: { readonly paths: StateDatabasePaths; readonly runId: string }[] = [];
+  for (const paths of allPaths) {
     // No migrations, retention, journal scans or snapshot payloads here.
     // These rows only reserve ids in the restore gate; they have no execution
     // authority until recoverAgenCDaemonStartupState validates their project.
@@ -2539,8 +2612,10 @@ export function discoverAgenCDaemonStartupState(
         id: string; objective: string; status: RecoveredAgentRun["status"];
         started_at: string; last_active_at: string; current_session_id: string | null;
         thread_cwd: string | null; thread_model: string | null; thread_model_provider: string | null;
+        thread_rollout_path: string | null;
       }>(`SELECT runs.id, runs.objective, runs.status, runs.started_at, runs.last_active_at,
                  runs.current_session_id,
+                 durable.rollout_path AS thread_rollout_path,
                  COALESCE(durable.cwd, live.cwd) AS thread_cwd,
                  COALESCE(durable.model, live.model) AS thread_model,
                  COALESCE(durable.model_provider, live.model_provider) AS thread_model_provider
@@ -2560,11 +2635,15 @@ export function discoverAgenCDaemonStartupState(
           ...(row.thread_model !== null ? { model: row.thread_model } : {}),
           ...(row.thread_model_provider !== null ? { modelProvider: row.thread_model_provider } : {}),
         });
+        if (row.thread_rollout_path === null || !isRolloutInOwnProject(row.thread_rollout_path, row.id, paths.projectDir)) {
+          strayCandidates.push({ paths, runId: row.id });
+        }
       }
     } finally {
       reader.close();
     }
   }
+  if (listings !== undefined) markSplitRunStrays(listings, recoveredRuns, strayCandidates, allPaths, warn);
   return { recoveredAt: new Date().toISOString(), recoveredRuns,
     recoveredToolCalls: [], warnings: [], recoveryExclusions: [] };
 }
