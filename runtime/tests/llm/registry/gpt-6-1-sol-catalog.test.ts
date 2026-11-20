@@ -36,8 +36,8 @@ describe("GPT-6.1 Sol, official docs and live API reviewed 2026-09-29", () => {
       expect(ids.filter(id => id === prefix + model)).toHaveLength(1);
       expect(ids.indexOf(prefix + model)).toBeLessThan(ids.indexOf(prefix + "gpt-6-sol"));
     }
-    expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.openai).toBe("gpt-5");
-    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.openai[0]).toBe("gpt-5");
+    expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.openai).toBe("gpt-6.2-astra");
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.openai[0]).toBe("gpt-6.2-astra");
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.openrouter[0]).toBe("x-ai/grok-4.5");
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).not.toContain(`github:copilot:${model}`);
     expect(resolveRegisteredModelCatalogEntry({ provider: "openai", model: `${model}-pro` })).toBeUndefined();

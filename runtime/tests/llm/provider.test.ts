@@ -609,14 +609,14 @@ describe("createProvider", () => {
 
     expect(
       (provider as unknown as { config: { model: string } }).config.model,
-    ).toBe("gpt-5");
-    expect(readProviderFactoryOptions(provider).model).toBe("gpt-5");
+    ).toBe("gpt-6.2-astra");
+    expect(readProviderFactoryOptions(provider).model).toBe("gpt-6.2-astra");
     await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.2-astra",
     });
-    expect(prepared.model).toBe("gpt-5");
-    expect(readProviderFactoryOptions(prepared.instance).model).toBe("gpt-5");
+    expect(prepared.model).toBe("gpt-6.2-astra");
+    expect(readProviderFactoryOptions(prepared.instance).model).toBe("gpt-6.2-astra");
   });
 
   test("does not combine partial explicit Bedrock credentials with managed vending", () => {
@@ -809,7 +809,7 @@ describe("createProvider", () => {
     expect(provider).toBeInstanceOf(OpenAIProvider);
     expect(
       (provider as unknown as { config: OpenAIProviderConfig }).config.model,
-    ).toBe("gpt-5");
+    ).toBe("gpt-6.2-astra");
   });
 
   test("routes 'anthropic' to AnthropicProvider", () => {

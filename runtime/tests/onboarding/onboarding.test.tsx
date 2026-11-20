@@ -1963,7 +1963,7 @@ describe("account sign-in from the model-access step", () => {
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
     state = (await submitFirstRunOnboardingInput(state, "openai", context)).state;
     expect(detailLinesForStep(state, context)).toEqual([
-      "How should AgenC reach openai / gpt-5?",
+      "How should AgenC reach openai / gpt-6.2-astra?",
       "› OPENAI_API_KEY  paste a key next",
       "  ChatGPT account  sign in to use OpenAI with your plan",
       "  Set up later  AgenC can't answer until you do",
@@ -1976,17 +1976,17 @@ describe("account sign-in from the model-access step", () => {
     const card = detailLinesForStep(state, context);
     expect(card[0]).toBe("Which OpenAI model should AgenC use?");
     expect(card).toContain("✓ Signed in to ChatGPT as paul@example.com.");
-    expect(card).toContain("› gpt-5  default");
+    expect(card).toContain("› gpt-6.2-astra  default");
 
     // Typing narrows the list; Enter picks the highlighted match.
     const narrowed = setFirstRunOnboardingListFilter(state, "luna");
     expect(detailLinesForStep(narrowed, context).filter((line) => /^[› ] gpt/u.test(line)))
-      .toEqual(["› gpt-5.6-luna", "  gpt-6-luna"]);
+      .toEqual(["› gpt-6-luna", "  gpt-5.6-luna"]);
     const picked = await submitFirstRunOnboardingInput(narrowed, "luna", context);
     expect(picked.state).toMatchObject({
       currentStepId: "ready",
       selectedProvider: "openai",
-      selectedModel: "gpt-5.6-luna",
+      selectedModel: "gpt-6-luna",
     });
     expect(detailLinesForStep(picked.state, context)).toContain(
       "Access: ChatGPT sign-in",

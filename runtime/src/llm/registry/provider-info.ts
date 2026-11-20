@@ -14,6 +14,7 @@ import {
   ABLITERATION_DEFAULT_MODEL,
 } from "./abliteration-models.js";
 import { deriveFlatCatalog } from "./model-catalog.js";
+import { OPENAI_DEFAULT_MODEL } from "./openai-reasoning-models.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 import { registerProviderFundsDisplayNames } from "../funds.js";
 
@@ -259,7 +260,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   }),
   openai: providerDefinition({
     name: "OpenAI",
-    defaultModel: "gpt-5",
+    defaultModel: OPENAI_DEFAULT_MODEL,
     baseURL: "https://api.openai.com/v1",
     credentials: apiKeyCredentials(["OPENAI_API_KEY"]),
     baseURLEnvVars: ["OPENAI_BASE_URL", "OPENAI_API_BASE"],
@@ -574,8 +575,8 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
 > = Object.freeze({
   // grok is fully covered by REGISTERED_MODEL_CATALOG: derived directly.
   grok: mergeDerivedProviderModels("grok"),
-  // openai is registry-derived (gpt-5, the provider default, now leads from the
-  // registry via its lowest priority).
+  // openai is registry-derived: GPT-6.2 Astra, the provider default, leads as
+  // the first reasoning row (openai-reasoning-models.ts).
   openai: mergeDerivedProviderModels("openai"),
   // Current lineup verified against the authenticated Models API and
   // platform.claude.com (2026-09-29), followed by older supported choices.

@@ -133,22 +133,22 @@ describe("GPT-6 Sol and GPT-6 Luna", () => {
     expect(resolveSessionReasoningEffort("none", ["low", "medium", "high"], { provider: "grok", model: "grok-4.5" })).toBeUndefined();
   });
 
-  test("appends the rows after Astra so GPT-5.6 Sol still leads and gpt-5 stays the provider default", () => {
+  test("orders the rows best first, so GPT-6.2 Astra, the provider default, leads", () => {
     expect(OPENAI_REASONING_MODELS.map((entry) => entry.model)).toEqual([
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
-      "gpt-6-astra",
       "gpt-6.2-astra",
+      "gpt-6-astra",
+      "gpt-5.6-sol",
       "gpt-6.2-sol",
       "gpt-6.1-sol",
       "gpt-6.1-terra",
       "gpt-6-sol",
+      "gpt-5.6-terra",
       "gpt-6-luna",
+      "gpt-5.6-luna",
     ]);
-    expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.openai).toBe("gpt-5");
-    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.openai[0]).toBe("gpt-5");
-    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.openai).toEqual(expect.arrayContaining(["gpt-6-sol", "gpt-6-luna"]));
+    expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.openai).toBe("gpt-6.2-astra");
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.openai[0]).toBe("gpt-6.2-astra");
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.openai).toEqual(expect.arrayContaining(["gpt-5", "gpt-6-sol", "gpt-6-luna"]));
   });
 
   test.each(GPT_6_SOL_AND_LUNA)("keeps unverified $model variants and other providers without its tiers", ({ model }) => {

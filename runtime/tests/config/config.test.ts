@@ -1623,7 +1623,7 @@ describe("profiles: resolveProfile", () => {
 
     expect(resolveProfile(cfg, "remote")).toMatchObject({
       model_provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.2-astra",
     });
   });
 
@@ -1711,7 +1711,7 @@ describe("env: resolvers", () => {
     const base = mergeConfigs(defaultConfig(), { model_provider: "grok" });
     const out = applyEnvOverrides(base, { AGENC_PROVIDER: "openai" });
     expect(out.model_provider).toBe("openai");
-    expect(out.model).toBe("gpt-5");
+    expect(out.model).toBe("gpt-6.2-astra");
   });
 
   test.each([
@@ -2118,7 +2118,7 @@ describe("ConfigStore", () => {
 
     expect(store.current()).toMatchObject({
       model_provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.2-astra",
     });
   });
 
@@ -2143,7 +2143,7 @@ describe("ConfigStore", () => {
 
     await expect(store.reload()).resolves.toMatchObject({
       model_provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.2-astra",
     });
   });
 

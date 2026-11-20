@@ -65,7 +65,7 @@ describe("session provider/model policy boundary", () => {
       resolveProviderModelSelection(config, CURRENT, {
         model_provider: "openai",
       })
-    ).toThrow(/model 'gpt-5' is not allowed/u);
+    ).toThrow(/model 'gpt-6.2-astra' is not allowed/u);
   });
 
   test("uses collision-safe policy IDs without storing them in session state", () => {

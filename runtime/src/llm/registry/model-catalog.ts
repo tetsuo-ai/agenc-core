@@ -1323,12 +1323,11 @@ const NON_OPENROUTER_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "list",
     },
     {
-      // openai built-in provider default (BUILT_IN_PROVIDER_DEFAULT_MODELS.openai).
-      // Registered here so the default resolves through the single-source
-      // registry instead of falling back to heuristics: "gpt-5" is not a prefix
-      // of "gpt-5.5"/"gpt-5.4"/... (those are longer), so findLongestPrefix
-      // cannot recover it without an explicit entry. Lowest priority so it
-      // leads the openai catalog ordering in deriveFlatCatalog.
+      // GPT-5, the openai built-in provider default until 2026-11-20. It has
+      // its own row instead of a heuristic match: "gpt-5" is not a prefix of
+      // "gpt-5.5"/"gpt-5.4"/... (those are longer), so findLongestPrefix
+      // cannot recover it without an explicit entry. Listed after the GPT-5.2
+      // row; the provider default (GPT-6.2 Astra) leads the openai catalog.
       provider: "openai",
       model: "gpt-5",
       displayName: "GPT-5",
@@ -1349,7 +1348,7 @@ const NON_OPENROUTER_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportedReasoningLevels: OPENAI_GPT5_REASONING_LEVELS,
       defaultReasoningLevel: "medium",
       additionalSpeedTiers: FAST_SPEED_TIER,
-      priority: -1,
+      priority: 11,
       visibility: "list",
     },
     {

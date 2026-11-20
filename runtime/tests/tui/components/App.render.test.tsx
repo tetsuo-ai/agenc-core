@@ -5848,7 +5848,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           expect(session.setPendingProviderSwitch).toHaveBeenCalledTimes(1);
           expect(session.setPendingProviderSwitch).toHaveBeenCalledWith({
             provider: "openai",
-            model: "gpt-5",
+            model: "gpt-6.2-astra",
           });
           expect(readOnboardingState({ agencHome }).completed).toBe(true);
           // No starter message: the first turn is the user's own.
@@ -5929,7 +5929,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             const completeOnboarding = providerProbe.promptSubmits.at(-1);
             expect(completeOnboarding).toBeDefined();
             await expect(completeOnboarding!("", helpers)).rejects.toThrow(
-              "model 'gpt-5' is not allowed by managed availableModels policy",
+              "model 'gpt-6.2-astra' is not allowed by managed availableModels policy",
             );
 
             expect(session.setPendingProviderSwitch).not.toHaveBeenCalled();
