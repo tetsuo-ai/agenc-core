@@ -955,7 +955,8 @@ notice types they do not know.
 A client that sends `schemaVersion: 3` (the daemon advertises
 `transcript.tools.v3` and `transcript.plans.v3`) gets the same answer with
 `schemaVersion: 3` and `turns`: for each visible turn, its tool calls (name,
-the fields that name the call's target, error and duration, never outputs),
+the fields that name the call's target, for `apply_patch` the files its patch
+names, error and duration, never outputs),
 its plan and to-do list, the usage Core recorded when it ended and its
 workspace change summary. Without the field the answer stays schema 2. The
 other timeline capabilities (`turn.failure.v1`, `turn.usage.v1`,
@@ -1868,6 +1869,17 @@ Automatic continuation is limited to a root whose descendant edges are all
 closed with recorded terminal outcomes. Turns with unfinished workers use the
 ordinary bootstrap dangling-call pairing, do not restore descendant sessions,
 and wait for an explicit new turn. Resuming worker turns is follow-up work.
+A prompt that arrives while such a continuation runs replaces it. When the
+continuation's model call is already on the wire, the new turn waits for that
+call to finish, at most 30 seconds, and the continuation then stops without
+using the answer: the call settles in the admission ledger with the usage the
+provider reported, so the session's cost stays known. Cutting it would leave
+the ledger holding the call as `held_unknown`
+(`cancelled_after_dispatch:replaced`), and `costKnown` false from then on. A
+call still out after 30 seconds is cut as before. Every other stop (an
+interrupt, a daemon shutdown, a provider switch) cuts the call at once, also
+while the new turn waits for it, and a sub-agent's turn that inherits the
+`replaced` reason is never held.
 See the canonical
 [resume outcome table](../design/durable-runs-effects-events.md#resume-outcomes).
 

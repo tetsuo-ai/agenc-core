@@ -1,22 +1,80 @@
 import { isTodoPlanMirror } from "./timeline-capabilities.js";
+import { parsePatch } from "../tools/apply-patch/parser.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { SessionTranscriptV2Result } from "./protocol/index.js";
 
 type Turn = NonNullable<SessionTranscriptV2Result["turns"]>[number];
 type Call = Turn["toolCalls"][number];
 const TARGETS = ["command", "cmd", "path", "file_path", "url", "pattern", "query", "description"];
+const DIGEST_VALUE_MAX = 512;
+/** The model-facing name of the patch tool (`APPLY_PATCH_TOOL_NAME`). */
+const APPLY_PATCH = "apply_patch";
+
+/**
+ * The patch an apply_patch call carries, read as the registry hands it to
+ * the tool: the `input` field of a JSON object, or a bare patch or JSON
+ * string mapped onto `input`.
+ */
+function applyPatchText(args: string): string | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(args);
+  } catch {
+    return args;
+  }
+  if (typeof value === "string") return value;
+  const input = typeof value === "object" && value !== null ? (value as { input?: unknown }).input : undefined;
+  return typeof input === "string" ? input : undefined;
+}
+
+/**
+ * An apply_patch call's targets are the files its patch names, on its
+ * `*** Add File:`, `*** Update File:`, `*** Delete File:` and `*** Move to:`
+ * lines, as Core's patch parser reads them. `path` is the file of a patch
+ * with one file section (a move keeps the file it moves); `paths` lists every
+ * file the patch names, one per line, in patch order, without repeats, whole
+ * paths only. A patch the parser refuses has no safe digest.
+ */
+function applyPatchDigest(args: string): Record<string, string> {
+  const patch = applyPatchText(args);
+  if (patch === undefined) return {};
+  let hunks: ReturnType<typeof parsePatch>["hunks"];
+  try {
+    hunks = parsePatch(patch).hunks;
+  } catch {
+    return {};
+  }
+  const digest: Record<string, string> = {};
+  const only = hunks.length === 1 ? hunks[0]!.path : "";
+  if (only.length > 0) digest.path = only.slice(0, DIGEST_VALUE_MAX);
+  const named: string[] = [];
+  for (const hunk of hunks) {
+    for (const path of hunk.kind === "update" && hunk.movePath !== null ? [hunk.path, hunk.movePath] : [hunk.path]) {
+      if (path.length > 0 && !named.includes(path)) named.push(path);
+    }
+  }
+  let paths = "";
+  for (const path of named) {
+    const next = paths.length === 0 ? path : `${paths}\n${path}`;
+    if (next.length > DIGEST_VALUE_MAX) break;
+    paths = next;
+  }
+  if (paths.length > 0) digest.paths = paths;
+  return digest;
+}
 
 /** Target preview only. Never persist content, replacement text or outputs. */
-export function toolInputDigest(args: string): Record<string, string> {
+export function toolInputDigest(args: string, toolName?: string): Record<string, string> {
   const digest: Record<string, string> = {};
   if (args.length > 64 * 1024) return digest;
+  if (toolName === APPLY_PATCH) return applyPatchDigest(args);
   try {
     const value = JSON.parse(args);
     let remaining = 1024;
     for (const key of TARGETS) {
       if (remaining <= 0) break;
       if (typeof value?.[key] !== "string") continue;
-      digest[key] = value[key].slice(0, Math.min(512, remaining));
+      digest[key] = value[key].slice(0, Math.min(DIGEST_VALUE_MAX, remaining));
       remaining -= digest[key]!.length;
     }
   } catch { /* Malformed inputs have no safe digest. */ }
@@ -71,7 +129,7 @@ export function transcriptV3Turns(items: readonly RolloutItem[], boundaryIndex: 
         } catch { /* Invalid tool inputs do not replace the last valid list. */ }
       }
       if (current.toolCalls.length >= 128) { truncated = true; continue; }
-      const call: Call = { callId: msg.payload.callId.slice(0, 256), toolName: msg.payload.toolName.slice(0, 256), inputDigest: toolInputDigest(msg.payload.args) };
+      const call: Call = { callId: msg.payload.callId.slice(0, 256), toolName: msg.payload.toolName.slice(0, 256), inputDigest: toolInputDigest(msg.payload.args, msg.payload.toolName) };
       calls.set(msg.payload.callId, { turn: current, index: current.toolCalls.length });
       (current.toolCalls as Call[]).push(call);
     } else if (msg.type === "tool_call_completed") {

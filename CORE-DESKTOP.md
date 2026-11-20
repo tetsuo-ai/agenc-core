@@ -30,6 +30,9 @@ at `647d4c4a4` (runtime 0.19.38) on 2026-11-19.
   without it). A change to a file a benchmark loads leaves that test red until
   this branch recaptures: see "The core-desktop line" in
   `runtime/benchmarks/fnd/README.md`.
+- `platform-tests` (the full suite in four shards, the FND fresh-clone lane
+  and the platform lanes) runs on every push to this branch, as it does for
+  `main`.
 
 ## History
 

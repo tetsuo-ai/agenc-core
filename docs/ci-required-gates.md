@@ -12,7 +12,9 @@ and `README.md` do not start GitHub Actions. The
 classifier, command plan, and local pitfalls are in
 [Fast `test:fast` checks](#fast-testfast-checks).
 
-`.github/workflows/platform-tests.yml` is manual. It retains the four full-suite
+`.github/workflows/platform-tests.yml` runs on demand and on every push to
+`main` and to `core-desktop`, the branch AgenC Desktop runs
+([CORE-DESKTOP.md](../CORE-DESKTOP.md)). It retains the four full-suite
 shards and the Linux kernel, PowerShell, macOS, and Windows jobs for
 release candidates and changes that depend on those platforms. A normal PR does
 not need a full-suite receipt, a GitHub App check, or a platform-matrix run.
@@ -1018,7 +1020,7 @@ squash-merged commit.
 
 ## Hosted capability lanes
 
-The manual [`platform-tests.yml`](../.github/workflows/platform-tests.yml) has
+The [`platform-tests.yml`](../.github/workflows/platform-tests.yml) workflow has
 `default-suite`: four `ubuntu-24.04` shards that typecheck the runtime and run
 `run-hermetic-vitest.mjs --require-zero-skips --shard=N/4 --maxWorkers=2`.
 That is **not** the Docker hermetic/red-probe path used locally.
