@@ -1,4 +1,5 @@
 import { turnDiffCache } from "../session/turn-diff-cache.js";
+import { clientToolHolds } from "../session/tool-barrier.js";
 import type { SessionTurnDiffParams, SessionTurnDiffResult } from "./protocol/index.js";
 import { hasRuntimeHistoryWrapper, userFacingHistoryText } from "../session/user-facing-history-text.js";
 import { promoteOneShotRun, selectRelaxedOneShot } from "../durability/one-shot-durability.js";
@@ -4098,7 +4099,12 @@ export class AgenCDaemonAgentManager {
    * `session.compact`: the TUI's `/compact` for one session. The runner
    * refuses it with `ACTIVE_TURN` while a turn runs.
    */
-  /** `session.releaseTools`: the held turn of this message may run its tools. */
+  /**
+   * `session.releaseTools`: the held turn of this message may run its tools.
+   * The hold is the daemon's (session/tool-barrier.ts), so a turn resumed into
+   * a new runtime meets its release; the session named must be one this daemon
+   * knows.
+   */
   async releaseSessionTools(params: SessionReleaseToolsParams): Promise<SessionReleaseToolsResult> {
     if (this.#sessionManager === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
@@ -4106,16 +4112,15 @@ export class AgenCDaemonAgentManager {
         "session.releaseTools requires a daemon session manager",
       );
     }
-    if (this.#runner?.releaseAgentTools === undefined) {
+    if (await this.#sessionManager.getSession(params.sessionId) === null) {
       throw new AgenCDaemonAgentLifecycleError(
-        "BACKGROUND_RUNNER_UNAVAILABLE",
-        "session.releaseTools requires a background runner",
+        "AGENT_NOT_FOUND",
+        `AgenC daemon session not found: ${params.sessionId}`,
       );
     }
-    const agentId = await this.#resolveActiveAgentIdForSession(params.sessionId);
     return {
       sessionId: params.sessionId,
-      released: this.#runner.releaseAgentTools(agentId, params.clientMessageId),
+      released: clientToolHolds.release(params.clientMessageId),
     };
   }
 

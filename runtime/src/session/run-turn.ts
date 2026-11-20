@@ -1,6 +1,6 @@
 import { withLiveShellProgress } from "./live-shell-progress.js";
 import { beginWorkspaceChanges, type WorkspaceChangeCheckpoint } from "./workspace-changes.js";
-import { beginToolBarrier, toolHoldsFor } from "./tool-barrier.js";
+import { beginToolBarrier, clientToolHolds } from "./tool-barrier.js";
 import { TurnUsageCollector } from "./turn-usage.js";
 import { leanEditMode, resolveLightRequest } from "./light-request/settings.js";
 import { announceLightRequest } from "./light-request/notice.js";
@@ -2473,7 +2473,7 @@ async function* runTurnKernelScoped(
   // Work the first tool call waits for, while the model request goes out at once.
   const toolBarrier = beginToolBarrier(session);
   signalCleanups.push(() => toolBarrier.end());
-  if (opts.toolHoldId !== undefined) toolBarrier.barrier.add(toolHoldsFor(session).hold(opts.toolHoldId));
+  if (opts.toolHoldId !== undefined) toolBarrier.barrier.add(clientToolHolds.hold(opts.toolHoldId));
   try {
     if (opts.turnChanges !== undefined) {
       // The snapshot only reads the workspace; a tool call is what can change it.

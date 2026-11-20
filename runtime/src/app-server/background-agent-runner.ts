@@ -49,7 +49,7 @@ import {
   userPromptDisplayText,
 } from "../hooks/user-prompt-ingress.js";
 import { hasUserPromptSubmitHooks } from "../hooks/user-prompt-submit.js";
-import { toolHoldsFor } from "../session/tool-barrier.js";
+import { clientToolHolds } from "../session/tool-barrier.js";
 import type { AgentPath } from "../agents/registry.js";
 import type { ManagedThread } from "../agents/thread-manager.js";
 import { ConversationThreadManager, withoutSyntheticProcessKilledAborts } from "../conversation/thread-manager.js";
@@ -2925,7 +2925,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // A configured UserPromptSubmit hook can change the workspace, so a held
     // turn runs it only after the client's restore point exists.
     if (params.toolHoldId !== undefined && hasUserPromptSubmitHooks(active.bootstrap.session)) {
-      await toolHoldsFor(active.bootstrap.session).hold(params.toolHoldId);
+      await clientToolHolds.hold(params.toolHoldId);
     }
     const prepared = await prepareDaemonUserPrompt({
       session: active.bootstrap.session,
@@ -3844,18 +3844,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
    * through that same method so there is one compaction path. It refuses
    * while a turn runs or a prompt waits to start, before touching history.
    */
-  /**
-   * `session.releaseTools`: the held turn of this message may run its tools.
-   * A release that comes before its turn is kept for it (session/tool-barrier.ts).
-   */
-  releaseAgentTools(agentId: string, clientMessageId: string): boolean {
-    const active = this.#active.get(agentId);
-    if (active === undefined || !isRunnableActiveAgent(active)) {
-      throw new Error(`AgenC daemon agent not running: ${agentId}`);
-    }
-    return toolHoldsFor(active.bootstrap.session).release(clientMessageId);
-  }
-
   async compactAgentSession(
     agentId: string,
     params: AgenCBackgroundAgentCompactSessionParams,

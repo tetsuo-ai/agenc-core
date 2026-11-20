@@ -620,8 +620,6 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentPartialCompactParams,
   ): Promise<SessionPartialCompactFromMessageResult>;
-  /** `session.releaseTools`: lets the held turn of this message run its tools. */
-  releaseAgentTools?(agentId: string, clientMessageId: string): boolean;
   /** `session.compact`: the TUI's `/compact` for an idle session. */
   compactAgentSession?(
     agentId: string,

@@ -15,7 +15,7 @@ vi.mock("../../src/session/workspace-changes.js", () => ({
 }));
 
 import { runTurn } from "../../src/session/run-turn.js";
-import { ToolBarrier, ToolHolds, toolHoldsFor } from "../../src/session/tool-barrier.js";
+import { ToolBarrier, ToolHolds, clientToolHolds } from "../../src/session/tool-barrier.js";
 import type { LLMMessage, LLMResponse } from "../../src/llm/types.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
 import { mkCtx, mkProvider, mkSession } from "../fixtures.js";
@@ -38,6 +38,17 @@ describe("client tool holds", () => {
     await expect(holds.hold("m2")).resolves.toBeUndefined();
   });
 
+  it("do not hold again a message already released, as when a prompt hook waited for it before the turn", async () => {
+    const holds = new ToolHolds();
+    const first = holds.hold("m1");
+    holds.release("m1");
+    await first;
+    let again = false;
+    void holds.hold("m1").then(() => { again = true; });
+    await Promise.resolve(); await Promise.resolve();
+    expect(again).toBe(true);
+  });
+
   it("stop holding after the timeout, so a client that never releases cannot stall a turn", async () => {
     vi.useFakeTimers();
     const holds = new ToolHolds({ timeoutMs: 1000 });
@@ -47,6 +58,11 @@ describe("client tool holds", () => {
     expect(held).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     expect(held).toBe(true);
+    // Timed out once, it does not hold the same message for another 30 seconds.
+    let again = false;
+    void holds.hold("m1").then(() => { again = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(again).toBe(true);
   });
 
   it("let an aborted wait go without waiting for the work", async () => {
@@ -93,7 +109,7 @@ describe("a turn's first tool call waits; its model request does not", () => {
     await vi.waitFor(() => expect(requests).toHaveLength(1));
     await new Promise(resolve => setTimeout(resolve, 50));
     expect(probe).not.toHaveBeenCalled();
-    expect(toolHoldsFor(session).release("message-1")).toBe(true);
+    expect(clientToolHolds.release("message-1")).toBe(true);
     expect((await done)?.reason).toBe("completed");
     expect(probe).toHaveBeenCalledOnce();
     expect(requests).toHaveLength(2);
@@ -101,7 +117,7 @@ describe("a turn's first tool call waits; its model request does not", () => {
 
   it("does not wait at all when the release came before the turn", async () => {
     const { session, probe } = turnWithOneTool();
-    toolHoldsFor(session).release("message-2");
+    clientToolHolds.release("message-2");
     expect((await drain(runTurn(session, mkCtx(), "Probe it.", { toolHoldId: "message-2" }) as never))?.reason).toBe("completed");
     expect(probe).toHaveBeenCalledOnce();
   });
