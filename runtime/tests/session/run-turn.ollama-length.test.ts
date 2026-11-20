@@ -68,6 +68,8 @@ describe("native Ollama output truncation", () => {
       outcome: persistent ? "errored" : "completed",
       code: persistent ? 1 : 0,
     })]);
-    if (!persistent) expect(terminals[0]?.message).toBe("Finished after recovery.");
+    // Recovery ran: the reply is the cut part and its continuation, in order,
+    // never the truncated commentary alone.
+    if (!persistent) expect(terminals[0]?.message).toBe("Now I need to modify the tests:Finished after recovery.");
   });
 });

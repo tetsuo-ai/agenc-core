@@ -45,6 +45,7 @@ import {
 } from "./turn-context.js";
 import type { TurnState } from "./turn-state.js";
 import { buildAgenCToolUseContext } from "./agenc-tool-use-context.js";
+import { emitAutoCompactBoundary } from "./auto-compact-boundary.js";
 import {
   excludeFromDurableHistory,
   finitePositive,
@@ -432,6 +433,12 @@ interface RunAutoCompactOptions {
    */
   readonly onDurableHistoryReplaced?: (durableCount: number) => void;
   /**
+   * Called right after the compaction's boundary was reported. The caller
+   * checkpoints the turn, so a turn resumed after a crash does not report
+   * the same compaction a second time.
+   */
+  readonly onCompactionReported?: () => void;
+  /**
    * Receives a final unchanged-history refusal that no compaction tier can
    * overcome (see {@link isStructuralCompactionDecline}) in place of the
    * `auto_compact_failed` warning. The dispatch caller can still shorten the
@@ -760,6 +767,12 @@ async function runAutoCompact(
         }
       }
     }
+    // Report the compaction where it committed, before the model call that
+    // follows it: once per automatic compaction, after its last commit.
+    const committed = (compacted: TurnState): true => {
+      if (emitAutoCompactBoundary(compacted, session)) options.onCompactionReported?.();
+      return true;
+    };
     while (result.wasCompacted && state) {
       await applyCommitted(result);
       offeredCount = state.messages.length;
@@ -776,16 +789,16 @@ async function runAutoCompact(
         !ladderAppliesToReason(reason) ||
         getActiveContextTokenUsage(session, ctx, state) < limit
       ) {
-        return true;
+        return committed(state);
       }
       // Still at the limit after a commit: escalate once more. A decline
       // here is not a failure — the history did shrink; let the loop sample.
       const next = strongerTierThan(tier, policy, state.compactionLadder?.tiersAttempted ?? []);
-      if (next === undefined) return true;
+      if (next === undefined) return committed(state);
       recordTier(next);
       emitDegraded(`tier=${next} attempting: history still above the limit after ${tier}`);
       result = await attempt(next);
-      if (!result.wasCompacted) return true;
+      if (!result.wasCompacted) return committed(state);
     }
     if (result.wasCompacted) return true;
 
@@ -903,7 +916,7 @@ export async function maybeRunPreviousModelInlineCompact(
   ctx: TurnContext,
   _totalUsageTokens: number,
   state?: TurnState,
-  options: Pick<RunAutoCompactOptions, "onDurableHistoryReplaced"> = {},
+  options: Pick<RunAutoCompactOptions, "onDurableHistoryReplaced" | "onCompactionReported"> = {},
 ): Promise<boolean> {
   // A1 fix: there is no models-manager lookup for the previous model's
   // context window yet, so
@@ -1033,7 +1046,7 @@ async function runPreSamplingCompact(
   ctx: TurnContext,
   _querySource: string,
   state?: TurnState,
-  options: Pick<RunAutoCompactOptions, "onAdvisoryRefusal" | "onDurableHistoryReplaced"> = {},
+  options: Pick<RunAutoCompactOptions, "onAdvisoryRefusal" | "onDurableHistoryReplaced" | "onCompactionReported"> = {},
 ): Promise<boolean> {
   const activeContextTokensBefore = getActiveContextTokenUsage(
     session,
