@@ -3,7 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { buildDefaultRegistry } from "../../../src/commands/registry.js";
 import {
   extendCompactionRetentionForOperator,
+  CompactionDeclinedError,
   compactionCannotShrinkDisplay,
+  compactionDeclinedError,
+  declinedCompactionAttemptId,
+  recordDeclinedCompactionAttempt,
   rollbackCompactionForOperator,
 } from "../../../src/services/compact/operator.js";
 import { CompactionCannotReduceError } from "../../../src/services/compact/transaction-types.js";
@@ -22,13 +26,25 @@ function operatorStore() {
 }
 
 describe("compaction operator surface", () => {
-  it("formats only typed no-shrink refusals and preserves attempt diagnostics", () => {
-    const detail = "compaction candidate saves -101 tokens; required 222 and 0.2; history was not changed.\nCompaction attempt ID: attempt-tiny";
+  it("formats only typed no-shrink refusals, in a plain sentence, and keeps the attempt as data", () => {
+    const detail = "compaction candidate saves -101 tokens; required 222 and 0.2; history was not changed.";
     const error = new CompactionCannotReduceError("no_shrink", detail);
-    expect(compactionCannotShrinkDisplay(error)).toBe("Nothing to compact yet. A summary would not reduce this conversation enough; history was not changed.\nCompaction attempt ID: attempt-tiny");
+    recordDeclinedCompactionAttempt(error, "compact-tiny");
+    const plain = "Nothing to compact yet. A summary would not reduce this conversation enough; history was not changed.";
+    expect(compactionCannotShrinkDisplay(error)).toBe(plain);
     expect(error.message).toBe(detail);
+    const declined = compactionDeclinedError(error);
+    expect(declined).toBeInstanceOf(CompactionDeclinedError);
+    expect(declined).toMatchObject({ message: plain, code: "NOTHING_TO_COMPACT", attemptId: "compact-tiny", cause: error });
+    // Found through wrappers too, as a ladder or a turn hands the error on.
+    expect(declinedCompactionAttemptId(new Error("wrapped", { cause: new Error("again", { cause: error }) }))).toBe("compact-tiny");
+    expect(declinedCompactionAttemptId(declined)).toBe("compact-tiny");
+    const unrecorded = compactionDeclinedError(new CompactionCannotReduceError("no_shrink", detail));
+    expect(unrecorded).toMatchObject({ message: plain, attemptId: undefined });
     expect(compactionCannotShrinkDisplay(new Error(detail))).toBeUndefined();
-    expect(compactionCannotShrinkDisplay(new CompactionCannotReduceError("failure_guard", detail))).toBeUndefined();
+    expect(compactionDeclinedError(new Error(detail))).toBeUndefined();
+    expect(compactionDeclinedError(new CompactionCannotReduceError("failure_guard", detail))).toBeUndefined();
+    expect(declinedCompactionAttemptId(new Error(detail))).toBeUndefined();
   });
 
   it("durably authorizes rollback before exposing its projection", () => {

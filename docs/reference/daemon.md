@@ -495,9 +495,17 @@ prints. Nothing changes when the answer is `ok: false`, with a `code` and a
   durable history to compact.
 - `ABORTED`: the request was cancelled (`request.cancel`) before it finished.
 
-A compaction that cannot shrink the conversation fails the request with its
-reason. The method is advertised in `daemon.methods` whenever the daemon's
-runner can compact, whatever protocol version the client negotiated: nothing
+A compaction that cannot shrink the conversation fails the request (here
+and on `session.partialCompactFromMessage`) with JSON-RPC error `-32000`,
+the message `Nothing to compact yet. A summary would not reduce this
+conversation enough; history was not changed.` and `data` `{ code:
+"NOTHING_TO_COMPACT", attemptId }`. `attemptId` names the declined attempt's
+`compaction_failed` record; the sentence never carries it, and the daemon
+log keeps it (`agenc: compaction declined (NOTHING_TO_COMPACT); compaction
+attempt ID: <id>`).
+
+The method is advertised in `daemon.methods` whenever the daemon's runner can
+compact, whatever protocol version the client negotiated: nothing
 the daemon sends asks a client to call it, so a client that does not know it
 never does. A remote browser connection is not offered it.
 

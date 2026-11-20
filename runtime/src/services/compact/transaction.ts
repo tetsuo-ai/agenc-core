@@ -54,6 +54,7 @@ import { buildPrefixCompactionCall, readCompactionQueryPrefix, clearCompactionQu
 import { getCompactionSystemPrompt } from "./prompt.js";
 import { estimateMessagesTokens } from "./_deps/runtime.js";
 import { createCompactionProgress, type CompactionProgressReporter } from "./progress.js";
+import { recordDeclinedCompactionAttempt } from "./operator.js";
 import {
   canonicalizeJson,
   createCompactionSummaryV1,
@@ -801,8 +802,11 @@ async function compactConversationTransactionBody(
     }
     if (error instanceof CompactionCannotReduceError && error.code === "no_shrink") {
       // Publish the attempt only after its durable failure record succeeds.
-      // Preserve the typed rejection and the unchanged source history.
-      error.message += `; history was not changed.\nCompaction attempt ID: ${attemptId}`;
+      // Preserve the typed rejection and the unchanged source history. The
+      // attempt id is data beside the error (operator.ts), not part of the
+      // sentence: clients show this message to people.
+      error.message += "; history was not changed.";
+      recordDeclinedCompactionAttempt(error, attemptId);
     }
     // Reject invalid model output without replacing a byte of source history.
     // Do not turn arbitrary provider, budget, storage, or cancellation errors

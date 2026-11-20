@@ -7,12 +7,27 @@ import {
   compactionFailureDetails,
   describeFailureCause,
 } from "../../../src/services/compact/failure-details.js";
-import { CompactionTransactionError } from "../../../src/services/compact/transaction-types.js";
+import { recordDeclinedCompactionAttempt } from "../../../src/services/compact/operator.js";
+import { CompactionCannotReduceError, CompactionTransactionError } from "../../../src/services/compact/transaction-types.js";
 
 /** The flattened error chain behind an `auto_compact_failed` warning (#2499). */
 describe("compactionFailureDetails", () => {
   const nodeError = (message: string, fields: Record<string, unknown>) =>
     Object.assign(new Error(message), fields);
+
+  it("carries a declined attempt's id, which its message no longer names", () => {
+    const declined = new CompactionCannotReduceError("no_shrink", "compaction candidate saves -101 tokens; history was not changed.");
+    recordDeclinedCompactionAttempt(declined, "compact-declined");
+    expect(compactionFailureDetails(declined)).toEqual({
+      error_name: "CompactionCannotReduceError",
+      error_message: "compaction candidate saves -101 tokens; history was not changed.",
+      error_code: "no_shrink",
+      attempt_id: "compact-declined",
+    });
+    // A wrapper keeps it; an error with no recorded attempt has none.
+    expect(compactionFailureDetails(new Error("ladder declined", { cause: declined }))).toMatchObject({ attempt_id: "compact-declined" });
+    expect(compactionFailureDetails(new CompactionCannotReduceError("no_shrink", "x"))).not.toHaveProperty("attempt_id");
+  });
 
   it("flattens the failure, its cause, and the root cause into scalar fields", () => {
     const root = nodeError("ENOSPC: no space left on device, write", {

@@ -78,6 +78,8 @@ import {
 } from "../permissions/types.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import { AGENC_DAEMON_PROTOCOL_VERSION, JSON_RPC_VERSION } from "./protocol/index.js";
+import { compactionDeclinedError, recordDeclinedCompactionAttempt } from "../services/compact/operator.js";
+import { CompactionCannotReduceError } from "../services/compact/transaction-types.js";
 import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
 import { requestApproval } from "../tools/orchestrator.js";
 import { runToolUse } from "../tools/execution.js";
@@ -10718,6 +10720,50 @@ describe("AgenC delegate background-agent runner", () => {
       await connection.close();
       await dispatcher.close();
       await h.runner.stopAgent("session-compact-rpc", "test_cleanup");
+    }
+  });
+
+  it("[managed-thread] answers a declined compaction on both compaction RPCs in a plain sentence, the attempt id as data", async () => {
+    const h = makeTopLevelRunner({ conversationId: "session-compact-declined", scopedTurnCancellation: true });
+    const attemptId = "compact-0c1d2e3f-4a5b-4c6d-8e7f-901a2b3c4d5e";
+    // What the session throws when a summary would not shrink the history.
+    const cannotReduce = new CompactionCannotReduceError(
+      "no_shrink", "compaction candidate saves -12 tokens; required 64 and 0.2; history was not changed.");
+    recordDeclinedCompactionAttempt(cannotReduce, attemptId);
+    const partialCompactFromMessage = vi.fn(async () => { throw compactionDeclinedError(cannotReduce); });
+    Object.assign(h.session, { partialCompactFromMessage });
+    await h.runner.startAgent({ objective: "passive", deferInitialTurn: true, unattendedAllow: [], unattendedDeny: [] });
+    const sessions = new AgenCDaemonSessionManager();
+    const manager = new AgenCDaemonAgentManager({ runner: h.runner, sessionManager: sessions });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: sessions });
+    const connection = dispatcher.createConnection();
+    await sessions.restoreSession({ sessionId: "declined-client", agentId: "session-compact-declined", status: "waiting", createdAt: "2026-11-20T00:00:00.000Z" });
+    await manager.restoreAgent({ agentId: "session-compact-declined", objective: "passive", startedAt: "2026-11-20T00:00:00.000Z", lastActiveAt: "2026-11-20T00:00:00.000Z", sessionIds: ["declined-client"], runtimeAvailable: true });
+    const daemonLog = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const handlerFaults = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await connection.dispatch({ jsonrpc: "2.0", id: "initialize", method: "initialize", params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION } } });
+      // The manager and the runner hand the session's error on unwrapped.
+      const declined = {
+        code: -32000,
+        message: "Nothing to compact yet. A summary would not reduce this conversation enough; history was not changed.",
+        data: { code: "NOTHING_TO_COMPACT", attemptId },
+      };
+      await expect(connection.dispatch({ jsonrpc: "2.0", id: "compact", method: "session.compact", params: { sessionId: "declined-client" } }))
+        .resolves.toEqual({ jsonrpc: "2.0", id: "compact", error: declined });
+      await expect(connection.dispatch({ jsonrpc: "2.0", id: "partial", method: "session.partialCompactFromMessage", params: { sessionId: "declined-client", messageOrdinal: 0, direction: "from" } }))
+        .resolves.toEqual({ jsonrpc: "2.0", id: "partial", error: declined });
+      expect(partialCompactFromMessage).toHaveBeenCalledTimes(2);
+      // daemon.log keeps the id, once per answer, and logs no handler fault.
+      expect(daemonLog.mock.calls.map((call) => call.join(" ")))
+        .toEqual(Array(2).fill(`agenc: compaction declined (NOTHING_TO_COMPACT); compaction attempt ID: ${attemptId}`));
+      expect(handlerFaults.mock.calls.flat().join("\n")).not.toContain("unexpected RPC handler exception");
+    } finally {
+      daemonLog.mockRestore();
+      handlerFaults.mockRestore();
+      await connection.close();
+      await dispatcher.close();
+      await h.runner.stopAgent("session-compact-declined", "test_cleanup");
     }
   });
 

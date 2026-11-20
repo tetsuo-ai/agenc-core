@@ -89,7 +89,7 @@ import {
 import {
   extendCompactionRetentionForOperator,
   formatCompactionOperatorDisplay,
-  compactionCannotShrinkDisplay,
+  compactionDeclinedError,
   rollbackCompactionForOperator,
 } from "../services/compact/operator.js";
 import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
@@ -4373,8 +4373,8 @@ export class Session {
           "Conversation summarization was cancelled.",
         );
       }
-      const message = compactionCannotShrinkDisplay(error);
-      if (message !== undefined) throw new Error(message, { cause: error });
+      const declined = compactionDeclinedError(error);
+      if (declined !== undefined) throw declined;
       throw error;
     } finally {
       params.signal?.removeEventListener("abort", onCallerAbort);
