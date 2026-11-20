@@ -1953,11 +1953,14 @@ describe("account sign-in from the model-access step", () => {
     const runProviderSignIn = vi
       .fn<(provider: "openai" | "grok") => Promise<{ ok: true; accountLabel: string }>>()
       .mockResolvedValue({ ok: true, accountLabel: "paul@example.com" });
+    // The account's list could not be read: OpenAI's own list is offered.
+    const readChatGptAccountModels = vi.fn(async () => undefined);
     const context = {
       config: defaultConfig(),
       env: {},
       checkLocalProviders: false,
       runProviderSignIn,
+      readChatGptAccountModels,
     };
     let state = createInitialFirstRunOnboardingState(context);
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
@@ -1991,6 +1994,44 @@ describe("account sign-in from the model-access step", () => {
     expect(detailLinesForStep(picked.state, context)).toContain(
       "Access: ChatGPT sign-in",
     );
+  });
+
+  test("a ChatGPT sign-in offers what its account lists and starts on the best of it", async () => {
+    const runProviderSignIn = vi
+      .fn<(provider: "openai" | "grok") => Promise<{ ok: true; accountLabel: string }>>()
+      .mockResolvedValue({ ok: true, accountLabel: "paul@example.com" });
+    // The ChatGPT account signed in to Codex on the owner's PC listed these on
+    // 2026-11-20: no GPT-6.2 Astra.
+    const readChatGptAccountModels = vi.fn(async () => ["gpt-6-luna", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]);
+    const context = {
+      config: defaultConfig(),
+      env: {},
+      checkLocalProviders: false,
+      runProviderSignIn,
+      readChatGptAccountModels,
+    };
+    let state = createInitialFirstRunOnboardingState(context);
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "openai", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "chatgpt", context)).state;
+    expect(readChatGptAccountModels).toHaveBeenCalledTimes(1);
+    expect(state).toMatchObject({ modelAccessInput: "models", selectedModel: "gpt-5.6-sol" });
+    expect(state.modelChoices).toEqual(["gpt-5.6-sol", "gpt-6-luna", "gpt-5.6-luna", "gpt-5.6-terra"]);
+    const card = detailLinesForStep(state, context);
+    expect(card).toContain("✓ Signed in to ChatGPT as paul@example.com.");
+    expect(card).toContain("› gpt-5.6-sol  default");
+    expect(card.join("\n")).not.toContain("gpt-6.2-astra");
+    const done = await submitFirstRunOnboardingInput(state, "", context);
+    expect(done.state).toMatchObject({ currentStepId: "ready", selectedProvider: "openai", selectedModel: "gpt-5.6-sol" });
+
+    // An account that lists GPT-6.2 Astra starts on it.
+    readChatGptAccountModels.mockResolvedValueOnce(["gpt-6-luna", "gpt-6.2-astra"]);
+    let astra = createInitialFirstRunOnboardingState(context);
+    astra = (await submitFirstRunOnboardingInput(astra, "1", context)).state;
+    astra = (await submitFirstRunOnboardingInput(astra, "openai", context)).state;
+    astra = (await submitFirstRunOnboardingInput(astra, "chatgpt", context)).state;
+    expect(astra).toMatchObject({ selectedModel: "gpt-6.2-astra", modelChoices: ["gpt-6.2-astra", "gpt-6-luna"] });
+    expect(detailLinesForStep(astra, context)).toContain("› gpt-6.2-astra  default");
   });
 
   test("ChatGPT sign-in is refused for other providers", async () => {

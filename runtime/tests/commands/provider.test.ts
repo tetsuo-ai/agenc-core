@@ -2,7 +2,22 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// The stored OpenAI sign-in, as the ChatGPT account default reads it. Unset,
+// the real (hermetic) store answers.
+const openAiSignIn = vi.hoisted(() => ({ stored: undefined as unknown }));
+vi.mock("../utils/openAiOauthCredentials.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../utils/openAiOauthCredentials.js")>();
+  return {
+    ...original,
+    readOpenAiOauthCredentials: (home: Parameters<typeof original.readOpenAiOauthCredentials>[0]) =>
+      openAiSignIn.stored === undefined
+        ? original.readOpenAiOauthCredentials(home)
+        : openAiSignIn.stored as ReturnType<typeof original.readOpenAiOauthCredentials>,
+  };
+});
+
 import {
   providerCommand,
   applyProviderSwitch,
@@ -22,6 +37,7 @@ import { RemoteAuthBackend } from "../auth/backends/remote.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import { saveXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
 import { modelCommand } from "./model.js";
+import { clearChatGptAccountModelCache } from "../llm/providers/openai/chatgpt-account-models.js";
 
 const TEST_ENVIRONMENT: EnvSnapshot = Object.freeze({
   AGENC_HOME: "/tmp/agenc-provider-command-test",
@@ -358,6 +374,71 @@ describe("providerCommand", () => {
       }
     ).pendingProviderSwitch;
     expect(pending).toEqual({ provider: "openai", model: "gpt-5" });
+  });
+
+  describe("with a ChatGPT sign-in", () => {
+    const SIGNED_IN = { authMode: "chatgpt", accessToken: "access-1", accountId: "acct-1" };
+    const listing = (...slugs: string[]) =>
+      new Response(JSON.stringify({ models: slugs.map((slug) => ({ slug, visibility: "list" })) }));
+    const pendingOf = (session: Session) =>
+      (session as unknown as { pendingProviderSwitch: unknown }).pendingProviderSwitch;
+    afterEach(() => {
+      openAiSignIn.stored = undefined;
+      clearChatGptAccountModelCache();
+      vi.unstubAllGlobals();
+    });
+
+    it("switches to the best model the account lists when it does not offer GPT-6.2 Astra", async () => {
+      openAiSignIn.stored = SIGNED_IN;
+      // The ChatGPT account on the owner's PC listed these on 2026-11-20.
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        listing("gpt-6-luna", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"));
+      vi.stubGlobal("fetch", fetchImpl);
+      const session = stubSession({ provider: "grok", model: "grok-4" });
+      await providerCommand.execute(mkctx(session, "openai"));
+      expect(pendingOf(session)).toEqual({ provider: "openai", model: "gpt-5.6-sol" });
+      expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("https://chatgpt.com/backend-api/codex/models?client_version=1.0.0");
+    });
+
+    it("switches to GPT-6.2 Astra when the account lists it", async () => {
+      openAiSignIn.stored = SIGNED_IN;
+      vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(listing("gpt-6-luna", "gpt-6.2-astra")));
+      const session = stubSession({ provider: "grok", model: "grok-4" });
+      await providerCommand.execute(mkctx(session, "openai"));
+      expect(pendingOf(session)).toEqual({ provider: "openai", model: "gpt-6.2-astra" });
+    });
+
+    it("keeps OpenAI's default without a readable list, and a configured or typed model always", async () => {
+      openAiSignIn.stored = SIGNED_IN;
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response("", { status: 503 }));
+      vi.stubGlobal("fetch", fetchImpl);
+      const unreadable = stubSession({ provider: "grok", model: "grok-4" });
+      await providerCommand.execute(mkctx(unreadable, "openai"));
+      expect(pendingOf(unreadable)).toEqual({ provider: "openai", model: "gpt-6.2-astra" });
+      fetchImpl.mockClear();
+      const configured = stubSession({ provider: "grok", model: "grok-4", configModelByProvider: { openai: "gpt-6-luna" } });
+      await providerCommand.execute(mkctx(configured, "openai"));
+      expect(pendingOf(configured)).toEqual({ provider: "openai", model: "gpt-6-luna" });
+      const typed = stubSession({ provider: "grok", model: "grok-4" });
+      await providerCommand.execute(mkctx(typed, "openai gpt-6-luna"));
+      expect(pendingOf(typed)).toEqual({ provider: "openai", model: "gpt-6-luna" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it("is not asked with an API key or the api-key auth setting", async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(listing("gpt-6-luna"));
+      vi.stubGlobal("fetch", fetchImpl);
+      openAiSignIn.stored = SIGNED_IN;
+      const apiKeyMode = stubSession({ provider: "grok", model: "grok-4",
+        environment: Object.freeze({ ...TEST_ENVIRONMENT, OPENAI_AUTH_MODE: "api-key" }) });
+      await providerCommand.execute(mkctx(apiKeyMode, "openai"));
+      expect(pendingOf(apiKeyMode)).toEqual({ provider: "openai", model: "gpt-6.2-astra" });
+      openAiSignIn.stored = { authMode: "apiKey", apiKey: "sk-exchanged" };
+      const exchanged = stubSession({ provider: "grok", model: "grok-4" });
+      await providerCommand.execute(mkctx(exchanged, "openai"));
+      expect(pendingOf(exchanged)).toEqual({ provider: "openai", model: "gpt-6.2-astra" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
   });
 
   it("prefers configured provider defaults when available", async () => {
