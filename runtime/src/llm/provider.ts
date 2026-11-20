@@ -5,6 +5,7 @@
  */
 
 import { observeEndpointMetadataFailures } from "./endpoint-metadata-cache.js";
+import { refuseRetiredModelRequests } from "./retired-model-guard.js";
 
 import { LLMMissingCredentialsError } from "./errors.js";
 
@@ -366,7 +367,12 @@ function markFactoryProvider<T extends LLMProvider>(
     configurable: false,
     writable: false,
   });
-  return observeEndpointMetadataFailures(provider, state.provider);
+  return refuseRetiredModelRequests(
+    observeEndpointMetadataFailures(provider, state.provider),
+    state.provider,
+    state.options.model,
+    state.options.baseURL,
+  );
 }
 
 /** Preserve canonical factory identity when wrapping a provider object. */

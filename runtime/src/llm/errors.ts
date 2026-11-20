@@ -235,6 +235,19 @@ export class LLMModelUnavailableError extends LLMProviderError {
   }
 }
 
+/**
+ * The provider has retired this model by the bundled catalog's date, so the
+ * request was refused before anything was sent (llm/retired-model-guard.ts).
+ * The message is the notice selection gives, nothing added.
+ */
+export class LLMModelRetiredError extends LLMProviderError {
+  constructor(providerName: string, readonly model: string, notice: string) {
+    super(providerName, notice);
+    this.name = "LLMModelRetiredError";
+    this.message = notice;
+  }
+}
+
 /** An authenticated AgenC response bound to this attempt proves no dispatch. */
 export class LLMManagedAdmissionError extends LLMProviderError {
   constructor(readonly reason: "capacity" | "insufficient_credits" | "credits_unavailable" = "capacity") {

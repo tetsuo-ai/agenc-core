@@ -3,7 +3,7 @@ import { createProvider, readProviderIdentity } from "../../../src/llm/provider.
 import { resolveProviderCredentialAuthority } from "../../../src/llm/provider-options.js";
 import { resolveProviderCapabilityEntry } from "../../../src/llm/capabilities.js";
 import { resolveRegisteredModelCatalogEntry } from "../../../src/llm/registry/model-catalog.js";
-import { OLLAMA_CLOUD_MODELS } from "../../../src/llm/registry/ollama-cloud-models.js";
+import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_RETIRED_ON } from "../../../src/llm/registry/ollama-cloud-models.js";
 import {
  clearPublishedModelCatalogs,
  publishedModelDetailRecordedAt,
@@ -50,6 +50,12 @@ describe("direct Ollama Cloud provider",()=>{
   expect(hints.outputTokensCeiling).toBeUndefined();expect(hints.requiresGrammarSafeToolSchemas).toBe(false);
   const fetchImpl=vi.fn<typeof fetch>().mockImplementation(async()=>reply());
   const provider=createProvider("ollama-cloud",{model:entry.model,apiKey:"fixture-key",tools:[tool],extra:{fetchImpl}});
+  if(Object.hasOwn(OLLAMA_CLOUD_RETIRED_ON,entry.model)){
+   // Ollama retired it: the row stays for saved choices, and no request is sent.
+   await expect(provider.chat([{role:"user",content:"hi"}])).rejects.toThrow(`Ollama Cloud retired '${entry.model}' on ${OLLAMA_CLOUD_RETIRED_ON[entry.model]}. Pick another model.`);
+   expect(fetchImpl).not.toHaveBeenCalled();
+   return;
+  }
   for(const effort of entry.efforts){
    await provider.chat([{role:"user",content:"hi"}],{reasoningEffort:effort});
    const request=body(fetchImpl,fetchImpl.mock.calls.length-1);

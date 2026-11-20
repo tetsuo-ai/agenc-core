@@ -1067,7 +1067,8 @@ function shouldQueryLiveEndpoint(
   );
 }
 
-function hasCustomProviderBaseUrl(
+/** Whether `baseUrl` names an endpoint other than the provider's built-in one. */
+export function hasCustomProviderBaseUrl(
   provider: string,
   baseUrl: string | undefined,
 ): boolean {

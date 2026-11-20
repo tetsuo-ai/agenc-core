@@ -16,6 +16,7 @@ import {
   LLMContextWindowExceededError,
   LLMInvalidResponseError,
   LLMModelLoadError,
+  LLMModelRetiredError,
   LLMRequestRebuiltError,
   LLMStreamTruncatedError,
   LLMStreamRetryDeniedError,
@@ -462,7 +463,8 @@ function isExplicitNonTransientProviderError(err: unknown): boolean {
     err instanceof LLMCaptivePortalError ||
     err instanceof LLMCertificateError ||
     err instanceof LLMInvalidResponseError ||
-    err instanceof LLMModelLoadError
+    err instanceof LLMModelLoadError ||
+    err instanceof LLMModelRetiredError
   );
 }
 
