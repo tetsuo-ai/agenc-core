@@ -86,7 +86,6 @@ interface AgentRunRow {
 
 interface LocatedRun {
   readonly paths: StateDatabasePaths;
-  readonly run?: AgentRunRow;
   readonly admission?: {
     readonly paths: StateDatabasePaths;
     readonly summary: RunStatusResult["admission"];
@@ -239,7 +238,7 @@ export class AgenCDaemonRunInspectionService {
   result(params: RunResultParams): RunResultResult {
     const runId = normalizeRunId(params.runId, "run.result");
     return this.#inspect(runId, (paths) => refreshRunJournalProjection(paths, runId), (db, located) => {
-      const run = readAgentRun(db, runId) ?? located.run;
+      const run = readAgentRun(db, runId);
       const durableTerminal = readCurrentTerminalResult(db, runId);
       const status = buildRunStatus(db, located, runId);
       if (
@@ -433,9 +432,7 @@ export class AgenCDaemonRunInspectionService {
         const run = readAgentRun(db, runId);
         const canonical = hasCanonicalRunState(db, runId);
         const hasAdmission = hasAdmissionState(db, runId);
-        return run !== undefined || hasAdmission || canonical
-          ? { paths, canonical, hasAdmission, ...(run !== undefined ? { run } : {}) }
-          : undefined;
+        return run !== undefined || hasAdmission || canonical ? { paths, canonical, hasAdmission } : undefined;
       });
       if (match !== undefined) matches.push(match);
     }
@@ -881,7 +878,9 @@ function buildRunStatus(
   runId: string,
 ): RunStatusResult {
   const admission = located.admission?.summary ?? admissionSummary(db, runId);
-  const run = readAgentRun(db, runId) ?? located.run;
+  // The run row of the snapshot; the one found while locating the run was
+  // read before it.
+  const run = readAgentRun(db, runId);
   const currentLifecycleEpoch = readCurrentLifecycleEpoch(db, runId);
   const durableTerminal = readCurrentTerminalResult(db, runId);
   const workflow = workflowStatusProjection(db, runId, durableTerminal);

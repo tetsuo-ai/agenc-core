@@ -25,6 +25,7 @@ import { RolloutStore } from "../../src/session/rollout-store.js";
 import { upsertAgentRun } from "../../src/state/agent-runs.js";
 import { discoverStateDatabasePaths } from "../../src/state/database-paths.js";
 import * as sqliteEngine from "../../src/state/sqlite-engine.js";
+import * as journalRecovery from "../../src/state/startup-run-journal-recovery.js";
 import { openStateDatabasePaths, openStateDatabases, type StateDatabasePaths } from "../../src/state/sqlite-driver.js";
 import { recoverCanonicalRunJournalForRun } from "../../src/state/startup-run-journal-recovery.js";
 import { VERSION } from "../../src/version.js";
@@ -202,6 +203,30 @@ describe("a change between the proof and the read", () => {
     expect(status).toMatchObject({ status: "completed", terminal: true, durableRun: { objective: OBJECTIVE },
       admission: { reservationCount: 2, actualTokens: 2 * 42 } });
     expectRefusedAfterwards();
+  });
+
+  it("reads the daemon's run row from the snapshot, not from the lookup before it", () => {
+    // The run row goes (as terminal-run retention prunes it) after run
+    // inspection found the run and before it opened its snapshot.
+    const refresh = journalRecovery.recoverCanonicalRunJournalForRun;
+    vi.spyOn(journalRecovery, "recoverCanonicalRunJournalForRun").mockImplementation((driver, runId, options) => {
+      const result = refresh(driver, runId, options);
+      driver.state.prepare("DELETE FROM agent_runs WHERE id = ?").run(RUN_ID);
+      return result;
+    });
+    const status = inspection().status({ runId: RUN_ID });
+    expect(status).toMatchObject({ status: "completed", terminal: true, statusSource: "run_terminal_result" });
+    expect(status.durableRun).toBeUndefined();
+    vi.restoreAllMocks();
+    recordRun(OBJECTIVE);
+    vi.spyOn(journalRecovery, "recoverCanonicalRunJournalForRun").mockImplementation((driver, runId, options) => {
+      const result = refresh(driver, runId, options);
+      driver.state.prepare("DELETE FROM agent_runs WHERE id = ?").run(RUN_ID);
+      return result;
+    });
+    const result = inspection().result({ runId: RUN_ID });
+    expect(result).toMatchObject({ status: "completed", terminal: true, output: { available: true, finalMessage: "done" } });
+    expect(result.durableRun).toBeUndefined();
   });
 
   it("does not reach run.result", () => {
