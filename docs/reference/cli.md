@@ -654,7 +654,9 @@ while `source.admissionProjectDir` and `source.admissionLastSequence` identify
 the accounting database and the latest admission event for the run subtree.
 The admission sequence is not a replay cursor. Evidence from separate databases
 is marked partial rather than claiming a single atomic snapshot. Conflicting
-owners still fail with `RUN_ID_AMBIGUOUS`; changing cwd does not select an owner.
+owners still fail with `RUN_ID_AMBIGUOUS`, and the message says why (the error's
+`reason`, listed in [daemon.md](daemon.md)); changing cwd does not select an
+owner.
 
 ---
 

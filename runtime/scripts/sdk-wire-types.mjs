@@ -14,6 +14,8 @@ const PUBLIC_WIRE_ROOTS = [
   "AgenCDaemonErrorResponse",
   // The SDK retains an explicit compatibility adapter for old admission logs.
   "RunAdmissionJournalEvent",
+  // Error data is untyped on the envelope; run inspection declares its own.
+  "RunInspectionErrorData",
 ];
 
 /** Copy the public declaration closure without bundling runtime imports. */

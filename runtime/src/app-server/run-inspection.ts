@@ -14,6 +14,7 @@ import type {
   RunEvidenceBundle,
   RunEvidenceParams,
   RunEvidenceResult,
+  RunIdAmbiguousReason,
   RunReplayParams,
   RunReplayResult,
   RunResultParams,
@@ -40,6 +41,7 @@ import {
   openStateDatabasePaths,
   type StateDatabasePaths,
 } from "../state/sqlite-driver.js";
+import { countRunJournalHomes } from "../state/split-run.js";
 import { recoverCanonicalRunJournalForRun } from "../state/startup-run-journal-recovery.js";
 import { buildCanonicalRunReplay } from "./run-journal-replay.js";
 import { readWorkflowStepEvidence } from "./workflow/steps.js";
@@ -420,24 +422,41 @@ export class AgenCDaemonRunInspectionService {
     }
     const canonicalMatches = matches.filter((match) => match.canonical);
     if (canonicalMatches.length === 0 && matches.length === 1) return matches[0]!;
-    if (canonicalMatches.length !== 1) throw ambiguousRunOwner(runId);
+    if (canonicalMatches.length !== 1) {
+      const homes = journalHomes(canonicalMatches, runId);
+      throw ambiguousRunOwner(runId, homes === undefined ? undefined : homes > 1 ? "duplicate_run_id" : "project_split");
+    }
     const canonical = canonicalMatches[0]!;
     this.#refreshStatusProjection(canonical.paths, runId, observedStop);
     const authority = withReadonlyStateDatabase(canonical.paths, (db) => readRunAdmissionAuthority(db, runId));
-    if (matches.length === 1 && authority.owner === undefined) return canonical;
+    // The session's own compaction attempts are admitted where the session
+    // is: each is proven against the admission journal of the run.
+    const proveCompactions = (admissionPaths: StateDatabasePaths): void =>
+      proveCompactionAdmissions([admissionPaths], authority.compactions, runId);
+    if (matches.length === 1 && authority.owner === undefined) {
+      proveCompactions(canonical.paths);
+      return canonical;
+    }
     const admissionMatches = matches.filter((match) => match.hasAdmission);
     const declaredOwners = authority.owner === undefined ? [] : discovered.filter((paths) =>
       paths.projectDir === authority.owner?.workspaceId || withReadonlyStateDatabase(paths, (db) =>
         hasDeclaredAdmissionWorkspace(db, authority.owner!, runId),
       ),
     );
-    if (declaredOwners.length > 1) throw ambiguousRunOwner(runId);
+    if (declaredOwners.length > 1) throw ambiguousRunOwner(runId, "admission_owner_unproved");
     const declaredOwnerPaths = declaredOwners[0];
     const owner: LocatedRun | undefined = authority.owner === undefined
       ? admissionMatches.length === 1 ? admissionMatches[0] : undefined
       : declaredOwnerPaths === undefined ? undefined : { paths: declaredOwnerPaths };
-    if (owner === undefined || !authority.identitiesValid) throw ambiguousRunOwner(runId);
-    if (matches.some((match) => match.paths.stateDbPath !== canonical.paths.stateDbPath && match.paths.stateDbPath !== owner.paths.stateDbPath)) throw ambiguousRunOwner(runId);
+    // Rows of the run in another database, and no admission records anywhere
+    // to name an owner: the records are split across databases.
+    if (owner === undefined && authority.owner === undefined && admissionMatches.length === 0) {
+      throw ambiguousRunOwner(runId, "project_split");
+    }
+    if (owner === undefined || !authority.identitiesValid) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+    if (matches.some((match) => match.paths.stateDbPath !== canonical.paths.stateDbPath && match.paths.stateDbPath !== owner.paths.stateDbPath)) {
+      throw ambiguousRunOwner(runId, "project_split");
+    }
     const admission = withReadonlyStateDatabase(owner.paths, (db) => db.transaction(() => {
       verifyRunAdmissionAuthority(db, authority, runId);
       const runIds = collectRunTreeIds(db, runId);
@@ -448,6 +467,7 @@ export class AgenCDaemonRunInspectionService {
         : 0;
       return { paths: owner.paths, summary: admissionSummary(db, runId), lastSequence };
     })());
+    proveCompactions(owner.paths);
     return owner.paths.stateDbPath === canonical.paths.stateDbPath ? canonical : { ...canonical, admission };
   }
 }
@@ -455,13 +475,115 @@ export class AgenCDaemonRunInspectionService {
 interface RunAdmissionAuthority {
   readonly identitiesValid: boolean;
   readonly owner?: { readonly workspaceId: string; readonly runId: string; readonly parentRunId?: string };
+  /** The run's own admission events in its bound rollout. */
   readonly events: readonly JsonObject[];
+  /**
+   * Admission events of the session's own compaction attempts in its bound
+   * rollout. They are never the run's own events: they prove no owner, and
+   * each must be proven against an admission journal on its own.
+   */
+  readonly compactions: readonly JsonObject[];
 }
 
-function ambiguousRunOwner(runId: string): AgenCDaemonRunInspectionError {
+/**
+ * A compaction attempt is admitted under its own run id, `compact-<uuid>`,
+ * as a child of the session's run, one step per summarizer call:
+ * `compact:<attempt run id>:<call>` (services/compact/transaction.ts). Its
+ * admission events are written into the session's rollout.
+ */
+const COMPACTION_ATTEMPT_RUN_ID = /^compact-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const COMPACTION_ATTEMPT_CALL = /^[1-9][0-9]{0,8}$/u;
+
+function isCompactionAttemptEvent(event: JsonObject): boolean {
+  const { runId, stepId } = event;
+  if (typeof runId !== "string" || typeof stepId !== "string" || !COMPACTION_ATTEMPT_RUN_ID.test(runId)) return false;
+  const prefix = `compact:${runId}:`;
+  return stepId.startsWith(prefix) && COMPACTION_ATTEMPT_CALL.test(stepId.slice(prefix.length));
+}
+
+interface CompactionAdmissionJobRow {
+  readonly admission_run_id: string | null;
+  readonly admission_step_id: string | null;
+  readonly admission_parent_run_id: string | null;
+  readonly admission_session_id: string | null;
+}
+
+/**
+ * Prove each compaction admission event of the session's rollout against an
+ * admission journal: exactly one of the given databases holds its journal
+ * row, the row is the event, and the row's admission job is that attempt's
+ * step, a child of this run in this session. Anything else refuses.
+ */
+function proveCompactionAdmissions(
+  journals: readonly StateDatabasePaths[],
+  events: readonly JsonObject[],
+  runId: string,
+): void {
+  if (events.length === 0) return;
+  const unique = journals.filter((paths, index) =>
+    journals.findIndex((other) => other.stateDbPath === paths.stateDbPath) === index);
+  const proven = new Map<string, number>();
+  for (const paths of unique) {
+    withReadonlyStateDatabase(paths, (db) => {
+      if (!tableExists(db, "execution_admission_journal")) return;
+      const jobsReadable = tableExists(db, "agent_jobs") &&
+        ["admission_run_id", "admission_step_id", "admission_parent_run_id", "admission_session_id"]
+          .every((column) => columnExists(db, "agent_jobs", column));
+      const journalRow = db.prepare<[string], AdmissionJournalRow & { readonly job_id: string | null }>(
+        "SELECT * FROM execution_admission_journal WHERE event_id = ?",
+      );
+      const jobRow = db.prepare<[string], CompactionAdmissionJobRow>(
+        `SELECT admission_run_id, admission_step_id, admission_parent_run_id, admission_session_id
+         FROM agent_jobs WHERE id = ?`,
+      );
+      for (const event of events) {
+        const eventId = String(event.eventId);
+        const row = journalRow.get(eventId);
+        if (row === undefined) continue;
+        if (row.run_id !== event.runId || row.step_id !== event.stepId) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+        const { category: ignoredCategory, ...admissionEvent } = legacyJournalEventFromRow(row);
+        if (canonicalJson(admissionEvent) !== canonicalJson(event)) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+        const job = jobsReadable && row.job_id !== null ? jobRow.get(row.job_id) : undefined;
+        if (job === undefined || job.admission_run_id !== row.run_id || job.admission_step_id !== row.step_id ||
+            job.admission_parent_run_id !== runId || job.admission_session_id !== runId) {
+          throw ambiguousRunOwner(runId, "admission_owner_unproved");
+        }
+        proven.set(eventId, (proven.get(eventId) ?? 0) + 1);
+      }
+    });
+  }
+  if (events.some((event) => proven.get(String(event.eventId)) !== 1)) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+}
+
+/**
+ * How many databases hold their own journal of the run, to tell two chats
+ * with one id from a split; undefined when that cannot be read. The reason is
+ * a best effort and the refusal is not.
+ */
+function journalHomes(canonicalMatches: readonly { readonly paths: StateDatabasePaths }[], runId: string): number | undefined {
+  try {
+    return countRunJournalHomes(canonicalMatches, runId);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The most admission records of a run's rollout that one read checks. */
+const MAX_RUN_ADMISSION_RECORDS = 100_000;
+
+const AMBIGUOUS_RUN_ID_REASONS: Readonly<Record<RunIdAmbiguousReason, string>> = {
+  project_split: "its records are split across project databases",
+  duplicate_run_id: "more than one project database holds a journal of this run id",
+  admission_owner_unproved: "an admission owner or admission record of its journal is not proven",
+  admission_record_limit: `its rollout holds more than ${MAX_RUN_ADMISSION_RECORDS} admission records`,
+};
+
+/** Without a reason when it could not be worked out: a client then words it as an older daemon's refusal. */
+function ambiguousRunOwner(runId: string, reason: RunIdAmbiguousReason | undefined): AgenCDaemonRunInspectionError {
   return new AgenCDaemonRunInspectionError(
     "RUN_ID_AMBIGUOUS",
-    `run id ${runId} has conflicting or unproved journal/admission owners`,
+    `run id ${runId} has conflicting or unproved journal/admission owners${reason === undefined ? "" : `: ${AMBIGUOUS_RUN_ID_REASONS[reason]}`}`,
+    reason,
   );
 }
 
@@ -471,7 +593,7 @@ function isRunAuthorityObject(value: JsonValue | undefined): value is JsonObject
 
 function readRunAdmissionAuthority(db: BetterSqlite3.Database, runId: string): RunAdmissionAuthority {
   if (!tableExists(db, "run_journal_bindings") || !tableExists(db, "thread_rollout_items")) {
-    return { identitiesValid: false, events: [] };
+    return { identitiesValid: false, events: [], compactions: [] };
   }
   const bindings = db.prepare<[string], { child_run_id: string; session_id: string }>(
     "SELECT child_run_id, session_id FROM run_journal_bindings WHERE run_id = ? LIMIT 33",
@@ -484,51 +606,54 @@ function readRunAdmissionAuthority(db: BetterSqlite3.Database, runId: string): R
      WHERE source_path IN (SELECT source_path FROM run_journal_bindings WHERE run_id = ?)
        AND (item_type = 'session_meta' OR
          (item_type = 'event_msg' AND json_extract(payload_json, '$.msg.type') = 'execution_admission'))
-     ORDER BY source_path, line_number LIMIT 100001`,
+     ORDER BY source_path, line_number LIMIT ${MAX_RUN_ADMISSION_RECORDS + 1}`,
   ).all(runId);
-  if (rows.length > 100000) throw ambiguousRunOwner(runId);
+  if (rows.length > MAX_RUN_ADMISSION_RECORDS) throw ambiguousRunOwner(runId, "admission_record_limit");
   const events: JsonObject[] = [];
+  const compactions: JsonObject[] = [];
   for (const row of rows) {
     const payload = parseJsonObject(row.payload_json);
     if (row.item_type === "session_meta") {
-      if (payload.sessionId !== runId) throw ambiguousRunOwner(runId);
+      if (payload.sessionId !== runId) throw ambiguousRunOwner(runId, "admission_owner_unproved");
       if (payload.admissionOwner === undefined) continue;
       const candidate = payload.admissionOwner;
       if (!isRunAuthorityObject(candidate) ||
           candidate.runId !== runId || typeof candidate.workspaceId !== "string" || candidate.workspaceId.length === 0 ||
           (candidate.parentRunId !== undefined && (typeof candidate.parentRunId !== "string" || candidate.parentRunId.length === 0 || candidate.parentRunId === runId))) {
-        throw ambiguousRunOwner(runId);
+        throw ambiguousRunOwner(runId, "admission_owner_unproved");
       }
       const current = { workspaceId: candidate.workspaceId, runId, ...(typeof candidate.parentRunId === "string" ? { parentRunId: candidate.parentRunId } : {}) };
-      if (owner !== undefined && canonicalJson(owner) !== canonicalJson(current)) throw ambiguousRunOwner(runId);
+      if (owner !== undefined && canonicalJson(owner) !== canonicalJson(current)) throw ambiguousRunOwner(runId, "admission_owner_unproved");
       owner = current;
     } else {
       const message = payload.msg;
       const event = isRunAuthorityObject(message) ? message.payload : undefined;
-      if (!isRunAuthorityObject(event) || event.runId !== runId ||
-          typeof event.eventId !== "string" || event.eventId !== payload.eventId) throw ambiguousRunOwner(runId);
-      events.push(event);
+      if (!isRunAuthorityObject(event) ||
+          typeof event.eventId !== "string" || event.eventId !== payload.eventId) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+      if (event.runId === runId) events.push(event);
+      else if (isCompactionAttemptEvent(event)) compactions.push(event);
+      else throw ambiguousRunOwner(runId, "admission_owner_unproved");
     }
   }
-  return { identitiesValid, ...(owner !== undefined ? { owner } : {}), events };
+  return { identitiesValid, ...(owner !== undefined ? { owner } : {}), events, compactions };
 }
 
 function verifyRunAdmissionAuthority(db: BetterSqlite3.Database, authority: RunAdmissionAuthority, runId: string): void {
-  if (authority.owner === undefined && authority.events.length === 0) throw ambiguousRunOwner(runId);
-  if (authority.events.length > 0 && !tableExists(db, "execution_admission_journal")) throw ambiguousRunOwner(runId);
+  if (authority.owner === undefined && authority.events.length === 0) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+  if (authority.events.length > 0 && !tableExists(db, "execution_admission_journal")) throw ambiguousRunOwner(runId, "admission_owner_unproved");
   for (const event of authority.events) {
     const row = db.prepare<[string], AdmissionJournalRow>(
       "SELECT * FROM execution_admission_journal WHERE event_id = ?",
     ).get(String(event.eventId));
-    if (row === undefined || row.run_id !== runId) throw ambiguousRunOwner(runId);
+    if (row === undefined || row.run_id !== runId) throw ambiguousRunOwner(runId, "admission_owner_unproved");
     const { category: ignoredCategory, ...admissionEvent } = legacyJournalEventFromRow(row);
-    if (canonicalJson(admissionEvent) !== canonicalJson(event)) throw ambiguousRunOwner(runId);
+    if (canonicalJson(admissionEvent) !== canonicalJson(event)) throw ambiguousRunOwner(runId, "admission_owner_unproved");
   }
   if (authority.owner?.parentRunId !== undefined && tableExists(db, "agent_jobs") && columnExists(db, "agent_jobs", "admission_parent_run_id")) {
     const parents = db.prepare<[string], { parent_run_id: string | null }>(
       "SELECT DISTINCT admission_parent_run_id AS parent_run_id FROM agent_jobs WHERE admission_run_id = ?",
     ).all(runId);
-    if (parents.some((parent) => parent.parent_run_id !== authority.owner?.parentRunId)) throw ambiguousRunOwner(runId);
+    if (parents.some((parent) => parent.parent_run_id !== authority.owner?.parentRunId)) throw ambiguousRunOwner(runId, "admission_owner_unproved");
   }
 }
 

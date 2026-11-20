@@ -419,6 +419,15 @@ export type RunEvidenceBundle = Wire.RunEvidenceBundle;
 
 export type RunDurableRecord = Wire.RunDurableRecord;
 
+/** `data.code` of a failed run inspection call. */
+export type RunInspectionErrorCode = Wire.RunInspectionErrorCode;
+
+/** Why run inspection answered `RUN_ID_AMBIGUOUS` (`data.reason`); absent from older daemons. */
+export type RunIdAmbiguousReason = Wire.RunIdAmbiguousReason;
+
+/** The error `data` of a failed run inspection call (`AgencRpcError.data`). */
+export type RunInspectionErrorData = Wire.RunInspectionErrorData;
+
 export type RunStateSource = Wire.RunStateSource;
 
 export type RunAdmissionSourceAvailability =
