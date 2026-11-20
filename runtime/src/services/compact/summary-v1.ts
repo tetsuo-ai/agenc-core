@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { types as utilTypes } from "node:util";
 
+import { redactDurableSecrets } from "../../session/provider-replay-redaction.js";
+
 import {
   COMPACTION_SUMMARY_DIGEST_DOMAIN,
   COMPACTION_SUMMARY_KIND,
@@ -360,14 +362,44 @@ export function createCompactionSummaryV1(
     policy_digest: input.policyDigest,
     accounting_ref: input.accountingRef,
     source_refs: input.sourceRefs,
-    body: input.body,
+    body: storedCompactionBody(input.body, input.sourceRefs),
   } as const;
+  // Every later read recomputes this digest from the redacted rollout copy.
+  // A preimage the redactor would still change could never be read back.
+  if (
+    canonicalizeJson(redactDurableSecrets(withoutDigest, "ordinary")) !==
+      canonicalizeJson(withoutDigest)
+  ) {
+    throw invalid("compaction summary would not be stored as it is digested");
+  }
   return {
     ...withoutDigest,
     summary_sha256: sha256Hex(
       `${COMPACTION_SUMMARY_DIGEST_DOMAIN}${canonicalizeJson(withoutDigest)}`,
     ),
   };
+}
+
+/**
+ * The body as the rollout will hold it. A summary reaches the rollout through
+ * payload bundles that are secret-redacted before they are hashed
+ * (`createCompactionPayloadBundleV1`), so a summarizer that writes text the
+ * redactor rewrites ("continue at the next token: suspension bridge", a run of
+ * twelve wordlist words) once got a digest of words the rollout never held:
+ * the commit went through, and every later read of the session failed its
+ * digest check. The digest is taken over the redacted body, which is validated
+ * again exactly as the reader validates it.
+ */
+function storedCompactionBody(
+  body: CompactionSummaryBodyV1,
+  sourceRefs: readonly CompactionSourceRefV1[],
+): CompactionSummaryBodyV1 {
+  const redacted = redactDurableSecrets(body, "ordinary");
+  if (canonicalizeJson(redacted) === canonicalizeJson(body)) return body;
+  return validateProgrammaticCompactionBodyV1(
+    redacted,
+    new Set(sourceRefs.map((ref) => ref.ref_id)),
+  ).body;
 }
 
 export function verifyCompactionSummaryDigest(summary: CompactionSummaryV1): void {
