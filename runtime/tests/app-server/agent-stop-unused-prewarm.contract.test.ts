@@ -8,6 +8,7 @@ import { FileThreadStore } from "../thread-store/store.js";
 import { resolveLatestSessionId } from "../bin/resume-session.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { canonicalRolloutHoldsNoInput } from "../session/rollout-input.js";
+import { promptEnvironmentItem } from "../session/prompt-environment.js";
 import { UNUSED_TUI_PREWARM_STOP_REASON } from "./agent-stop-reasons.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
@@ -41,7 +42,7 @@ function dirs(): { readonly cwd: string; readonly home: string } {
   return { cwd, home };
 }
 
-type Activity = "untouched" | "prompted" | "shell";
+type Activity = "untouched" | "prompted" | "shell" | "cache-state";
 
 /** Persist a root TUI thread the way the daemon leaves one after its stop. */
 function persistThread(
@@ -78,7 +79,9 @@ function persistThread(
         payload: { id: `event-${seq}`, eventId: `event:${seq}`, seq, msg },
       } as never);
     };
-    // What an untouched provisioned session records: bookkeeping only.
+    // What an untouched provisioned session records: the date and branch its
+    // instructions were built with (written at creation), then bookkeeping.
+    rollout.appendRollout(promptEnvironmentItem({ currentDate: "2026-11-20", gitBranch: "main" })!);
     event({ type: "session_usage", payload: {} });
     event({ type: "session_configured", payload: { sessionId: threadId } });
     if (activity === "prompted") {
@@ -87,6 +90,10 @@ function persistThread(
         payload: { contentFingerprint: "x", messageId: "m-1", streamId: "s-1", acceptedAt: "2026-10-15T19:41:02.000Z" },
       });
       event({ type: "user_message", payload: { message: "fix the tests" } });
+    }
+    if (activity === "cache-state") {
+      // Any other session state counts as use: only the creation record is skipped.
+      rollout.appendRollout({ type: "session_state", payload: { promptCache: null } } as never);
     }
     if (activity === "shell") {
       event({
@@ -232,6 +239,7 @@ describe("stopping an unused TUI prewarm session", () => {
     expect(canonicalRolloutHoldsNoInput(persistThread(cwd, home, "conv-a", "untouched"))).toBe(true);
     expect(canonicalRolloutHoldsNoInput(persistThread(cwd, home, "conv-b", "prompted"))).toBe(false);
     expect(canonicalRolloutHoldsNoInput(persistThread(cwd, home, "conv-c", "shell"))).toBe(false);
+    expect(canonicalRolloutHoldsNoInput(persistThread(cwd, home, "conv-d", "cache-state"))).toBe(false);
     expect(canonicalRolloutHoldsNoInput(join(cwd, "missing.jsonl"))).toBe(false);
   });
 });
