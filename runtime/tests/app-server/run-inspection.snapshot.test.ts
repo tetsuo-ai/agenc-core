@@ -164,6 +164,28 @@ function changeAfterTheProofRead(change: () => void): () => boolean {
   return () => changed;
 }
 
+/**
+ * Make the change when run inspection prepares the statement that reads the
+ * run's admission records for its proof, before that statement runs.
+ */
+function changeBeforeTheProofRead(change: () => void): () => boolean {
+  let changed = false;
+  const open = sqliteEngine.openSqliteDatabase;
+  vi.spyOn(sqliteEngine, "openSqliteDatabase").mockImplementation((path, options) => {
+    const db = open(path, options);
+    const prepare = db.prepare.bind(db) as (sql: string) => BetterSqlite3.Statement;
+    db.prepare = ((sql: string) => {
+      if (!changed && sql.includes(AUTHORITY_READ)) {
+        changed = true;
+        change();
+      }
+      return prepare(sql);
+    }) as typeof db.prepare;
+    return db;
+  });
+  return () => changed;
+}
+
 function inspection(): AgenCDaemonRunInspectionService {
   return new AgenCDaemonRunInspectionService({ agencHome: home, stateDatabasePaths: () => discoverStateDatabasePaths(home) });
 }
@@ -203,6 +225,41 @@ describe("a change between the proof and the read", () => {
     expect(status).toMatchObject({ status: "completed", terminal: true, durableRun: { objective: OBJECTIVE },
       admission: { reservationCount: 2, actualTokens: 2 * 42 } });
     expectRefusedAfterwards();
+  });
+
+  it("cannot hide a projection row from the proof once the answer's snapshot holds it", () => {
+    // The unproven event is in the projection when the read starts; it is
+    // dropped just before the proof reads the admission records (as a
+    // rebuild of the projection would drop it). The proof reads the same
+    // snapshot as the answer, so it sees the event and refuses; a proof
+    // read anywhere else would pass while the answer served the event.
+    lastSequence += 1;
+    forgeAdmission({ runId: RUN_ID, rolloutPath, sequence: lastSequence, template, paths: projectPaths() });
+    const changed = changeBeforeTheProofRead(() => {
+      const driver = openStateDatabasePaths(projectPaths());
+      try {
+        driver.state.prepare("DELETE FROM thread_rollout_items WHERE thread_id = ? AND event_id = ?").run(RUN_ID, FORGED);
+      } finally {
+        driver.close();
+      }
+    });
+    for (const read of [
+      () => inspection().replay({ runId: RUN_ID, limit: 200 }),
+      () => inspection().evidence({ runId: RUN_ID, limit: 200 }),
+    ]) {
+      expect(read).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS", reason: "admission_owner_unproved" }));
+      expect(changed()).toBe(true);
+      vi.restoreAllMocks();
+      // The next read imports the line again; drop it again on the next read's proof.
+      changeBeforeTheProofRead(() => {
+        const driver = openStateDatabasePaths(projectPaths());
+        try {
+          driver.state.prepare("DELETE FROM thread_rollout_items WHERE thread_id = ? AND event_id = ?").run(RUN_ID, FORGED);
+        } finally {
+          driver.close();
+        }
+      });
+    }
   });
 
   it("reads the daemon's run row from the snapshot, not from the lookup before it", () => {
