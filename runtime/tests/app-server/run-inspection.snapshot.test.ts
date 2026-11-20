@@ -286,6 +286,29 @@ describe("a change between the proof and the read", () => {
     expect(result.durableRun).toBeUndefined();
   });
 
+  it("answers RUN_NOT_FOUND for a run that is gone from the snapshot", () => {
+    // An old run that only its daemon run row names (no journal, no
+    // admission), pruned after run inspection found it and before its
+    // snapshot opened.
+    const driver = openStateDatabases({ cwd: workspace, agencHome: home });
+    try {
+      upsertAgentRun(driver, { id: "run-row-only", objective: OBJECTIVE, status: "completed", startedAt: "2026-11-20T08:00:00.000Z",
+        lastActiveAt: "2026-11-20T08:05:00.000Z" });
+    } finally {
+      driver.close();
+    }
+    expect(inspection().status({ runId: "run-row-only" })).toMatchObject({ status: "completed", terminal: true });
+    const refresh = journalRecovery.recoverCanonicalRunJournalForRun;
+    vi.spyOn(journalRecovery, "recoverCanonicalRunJournalForRun").mockImplementation((refreshDriver, runId, options) => {
+      const result = refresh(refreshDriver, runId, options);
+      expect(refreshDriver.state.prepare("DELETE FROM agent_runs WHERE id = ?").run("run-row-only").changes).toBe(1);
+      return result;
+    });
+    expect(() => inspection().status({ runId: "run-row-only" })).toThrow(expect.objectContaining({ code: "RUN_NOT_FOUND" }));
+    vi.restoreAllMocks();
+    expect(() => inspection().status({ runId: "run-row-only" })).toThrow(expect.objectContaining({ code: "RUN_NOT_FOUND" }));
+  });
+
   it("does not reach run.result", () => {
     const changed = changeAfterTheProofRead(writeAfterTheProof);
     const result = inspection().result({ runId: RUN_ID });

@@ -565,6 +565,13 @@ function withRunSnapshot<T>(fn: (snapshot: RunSnapshot) => T): T {
  */
 function proveRunAuthority(snapshot: RunSnapshot, layout: RunLayout, runId: string): LocatedRun {
   const { located, kept, discovered, strays } = layout;
+  // Retention can prune a run after it was located; its snapshot then holds
+  // nothing of it to answer from.
+  const present = snapshot.read(located.paths, (db) =>
+    readAgentRun(db, runId) !== undefined || hasCanonicalRunState(db, runId) || hasAdmissionState(db, runId));
+  if (!present) {
+    throw new AgenCDaemonRunInspectionError("RUN_NOT_FOUND", `no durable run or admission state found for id: ${runId}`);
+  }
   const authority = snapshot.read(located.paths, (db) => readRunAdmissionAuthority(db, runId));
   if (!layout.canonical || (kept.length === 1 && authority.owner === undefined)) {
     // One database holds the run: its own admission was journaled there,
