@@ -24,10 +24,13 @@ afterEach(() => {
 
 const at = (day: string, time = "12:00:00.000"): Date => new Date(`${day}T${time}Z`);
 
-// Bundled rows of the 2026-10-20 snapshot (issue #3447).
+// A bundled row of the 2026-11-20 snapshot, dated by OpenRouter (issue #3447).
 const MODEL = "z-ai/glm-4.5";
 const DATE = "2026-12-31";
 const REFUSAL = `OpenRouter retired '${MODEL}' on ${DATE}. Pick another model.`;
+// Rows of the 2026-10-20 snapshot retired by 2026-11-12. OpenRouter's listing
+// no longer has them: they are kept, with these dates, as retired rows
+// (openrouter-retired-models.ts) and are not in the snapshot.
 const RETIRED_BY_2026_11_12 = [
   ["poolside/laguna-s-2.1", "2026-10-31"],
   ["poolside/laguna-s-2.1:free", "2026-10-31"],
@@ -38,6 +41,16 @@ const RETIRED_BY_2026_11_12 = [
   ["bytedance-seed/seed-2.0-code", "2026-11-11"],
 ] as const;
 const RETIRING_2026_12_31 = ["dots-studio/dots-3-note-preview:free", MODEL];
+// Every dated row of the 2026-11-20 snapshot (OpenRouter's expiration_date).
+const SNAPSHOT_DATED = [
+  ["openai/gpt-5-pro", "2026-12-11"], ["openai/gpt-5", "2026-12-11"], ["openai/gpt-5-mini", "2026-12-11"],
+  ["openai/gpt-5-nano", "2026-12-11"], ["openai/o3-pro", "2026-12-11"], ["openai/o3", "2026-12-11"],
+  ["dots-studio/dots-3-note-preview:free", "2026-12-31"], ["z-ai/glm-4.5v", "2026-12-31"], [MODEL, DATE],
+  ["mistralai/mistral-medium-3-5", "2027-01-31"],
+] as const;
+/** How many snapshot rows are past their date at `now`. */
+const retiredRowsAt = (now: Date): number =>
+  SNAPSHOT_DATED.filter(([, date]) => at(date, "00:00:00.000").getTime() <= now.getTime()).length;
 
 interface Scene {
   readonly provider?: string;
@@ -108,8 +121,9 @@ describe("a bundled model with a retirement date", () => {
     const snapshot = readModelMenuSnapshot(ctx, { now });
     expect(menuModels(ctx, now)).not.toContain(MODEL);
     expect(hubModels(ctx, now)).not.toContain(MODEL);
-    // All nine dated rows of the snapshot are past their date by then.
-    expect(snapshot.providerCounts.openrouter).toBe(OPENROUTER_MODEL_IDS.length - 9);
+    // Nine of the snapshot's ten dated rows are past their date on it, all ten after.
+    expect(snapshot.providerCounts.openrouter).toBe(OPENROUTER_MODEL_IDS.length - retiredRowsAt(now));
+    expect(retiredRowsAt(now)).toBe(now.getTime() === at(DATE, "00:00:00.000").getTime() ? 9 : 10);
     expect(snapshot.catalogNote).toBe(OPENROUTER_CATALOG_FALLBACK_NOTE);
     expect(modelMenuFallback(snapshot)).not.toContain(`openrouter:${MODEL} `);
     expect(modelMenuFallback(snapshot)).toContain("openrouter:z-ai/glm-4.5-air ");
@@ -217,14 +231,15 @@ describe("a session or a configuration that is on a retired model", () => {
     const before = readModelMenuSnapshot(ctx, { now: at("2026-12-30") });
     expect(modelMenuFallback(before)).toContain(`* openrouter:${MODEL} (active session model)`);
     expect(before.rows[before.activeIndex]).toMatchObject({ displayModel: MODEL, selectable: true });
-    // It is not counted among the models offered: all nine dated rows are past their date.
-    expect(snapshot.providerCounts.openrouter).toBe(OPENROUTER_MODEL_IDS.length - 9);
-    expect(before.providerCounts.openrouter).toBe(OPENROUTER_MODEL_IDS.length - 7);
+    // It is not counted among the models offered: all ten dated rows are past their date.
+    expect(snapshot.providerCounts.openrouter).toBe(OPENROUTER_MODEL_IDS.length - 10);
+    // On 2026-12-30 only the six rows dated 2026-12-11 are.
+    expect(before.providerCounts.openrouter).toBe(OPENROUTER_MODEL_IDS.length - 6);
     const row = readProvidersHubModels(ctx, "openrouter", { now: late }).find((entry) => entry.model === MODEL);
     expect(row).toMatchObject({ current: true });
     expect(row?.tags).toContain(`retired ${DATE}`);
     // The hub lists it with the models it offers.
-    expect(hubModels(ctx, late)).toHaveLength(OPENROUTER_MODEL_IDS.length - 9 + 1);
+    expect(hubModels(ctx, late)).toHaveLength(OPENROUTER_MODEL_IDS.length - 10 + 1);
     // Every other retired row is still left out.
     expect(hubModels(ctx, late)).not.toContain("bytedance-seed/seed-1.6");
 
@@ -269,12 +284,13 @@ describe("the bundled snapshot with the clock at 2026-11-12", () => {
     const selectable = readModelMenuSnapshot(ctx, { now: today }).rows
       .filter((row) => row.provider === "openrouter" && row.selectable)
       .map((row) => row.displayModel);
-    expect(selectable).toHaveLength(OPENROUTER_MODEL_IDS.length - RETIRED_BY_2026_11_12.length);
+    // No row of the snapshot is past its date yet; the retired seven are not in it.
+    expect(selectable).toHaveLength(OPENROUTER_MODEL_IDS.length);
     for (const [retired] of RETIRED_BY_2026_11_12) expect(selectable, retired).not.toContain(retired);
     for (const retiring of RETIRING_2026_12_31) expect(selectable, retiring).toContain(retiring);
   });
 
-  test("offers none of the seven retired models and still offers the two dated 2026-12-31", () => {
+  test("offers none of the seven retired models and still offers the dated rows of the snapshot", () => {
     const ctx = context();
     const snapshot = readModelMenuSnapshot(ctx, { now: today });
     const menu = menuModels(ctx, today);
@@ -290,19 +306,20 @@ describe("the bundled snapshot with the clock at 2026-11-12", () => {
       expect(hub, model).toContain(model);
       expect(listing, model).toContain(`openrouter:${model} `);
     }
-    expect(snapshot.providerCounts.openrouter).toBe(OPENROUTER_MODEL_IDS.length - RETIRED_BY_2026_11_12.length);
-    expect(hub).toHaveLength(OPENROUTER_MODEL_IDS.length - RETIRED_BY_2026_11_12.length);
-    expect(readProvidersHubModels(ctx, "openrouter", { now: today }).filter((row) => row.tags?.includes("retire")))
-      .toEqual(RETIRING_2026_12_31.map((model) => expect.objectContaining({
-        model, tags: expect.stringContaining(`retires ${DATE}`),
-      })));
+    expect(snapshot.providerCounts.openrouter).toBe(OPENROUTER_MODEL_IDS.length);
+    expect(hub).toHaveLength(OPENROUTER_MODEL_IDS.length);
+    const tagged = readProvidersHubModels(ctx, "openrouter", { now: today }).filter((row) => row.tags?.includes("retire"));
+    expect(tagged.map((row) => row.model).sort()).toEqual(SNAPSHOT_DATED.map(([model]) => model).sort());
+    for (const [model, date] of SNAPSHOT_DATED) {
+      expect(tagged.find((row) => row.model === model)?.tags, model).toContain(`retires ${date}`);
+    }
   });
 
   test("without a clock the picker reads the system time", () => {
     vi.useFakeTimers({ toFake: ["Date"], now: today });
     const ctx = context();
-    expect(readModelMenuSnapshot(ctx).providerCounts.openrouter).toBe(OPENROUTER_MODEL_IDS.length - 7);
-    expect(readProvidersHubModels(ctx, "openrouter")).toHaveLength(OPENROUTER_MODEL_IDS.length - 7);
+    expect(readModelMenuSnapshot(ctx).providerCounts.openrouter).toBe(OPENROUTER_MODEL_IDS.length);
+    expect(readProvidersHubModels(ctx, "openrouter")).toHaveLength(OPENROUTER_MODEL_IDS.length);
     expect(modelCapabilityTags("openrouter", "bytedance-seed/seed-1.6")).toContain("retired 2026-11-11");
     expect(modelCapabilityTags("openrouter", MODEL)).toContain(`retires ${DATE}`);
   });

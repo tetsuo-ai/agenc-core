@@ -625,7 +625,6 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   openrouter: mergeDerivedProviderModels("openrouter", { leadingExtras: [
     "x-ai/grok-4.5",
     "x-ai/grok-4.3",
-    "x-ai/grok-build-0.1",
     "x-ai/grok-4.20",
     "openai/gpt-5",
     "openai/gpt-4o-mini",
