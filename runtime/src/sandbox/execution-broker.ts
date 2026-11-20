@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   canWritePathWithCwd,
+  macosHostCommand,
   restrictedFileSystemPolicy,
   resolvePermissionPath,
   SandboxManager,
@@ -1353,7 +1354,19 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
         argv0: command.argv0 ?? basename(command.program),
       };
       const preparedCommand = (() => {
-        if (runtimeSandbox === undefined) return resolvedCommand;
+        if (runtimeSandbox === undefined) {
+          // Full access on macOS still opens no window or dialog and starts
+          // nothing outside the command's profile. The Browser tool's
+          // Chromium needs the window server; an external sandbox is its own.
+          if (this.mode !== "danger_full_access" || surface === "browser") return resolvedCommand;
+          const [program = resolvedCommand.program, ...args] = macosHostCommand(
+            [resolvedCommand.program, ...resolvedCommand.args],
+            this.#platform,
+          );
+          return program === resolvedCommand.program
+            ? resolvedCommand
+            : { ...resolvedCommand, program, args, argv0: basename(program) };
+        }
         // A routine run's commands never widen their sandbox.
         const sandboxWithSurfacePermissions =
           command.additionalPermissions === undefined || this.#routineConfines(surface)

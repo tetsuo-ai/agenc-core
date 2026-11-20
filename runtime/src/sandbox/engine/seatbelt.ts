@@ -13,6 +13,7 @@ import {
   type SpawnOptions,
 } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   PROTECTED_METADATA_PATH_NAMES,
@@ -85,6 +86,82 @@ const PROXY_URL_ENV_KEYS = [
 
 export const MACOS_PATH_TO_SEATBELT_EXECUTABLE = "/usr/bin/sandbox-exec";
 
+/**
+ * The keychain files stay out of reach of a sandboxed command. The network
+ * section allows the security server for TLS, and with the keychain files
+ * readable that also let a command read any keychain item the security tool
+ * may read, and ask for any other: macOS then shows a prompt for the login
+ * password, which securityd raises and no rule for the command can stop
+ * (measured on macOS 27.2). TLS keeps working without them. A command that
+ * needs a keychain item runs after an approved escalation.
+ */
+export const MACOS_SEATBELT_KEYCHAIN_POLICY = `; no keychain: a keychain prompt asks for the login password
+(deny file-read* file-write*
+  (subpath (param "KEYCHAIN_HOME_DIR"))
+  (subpath "/Library/Keychains"))`;
+
+/**
+ * The profile a command runs in on macOS when it runs outside AgenC's
+ * sandbox (full access, an approved escalation). Everything is allowed but
+ * what opens a window or a dialog that takes typing, or starts a program
+ * outside this profile: the window server (its own windows and dialogs, such
+ * as osascript's display dialog), the system's alerts (CFUserNotification,
+ * which needs no window server and can carry a password field), Touch ID and
+ * password sheets, LaunchServices (open, whose program would be launchd's,
+ * with nothing denied), Apple Events (which start an app that is not
+ * running), and authorization rights (the administrator password prompt).
+ * Measured on macOS 27.2: each of them fails at once with nothing on the
+ * screen, and ordinary work, network and files keep working. A program in it
+ * cannot start a sandbox of its own (macOS refuses a second one).
+ */
+export const MACOS_UNSANDBOXED_COMMAND_POLICY = `(version 1)
+(allow default)
+(deny mach-lookup
+  (global-name "com.apple.windowserver.active")
+  (global-name "com.apple.windowserver")
+  (global-name "com.apple.UNCUserNotification")
+  (global-name "com.apple.UNCUserNotificationAgent")
+  (global-name "com.apple.CoreAuthentication.agent")
+  (global-name "com.apple.CoreAuthentication.agent.libxpc")
+  (global-name "com.apple.CoreAuthentication.daemon")
+  (global-name "com.apple.CoreAuthentication.daemon.libxpc"))
+(deny lsopen)
+(deny appleevent-send)
+(deny authorization-right-obtain)`;
+
+/** sandbox-exec arguments for a command outside AgenC's sandbox: {@link MACOS_UNSANDBOXED_COMMAND_POLICY}. */
+export function createUnsandboxedCommandArgs(command: readonly string[]): string[] {
+  return ["-p", MACOS_UNSANDBOXED_COMMAND_POLICY, "--", ...command];
+}
+
+let hostProfileStarts: boolean | undefined;
+
+/**
+ * Whether this process can start a command in a profile. One that runs in a
+ * sandbox already (AgenC under another program's sandbox) cannot: macOS
+ * refuses a second one, and the outer sandbox is the boundary there.
+ */
+function canStartHostProfile(): boolean {
+  hostProfileStarts ??= process.platform === "darwin" &&
+    spawnSync(MACOS_PATH_TO_SEATBELT_EXECUTABLE, ["-p", "(version 1)(allow default)", "--", "/usr/bin/true"], {
+      stdio: "ignore",
+      timeout: 10_000,
+    }).status === 0;
+  return hostProfileStarts;
+}
+
+/**
+ * The command line for a command that runs outside AgenC's sandbox (full
+ * access, an approved escalation): on macOS in
+ * {@link MACOS_UNSANDBOXED_COMMAND_POLICY}, elsewhere, or when this process
+ * cannot start a profile, the command as given.
+ */
+export function macosHostCommand(command: readonly string[], platform: NodeJS.Platform = process.platform): readonly string[] {
+  return platform === "darwin" && canStartHostProfile()
+    ? [MACOS_PATH_TO_SEATBELT_EXECUTABLE, ...createUnsandboxedCommandArgs(command)]
+    : command;
+}
+
 export interface CreateSeatbeltCommandArgsParams {
   readonly command: readonly string[];
   readonly fileSystemSandboxPolicy: FileSystemSandboxPolicy;
@@ -96,6 +173,8 @@ export interface CreateSeatbeltCommandArgsParams {
   readonly extraAllowUnixSockets?: readonly string[];
   /** Opt-in GPU compute (Metal) — see {@link MACOS_SEATBELT_GPU_POLICY}. */
   readonly allowGpu?: boolean;
+  /** The home folder whose keychain files are denied (see {@link MACOS_SEATBELT_KEYCHAIN_POLICY}); defaults to the user's. */
+  readonly keychainHome?: string;
   /**
    * The command launches Chromium for the Browser tool. See
    * {@link MACOS_SEATBELT_CHROMIUM_POLICY}. `bundleIdentifier` is the
@@ -324,6 +403,7 @@ export function createSeatbeltCommandArgs(
     denyReadPolicy,
     reservedWritePolicy,
     networkPolicy,
+    MACOS_SEATBELT_KEYCHAIN_POLICY,
   ];
   if (includePlatformDefaults(fileSystemSandboxPolicy)) {
     policySections.push(getMacosRestrictedReadOnlyPlatformDefaults());
@@ -357,6 +437,7 @@ export function createSeatbeltCommandArgs(
     ...macosDirParams(),
     ...unixSocketDirParams(proxy),
     ...chromiumParams,
+    ["KEYCHAIN_HOME_DIR", normalizePathForPolicy(path.join(args.keychainHome ?? os.homedir(), "Library", "Keychains"))] as const,
   ];
   return [
     "-p",

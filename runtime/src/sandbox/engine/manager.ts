@@ -41,6 +41,7 @@ import {
   chromiumBundleIdentifier,
   createSeatbeltCommandArgs,
   darwinUserTempDir,
+  macosHostCommand,
 } from "./seatbelt.js";
 import { isWsl1 } from "./bwrap.js";
 import {
@@ -103,7 +104,10 @@ export class SandboxManager {
     let appliedFileSystemPolicy = fileSystem;
     switch (request.sandbox) {
       case "none":
-        command = argv;
+        // Outside AgenC's sandbox a command on macOS still opens no window or
+        // dialog and starts nothing outside it. The Browser tool's Chromium
+        // needs the window server, and confines its own pages.
+        command = request.chromiumBrowser === true ? argv : [...macosHostCommand(argv, platform)];
         break;
       case "macos_seatbelt":
         if (platform !== "darwin") {

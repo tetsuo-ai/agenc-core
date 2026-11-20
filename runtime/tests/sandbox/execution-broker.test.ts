@@ -26,9 +26,10 @@ import {
   resolveDefaultLinuxSandboxExecutable,
   type SandboxExecutionStatus,
 } from "../../src/sandbox/execution-broker.js";
-import type {
-  FileSystemSandboxEntry,
-  PermissionProfile,
+import {
+  macosHostCommand,
+  type FileSystemSandboxEntry,
+  type PermissionProfile,
 } from "../../src/sandbox/engine/index.js";
 import { applyRuntimeSandboxToSpawn } from "../../src/tools/system/apply-runtime-sandbox.js";
 import {
@@ -315,11 +316,13 @@ describe("SandboxExecutionBroker", () => {
       });
 
       const command = prepared.runSync((resolved) => resolved);
-      expect(command).toMatchObject({
-        program: realpathSync("/bin/echo"),
-        args: ["ok"],
-        cwd: root,
-      });
+      // On macOS a full-access command runs in the profile that opens no
+      // window or dialog (seatbelt-dialogs.darwin.test.ts); elsewhere and in
+      // an external sandbox it is the host command.
+      const [program, ...args] = mode === "danger_full_access"
+        ? macosHostCommand([realpathSync("/bin/echo"), "ok"])
+        : [realpathSync("/bin/echo"), "ok"];
+      expect(command).toMatchObject({ program, args, cwd: root });
     },
   );
 

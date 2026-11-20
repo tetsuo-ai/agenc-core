@@ -7,4 +7,4 @@
 export * from "./policy.js";
 export { SandboxManager, compatibilitySandboxPolicyForPermissionProfile } from "./manager.js";
 export { createLinuxSandboxCommandArgsForPermissionProfile } from "./landlock.js";
-export { createSeatbeltCommandArgs } from "./seatbelt.js";
+export { createSeatbeltCommandArgs, macosHostCommand } from "./seatbelt.js";
