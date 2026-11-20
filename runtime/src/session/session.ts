@@ -260,6 +260,7 @@ import {
   type SteerInputResult,
   type TurnAbortReason,
 } from "./tasks.js";
+import { ReplacedModelCalls } from "./replaced-model-call.js";
 import {
   RealtimeConversationManager as RuntimeRealtimeConversationManager,
   type RealtimeConversation,
@@ -2631,6 +2632,13 @@ export class Session {
 
   /** I-7: session-level AbortController; phases observe `signal.aborted`. */
   readonly abortController: AbortController = new AbortController();
+
+  /**
+   * Model calls that were on the wire when a new task replaced their turn,
+   * each held until it settles (`holdReplacementWhileOnWire`). The replacing
+   * task waits for them in `handleTaskAbort`; any other stop cuts them.
+   */
+  readonly replacedModelCalls: ReplacedModelCalls = new ReplacedModelCalls(this.abortController.signal);
 
   /** T6: in-process event bus (pub/sub). All emit() paths go through
    *  here — EventLog assigns a monotonic seq (I-27) and fans out to
@@ -6110,6 +6118,9 @@ export class Session {
    * clears pending state and releases.
    */
   async abortAllTasks(reason: TurnAbortReason): Promise<void> {
+    // A replacement may hold the lock while it waits for a replaced turn's
+    // model call; this stop reaches that call first.
+    this.replacedModelCalls.cutAll(reason);
     await this.taskDispatchLock.with(async () => {
       await this.abortAllTasksLocked(reason);
     });
@@ -6149,6 +6160,7 @@ export class Session {
     turnId: string,
     reason: TurnAbortReason,
   ): Promise<boolean> {
+    this.replacedModelCalls.cutAll(reason);
     const taken = await this.activeTurn.update((current) => {
       if (current === null || !current.tasks.has(turnId)) {
         return { next: current, result: null };
@@ -6185,7 +6197,15 @@ export class Session {
       task.resolveDone();
       return;
     }
-    task.abortController.abort(reason);
+    if (reason === "replaced") {
+      // A model call this turn already had on the wire settles first
+      // (replaced-model-call.ts): its usage is then known, and the new task
+      // does not start while that call and its turn are still running.
+      this.replacedModelCalls.armWhile(() => task.abortController.abort(reason));
+      await this.replacedModelCalls.wait();
+    } else {
+      task.abortController.abort(reason);
+    }
     await waitForDoneWithin(task.done, GRACEFUL_INTERRUPTION_TIMEOUT_MS);
     if (task.task !== undefined && task.turnContext !== undefined) {
       await task.task.abort({
@@ -6628,6 +6648,7 @@ export class Session {
    * so the same reason reaches them through the turn's own controller.
    */
   private abortActiveTurnForProviderSwitch(): void {
+    this.replacedModelCalls.cutAll("provider_switched");
     const active = this.activeTurn.unsafePeek();
     if (active === null || active.abortController.signal.aborted) return;
     active.abortController.abort("provider_switched");
