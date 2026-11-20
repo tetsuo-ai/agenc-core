@@ -497,8 +497,11 @@ interface RunLayout {
 /**
  * Read-only connections, one per database, each in one read transaction from
  * its first read until {@link withRunSnapshot} ends, so every read of one
- * database sees the same snapshot. State databases run in WAL mode: writers
- * go on meanwhile, and a checkpoint waits for it as for any reader.
+ * database sees the same snapshot. It lasts one call (the proof and the
+ * answer, nothing else) and holds what any reader holds: in WAL mode, which
+ * state databases use, writers go on, while a FULL or TRUNCATE checkpoint
+ * waits for it up to its busy timeout; a database not in WAL mode would hold
+ * other connections' commits until it ends.
  */
 class RunSnapshot {
   readonly #databases = new Map<string, BetterSqlite3.Database>();
