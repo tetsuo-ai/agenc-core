@@ -487,7 +487,7 @@ the error's `data.reason` (`RunInspectionErrorData`, `RunIdAmbiguousReason`):
 `project_split`, `duplicate_run_id`, `admission_owner_unproved` or
 `admission_record_limit`. Older daemons send no reason.
 
-## Daemon method surface (54 methods)
+## Daemon method surface (56 methods)
 
 Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 (order pinned to the runtime registry):
@@ -498,7 +498,7 @@ Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 | agents              | `agent.create`, `agent.list`, `agent.attach`, `agent.stop`, `agent.logs`                                                                                                                                                                                |
 | runs                | `run.start`, `run.status`, `run.result`, `run.replay`, `run.evidence`, `run.cancel`                                                                                                                                                                     |
 | CSV review          | `csvJob.review.list`, `csvJob.review.show`, `csvJob.review.resolve`                                                                                                                                                                                     |
-| sessions            | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.compact`, `session.snapshot`, `session.transcript`, `session.transcript.v2`, `session.cancelTurn`, `session.resolveToolCall`, `session.mcp.status`, `session.mcp.addServer` |
+| sessions            | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.compact`, `session.releaseTools`, `session.snapshot`, `session.transcript`, `session.transcript.v2`, `session.cancelTurn`, `session.resolveToolCall`, `session.mcp.status`, `session.mcp.addServer` |
 | messaging           | `message.send`, `message.stream`                                                                                                                                                                                                                        |
 | realtime            | `thread/realtime/start`, `thread/realtime/appendAudio`, `thread/realtime/appendText`, `thread/realtime/stop`, `thread/realtime/listVoices`                                                                                                              |
 | tools / permissions | `tool.approve`, `tool.deny`, `tool.cancel`, `elicitation.respond`, `permission.list`                                                                                                                                                                    |
