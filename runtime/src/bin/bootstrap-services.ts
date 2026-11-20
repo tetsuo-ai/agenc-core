@@ -154,6 +154,12 @@ export interface BootstrapSessionServicesOptions {
   readonly modelsManager: SessionServices["modelsManager"];
   readonly agencHome: string;
   readonly workspaceRoot: string;
+  /**
+   * The project of a resumed session's rollout. Its thread projection (what
+   * run.replay reads) belongs there, not in the project found again from the
+   * folder.
+   */
+  readonly stateProjectDir?: string;
   readonly env: NodeJS.ProcessEnv;
   readonly conversationId: string;
   readonly model: string;
@@ -708,6 +714,7 @@ export function buildBootstrapSessionServices(
   const createFileThreadStore = () => new FileThreadStore({
     deferLogs: true,
     cwd: opts.workspaceRoot,
+    ...(opts.stateProjectDir !== undefined ? { projectDir: opts.stateProjectDir } : {}),
     agencHome: opts.agencHome,
     defaultModelProviderId: opts.providerName,
     projectRootMarkers: opts.configStore.current().project_root_markers,

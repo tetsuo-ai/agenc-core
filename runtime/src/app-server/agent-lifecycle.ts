@@ -1,5 +1,8 @@
+import { turnDiffCache } from "../session/turn-diff-cache.js";
+import type { SessionTurnDiffParams, SessionTurnDiffResult } from "./protocol/index.js";
 import { hasRuntimeHistoryWrapper, userFacingHistoryText } from "../session/user-facing-history-text.js";
 import { promoteOneShotRun, selectRelaxedOneShot } from "../durability/one-shot-durability.js";
+import { rolloutProjectDir } from "../session/rollout-project.js";
 /**
  * In-memory daemon lifecycle for user-started background agents.
  *
@@ -44,6 +47,7 @@ import {
 
 import { AsyncLock } from "../utils/async-lock.js";
 import { canonicalRolloutHoldsNoInput } from "../session/rollout-input.js";
+import type { TurnAdviceReader } from "../session/turn-advice.js";
 import { UNUSED_TUI_PREWARM_STOP_REASON } from "./agent-stop-reasons.js";
 import {
   captureRecoverableCommandEnvironment,
@@ -55,7 +59,11 @@ import {
   DAEMON_AGENT_CREATE_TIMEOUT_MS,
   DAEMON_AGENT_STOP_TIMEOUT_MS,
 } from "./operation-deadline.js";
-import { openStateDatabases } from "../state/sqlite-driver.js";
+import {
+  openStateDatabasePaths,
+  openStateDatabases,
+  stateDatabasePathsForProjectDir,
+} from "../state/sqlite-driver.js";
 import {
   createOperatorAttestationEvidence,
   createOperatorEffectReviewResolution,
@@ -119,6 +127,8 @@ import type {
   SessionCancelTurnResult,
   SessionClearParams,
   SessionClearResult,
+  SessionCompactParams,
+  SessionCompactResult,
   SessionMcpAddServerParams,
   SessionMcpAddServerResult,
   SessionMcpStatusParams,
@@ -1284,6 +1294,13 @@ export class AgenCDaemonAgentManager {
           ? { canonicalRolloutIno: started.rolloutIno }
           : {}),
       };
+      // The run's journal lives in the project that holds its rollout. Record
+      // the daemon's own rows for it there too: found again from the folder
+      // (default root markers, the daemon's HOME), the project can differ.
+      const stateProjectDir =
+        (started.rolloutPath !== undefined
+          ? rolloutProjectDir(started.rolloutPath, this.#agencHome)
+          : undefined) ?? retainedAgent?.stateProjectDir;
       const agent: MutableAgent = {
         agentId: started.agentId,
         ...(started.runtimeGenerationId !== undefined
@@ -1305,9 +1322,7 @@ export class AgenCDaemonAgentManager {
         logSessionIds: retainedAgent?.logSessionIds.slice() ?? [],
         cwd,
         metadata: agentMetadata,
-        ...(retainedAgent?.stateProjectDir !== undefined
-          ? { stateProjectDir: retainedAgent.stateProjectDir }
-          : {}),
+        ...(stateProjectDir !== undefined ? { stateProjectDir } : {}),
       };
 
       let createdLifecycleSessionId: string | undefined;
@@ -3194,7 +3209,12 @@ export class AgenCDaemonAgentManager {
         `Session ${params.effectSessionId} is not owned by parent ${params.sessionId}; attach to its owning session to review it`);
     }
     const selectedIds = params.effectSessionId === undefined ? reviewSessionIds : [params.effectSessionId];
-    const driver = openStateDatabases({ cwd: session.cwd, agencHome: this.#agencHome });
+    // The conversation's effects are in the project of its journal, which the
+    // folder may no longer name after a restart.
+    const stateProjectDir = await this.#state.with((state) => state.agents.get(session.agentId)?.stateProjectDir);
+    const driver = stateProjectDir !== undefined
+      ? openStateDatabasePaths(stateDatabasePathsForProjectDir(stateProjectDir))
+      : openStateDatabases({ cwd: session.cwd, agencHome: this.#agencHome });
     try {
       const durableEffects = new StateRunDurabilityRepository(driver);
       const pending = selectedIds.flatMap(id => [...listUnresolvedUnknownOutcomeEffects(driver, id)]);
@@ -3872,8 +3892,9 @@ export class AgenCDaemonAgentManager {
 
   async getSessionTranscriptV2(
     params: SessionTranscriptV2Params,
-    options: { readonly includeCompleteMessages?: boolean } = {},
+    options: { readonly schemaVersion?: 2 | 3; readonly includeCompleteMessages?: boolean } = {},
   ): Promise<SessionTranscriptV2Result> {
+    options = { ...options, ...(params.schemaVersion !== undefined ? { schemaVersion: params.schemaVersion } : {}) };
     if (this.#sessionManager === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "INVALID_ARGUMENT",
@@ -3910,6 +3931,7 @@ export class AgenCDaemonAgentManager {
       return await this.#runner.getAgentSessionTranscriptV2(agentId, {
         sessionId: params.sessionId,
         includeCompleteMessages: options.includeCompleteMessages,
+        schemaVersion: options.schemaVersion,
       });
     } catch (error) {
       if (isNoLiveAgentRunnerError(error)) {
@@ -3921,6 +3943,16 @@ export class AgenCDaemonAgentManager {
       }
       throw error;
     }
+  }
+
+  async readSessionTurnDiff(params: SessionTurnDiffParams): Promise<SessionTurnDiffResult> {
+    // Resolve session ownership and the visible turn boundary through the same
+    // authoritative projection used for reopening a chat.
+    const snapshot = await this.getSessionTranscriptV2({ sessionId: params.sessionId, schemaVersion: 3 });
+    if (!snapshot.turns?.some(turn => turn.turnId === params.turnId)) {
+      return { ...params, unavailable: true, note: "turn is outside the visible transcript" };
+    }
+    return { ...params, ...turnDiffCache.read(snapshot.runId, params.turnId, params.path) };
   }
 
   async readSessionArtifact(params: SessionArtifactReadParams): Promise<SessionArtifactReadResult> {
@@ -4009,7 +4041,7 @@ export class AgenCDaemonAgentManager {
 
   async #readPersistedSessionTranscriptV2(
     sessionId: string,
-    options: { readonly includeCompleteMessages?: boolean } = {},
+    options: { readonly schemaVersion?: 2 | 3; readonly includeCompleteMessages?: boolean } = {},
   ): Promise<SessionTranscriptV2Result | undefined> {
     const thread = await this.#readPersistedThreadForSession(sessionId);
     if (thread === undefined) return undefined;
@@ -4056,6 +4088,36 @@ export class AgenCDaemonAgentManager {
       messageOrdinal: params.messageOrdinal,
       direction: params.direction,
       ...(params.feedback !== undefined ? { feedback: params.feedback } : {}),
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
+  /**
+   * `session.compact`: the TUI's `/compact` for one session. The runner
+   * refuses it with `ACTIVE_TURN` while a turn runs.
+   */
+  async compactSession(
+    params: SessionCompactParams,
+    signal?: AbortSignal,
+  ): Promise<SessionCompactResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.compact requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.compactAgentSession === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.compact requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowCompactSession: true },
+    );
+    return await this.#runner.compactAgentSession(agentId, {
+      sessionId: params.sessionId,
       ...(signal !== undefined ? { signal } : {}),
     });
   }
@@ -4449,6 +4511,8 @@ export class AgenCDaemonAgentManager {
   }
 
   async streamAgentMessage(params: {
+    readonly includeToolProgress?: boolean;
+    readonly turnChanges?: { readonly includeDiff?: boolean };
     readonly exactOutput?: boolean;
     /** Settings of the skill the user started this turn with. */
     readonly skillInvocation?: MessageSkillInvocation;
@@ -4463,6 +4527,8 @@ export class AgenCDaemonAgentManager {
     readonly methodName?: "message.send" | "message.stream";
     /** Set only by authenticated daemon ingress, never by RPC payload metadata. */
     readonly localMcpAccess?: boolean;
+    /** Who reads the advice of this prompt's turn (`session/turn-advice.ts`). */
+    readonly adviceReader?: TurnAdviceReader;
   }): Promise<AgenCBackgroundAgentMessageResult> {
     const methodName = params.methodName ?? "message.stream";
     if (this.#sessionManager === undefined) {
@@ -4525,11 +4591,14 @@ export class AgenCDaemonAgentManager {
         sessionId: params.sessionId,
         content: params.content,
         originalContent: params.content,
+        ...(params.includeToolProgress === true ? { includeToolProgress: true } : {}),
+        ...(params.turnChanges !== undefined ? { turnChanges: params.turnChanges } : {}),
         ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
         ...(params.skillInvocation !== undefined
           ? { skillInvocation: params.skillInvocation }
           : {}),
         ...(params.localMcpAccess !== undefined ? { localMcpAccess: params.localMcpAccess } : {}),
+        ...(params.adviceReader !== undefined ? { adviceReader: params.adviceReader } : {}),
         ...(params.userPromptText !== undefined ? { userPromptText: params.userPromptText } : {}),
         ...(params.displayUserMessage !== undefined
           ? { displayUserMessage: params.displayUserMessage }
@@ -4666,6 +4735,7 @@ export class AgenCDaemonAgentManager {
       readonly allowElicitationResponse?: boolean;
       readonly allowListPermissions?: boolean;
       readonly allowPartialCompact?: boolean;
+      readonly allowCompactSession?: boolean;
       readonly allowCompactionOperator?: boolean;
       readonly allowConversationRewind?: boolean;
       readonly allowMcpStatus?: boolean;
@@ -4712,6 +4782,9 @@ export class AgenCDaemonAgentManager {
     const hasPartialCompactRunner =
       options.allowPartialCompact === true &&
       this.#runner?.partialCompactFromMessage !== undefined;
+    const hasCompactSessionRunner =
+      options.allowCompactSession === true &&
+      this.#runner?.compactAgentSession !== undefined;
     const hasCompactionOperatorRunner =
       options.allowCompactionOperator === true &&
       this.#runner?.rollbackCompaction !== undefined &&
@@ -4784,6 +4857,7 @@ export class AgenCDaemonAgentManager {
       !hasClearSessionRunner &&
       !hasPermissionListRunner &&
       !hasPartialCompactRunner &&
+      !hasCompactSessionRunner &&
       !hasCompactionOperatorRunner &&
       !hasConversationRewindRunner &&
       !hasMcpStatusRunner &&
@@ -5371,7 +5445,14 @@ export function assertCanonicalRuntimeSettingsProjection(
     // ambient current-session accessor refused with "Ambiguous runtime
     // session" as soon as more than one session lived in the daemon, so no
     // session could be resumed after a restart while others were open.
-    driver = openStateDatabases({ cwd, agencHome });
+    // The projection is in the project that holds the rollout; the folder
+    // can name another project after a restart.
+    const projectDir = proof.rolloutPath === undefined
+      ? undefined
+      : rolloutProjectDir(proof.rolloutPath, agencHome);
+    driver = projectDir !== undefined
+      ? openStateDatabasePaths(stateDatabasePathsForProjectDir(projectDir))
+      : openStateDatabases({ cwd, agencHome });
   } catch (error) {
     // Say why. A live resume failed for an hour with this sentence and
     // nothing else; the cause (a locked database, a schema mismatch, a bad

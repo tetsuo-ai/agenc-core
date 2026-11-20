@@ -1,3 +1,5 @@
+import type { SessionTurnDiffParams } from "./protocol/index.js";
+import { timelineNotification, PromptProgressGate } from "./timeline-capabilities.js";
 import { PermissionModeTransitionPrecommitError } from "../permissions/permission-mode.js";
 import { PrintInvocation, validatePrintInvokeParams } from "./print-invocation.js";
 import { promoteOneShotRun } from "../durability/one-shot-durability.js";
@@ -15,6 +17,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { redactSecrets } from "../secrets/sanitizer.js";
 import type { PluginSettingsService } from "../plugins/settings-service.js";
 import type { PluginSettingsResult } from "./protocol/index.js";
+import type { TurnAdviceReader } from "../session/turn-advice.js";
 import { sessionMcpAttachmentIssue } from "../mcp-client/local-control.js";
 import { isAbsolute } from "node:path";
 import type { WhisperService } from "../audio/whisper.js";
@@ -131,6 +134,8 @@ import {
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
   AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY,
   AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
+  AGENC_SLASH_COMMAND_ADVICE_CAPABILITY,
+  AGENC_COMPACT_ACTION_ADVICE_CAPABILITY,
   AGENC_MESSAGE_STREAM_SKILL_INVOCATION_CAPABILITY,
   MAX_SESSION_SHELL_COMMAND_UTF8_BYTES,
   MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
@@ -194,6 +199,7 @@ import {
   type SessionResolveToolCallLegacyParams,
   type SessionResolveToolCallParams,
   type SessionClearParams,
+  type SessionCompactParams,
   type SessionMcpStatusParams,
   type SessionMcpAddServerParams,
   type SessionMcpServerConfig,
@@ -414,11 +420,13 @@ function buildServerCapabilities(
     "session.detach": hasMethod(sessionManager, "detachSession"),
     "session.terminate": hasMethod(sessionManager, "terminateSession"),
     "session.clear": hasMethod(agentManager, "clearSessionHistory"),
+    "session.compact": hasMethod(agentManager, "compactSession"),
     "session.snapshot": hasMethod(agentManager, "snapshotSession"),
     "session.processes.list": hasMethod(agentManager, "listSessionProcesses"),
     "session.processes.stop": hasMethod(agentManager, "stopSessionProcess"),
     "session.transcript": hasMethod(agentManager, "getSessionTranscript"),
     "session.transcript.v2": hasMethod(agentManager, "getSessionTranscriptV2"),
+    "session.turn.diff": hasMethod(agentManager, "readSessionTurnDiff"),
     "session.artifact.read": hasMethod(agentManager, "readSessionArtifact"),
     "session.cancelTurn": hasMethod(agentManager, "cancelSessionTurn"),
     "session.resolveToolCall": hasMethod(
@@ -546,6 +554,13 @@ function buildServerCapabilities(
   }
 
   return Object.freeze({
+    "turn.failure.v1": true,
+    "turn.usage.v1": true,
+    "transcript.tools.v3": true,
+    "transcript.plans.v3": true,
+    "tool.progress.shell.v1": true,
+    "turn.changes.v1": true,
+    "turn.diff.read.v1": true,
     ...(inputs.printHome !== undefined ? { [AGENC_PRINT_INVOKE_CAPABILITY]: true } : {}),
     [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.freeze(
       methodCapabilities,
@@ -582,6 +597,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "snapshotSession"
     | "getSessionTranscript"
     | "getSessionTranscriptV2"
+    | "readSessionTurnDiff"
     | "readSessionArtifact"
     | "getMcpStatusForSession"
     | "addMcpServerToSession"
@@ -610,6 +626,7 @@ export interface AgenCDaemonDispatcherOptions {
   > & {
     readonly listSessionProcesses?: AgenCDaemonAgentManager["listSessionProcesses"];
     readonly stopSessionProcess?: AgenCDaemonAgentManager["stopSessionProcess"];
+    readonly compactSession?: AgenCDaemonAgentManager["compactSession"];
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
     readonly pendingElicitations?: AgenCDaemonAgentManager["pendingElicitations"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
@@ -729,6 +746,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "snapshotSession"
     | "getSessionTranscript"
     | "getSessionTranscriptV2"
+    | "readSessionTurnDiff"
     | "readSessionArtifact"
     | "getMcpStatusForSession"
     | "addMcpServerToSession"
@@ -757,6 +775,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   > & {
     readonly listSessionProcesses?: AgenCDaemonAgentManager["listSessionProcesses"];
     readonly stopSessionProcess?: AgenCDaemonAgentManager["stopSessionProcess"];
+    readonly compactSession?: AgenCDaemonAgentManager["compactSession"];
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
     readonly pendingElicitations?: AgenCDaemonAgentManager["pendingElicitations"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
@@ -1616,6 +1635,17 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateSessionClearParams(params),
           ),
         );
+      case "session.compact":
+        if (this.#agentManager.compactSession === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(
+          id,
+          await this.#agentManager.compactSession(
+            validateSessionCompactParams(params),
+            signal,
+          ),
+        );
       case "session.snapshot":
         return successResponse(
           id,
@@ -1649,7 +1679,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           const clientMinor = Number(connection.initializeState?.clientProtocol.version.split(".")[1] ?? 0);
           const transcript = await this.#agentManager.getSessionTranscriptV2(
             validateSessionTranscriptV2Params(params),
-            { includeCompleteMessages: clientMinor < 18 },
+            { includeCompleteMessages: clientMinor < 18, ...(params.schemaVersion === 3 ? { schemaVersion: 3 as const } : {}) },
           );
           if (clientMinor >= 18) return successResponse(id, transcript);
           // Protocol 1.17 has no artifact RPC. Restore complete messages only
@@ -1698,6 +1728,15 @@ export class AgenCDaemonJsonRpcDispatcher {
           }
           return emptyResponse;
         }
+      case "session.turn.diff": {
+        if (connection.initializeState?.clientCapabilities["turn.changes.v1"] !== true ||
+            connection.initializeState?.clientCapabilities["turn.diff.read.v1"] !== true ||
+            this.#agentManager.readSessionTurnDiff === undefined) return methodNotImplementedResponse(id, method);
+        const value = validateObjectShape(params, { methodName: method, stringFields: ["sessionId", "turnId", "path"] });
+        for (const key of ["sessionId", "turnId", "path"]) validateRequiredString(value, method, key);
+        if (String(value.path).length > 512 || String(value.turnId).length > 256) throw invalidParams("turn diff identifier exceeds limit");
+        return successResponse(id, await this.#agentManager.readSessionTurnDiff(value as SessionTurnDiffParams));
+      }
       case "session.artifact.read":
         {
           return successResponse(id, await this.#agentManager.readSessionArtifact(validateSessionArtifactReadParams(params)));
@@ -1920,6 +1959,8 @@ export class AgenCDaemonJsonRpcDispatcher {
             AGENC_DAEMON_METHOD_CAPABILITIES_KEY
           ]["session.transcript.v2"] === true,
           connection.remoteAccess === undefined,
+          connection,
+          turnAdviceReaderOf(connection),
         );
       case "message.stream":
         return this.#streamMessage(
@@ -1930,6 +1971,8 @@ export class AgenCDaemonJsonRpcDispatcher {
             AGENC_DAEMON_METHOD_CAPABILITIES_KEY
           ]["session.transcript.v2"] === true,
           connection.remoteAccess === undefined,
+          connection,
+          turnAdviceReaderOf(connection),
         );
       case "thread/realtime/start":
         return successResponse(
@@ -2637,11 +2680,16 @@ export class AgenCDaemonJsonRpcDispatcher {
     signal: AbortSignal,
     identitySafeCancellation: boolean,
     localMcpAccess: boolean,
+    connection: AgenCDaemonJsonRpcConnection,
+    adviceReader: TurnAdviceReader,
   ): Promise<AgenCDaemonResponse> {
     const sendParams = validateMessageSendParams(params);
     const messageId = sendParams.clientMessageId ?? this.#createMessageId();
     const acceptedAt = this.#now();
-    const submissionResult = await this.#runMessageWithCancel(
+    const submissionResult = await connection.promptProgress.run(
+      sendParams.sessionId, messageId,
+      sendParams.includeToolProgress === true && connection.initializeState?.clientCapabilities["tool.progress.shell.v1"] === true,
+      () => this.#runMessageWithCancel(
       signal,
       sendParams.sessionId,
       !identitySafeCancellation || sendParams.clientMessageId === undefined,
@@ -2649,6 +2697,8 @@ export class AgenCDaemonJsonRpcDispatcher {
         this.#agentManager.streamAgentMessage({
           sessionId: sendParams.sessionId,
           content: sendParams.content,
+          ...(sendParams.includeToolProgress === true && connection.initializeState?.clientCapabilities["tool.progress.shell.v1"] === true ? { includeToolProgress: true } : {}),
+          ...(sendParams.turnChanges !== undefined && connection.initializeState?.clientCapabilities["turn.changes.v1"] === true ? { turnChanges: sendParams.turnChanges } : {}),
           ...displayUserMessageFromMetadata(
             "message.send",
             sendParams.metadata,
@@ -2658,11 +2708,12 @@ export class AgenCDaemonJsonRpcDispatcher {
           acceptedAt,
           methodName: "message.send",
           localMcpAccess,
+          adviceReader,
           ...(sendParams.ifBusy !== undefined
             ? { ifBusy: sendParams.ifBusy }
             : {}),
         }),
-    );
+    ));
     const submission = submissionResult ?? {
       disposition: "started" as const,
       acceptedAt,
@@ -2691,12 +2742,17 @@ export class AgenCDaemonJsonRpcDispatcher {
     signal: AbortSignal,
     identitySafeCancellation: boolean,
     localMcpAccess: boolean,
+    connection: AgenCDaemonJsonRpcConnection,
+    adviceReader: TurnAdviceReader,
   ): Promise<AgenCDaemonResponse> {
     const streamParams = validateMessageStreamParams(params);
     const messageId = streamParams.clientMessageId ?? this.#createMessageId();
     const streamId = streamParams.streamId ?? messageId;
     const acceptedAt = this.#now();
-    const submissionResult = await this.#runMessageWithCancel(
+    const submissionResult = await connection.promptProgress.run(
+      streamParams.sessionId, messageId,
+      streamParams.includeToolProgress === true && connection.initializeState?.clientCapabilities["tool.progress.shell.v1"] === true,
+      () => this.#runMessageWithCancel(
       signal,
       streamParams.sessionId,
       !identitySafeCancellation || streamParams.clientMessageId === undefined,
@@ -2704,6 +2760,8 @@ export class AgenCDaemonJsonRpcDispatcher {
         this.#agentManager.streamAgentMessage({
           sessionId: streamParams.sessionId,
           content: streamParams.content,
+          ...(streamParams.includeToolProgress === true && connection.initializeState?.clientCapabilities["tool.progress.shell.v1"] === true ? { includeToolProgress: true } : {}),
+          ...(streamParams.turnChanges !== undefined && connection.initializeState?.clientCapabilities["turn.changes.v1"] === true ? { turnChanges: streamParams.turnChanges } : {}),
           ...(streamParams.exactOutput !== undefined ? { exactOutput: streamParams.exactOutput } : {}),
           ...(streamParams.skillInvocation !== undefined
             ? { skillInvocation: streamParams.skillInvocation }
@@ -2716,11 +2774,12 @@ export class AgenCDaemonJsonRpcDispatcher {
           streamId,
           acceptedAt,
           localMcpAccess,
+          adviceReader,
           ...(streamParams.ifBusy !== undefined
             ? { ifBusy: streamParams.ifBusy }
             : {}),
         }),
-    );
+    ));
     const submission = submissionResult ?? {
       disposition: "started" as const,
       acceptedAt,
@@ -2908,9 +2967,20 @@ export class AgenCDaemonJsonRpcConnection {
     return this.#daemonSocketIdentity;
   }
 
+  readonly promptProgress = new PromptProgressGate();
+
   get sendNotification():
     ((message: JsonObject) => void | Promise<void>) | undefined {
-    return this.printEventSink ?? this.#sendNotification;
+    const send = this.printEventSink ?? this.#sendNotification;
+    if (!send) return undefined;
+    return (message) => {
+      const projected = timelineNotification(message, this.#initializeState?.clientCapabilities);
+      if (projected !== null) {
+        const progress = this.#initializeState?.clientCapabilities["tool.progress.shell.v1"] === true
+          ? this.promptProgress.project(projected) : projected;
+        if (progress !== null) return send(progress);
+      }
+    };
   }
 
   get rawSendNotification(): ((message: JsonObject) => void | Promise<void>) | undefined {
@@ -3106,12 +3176,26 @@ function methodSupportsRequestCancellation(
     method === "csvJob.review.show" ||
     method === "csvJob.review.resolve" ||
     method === "session.partialCompactFromMessage" ||
+    method === "session.compact" ||
     method === "session.rewindConversationToMessage" ||
     method === "session.shell.execute" ||
     method === "session.statusLine.execute" ||
     method === "message.stream" ||
     method === "message.send"
   );
+}
+
+/**
+ * Who reads the advice of a turn this connection prompts: the TUI, which
+ * declares it runs slash commands; a client that offers Compact itself; or
+ * any other client. A remote connection initializes with no client
+ * capabilities, so it is a plain client.
+ */
+function turnAdviceReaderOf(connection: AgenCDaemonJsonRpcConnection): TurnAdviceReader {
+  const capabilities = connection.initializeState?.clientCapabilities;
+  if (capabilities?.[AGENC_SLASH_COMMAND_ADVICE_CAPABILITY] === true) return "tui";
+  if (capabilities?.[AGENC_COMPACT_ACTION_ADVICE_CAPABILITY] === true) return "client_with_compact";
+  return "client";
 }
 
 function objectParams(params: unknown): JsonObject {
@@ -4047,6 +4131,15 @@ function validateSessionClearParams(params: JsonObject): SessionClearParams {
   return validated as SessionClearParams;
 }
 
+function validateSessionCompactParams(params: JsonObject): SessionCompactParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.compact",
+    stringFields: ["sessionId"],
+  });
+  validateRequiredString(validated, "session.compact", "sessionId");
+  return validated as SessionCompactParams;
+}
+
 function validateSessionSnapshotParams(
   params: JsonObject,
 ): SessionSnapshotParams {
@@ -4093,8 +4186,12 @@ function validateSessionTranscriptV2Params(
   const validated = validateObjectShape(params, {
     methodName: "session.transcript.v2",
     stringFields: ["sessionId"],
+    numberFields: ["schemaVersion"],
   });
   validateRequiredString(validated, "session.transcript.v2", "sessionId");
+  if (params.schemaVersion !== undefined && params.schemaVersion !== 2 && params.schemaVersion !== 3) {
+    throw invalidParams("session.transcript.v2 schemaVersion must be 2 or 3");
+  }
   return validated as SessionTranscriptV2Params;
 }
 
@@ -4838,13 +4935,18 @@ function validateMessageSendParams(params: JsonObject): MessageSendParams {
   const validated = validateObjectShape(params, {
     methodName: "message.send",
     stringFields: ["sessionId", "clientMessageId", "ifBusy"],
-    objectFields: ["metadata"],
-    valueFields: ["content"],
+    objectFields: ["metadata", "turnChanges"],
+    valueFields: ["content", "includeToolProgress"],
   });
   validateRequiredString(validated, "message.send", "sessionId");
   validateMessageContent("message.send", "content", validated.content);
+  if (validated.includeToolProgress !== undefined && typeof validated.includeToolProgress !== "boolean") throw invalidParams("message.send includeToolProgress must be boolean");
   if (validated.ifBusy !== undefined && validated.ifBusy !== "reject") {
     throw invalidParams("message.send param 'ifBusy' must be 'reject'");
+  }
+  if (validated.turnChanges !== undefined) {
+    const changes = validateObjectShape(validated.turnChanges as JsonObject, { methodName: "message.send.turnChanges", valueFields: ["includeDiff"] });
+    if (changes.includeDiff !== undefined && typeof changes.includeDiff !== "boolean") throw invalidParams("turnChanges.includeDiff must be boolean");
   }
   return validated as MessageSendParams;
 }
@@ -4853,8 +4955,8 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   const validated = validateObjectShape(params, {
     methodName: "message.stream",
     stringFields: ["sessionId", "clientMessageId", "streamId", "ifBusy"],
-    objectFields: ["metadata", "skillInvocation"],
-    valueFields: ["content", "exactOutput"],
+    objectFields: ["metadata", "skillInvocation", "turnChanges"],
+    valueFields: ["content", "exactOutput", "includeToolProgress"],
   });
   if (
     typeof validated.sessionId !== "string" ||
@@ -4863,6 +4965,7 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
     throw invalidParams("message.stream requires sessionId");
   }
   validateMessageContent("message.stream", "content", validated.content);
+  if (validated.includeToolProgress !== undefined && typeof validated.includeToolProgress !== "boolean") throw invalidParams("message.stream includeToolProgress must be boolean");
   if (validated.ifBusy !== undefined && validated.ifBusy !== "reject") {
     throw invalidParams("message.stream param 'ifBusy' must be 'reject'");
   }
@@ -4871,6 +4974,10 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   }
   if (validated.skillInvocation !== undefined) {
     validateMessageSkillInvocation(validated.skillInvocation as JsonObject);
+  }
+  if (validated.turnChanges !== undefined) {
+    const changes = validateObjectShape(validated.turnChanges as JsonObject, { methodName: "message.stream.turnChanges", valueFields: ["includeDiff"] });
+    if (changes.includeDiff !== undefined && typeof changes.includeDiff !== "boolean") throw invalidParams("turnChanges.includeDiff must be boolean");
   }
   return validated as MessageStreamParams;
 }

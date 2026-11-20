@@ -76,10 +76,17 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * event, which names the closed request by its event id. Both are sent only to
  * clients that negotiated 1.36, which use them to close elicitation prompts
  * that are no longer pending.
+ * 1.37 adds `session.compact`: the TUI's `/compact` for one idle session,
+ * answering with the context tokens before and after. A client finds it in
+ * `daemon.methods`; it is not gated by the negotiated version, since nothing
+ * the daemon sends asks a client to call it.
+ * It also reads two optional client capabilities that only word the advice
+ * of a context-full failure: `turn.advice.slashCommands.v1` (the TUI) and
+ * `turn.advice.compactAction.v1` (a client that offers Compact itself).
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.36.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.37.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -116,6 +123,20 @@ export const AGENC_PENDING_APPROVALS_LIST_CAPABILITY =
 /** Client understands the cross-provider disclosure and explicit approval marker. */
 export const AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY =
   "approvals.cross_provider_spawn.v1" as const;
+/**
+ * A client that runs Core's slash commands (the TUI). A turn it prompted may
+ * end with advice that names /compact and /clear; any other client gets the
+ * same advice in plain words.
+ */
+export const AGENC_SLASH_COMMAND_ADVICE_CAPABILITY =
+  "turn.advice.slashCommands.v1" as const;
+/**
+ * A client that offers Compact itself when a turn ends because the
+ * conversation no longer fits (`turn_failed` code `compact_failed`): a turn
+ * it prompted ends without advice.
+ */
+export const AGENC_COMPACT_ACTION_ADVICE_CAPABILITY =
+  "turn.advice.compactAction.v1" as const;
 /**
  * `message.stream` accepts `skillInvocation` (protocol 1.35): a daemon without
  * it refuses the whole request when the field is present.
@@ -206,12 +227,14 @@ export const AGENC_DAEMON_METHODS = [
   "session.detach",
   "session.terminate",
   "session.clear",
+  "session.compact",
   "session.snapshot",
   "session.processes.list",
   "session.processes.stop",
   "session.goal",
   "session.transcript",
   "session.transcript.v2",
+  "session.turn.diff",
   "session.artifact.read",
   "session.cancelTurn",
   "session.resolveToolCall",
@@ -289,6 +312,13 @@ export type AgenCDaemonMethodCapabilities = JsonObject & {
 };
 
 export type AgenCDaemonServerCapabilities = JsonObject & {
+  readonly "turn.failure.v1"?: true;
+  readonly "turn.usage.v1"?: true;
+  readonly "transcript.tools.v3"?: true;
+  readonly "transcript.plans.v3"?: true;
+  readonly "tool.progress.shell.v1"?: true;
+  readonly "turn.changes.v1"?: true;
+  readonly "turn.diff.read.v1"?: true;
   readonly [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: AgenCDaemonMethodCapabilities;
   readonly [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]?: true;
   readonly [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]?: true;
@@ -876,6 +906,14 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description: "Clear a daemon-owned session's conversation history.",
   },
+  "session.compact": {
+    method: "session.compact",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Compact an idle daemon-owned session's conversation the way the TUI's /compact does.",
+  },
   "session.snapshot": {
     method: "session.snapshot",
     direction: "client-to-server",
@@ -921,6 +959,13 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description:
       "Read an identity-bearing, sequence-watermarked transcript projection suitable for atomic snapshot-plus-live reconciliation.",
+  },
+  "session.turn.diff": {
+    method: "session.turn.diff",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Read one bounded immutable file diff from an opted-in turn checkpoint.",
   },
   "session.artifact.read": {
     method: "session.artifact.read",
@@ -1938,6 +1983,11 @@ export interface SessionClearParams extends JsonObject {
   readonly sessionId: string;
 }
 
+/** `session.compact`: the session whose whole active conversation is compacted. */
+export interface SessionCompactParams extends JsonObject {
+  readonly sessionId: string;
+}
+
 /**
  * Protocol-1.0 compatibility request shipped with agenc-sdk 0.3.0.
  *
@@ -2385,6 +2435,8 @@ export type MessageContentBlock =
 export type MessageContent = string | readonly MessageContentBlock[];
 
 export interface MessageSendParams extends JsonObject {
+  readonly turnChanges?: { readonly includeDiff?: boolean };
+  readonly includeToolProgress?: boolean;
   readonly sessionId: string;
   readonly content: MessageContent;
   readonly clientMessageId?: string;
@@ -3004,6 +3056,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"session.detach", SessionDetachParams>
   | AgenCDaemonRequestWithParams<"session.terminate", SessionTerminateParams>
   | AgenCDaemonRequestWithParams<"session.clear", SessionClearParams>
+  | AgenCDaemonRequestWithParams<"session.compact", SessionCompactParams>
   | AgenCDaemonRequestWithParams<"session.snapshot", SessionSnapshotParams>
   | AgenCDaemonRequestWithParams<"session.processes.list", SessionProcessesListParams>
   | AgenCDaemonRequestWithParams<"session.processes.stop", SessionProcessesStopParams>
@@ -3013,6 +3066,7 @@ export type AgenCDaemonRequest =
       "session.transcript.v2",
       SessionTranscriptV2Params
     >
+  | AgenCDaemonRequestWithParams<"session.turn.diff", SessionTurnDiffParams>
   | AgenCDaemonRequestWithParams<"session.artifact.read", SessionArtifactReadParams>
   | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams>
   | AgenCDaemonRequestWithParams<
@@ -3443,12 +3497,28 @@ export interface RunDurableRecord extends JsonObject {
   readonly metadata?: JsonObject;
 }
 
+/**
+ * Marks an inspection answer as partial. `split_run`: a resume found the run's
+ * project again from its folder, got another project, and wrote rows of the
+ * run into that project's database too. Those rows are bound to the run's
+ * rollout, so the answer reads the project that holds the rollout: the replay
+ * is complete, but the records in `omittedProjectDirs` are left out (their
+ * admission records, and the daemon's run row there: `durableRun` is the
+ * first project's).
+ */
+export interface RunPartialAnswer extends JsonObject {
+  readonly reason: "split_run";
+  readonly omittedProjectDirs: readonly string[];
+}
+
 export interface RunStateSource extends JsonObject {
   readonly kind: "existing_state_database";
   readonly projectDir: string;
   readonly admissionProjectDir?: string;
   readonly admissionLastSequence?: number;
   readonly readonly: true;
+  /** Present only when the answer leaves out records of the run. */
+  readonly partial?: RunPartialAnswer;
 }
 
 export interface RunAdmissionSourceAvailability extends JsonObject {
@@ -3651,6 +3721,8 @@ export interface RunJournalReplaySource extends JsonObject {
   readonly canonical: "rollout_jsonl";
   readonly projection: "thread_rollout_items";
   readonly projectDir: string;
+  /** Present only for a split run. The replay still reads the whole rollout. */
+  readonly partial?: RunPartialAnswer;
 }
 
 export interface RunAdmissionReplaySource extends JsonObject {
@@ -3658,6 +3730,8 @@ export interface RunAdmissionReplaySource extends JsonObject {
   readonly available: boolean;
   readonly sequenceScope: "project_state_database";
   readonly projectDir: string;
+  /** Present only when the answer leaves out records of the run. */
+  readonly partial?: RunPartialAnswer;
 }
 
 export type RunReplaySource = RunJournalReplaySource | RunAdmissionReplaySource;
@@ -3688,6 +3762,8 @@ export interface RunEvidenceSource extends JsonObject {
   readonly admissionJournal: boolean;
   readonly workflowEvidenceIncluded: boolean;
   readonly completeness: RunEvidenceCompleteness;
+  /** Present only when the answer leaves out records of the run. */
+  readonly partial?: RunPartialAnswer;
 }
 
 export interface RunEvidenceCursor extends JsonObject {
@@ -3804,6 +3880,27 @@ export interface SessionClearResult extends JsonObject {
   readonly sessionId: string;
   readonly cleared: true;
   readonly clearedAt: string;
+}
+
+/**
+ * `session.compact`. `ok: false` changed nothing: `code` `ACTIVE_TURN` while a
+ * turn runs or a prompt waits to start, or the compaction's own refusal
+ * (`MESSAGE_NOT_FOUND` for a conversation with nothing to compact,
+ * `ROLLOUT_UNAVAILABLE`, `ROLLOUT_DEGRADED`, `ABORTED`).
+ */
+export interface SessionCompactResult extends JsonObject {
+  readonly sessionId: string;
+  readonly ok: boolean;
+  /** The active conversation's context tokens before compaction, as the compaction measured them. */
+  readonly tokensBefore?: number;
+  /** The same measure of the compacted conversation. */
+  readonly tokensAfter?: number;
+  /** The durable compaction's rollback ID (`session.rollbackCompaction`). */
+  readonly attemptId?: string;
+  /** The text the TUI's /compact prints for this compaction. */
+  readonly displayText?: string;
+  readonly code?: string;
+  readonly message?: string;
 }
 
 export interface SessionResolveToolCallResult extends JsonObject {
@@ -3925,7 +4022,24 @@ export interface SessionTranscriptParams extends JsonObject {
   readonly sessionId: string;
 }
 
+export interface SessionTurnDiffParams extends JsonObject {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly path: string;
+}
+export interface SessionTurnDiffResult extends JsonObject {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly path: string;
+  readonly diff?: string;
+  readonly binary?: true;
+  readonly diffTruncated?: true;
+  readonly unavailable?: true;
+  readonly note?: string;
+}
+
 export interface SessionTranscriptV2Params extends JsonObject {
+  readonly schemaVersion?: 2 | 3;
   readonly sessionId: string;
 }
 
@@ -4102,7 +4216,34 @@ export interface SessionTranscriptV2Result extends JsonObject {
   readonly pendingEffectReviews?: readonly PendingEffectReview[];
   /** Active selectable canonical user IDs; archived display rows are not targets. */
   readonly activeUserMessageIds?: readonly string[];
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 2 | 3;
+  /** Present only when schemaVersion 3 was requested. No tool outputs. */
+  readonly turns?: readonly {
+    readonly turnId: string;
+    readonly plan?: { readonly planItemId: string; readonly title: string; readonly text: string; readonly state: "running" | "done"; readonly truncated?: boolean };
+    readonly todos?: readonly { readonly text: string; readonly state: "pending" | "running" | "done" }[];
+    readonly todosTruncated?: boolean;
+    /** Values recorded by Core at completion, never reconstructed from session totals. */
+    readonly usage?: {
+      readonly mark: "reported" | "missing";
+      readonly input?: number; readonly output?: number; readonly cached?: number; readonly reasoning?: number;
+      readonly costUsd?: number; readonly billedEstimateUsd?: number; readonly planCalls?: number;
+    };
+    /** Checkpoint summary only. Diff text is fetched separately. */
+    readonly changes?: {
+      readonly turnId: string; readonly from: "checkpoint";
+      readonly files: readonly { readonly path: string; readonly op: "created" | "modified" | "deleted"; readonly added: number; readonly removed: number; readonly binary?: boolean }[];
+      readonly skipped?: boolean; readonly note?: string; readonly filesTruncated?: true;
+    };
+    readonly toolCalls: readonly {
+      readonly callId: string;
+      readonly toolName: string;
+      readonly inputDigest: { readonly [key: string]: string };
+      readonly isError?: boolean;
+      readonly durationMs?: number;
+    }[];
+  }[];
+  readonly turnsTruncated?: boolean;
   readonly sessionId: string;
   readonly runId: string;
   readonly historyEpoch: string;
@@ -4190,6 +4331,9 @@ export interface SessionPartialCompactFromMessageResult extends JsonObject {
   readonly eventAlreadyEmitted: boolean;
   readonly attemptId?: string;
   readonly displayText?: string;
+  /** The compacted span's context tokens before and after, as the compaction measured them. */
+  readonly preCompactTokens?: number;
+  readonly postCompactTokens?: number;
   readonly code?: string;
   readonly message?: string;
   readonly event?: JsonObject;
@@ -4702,12 +4846,14 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.detach": SessionDetachResult;
   readonly "session.terminate": SessionTerminateResult;
   readonly "session.clear": SessionClearResult;
+  readonly "session.compact": SessionCompactResult;
   readonly "session.snapshot": SessionSnapshotResult;
   readonly "session.processes.list": SessionProcessesListResult;
   readonly "session.processes.stop": SessionProcessesStopResult;
   readonly "session.goal": SessionGoalResult;
   readonly "session.transcript": SessionTranscriptResult;
   readonly "session.transcript.v2": SessionTranscriptV2Result;
+  readonly "session.turn.diff": SessionTurnDiffResult;
   readonly "session.artifact.read": SessionArtifactReadResult;
   readonly "session.cancelTurn": SessionCancelTurnResult;
   readonly "session.resolveToolCall": SessionResolveToolCallResult;

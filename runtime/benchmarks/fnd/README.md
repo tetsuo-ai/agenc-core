@@ -159,9 +159,9 @@ npm run check:fnd-benchmark-baseline:fresh-clone --workspace=@tetsuo-ai/runtime
 npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- --plan
 ```
 
-`--source-revision` must resolve to an ancestor of both `HEAD` and the
-repository default branch (`origin/HEAD`, else `origin/main`, else
-`origin/master`, else local `main` / `master`) whose
+`--source-revision` must resolve to an ancestor of both `HEAD` and this
+line's published branch, `core-desktop` (`origin/core-desktop`, else local
+`core-desktop`; `BENCHMARK_DEFAULT_BRANCH` in `provenance.mjs`), whose
 complete `runtime/src` tree exactly matches the checkout. Capture refuses a
 dirty worktree, including staged, unstaged, ignored, and ordinary untracked
 files, before it writes artifacts. Use the default-branch parent when the
@@ -171,25 +171,26 @@ dependency to a revision that remains reachable after a squash merge.
 
 The fresh-clone lane bundles named `HEAD` and default-branch refs. Passing
 raw object IDs to `git bundle create` produces an empty bundle, so the
-lane reinstalls `main` and `origin/HEAD` in the clone before `--check`.
+lane reinstalls `core-desktop`, `origin/core-desktop` and `origin/HEAD` in
+the clone before `--check`.
 
 Linked worktrees, including worktrees of a bare repository, need at least one
 of those default-branch refs in their shared Git repository. A bare mirror
 that stores the upstream branch only under a custom name will fail the
 baseline contract with `could not resolve the repository default branch`.
-An absent `origin/HEAD` alone is harmless when another listed ref exists.
-Provision `refs/remotes/origin/main` from the independently verified upstream
-default branch before running the contract, for example in an isolated clone:
+`origin/HEAD` is never consulted on this line.
+Provision `refs/remotes/origin/core-desktop` from the independently verified
+upstream branch before running the contract, for example in an isolated clone:
 
 ```sh
-git fetch <upstream-url> refs/heads/main:refs/remotes/origin/main
+git fetch <upstream-url> refs/heads/core-desktop:refs/remotes/origin/core-desktop
 ```
 
-Use the actual upstream default-branch name when it differs. If the verified
-commit is already available offline, `git update-ref refs/remotes/origin/main
-<verified-upstream-main-commit>` supplies the same prerequisite without a
-fetch. Refs are shared by linked worktrees, so coordinate this setup with the
-repository owner or use an isolated clone. Do not substitute the topic's
+If the verified commit is already available offline, `git update-ref
+refs/remotes/origin/core-desktop <verified-upstream-core-desktop-commit>`
+supplies the same prerequisite without a fetch. Refs are shared by linked
+worktrees, so coordinate this setup with the repository owner or use an
+isolated clone. Do not substitute the topic's
 `HEAD` or disable the ancestry check: either would erase the independent
 default-branch provenance check.
 
@@ -203,3 +204,25 @@ deterministically from it, embeds the JSON SHA-256, records the reproduction
 command, and summarizes machine/OS/CPU/RAM/filesystem, Node/npm, SQLite, and
 ripgrep metadata. Source-checkout and temporary-fixture filesystems are recorded
 separately because they may be different mounts.
+
+## The core-desktop line
+
+`core-desktop` is never merged into `main` (`CORE-DESKTOP.md`), so `main`
+never holds a source revision with this line's production files. Its
+baselines are therefore bound to `core-desktop` itself, never to `main` or
+`origin/HEAD` (which names `main` in an ordinary clone), and the contract
+test fails if that binding is lost. A change to a file in a benchmark's
+module closure (or to the harness) leaves the contract red until the
+baseline is recaptured for the line's own head, the way a `main` release
+recaptures after it lands:
+
+1. In an isolated clone, fetch the published branch into
+   `refs/remotes/origin/core-desktop` and check out that commit.
+2. Install and build as a `main` release recapture does, and capture with
+   the pinned toolchain and the default `--source-revision HEAD`.
+3. Commit only `baseline.v1.json` and `baseline.v1.md` on top of that commit
+   and land it on `core-desktop`. The captured revision is already published,
+   so any merge method keeps it reachable.
+
+When `main` is merged into `core-desktop` on purpose, keep this line's
+`BENCHMARK_DEFAULT_BRANCH` and recapture after the merge.

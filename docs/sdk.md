@@ -478,7 +478,11 @@ the execution-admission journal; its source declares
 other runs. `run.evidence` declares
 `workflowEvidenceIncluded: true` for canonical journal pages and `false` for
 that compatibility source, together with an explicit completeness value and
-content hashes.
+content hashes. A run split across project databases by an earlier resume is
+read from the project that holds its rollout, and every answer's
+`source.partial` (`reason: "split_run"`, `omittedProjectDirs`) says so: the
+replay is complete, but the admission summary and `durableRun` leave out those
+databases.
 
 ## Daemon method surface (54 methods)
 
@@ -491,7 +495,7 @@ Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 | agents              | `agent.create`, `agent.list`, `agent.attach`, `agent.stop`, `agent.logs`                                                                                                                                                                                |
 | runs                | `run.start`, `run.status`, `run.result`, `run.replay`, `run.evidence`, `run.cancel`                                                                                                                                                                     |
 | CSV review          | `csvJob.review.list`, `csvJob.review.show`, `csvJob.review.resolve`                                                                                                                                                                                     |
-| sessions            | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.snapshot`, `session.transcript`, `session.transcript.v2`, `session.cancelTurn`, `session.resolveToolCall`, `session.mcp.status`, `session.mcp.addServer` |
+| sessions            | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.compact`, `session.snapshot`, `session.transcript`, `session.transcript.v2`, `session.cancelTurn`, `session.resolveToolCall`, `session.mcp.status`, `session.mcp.addServer` |
 | messaging           | `message.send`, `message.stream`                                                                                                                                                                                                                        |
 | realtime            | `thread/realtime/start`, `thread/realtime/appendAudio`, `thread/realtime/appendText`, `thread/realtime/stop`, `thread/realtime/listVoices`                                                                                                              |
 | tools / permissions | `tool.approve`, `tool.deny`, `tool.cancel`, `elicitation.respond`, `permission.list`                                                                                                                                                                    |
@@ -513,10 +517,10 @@ evidence shape (`toolCallId`, `disposition`, `evidenceRef`, and
 `evidenceSha256`), and partial mixtures are rejected. An earlier-shape request
 leaves durable effects unchanged in `remaining`.
 
-Protocol version constant: **`1.9.0`**
+Protocol version constant: **`1.37.0`**
 (`AGENC_SDK_DAEMON_PROTOCOL_VERSION`). Handshake rules and
 `PROTOCOL_VERSION_UNSUPPORTED` live in [daemon.md](reference/daemon.md).
-The SDK retries initialization at a daemon running protocol 1.0 through 1.8 and
+The SDK retries initialization at the older 1.x version a daemon reports and
 uses advertised capabilities for additive fallbacks. Protocol 1.6 made the
 owning runtime options and live run-settings snapshot required in `agent.attach`.
 Protocol 1.7 adds required inactive auto availability and exact-workspace bypass

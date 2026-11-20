@@ -1,3 +1,6 @@
+import { withLiveShellProgress } from "./live-shell-progress.js";
+import { beginWorkspaceChanges, type WorkspaceChangeCheckpoint } from "./workspace-changes.js";
+import { TurnUsageCollector } from "./turn-usage.js";
 import { leanEditMode, resolveLightRequest } from "./light-request/settings.js";
 import { announceLightRequest } from "./light-request/notice.js";
 import { editThenRunCommand, editThenRunEnabled } from "../tools/edit-then-run.js";
@@ -348,9 +351,12 @@ export type {
 } from "./run-turn-compaction.js";
 
 import { taskBudgetOf, continueInteractiveTaskBudget, interactiveTaskBudget } from "./task-budget.js";
+import { contextFullAdvice, turnAdviceReader, type TurnAdviceReader } from "./turn-advice.js";
 import { StepLimitTrail, stepLimitReminder, stepLimitWrapup, STEP_LIMIT_WRAPUP_INSTRUCTION } from "./step-limit-wrapup.js";
 
 export interface RunTurnOptions {
+  readonly includeToolProgress?: boolean;
+  readonly turnChanges?: { readonly includeDiff?: boolean };
   /**
    * Read at each provider failure, with that failure. True while a live child
    * routing supervisor could still restart this task on another provider for
@@ -1702,7 +1708,7 @@ function emitContextFitNotice(
   });
 }
 
-function contextTooSmallMessage(pressure: PreparedRequestContextPressure, nonInteractive: boolean): string {
+function contextTooSmallMessage(pressure: PreparedRequestContextPressure, reader: TurnAdviceReader | "none"): string {
   const needed = Number.isFinite(pressure.inputTokens)
     ? `about ${Math.round(pressure.inputTokens).toLocaleString("en-US")} tokens`
     : "more tokens than can be counted";
@@ -1711,7 +1717,7 @@ function contextTooSmallMessage(pressure: PreparedRequestContextPressure, nonInt
     : "the context window";
   return `The conversation is too large for the next reply: it needs ${needed}, more than ${window} ` +
     "allows with room for a reply, even with every tool result shortened." +
-    (nonInteractive ? "" : " Run /compact to retry, start a new conversation with /clear, or use a model with a larger context window.");
+    contextFullAdvice(reader, "full");
 }
 
 async function preparedRequestContextPressure(
@@ -2191,7 +2197,21 @@ function restoreModelSampleResumePrompt(state: TurnState): void {
  * so bin/agenc.ts renders without a rewrite. Returns the terminal
  * reason as the generator return value.
  */
-export async function* runTurnKernel(
+export function runTurnKernel(
+  session: Session, ctx: TurnContext, userMessage: string | readonly LLMContentPart[], opts: RunTurnOptions = {},
+): AsyncGenerator<PhaseEvent, Terminal> {
+  const iterator = runTurnKernelScoped(session, ctx, userMessage, opts);
+  const run = <T>(task: () => T): T => withLiveShellProgress(opts.includeToolProgress === true, task);
+  return {
+    next: (...args) => run(() => iterator.next(...args)),
+    return: value => run(() => iterator.return(value)),
+    throw: error => run(() => iterator.throw(error)),
+    [Symbol.asyncIterator]() { return this; },
+    [Symbol.asyncDispose]: () => run(() => iterator[Symbol.asyncDispose]()),
+  };
+}
+
+async function* runTurnKernelScoped(
   session: Session,
   ctx: TurnContext,
   userMessage: string | readonly LLMContentPart[],
@@ -2207,6 +2227,24 @@ export async function* runTurnKernel(
   // recovery in rollout-reconstruction would treat every clean turn
   // as a `process_killed` abort.
   const turnStartedAt = Date.now();
+  let checkpoint: WorkspaceChangeCheckpoint | undefined;
+  let pendingTerminal: (() => void) | undefined;
+  const emitTerminal = (emit: () => void): void => {
+    if (checkpoint) pendingTerminal = emit;
+    else emit();
+  };
+  const flushChanges = async (): Promise<void> => {
+    if (!checkpoint || !pendingTerminal) return;
+    const current = checkpoint;
+    checkpoint = undefined;
+    const emit = pendingTerminal;
+    pendingTerminal = undefined;
+    try {
+      const changes = await current.finish(ctx.subId, String(session.conversationId));
+      session.emit({ id: session.nextInternalSubId(), msg: { type: "turn_changes", payload: changes } });
+    } finally { current.dispose(); emit(); }
+  };
+  let turnUsage: TurnUsageCollector | undefined;
   let turnStarted = false;
   let terminalAttempted = false;
   let usableFinalAnswer = false;
@@ -2284,24 +2322,25 @@ export async function* runTurnKernel(
       return;
     }
     terminalAttempted = true;
-    session.emit({
+    emitTerminal(() => session.emit({
       id: session.nextInternalSubId(),
       msg: {
         type: "turn_complete",
         payload: {
           turnId: ctx.subId,
           lastAgentMessage: content,
+          usage: opts.resume === undefined ? turnUsage?.snapshot() : {},
           completedAt: Date.now(),
           durationMs: Date.now() - turnStartedAt,
           usableFinalAnswer: content.trim().length > 0,
         },
       },
-    });
+    }));
   };
   const emitTurnAborted = (reason: string): void => {
     if (terminalAttempted) return;
     terminalAttempted = true;
-    session.emitTurnAbortedOnce(ctx.subId, reason);
+    emitTerminal(() => session.emitTurnAbortedOnce(ctx.subId, reason));
   };
   const emitTurnFailed = (
     message: string,
@@ -2313,7 +2352,7 @@ export async function* runTurnKernel(
     const completedAt = Date.now();
     const transportFailure = transportFailureOf(error) ?? (code === "deadline_reached" ? lastTurnTransportFailure : undefined);
     const deadline = runDeadlineOf(session);
-    session.emit({
+    emitTerminal(() => session.emit({
       id: session.nextInternalSubId(),
       msg: createTurnFailedEvent({
         turnId: ctx.subId,
@@ -2325,7 +2364,7 @@ export async function* runTurnKernel(
         ...(transportFailure ? { transportFailure } : {}),
         ...(deadline ? { remainingDeadlineMs: Math.max(0, deadlineRemainingMs(deadline)) } : {}),
       }),
-    });
+    }));
   };
   const referenceContextItem = toTurnContextItem(ctx);
 
@@ -2420,8 +2459,13 @@ export async function* runTurnKernel(
   // release below flush them.
   const releaseTurnDurability = session.rolloutStore?.deferSyncsForTurn?.();
 
+  const admissionUsage = session.services.executionAdmission;
+  turnUsage = new TurnUsageCollector(admissionUsage?.getDirectUsageSummary?.bind(admissionUsage));
+  const unsubscribeTurnUsage = session.eventLog.subscribe(event => turnUsage?.observe(event));
+  signalCleanups.push(unsubscribeTurnUsage);
   try {
-    return yield* runTurnKernelInner(
+    if (opts.turnChanges !== undefined) checkpoint = await beginWorkspaceChanges(ctx.cwd, opts.turnChanges.includeDiff === true);
+    const inner = runTurnKernelInner(
       session,
       ctx,
       userContent,
@@ -2444,6 +2488,16 @@ export async function* runTurnKernel(
         signalCleanups,
       },
     );
+    if (!checkpoint) return yield* inner;
+    try {
+      while (true) {
+        const next = await inner.next();
+        await flushChanges();
+        if (next.done) return next.value;
+        yield next.value;
+      }
+    } finally { await inner.return({ reason: "cancelled" }); }
+
   } catch (error) {
     session.writeBehind?.finish();
     if (turnStarted) {
@@ -2451,20 +2505,21 @@ export async function* runTurnKernel(
     }
     throw error;
   } finally {
-    try { session.writeBehind?.finish(); }
+    try { await flushChanges(); }
     finally {
-      try {
-        for (const cleanup of signalCleanups) cleanup();
-        codeModeTurnWorker.dispose();
-      } finally {
+      checkpoint?.dispose();
+      try { session.writeBehind?.finish(); }
+      finally {
         try {
-          // The turn boundary: whatever this turn wrote is fsynced before
-          // the turn reports done.
-          releaseTurnDurability?.("sync");
+          for (const cleanup of signalCleanups) cleanup();
+          codeModeTurnWorker.dispose();
         } finally {
-          // A failed persistence barrier must still release the task's done
-          // signal, otherwise Stop can wait forever for this failed turn.
-          await session.onTaskFinished(ctx.subId);
+          try {
+            // Flush the turn before releasing the task's done signal.
+            releaseTurnDurability?.("sync");
+          } finally {
+            await session.onTaskFinished(ctx.subId);
+          }
         }
       }
     }
@@ -3980,7 +4035,7 @@ async function* runTurnKernelInner(
             }
             if (fitted.kind === "too_small") {
               throw new DeferredCompactionError(contextTooSmallMessage(
-                fitted.pressure, session.services?.runtimeOptions?.nonInteractive === true,
+                fitted.pressure, turnAdviceReader(session),
               ));
             }
             // The shortened request is dispatched as is; the next sample makes
@@ -4048,7 +4103,7 @@ async function* runTurnKernelInner(
               // A disabled gate or missing owner is not an exhausted attempt.
               throw new DeferredCompactionError(
                 "The conversation is too large for the next reply. " +
-                  (session.services?.runtimeOptions?.nonInteractive !== true ? "Run /compact to retry, or start a new conversation with /clear." : ""),
+                  contextFullAdvice(turnAdviceReader(session), "short"),
               );
             }
             const current = await requestPressure();
@@ -4075,7 +4130,7 @@ async function* runTurnKernelInner(
             if (structuralDecline === undefined) {
               throw new DeferredCompactionError(
                 "The conversation is too large for the next reply. " +
-                  (session.services?.runtimeOptions?.nonInteractive !== true ? "Run /compact to retry, or start a new conversation with /clear." : ""),
+                  contextFullAdvice(turnAdviceReader(session), "short"),
               );
             }
             // The fit re-measures every shortened request; this count only
@@ -4673,6 +4728,8 @@ export function runTurn(
       userMessage: string | readonly LLMContentPart[],
       opts?: {
         ctx?: TurnContext;
+        turnChanges?: RunTurnOptions["turnChanges"];
+        includeToolProgress?: boolean;
         exactOutput?: boolean;
         stepLimitWrapup?: RunTurnOptions["stepLimitWrapup"];
         childRoutingOwnsRetries?: (error: unknown) => boolean;
@@ -4697,6 +4754,8 @@ export function runTurn(
   if (typeof sessionOwner.runTurn === "function") {
     return sessionOwner.runTurn(userMessage, {
       ctx,
+      ...(opts.includeToolProgress === true ? { includeToolProgress: true } : {}),
+      ...(opts.turnChanges !== undefined ? { turnChanges: opts.turnChanges } : {}),
       exactOutput: opts.exactOutput,
       stepLimitWrapup: opts.stepLimitWrapup,
       childRoutingOwnsRetries: opts.childRoutingOwnsRetries,

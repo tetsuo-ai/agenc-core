@@ -477,11 +477,17 @@ export class StateSqliteReader {
 export function resolveStateDatabasePaths(
   options: OpenStateDatabaseOptions,
 ): StateDatabasePaths {
-  const projectDir = getProjectDir(
+  return stateDatabasePathsForProjectDir(getProjectDir(
     options.cwd,
     options.projectRootMarkers ?? DEFAULT_SESSION_ROOT_MARKERS,
     options.agencHome,
-  );
+  ));
+}
+
+/** The databases of one project directory under AGENC_HOME/projects. */
+export function stateDatabasePathsForProjectDir(
+  projectDir: string,
+): StateDatabasePaths {
   return {
     projectDir,
     stateDbPath: join(projectDir, STATE_DATABASE_FILENAME),

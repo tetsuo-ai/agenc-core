@@ -38,6 +38,7 @@ export interface UnifiedExecOwnerBinding {
 }
 
 export interface UnifiedExecProgressEvent {
+  readonly outputDropped?: true;
   readonly chunk: string;
   readonly stream: UnifiedExecStream;
   readonly processId?: number;

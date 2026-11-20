@@ -4,6 +4,7 @@ import {
   chmod,
   lstat,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -4776,6 +4777,131 @@ describe("resumed prompt cache and costs", () => {
         previous = cost.getTotalCostUsd();
         await boot.shutdown(); boot = undefined;
       }
+    } finally {
+      await boot?.shutdown();
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("persists the summed cost of a session the daemon revives from its rollout", async () => {
+    // `agenc -c -p` revives a stopped session: bootstrap resumes it from the
+    // canonical rollout, runs one more turn and saves cost-totals.json on stop.
+    await installBootstrapProviderStub();
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const [home, workspace] = await Promise.all(
+      ["revive-cost-home-", "revive-cost-ws-"].map((prefix) => mkdtemp(join(tmpdir(), prefix))),
+    );
+    const env = { ...process.env, HOME: home, AGENC_HOME: home, AGENC_WORKSPACE: workspace };
+    const base = { apiKey: "test", conversationId: "revive-cost", costSummaryOnExit: false, env } as const;
+    const turn = { id: "usage", msg: { type: "token_count" as const, payload: {
+      model: "gpt-6.1-terra", provider: "openai", promptTokens: 1000, completionTokens: 100,
+      totalTokens: 1100, cachedInputTokens: 200,
+    } } };
+    let boot: Awaited<ReturnType<typeof bootstrapLocalRuntimeSession>> | undefined;
+    try {
+      boot = await bootstrapLocalRuntimeSession({ ...base, resumeConversation: false });
+      boot.session.emit(turn);
+      const firstCost = boot.session.services.costSidecar!.getTotalCostUsd();
+      expect(firstCost).toBeGreaterThan(0);
+      const rolloutPath = boot.rolloutStore.rolloutPath;
+      await boot.shutdown(); boot = undefined;
+
+      boot = await bootstrapLocalRuntimeSession({ ...base, resumeConversation: true, resumeRolloutPath: rolloutPath });
+      const cost = boot.session.services.costSidecar!;
+      expect(cost.getTotalCostUsd()).toBeCloseTo(firstCost, 12);
+      // The restored totals cover every call the rollout recorded, which is
+      // what lets the daemon's usage snapshot call the whole cost known.
+      expect(boot.session.state.unsafePeek().resumedHistoryTokenUsage)
+        .toEqual({ promptTokens: 1000, completionTokens: 100, totalTokens: 1100 });
+      expect(cost.getRestoredSessionTotals())
+        .toMatchObject({ inputTokens: 1000, outputTokens: 100, totalTokens: 1100 });
+      boot.session.emit(turn);
+      await boot.shutdown(); boot = undefined;
+
+      const projectsDir = join(home, "projects");
+      const [project] = await readdir(projectsDir);
+      const saved = JSON.parse(
+        await readFile(join(projectsDir, project!, "cost-totals.json"), "utf8"),
+      ) as { totalCostUsd: number; sessions: { sessionId: string; costUsd: number; usage: Record<string, number> }[] };
+      expect(saved.sessions).toHaveLength(1);
+      expect(saved.sessions[0]).toMatchObject({
+        sessionId: "revive-cost",
+        usage: { inputTokens: 2000, outputTokens: 200, totalTokens: 2200 },
+      });
+      expect(saved.sessions[0]!.costUsd).toBeCloseTo(2 * firstCost, 12);
+      expect(saved.totalCostUsd).toBeCloseTo(2 * firstCost, 12);
+    } finally {
+      await boot?.shutdown();
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a revived session's whole cost after a crash lost its saved cost record", async () => {
+    // `agenc -p`, then `agenc -c -p` killed before its sidecar saved: the
+    // ledger and the rollout hold both invocations' calls, cost-totals.json
+    // only the first. Desktop then revives the session from its rollout.
+    await installBootstrapProviderStub();
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const { terminalUsageForActiveAgent } = await import(
+      "../app-server/background-agent-runner/snapshot-retention.js"
+    );
+    const [home, workspace] = await Promise.all(
+      ["crash-cost-home-", "crash-cost-ws-"].map((prefix) => mkdtemp(join(tmpdir(), prefix))),
+    );
+    const env = { ...process.env, HOME: home, AGENC_HOME: home, AGENC_WORKSPACE: workspace };
+    const base = { apiKey: "test", conversationId: "crash-cost", costSummaryOnExit: false, env } as const;
+    type Boot = Awaited<ReturnType<typeof bootstrapLocalRuntimeSession>>;
+    // One provider call as a turn makes it: settled in the admission ledger,
+    // then reported as the turn's token_count.
+    const call = async (boot: Boot, step: string, promptTokens: number, completionTokens: number, costUsd: number) => {
+      const admission = boot.session.services.executionAdmission!;
+      const lease = await admission.acquire({
+        stepId: step, kind: "model_turn", model: "deepseek-flash", provider: "deepseek",
+        maxInputTokens: promptTokens, maxOutputTokens: completionTokens, maxCostUsd: 1,
+      });
+      admission.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+      admission.reconcile(lease.reservation.reservationId, { inputTokens: promptTokens, outputTokens: completionTokens, costUsd });
+      admission.acknowledgeCompletion(lease.reservation.reservationId);
+      boot.session.emit({ id: `usage-${step}`, msg: { type: "token_count", payload: {
+        model: "deepseek-flash", provider: "deepseek", promptTokens, completionTokens,
+        totalTokens: promptTokens + completionTokens,
+      } } });
+    };
+    const snapshot = (boot: Boot, live: { inputTokens: number; outputTokens: number; totalTokens: number }) =>
+      terminalUsageForActiveAgent({
+        thread: { totalTokenUsage: () => live },
+        bootstrap: { session: boot.session },
+      } as unknown as Parameters<typeof terminalUsageForActiveAgent>[0]);
+    let boot: Boot | undefined;
+    try {
+      boot = await bootstrapLocalRuntimeSession({ ...base, resumeConversation: false });
+      await call(boot, "turn-1:primary", 1_000, 100, 0.0005);
+      const rolloutPath = boot.rolloutStore.rolloutPath;
+      await boot.shutdown(); boot = undefined;
+      const [project] = await readdir(join(home, "projects"));
+      const costPath = join(home, "projects", project!, "cost-totals.json");
+      const savedByFirstStop = await readFile(costPath, "utf8");
+
+      boot = await bootstrapLocalRuntimeSession({ ...base, resumeConversation: true, resumeRolloutPath: rolloutPath });
+      await call(boot, "turn-2:primary", 1_200, 40, 0.0006);
+      await boot.shutdown(); boot = undefined;
+      // A SIGKILL leaves the record the last clean stop saved.
+      await writeFile(costPath, savedByFirstStop);
+
+      boot = await bootstrapLocalRuntimeSession({ ...base, resumeConversation: true, resumeRolloutPath: rolloutPath });
+      expect(boot.session.services.costSidecar!.getRestoredSessionTotals())
+        .toMatchObject({ inputTokens: 1_000, outputTokens: 100, totalTokens: 1_100 });
+      expect(snapshot(boot, { inputTokens: 0, outputTokens: 0, totalTokens: 0 })).toEqual({
+        inputTokens: 2_200, outputTokens: 140, totalTokens: 2_340,
+        costUsd: expect.closeTo(0.0011, 12), costKnown: true,
+      });
+      await call(boot, "turn-3:primary", 1_300, 30, 0.0007);
+      expect(snapshot(boot, { inputTokens: 1_300, outputTokens: 30, totalTokens: 1_330 })).toEqual({
+        inputTokens: 3_500, outputTokens: 170, totalTokens: 3_670,
+        costUsd: expect.closeTo(0.0018, 12), costKnown: true,
+      });
     } finally {
       await boot?.shutdown();
       await rm(home, { recursive: true, force: true });

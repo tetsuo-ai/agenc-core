@@ -714,12 +714,18 @@ export function assertCleanBenchmarkWorktree(repositoryRoot) {
   }
 }
 
+/**
+ * The published branch every checked source revision must stay reachable
+ * from. This is the core-desktop line: it is never merged into main
+ * (CORE-DESKTOP.md), so main can never hold this line's production sources.
+ * Its baselines are captured for its own head and checked against
+ * core-desktop itself, never main or origin/HEAD (which names main).
+ */
+export const BENCHMARK_DEFAULT_BRANCH = "core-desktop";
+
 const DEFAULT_BRANCH_SELECTORS = Object.freeze([
-  "refs/remotes/origin/HEAD",
-  "refs/remotes/origin/main",
-  "refs/remotes/origin/master",
-  "refs/heads/main",
-  "refs/heads/master",
+  `refs/remotes/origin/${BENCHMARK_DEFAULT_BRANCH}`,
+  `refs/heads/${BENCHMARK_DEFAULT_BRANCH}`,
 ]);
 
 export function resolveDefaultBranchSelector(repositoryRoot) {
@@ -752,20 +758,20 @@ export function materializeFreshCloneDefaultBranch(
     [
       ...FRESH_CLONE_REF_IDENTITY_ARGS,
       "update-ref",
-      "refs/heads/main",
+      `refs/heads/${BENCHMARK_DEFAULT_BRANCH}`,
       defaultRevision,
     ],
-    "install fresh-clone main",
+    `install fresh-clone ${BENCHMARK_DEFAULT_BRANCH}`,
   );
   gitText(
     canonicalRoot,
     [
       ...FRESH_CLONE_REF_IDENTITY_ARGS,
       "update-ref",
-      "refs/remotes/origin/main",
+      `refs/remotes/origin/${BENCHMARK_DEFAULT_BRANCH}`,
       defaultRevision,
     ],
-    "install fresh-clone origin/main",
+    `install fresh-clone origin/${BENCHMARK_DEFAULT_BRANCH}`,
   );
   gitStatus(canonicalRoot, [
     ...FRESH_CLONE_REF_IDENTITY_ARGS,
@@ -779,7 +785,7 @@ export function materializeFreshCloneDefaultBranch(
       ...FRESH_CLONE_REF_IDENTITY_ARGS,
       "symbolic-ref",
       "refs/remotes/origin/HEAD",
-      "refs/remotes/origin/main",
+      `refs/remotes/origin/${BENCHMARK_DEFAULT_BRANCH}`,
     ],
     "install fresh-clone origin HEAD",
   );

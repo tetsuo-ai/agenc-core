@@ -341,6 +341,28 @@ export interface SessionState {
     readonly webSearchRequests?: number;
   };
   /**
+   * Sum of every `token_count` the resumed rollout recorded, seeded on
+   * resume next to `initialTokenUsage`. The daemon's usage snapshot
+   * compares the cost totals restored from disk against it, so a resumed
+   * session's cost counts as known only when it covers the whole history.
+   */
+  resumedHistoryTokenUsage?: {
+    readonly promptTokens: number;
+    readonly completionTokens: number;
+    readonly totalTokens: number;
+  };
+  /**
+   * What the admission ledger held of this session's own run when it
+   * resumed, before this process added a call, seeded next to
+   * `resumedHistoryTokenUsage`. The usage snapshot takes the session's cost
+   * from the ledger and counts it known only when this covers the history.
+   */
+  resumedLedgerUsage?: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+  };
+  /**
    * Cross-turn cumulative token usage. This is the authoritative source
    * for the mid-turn compact gate's total-usage versus auto-compact-limit
    * check. The writer in `stream-model.ts` element-wise accumulates every
@@ -1793,6 +1815,9 @@ export type SessionPartialCompactFromMessageResult =
       readonly replacementHistory: readonly LLMMessage[];
       readonly attemptId?: string;
       readonly displayText: string;
+      /** The compacted span's context tokens before and after, as the compaction measured them. */
+      readonly preCompactTokens?: number;
+      readonly postCompactTokens?: number;
     }
   | {
       readonly ok: false;
@@ -4317,6 +4342,10 @@ export class Session {
         compactionResult,
       });
       if (commitFailure !== null) return commitFailure;
+      const preCompactTokens = compactionResult.preCompactTokenCount;
+      const postCompactTokens =
+        compactionResult.truePostCompactTokenCount ??
+        compactionResult.postCompactTokenCount;
 
       return {
         ok: true,
@@ -4326,6 +4355,8 @@ export class Session {
         replacementHistory,
         ...(attemptId !== undefined ? { attemptId } : {}),
         displayText,
+        ...(preCompactTokens !== undefined ? { preCompactTokens } : {}),
+        ...(postCompactTokens !== undefined ? { postCompactTokens } : {}),
       };
     } catch (error) {
       if (abortController.signal.aborted) {

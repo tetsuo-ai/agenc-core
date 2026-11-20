@@ -9,6 +9,7 @@ import {
   latestPersistedAgentTask,
   maybePrewarmAgentTaskRegistration,
   recordInitialHistoryOnResume,
+  recordedTokenUsageFromRollout,
   restorePersistedAgentTask,
   type RegisteredAgentTask,
   type SessionAgentTask,
@@ -422,6 +423,75 @@ describe("agent task lifecycle", () => {
           (w.message ?? "").includes("grok-4-fast"),
       ),
     ).toBe(true);
+  });
+
+  it("recordedTokenUsageFromRollout sums every token_count and resume seeds the sum", async () => {
+    const usage = (seq: number, promptTokens: number, completionTokens: number): RolloutItem => ({
+      type: "event_msg",
+      payload: {
+        id: `usage-${seq}`,
+        seq,
+        msg: {
+          type: "token_count",
+          payload: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens },
+        },
+      },
+    });
+    const rollout: RolloutItem[] = [
+      usage(1, 1_200, 30),
+      { type: "response_item", payload: { role: "user", content: "next" } },
+      usage(2, 1_400, 20),
+    ];
+    const recorded = { promptTokens: 2_600, completionTokens: 50, totalTokens: 2_650 };
+    expect(recordedTokenUsageFromRollout(rollout)).toEqual(recorded);
+    expect(recordedTokenUsageFromRollout([])).toBeUndefined();
+
+    const session = buildSession();
+    await recordInitialHistoryOnResume(session, rollout, { currentModel: "grok-4-fast" });
+    const seeded = await session.state.with((state) => ({
+      last: state.initialTokenUsage,
+      recorded: state.resumedHistoryTokenUsage,
+    }));
+    expect(seeded).toEqual({
+      last: { promptTokens: 1_400, completionTokens: 20, totalTokens: 1_420 },
+      recorded,
+    });
+  });
+
+  it("resume seeds what the admission ledger holds of the run next to the recorded sum", async () => {
+    const rollout: RolloutItem[] = [{
+      type: "event_msg",
+      payload: {
+        id: "usage-1",
+        seq: 1,
+        msg: { type: "token_count", payload: { promptTokens: 1_200, completionTokens: 30, totalTokens: 1_230 } },
+      },
+    }];
+    const ledgerOf = (getDirectUsageSummary: () => unknown) => buildSession({
+      services: { executionAdmission: { getDirectUsageSummary } } as unknown as Partial<SessionServices>,
+    });
+    const seeded = async (session: Session) => session.state.with((state) => state.resumedLedgerUsage);
+    const summary = vi.fn(() => ({
+      runId: "conv-agent-task", sequence: 4, inputTokens: 1_250, outputTokens: 30, totalTokens: 1_280,
+      costUsd: 0.0004, modelCalls: 2, hasUnknownCost: false, heldCostUsd: 0, models: [], agents: [],
+    }));
+
+    const session = ledgerOf(summary);
+    await recordInitialHistoryOnResume(session, rollout, { currentModel: "grok-4-fast" });
+    expect(await seeded(session)).toEqual({ inputTokens: 1_250, outputTokens: 30, totalTokens: 1_280 });
+
+    // Nothing to check without recorded usage, and nothing seeded when the
+    // ledger cannot be read.
+    summary.mockClear();
+    const fresh = ledgerOf(summary);
+    await recordInitialHistoryOnResume(fresh, [], { currentModel: "grok-4-fast" });
+    expect(summary).not.toHaveBeenCalled();
+    expect(await seeded(fresh)).toBeUndefined();
+    const closed = ledgerOf(() => { throw new Error("kernel closed"); });
+    await recordInitialHistoryOnResume(closed, rollout, { currentModel: "grok-4-fast" });
+    expect(await seeded(closed)).toBeUndefined();
+    expect(await closed.state.with((state) => state.resumedHistoryTokenUsage))
+      .toEqual({ promptTokens: 1_200, completionTokens: 30, totalTokens: 1_230 });
   });
 
   it("recordInitialHistoryOnResume is quiet when model matches", async () => {

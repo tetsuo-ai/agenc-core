@@ -29,6 +29,7 @@ import type {
 import type { Event } from "../../session/event-log.js";
 import type { SessionSubmitOptions } from "../../session/autonomous-mode.js";
 import type { SkillInvocationSettings } from "../../session/skill-invocation.js";
+import type { TurnAdviceReader } from "../../session/turn-advice.js";
 import type {
   SessionElicitationResponseParams,
 } from "../../elicitation/respond.js";
@@ -39,6 +40,7 @@ import type {
   MessageContent,
   PermissionListResult,
   SessionMcpServerConfig,
+  SessionCompactResult,
   SessionPartialCompactFromMessageParams,
   SessionPartialCompactFromMessageResult,
   SessionRollbackCompactionResult,
@@ -302,6 +304,8 @@ export interface AgenCBackgroundAgentSessionEventBinding {
 }
 
 export interface AgenCBackgroundAgentMessageParams {
+  readonly includeToolProgress?: boolean;
+  readonly turnChanges?: { readonly includeDiff?: boolean };
   readonly exactOutput?: boolean;
   /** Settings of the skill the user started this turn with (`message.stream`). */
   readonly skillInvocation?: SkillInvocationSettings;
@@ -316,6 +320,8 @@ export interface AgenCBackgroundAgentMessageParams {
   readonly ifBusy?: "reject";
   /** Trusted daemon connection provenance; omitted/internal/autonomous ingress fails closed. */
   readonly localMcpAccess?: boolean;
+  /** Who reads the advice of this prompt's turn; omitted by internal ingress, which keeps the session's reader. */
+  readonly adviceReader?: TurnAdviceReader;
 }
 
 export interface AgenCBackgroundAgentMessageResult {
@@ -380,6 +386,11 @@ export interface AgenCBackgroundAgentPartialCompactParams {
   readonly messageOrdinal: number;
   readonly direction: SessionPartialCompactFromMessageParams["direction"];
   readonly feedback?: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface AgenCBackgroundAgentCompactSessionParams {
+  readonly sessionId: string;
   readonly signal?: AbortSignal;
 }
 
@@ -574,7 +585,7 @@ export interface AgenCBackgroundAgentRunner {
   ): Promise<SessionTranscriptResult>;
   getAgentSessionTranscriptV2?(
     agentId: string,
-    params: { readonly sessionId: string; readonly includeCompleteMessages?: boolean },
+    params: { readonly sessionId: string; readonly schemaVersion?: 2 | 3; readonly includeCompleteMessages?: boolean },
   ): Promise<SessionTranscriptV2Result>;
   resolveLiveEffectReview?(
     agentId: string,
@@ -607,6 +618,11 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentPartialCompactParams,
   ): Promise<SessionPartialCompactFromMessageResult>;
+  /** `session.compact`: the TUI's `/compact` for an idle session. */
+  compactAgentSession?(
+    agentId: string,
+    params: AgenCBackgroundAgentCompactSessionParams,
+  ): Promise<SessionCompactResult>;
   rollbackCompaction?(
     agentId: string,
     params: AgenCBackgroundAgentRollbackCompactionParams,

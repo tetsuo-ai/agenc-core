@@ -18,7 +18,7 @@
  * @module
  */
 
-import type { Session } from "./session.js";
+import type { Session, SessionState } from "./session.js";
 import { restorePromptCacheState } from "./prompt-cache-state.js";
 import {
   sessionStateUpdateAddressesSlot,
@@ -255,6 +255,32 @@ export function lastTokenInfoFromRollout(
 }
 
 /**
+ * Sum of the usage every persisted `token_count` event reported, counted
+ * the way the cost sidecar counts it. Returns `undefined` if no
+ * token_count event was ever persisted.
+ */
+export function recordedTokenUsageFromRollout(
+  rolloutItems: ReadonlyArray<RolloutItem>,
+): NonNullable<SessionState["resumedHistoryTokenUsage"]> | undefined {
+  let found = false;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let totalTokens = 0;
+  for (const item of rolloutItems) {
+    if (!item || item.type !== "event_msg") continue;
+    const inner = item.payload.msg;
+    if ((inner as { type?: string }).type !== "token_count") continue;
+    const payload = (inner as { payload?: TokenCountEvent }).payload;
+    if (payload === undefined) continue;
+    found = true;
+    promptTokens += payload.promptTokens ?? 0;
+    completionTokens += payload.completionTokens ?? 0;
+    totalTokens += payload.totalTokens ?? 0;
+  }
+  return found ? { promptTokens, completionTokens, totalTokens } : undefined;
+}
+
+/**
  * Resume-time history bookkeeping.
  *
  * The resume-time behaviors are wired here so the AgenC bootstrap
@@ -272,7 +298,11 @@ export function lastTokenInfoFromRollout(
  *      active model.
  *   3. **Token-info seed.** Sets `initialTokenUsage` on session state
  *      from the last persisted `token_count` event so UIs display
- *      cumulative usage immediately after resume.
+ *      cumulative usage immediately after resume,
+ *      `resumedHistoryTokenUsage` from the sum of all of them, and
+ *      `resumedLedgerUsage` from what the admission ledger holds of the
+ *      run before this process adds a call, so the usage snapshot can
+ *      check that its cost covers the whole history.
  *
  * Callers (bootstrap.ts resume branch) pass the rollout items read
  * from the JSONL file plus the already-computed `previousTurnSettings`
@@ -322,11 +352,37 @@ export async function recordInitialHistoryOnResume(
 
   // 3. Seed token_info so downstream UIs see persisted usage.
   const info = lastTokenInfoFromRollout(rolloutItems);
-  if (info !== undefined) {
+  const recorded = recordedTokenUsageFromRollout(rolloutItems);
+  const ledger = recorded === undefined ? undefined : ledgerUsageOfRun(session);
+  if (info !== undefined || recorded !== undefined) {
     await session.state.with((s) => {
-      (s as unknown as { initialTokenUsage?: TokenCountEvent }).initialTokenUsage =
-        info;
+      if (info !== undefined) {
+        (s as unknown as { initialTokenUsage?: TokenCountEvent }).initialTokenUsage =
+          info;
+      }
+      if (recorded !== undefined) s.resumedHistoryTokenUsage = recorded;
+      if (ledger !== undefined) s.resumedLedgerUsage = ledger;
     });
+  }
+}
+
+/**
+ * What the session's admission ledger holds of its own run, or undefined
+ * without a ledger or when it cannot be read.
+ */
+function ledgerUsageOfRun(
+  session: Session,
+): SessionState["resumedLedgerUsage"] | undefined {
+  try {
+    const summary = session.services.executionAdmission?.getDirectUsageSummary?.();
+    if (summary === undefined) return undefined;
+    return {
+      inputTokens: summary.inputTokens,
+      outputTokens: summary.outputTokens,
+      totalTokens: summary.totalTokens,
+    };
+  } catch {
+    return undefined;
   }
 }
 

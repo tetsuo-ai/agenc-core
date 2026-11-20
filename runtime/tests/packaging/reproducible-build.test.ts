@@ -407,9 +407,9 @@ describe("reproducible install and release contract", () => {
     );
     expect(macosJob).toContain("--config vitest.native.config.ts");
     expect(macosJob).toContain("numTotalTestSuites: 16");
-    expect(macosJob).toContain("numTotalTests: 105");
+    expect(macosJob).toContain("numTotalTests: 106");
     expect(macosJob).toContain(
-      "macOS FND/native capability lane passed 105 tests in 10 files with zero skipped",
+      "macOS FND/native capability lane passed 106 tests in 10 files with zero skipped",
     );
     expect(macosJob).toContain(
       "Run the suites that only fail on macOS when darwin is broken",
@@ -483,7 +483,7 @@ describe("reproducible install and release contract", () => {
     );
     expect(windowsJob).toContain("--config vitest.native.config.ts");
     expect(windowsJob).toContain("numTotalTestSuites: 19");
-    expect(windowsJob).toContain("numTotalTests: 111");
+    expect(windowsJob).toContain("numTotalTests: 112");
     expect(windowsJob).toContain(
       "npm.cmd ci --ignore-scripts --no-audit --no-fund",
     );
@@ -493,7 +493,7 @@ describe("reproducible install and release contract", () => {
     );
     expect(windowsJob).not.toContain("npm_config_build_from_source");
     expect(windowsJob).toContain(
-      "Windows FND/native capability lane passed 111 tests in 12 files with zero skipped",
+      "Windows FND/native capability lane passed 112 tests in 12 files with zero skipped",
     );
 
     // Five lanes: default-suite plus the four hosted capability lanes.

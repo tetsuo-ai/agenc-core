@@ -1,4 +1,5 @@
 import * as oneShotDurability from "../../src/durability/one-shot-durability.js";
+import { getProjectDir } from "../../src/session/session-store.js";
 import { ModelRegistry, modelRegistryEntryToModelInfo } from "../../src/llm/model-registry.js";
 import { ModelMetadataResolver } from "../../src/llm/model-metadata.js";
 import { OpenRouterCatalog } from "../../src/llm/registry/openrouter-live-catalog.js";
@@ -86,6 +87,7 @@ import { resolveRoutinePermissionGrant } from "../routines/permission-authority.
 import type { CsvAgentJobsRepositoryProvider } from "./csv-agent-jobs-authority.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { turnAdviceReader } from "../session/turn-advice.js";
 import type {
   PermissionContextPreparedUpdate,
   PermissionContextPublication,
@@ -669,6 +671,10 @@ function makeTopLevelRunner(opts: {
   };
   const rolloutStore = {
     rolloutPath: `/tmp/${opts.conversationId}.jsonl`,
+    // As a new RolloutStore: the project of the session's folder under its own home.
+    get stateProjectDir(): string {
+      return getProjectDir(workspaceRoot, undefined, configStore.homeContext.path);
+    },
     readAll: () => [...rolloutItems],
     appendRollout: vi.fn((item: RolloutItem, _options?: { readonly durable?: boolean }) => {
       rolloutItems.push(item);
@@ -4957,6 +4963,108 @@ describe("AgenC delegate background-agent runner", () => {
       clearCurrentRuntimeSession(otherSessionA);
       clearCurrentRuntimeSession(otherSessionB);
       await runner.stopAgent("session-scoped-compact").catch(() => undefined);
+    }
+  });
+
+  it("compacts a session with the TUI's /compact request and answers the tokens before and after", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-compact",
+      scopedTurnCancellation: true,
+    });
+    const attemptId = "compact-0a8d6a35-5f4c-4c1a-9a43-6b9a3f7d2e10";
+    const replacementEvent = {
+      id: "history-replaced-session-compact",
+      type: "history_replaced" as const,
+      acceptedAt: "2026-11-19T00:00:00.000Z",
+      payload: { reason: "partial_compact" as const, messages: [] },
+    };
+    const partialCompactFromMessage = vi.fn(async () => ({
+      ok: true,
+      sessionId: "session-compact",
+      eventAlreadyEmitted: false as const,
+      event: replacementEvent,
+      attemptId,
+      replacementHistory: [],
+      displayText: `Conversation compacted\nRollback attempt ID: ${attemptId}`,
+      preCompactTokens: 118_400,
+      postCompactTokens: 9_216,
+    }));
+    Object.assign(session, { partialCompactFromMessage });
+    const emitted: unknown[] = [];
+    const started = await runner.startAgent({
+      objective: "compact like /compact",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents(started.agentId, {
+      sessionId: "session-compact",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+    try {
+      await expect(
+        runner.compactAgentSession?.(started.agentId, { sessionId: "session-compact" }),
+      ).resolves.toEqual({
+        sessionId: "session-compact",
+        ok: true,
+        tokensBefore: 118_400,
+        tokensAfter: 9_216,
+        attemptId,
+        displayText: `Conversation compacted\nRollback attempt ID: ${attemptId}`,
+      });
+      // The daemon TUI's /compact: everything from the first active message.
+      expect(partialCompactFromMessage).toHaveBeenCalledExactlyOnceWith({
+        messageOrdinal: 0,
+        direction: "from",
+      });
+      // Clients see the compaction exactly as after /compact.
+      expect(emitted.map((event) => (event as { params: { event: { type: string } } }).params.event.type))
+        .toEqual(["transcript_epoch", "history_replaced"]);
+    } finally {
+      await runner.stopAgent(started.agentId).catch(() => undefined);
+    }
+  });
+
+  it("refuses to compact while a turn runs and leaves the conversation alone", async () => {
+    const h = makeTopLevelRunner({ conversationId: "session-compact-busy", scopedTurnCancellation: true });
+    const partialCompactFromMessage = vi.fn(async () => ({
+      ok: false as const,
+      sessionId: "session-compact-busy",
+      eventAlreadyEmitted: false as const,
+      code: "ACTIVE_TURN" as const,
+      message: "Cannot summarize right now: a turn is currently in flight.",
+    }));
+    Object.assign(h.session, { partialCompactFromMessage });
+    const started = await h.runner.startAgent({
+      objective: "compact while busy",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    const refusal = {
+      sessionId: "session-compact-busy",
+      ok: false,
+      code: "ACTIVE_TURN",
+      message: "Cannot compact right now: a turn is running. Wait for it to finish, then compact.",
+    };
+    try {
+      h.setActiveTurn("turn-in-flight");
+      await expect(
+        h.runner.compactAgentSession?.(started.agentId, { sessionId: "session-compact-busy" }),
+      ).resolves.toEqual(refusal);
+      expect(partialCompactFromMessage).not.toHaveBeenCalled();
+      // A turn that starts after the runner's check is refused inside the
+      // session; the answer reads the same.
+      h.setActiveTurn(null);
+      await expect(
+        h.runner.compactAgentSession?.(started.agentId, { sessionId: "session-compact-busy" }),
+      ).resolves.toEqual(refusal);
+      expect(partialCompactFromMessage).toHaveBeenCalledOnce();
+    } finally {
+      await h.runner.stopAgent(started.agentId).catch(() => undefined);
     }
   });
 
@@ -10542,6 +10650,133 @@ describe("AgenC delegate background-agent runner", () => {
       expect.objectContaining({ rootHumanTurnText: content, displayUserMessage: null }));
   });
 
+  it("[managed-thread] answers session.compact through the daemon's own handler and refuses it mid-turn", async () => {
+    const h = makeTopLevelRunner({ conversationId: "session-compact-rpc", scopedTurnCancellation: true });
+    const attemptId = "compact-5b1f0c2e-7d3a-4e6b-8c9d-0e1f2a3b4c5d";
+    const partialCompactFromMessage = vi.fn(async () => ({
+      ok: true,
+      sessionId: "session-compact-rpc",
+      eventAlreadyEmitted: false as const,
+      event: {
+        id: "history-replaced-compact-rpc",
+        type: "history_replaced" as const,
+        acceptedAt: "2026-11-19T00:00:00.000Z",
+        payload: { reason: "partial_compact" as const, messages: [] },
+      },
+      attemptId,
+      replacementHistory: [],
+      displayText: `Conversation compacted\nRollback attempt ID: ${attemptId}`,
+      preCompactTokens: 64_000,
+      postCompactTokens: 4_096,
+    }));
+    Object.assign(h.session, { partialCompactFromMessage });
+    await h.runner.startAgent({ objective: "passive", deferInitialTurn: true, unattendedAllow: [], unattendedDeny: [] });
+    const sessions = new AgenCDaemonSessionManager();
+    const manager = new AgenCDaemonAgentManager({ runner: h.runner, sessionManager: sessions });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: sessions });
+    const connection = dispatcher.createConnection();
+    await sessions.restoreSession({ sessionId: "compact-client", agentId: "session-compact-rpc", status: "waiting", createdAt: "2026-11-19T00:00:00.000Z" });
+    await manager.restoreAgent({ agentId: "session-compact-rpc", objective: "passive", startedAt: "2026-11-19T00:00:00.000Z", lastActiveAt: "2026-11-19T00:00:00.000Z", sessionIds: ["compact-client"], runtimeAvailable: true });
+    const compact = (id: string, params: Record<string, unknown>) =>
+      connection.dispatch({ jsonrpc: "2.0", id, method: "session.compact", params });
+    try {
+      // Desktop negotiates protocol 1.28 and still finds the method.
+      await expect(connection.dispatch({ jsonrpc: "2.0", id: "initialize", method: "initialize", params: { protocol: { version: "1.28.0" } } }))
+        .resolves.toMatchObject({ result: { capabilities: { "daemon.methods": { "session.compact": true } } } });
+      await expect(compact("compact", { sessionId: "compact-client" })).resolves.toEqual({
+        jsonrpc: "2.0",
+        id: "compact",
+        result: {
+          sessionId: "compact-client",
+          ok: true,
+          tokensBefore: 64_000,
+          tokensAfter: 4_096,
+          attemptId,
+          displayText: `Conversation compacted\nRollback attempt ID: ${attemptId}`,
+        },
+      });
+      expect(partialCompactFromMessage).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ messageOrdinal: 0, direction: "from" }),
+      );
+
+      h.setActiveTurn("turn-running");
+      await expect(compact("busy", { sessionId: "compact-client" })).resolves.toEqual({
+        jsonrpc: "2.0",
+        id: "busy",
+        result: {
+          sessionId: "compact-client",
+          ok: false,
+          code: "ACTIVE_TURN",
+          message: "Cannot compact right now: a turn is running. Wait for it to finish, then compact.",
+        },
+      });
+      await expect(compact("malformed", { sessionId: "" })).resolves.toMatchObject({ id: "malformed", error: { code: -32602 } });
+      await expect(compact("extra", { sessionId: "compact-client", messageOrdinal: 3 })).resolves.toMatchObject({ id: "extra", error: { code: -32602 } });
+      expect(partialCompactFromMessage).toHaveBeenCalledOnce();
+    } finally {
+      h.setActiveTurn(null);
+      await connection.close();
+      await dispatcher.close();
+      await h.runner.stopAgent("session-compact-rpc", "test_cleanup");
+    }
+  });
+
+  it("[managed-thread] gives each turn's advice to the client that prompted it", async () => {
+    const { runner, control, session, configStore } = makeTopLevelRunner({ conversationId: "session-advice-reader" });
+    await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+    // Not started by the TUI: a plain client until a prompt says otherwise.
+    expect(turnAdviceReader(session as never)).toBe("client");
+    let submitDriver: (message: string, options?: unknown) => Promise<void> = async () => { throw new Error("driver missing"); };
+    Object.assign(session, {
+      newDefaultTurn: () => ({}),
+      installTurnDriverHooks: (hooks: { submit: typeof submitDriver }) => { submitDriver = hooks.submit; },
+    });
+    const readers: string[] = [];
+    const runTurnFn = vi.fn(async function* (turnSession: unknown) {
+      readers.push(turnAdviceReader(turnSession as never));
+    });
+    __installDaemonTurnDriverHooksForTest(session as never, configStore as never, runTurnFn as never);
+    control.sendInput.mockImplementation(async (...invocation: unknown[]) => {
+      await submitDriver(invocation[1] as string, invocation[2]);
+    });
+    const sessions = new AgenCDaemonSessionManager();
+    const manager = new AgenCDaemonAgentManager({ runner, sessionManager: sessions });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: sessions });
+    await sessions.restoreSession({ sessionId: "advice-client", agentId: "session-advice-reader", status: "waiting", createdAt: "2026-11-19T00:00:00.000Z" });
+    await manager.restoreAgent({ agentId: "session-advice-reader", objective: "passive", startedAt: "2026-11-19T00:00:00.000Z", lastActiveAt: "2026-11-19T00:00:00.000Z", sessionIds: ["advice-client"], runtimeAvailable: true });
+    const connect = async (capabilities: Record<string, boolean>) => {
+      const connection = dispatcher.createConnection();
+      await connection.dispatch({ jsonrpc: "2.0", id: "initialize", method: "initialize", params: { protocol: { version: "1.2.0" }, capabilities } });
+      return connection;
+    };
+    const tui = await connect({ "turn.advice.slashCommands.v1": true });
+    const desktop = await connect({ "turn.advice.compactAction.v1": true });
+    const sdk = await connect({});
+    try {
+      for (const [connection, name] of [[tui, "tui"], [sdk, "sdk"], [desktop, "desktop"], [tui, "tui-again"]] as const) {
+        const result = await connection.dispatch({ jsonrpc: "2.0", id: name, method: "message.stream", params: {
+          sessionId: "advice-client", content: `prompt from ${name}`, clientMessageId: `advice-${name}`, streamId: `stream-${name}`,
+        } });
+        expect(result, name).not.toHaveProperty("error");
+      }
+    } finally {
+      for (const connection of [tui, desktop, sdk]) await connection.close();
+      await dispatcher.close();
+      await runner.stopAgent("session-advice-reader", "test_cleanup");
+    }
+    expect(readers).toEqual(["tui", "client", "client_with_compact", "tui"]);
+  });
+
+  it("[managed-thread] marks a session the TUI started as read by the TUI", async () => {
+    const { runner, session } = makeTopLevelRunner({ conversationId: "session-advice-tui" });
+    await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [], metadata: { mode: "tui" } });
+    try {
+      expect(turnAdviceReader(session as never)).toBe("tui");
+    } finally {
+      await runner.stopAgent("session-advice-tui", "test_cleanup");
+    }
+  });
+
   it("[managed-thread] replays a legacy hook-block error as session-only after attach", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "session-hook-block-legacy-error",
@@ -12774,6 +13009,101 @@ describe("AgenC delegate background-agent runner", () => {
       costUsd: 0,
       costKnown: false,
     });
+  });
+
+  it("[managed-thread] reports a resumed session's whole cost once its restored totals cover the history", async () => {
+    // This process ran one call after the resume; the sidecar restored the
+    // saved totals of the calls before it.
+    const { runner, session, sessionState } = makeTopLevelRunner({
+      conversationId: "session-resumed-accounting",
+      totalTokenUsage: () => ({ inputTokens: 500, outputTokens: 20, totalTokens: 520 }),
+    });
+    type Totals = { inputTokens: number; outputTokens: number; totalTokens: number };
+    const getRestoredSessionTotals = vi.fn((): Totals | null => ({
+      inputTokens: 2_000, outputTokens: 100, totalTokens: 2_100,
+    }));
+    Object.assign(session.services, {
+      costSidecar: {
+        getTotalCostUsd: () => 0.25,
+        getSessionTotals: () => ({ inputTokens: 2_500, outputTokens: 120, totalTokens: 2_620 }),
+        getRestoredSessionTotals,
+        hasUnknownModelCost: () => false,
+      },
+    });
+    const state = sessionState as typeof sessionState & {
+      initialTokenUsage?: unknown;
+      resumedHistoryTokenUsage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+    };
+    state.initialTokenUsage = { promptTokens: 900, completionTokens: 40, totalTokens: 940 };
+    state.resumedHistoryTokenUsage = { promptTokens: 2_000, completionTokens: 100, totalTokens: 2_100 };
+    await runner.startAgent({ objective: "resume accounting", unattendedAllow: [], unattendedDeny: [] });
+    const tokenUsage = async () => (await runner.snapshotAgentSession(
+      "session-resumed-accounting",
+      { sessionId: "session-resumed-accounting" },
+    )).tokenUsage;
+
+    expect(await tokenUsage()).toEqual({
+      inputTokens: 2_500, outputTokens: 120, totalTokens: 2_620, costUsd: 0.25, costKnown: true,
+    });
+
+    // An earlier run ended before its totals were saved, so the rollout
+    // recorded calls the restored totals do not cover.
+    state.resumedHistoryTokenUsage = { promptTokens: 2_600, completionTokens: 130, totalTokens: 2_730 };
+    expect(await tokenUsage()).toEqual({
+      inputTokens: 500, outputTokens: 20, totalTokens: 520, costUsd: 0.25, costKnown: false,
+    });
+
+    state.resumedHistoryTokenUsage = { promptTokens: 2_000, completionTokens: 100, totalTokens: 2_100 };
+    getRestoredSessionTotals.mockReturnValue(null);
+    expect(await tokenUsage()).toMatchObject({ inputTokens: 500, costKnown: false });
+  });
+
+  it("[managed-thread] reports a session revived after a crash whole, from its admission ledger", async () => {
+    // The daemon died after the last clean stop, so the saved cost record
+    // covers 1,200 of the 2,000 input tokens the rollout recorded. The
+    // admission ledger settled every call. This process ran 500 more.
+    const { runner, session, sessionState } = makeTopLevelRunner({
+      conversationId: "session-crash-accounting",
+      totalTokenUsage: () => ({ inputTokens: 500, outputTokens: 20, totalTokens: 520 }),
+    });
+    Object.assign(session.services, {
+      costSidecar: {
+        getTotalCostUsd: () => 0.003,
+        getSessionTotals: () => ({ inputTokens: 1_700, outputTokens: 60, totalTokens: 1_760 }),
+        getRestoredSessionTotals: () => ({ inputTokens: 1_200, outputTokens: 40, totalTokens: 1_240 }),
+        hasUnknownModelCost: () => false,
+      },
+    });
+    type Counts = { inputTokens: number; outputTokens: number; totalTokens: number };
+    const state = sessionState as typeof sessionState & {
+      initialTokenUsage?: unknown;
+      resumedHistoryTokenUsage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+      resumedLedgerUsage?: Counts;
+    };
+    state.initialTokenUsage = { promptTokens: 800, completionTokens: 40, totalTokens: 840 };
+    state.resumedHistoryTokenUsage = { promptTokens: 2_000, completionTokens: 80, totalTokens: 2_080 };
+    state.resumedLedgerUsage = { inputTokens: 2_000, outputTokens: 80, totalTokens: 2_080 };
+    await runner.startAgent({ objective: "crash accounting", unattendedAllow: [], unattendedDeny: [] });
+    const getDirectUsageSummary = vi.fn(() => ({
+      runId: "session-crash-accounting", sequence: 9, inputTokens: 2_500, outputTokens: 100, totalTokens: 2_600,
+      costUsd: 0.0071, modelCalls: 5, hasUnknownCost: false, heldCostUsd: 0, models: [], agents: [],
+    }));
+    const services = session.services as { executionAdmission?: Record<string, unknown> };
+    if (services.executionAdmission !== undefined) {
+      services.executionAdmission.getDirectUsageSummary = getDirectUsageSummary;
+    } else {
+      Object.assign(services, { executionAdmission: { getDirectUsageSummary } });
+    }
+
+    const snapshot = await runner.snapshotAgentSession(
+      "session-crash-accounting",
+      { sessionId: "session-crash-accounting" },
+    );
+
+    expect(snapshot.tokenUsage).toEqual({
+      inputTokens: 2_500, outputTokens: 100, totalTokens: 2_600, costUsd: 0.0071, costKnown: true,
+    });
+    expect(getDirectUsageSummary).toHaveBeenCalled();
   });
 
   it("[managed-thread] inspects and stops a real child process through session RPC without consuming its output", async () => {

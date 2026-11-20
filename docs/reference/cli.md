@@ -266,9 +266,9 @@ API-equivalent values are not subscription invoices.
   applied), `planCalls` counts the calls a subscription covers, and
   `apiEquivalentUsd` is what those plan calls would cost at API rates
   (reference only, not billed; `apiEquivalentUnknown` marks a plan call
-  without a known price). `costKnown` is `false` when the model part is
-  incomplete (for example after a resume) or the tool charges could not be
-  read.
+  without a known price). `costKnown` is `false` when a call has no price;
+  in the snapshot fallback also when the ledger does not hold a resumed
+  session's earlier calls or could not be read.
 
 ### Examples
 
@@ -653,8 +653,12 @@ admission accounting. In that case, `source.projectDir` identifies the journal,
 while `source.admissionProjectDir` and `source.admissionLastSequence` identify
 the accounting database and the latest admission event for the run subtree.
 The admission sequence is not a replay cursor. Evidence from separate databases
-is marked partial rather than claiming a single atomic snapshot. Conflicting
-owners still fail with `RUN_ID_AMBIGUOUS`; changing cwd does not select an owner.
+is marked partial rather than claiming a single atomic snapshot. A run split
+across project databases by an earlier resume is read from the project that
+holds its rollout when the other databases' rows are all bound to that same
+rollout; `source.partial` then names the databases left out, whose admission
+records and run row the answer does not use. Conflicting owners still fail with
+`RUN_ID_AMBIGUOUS`; changing cwd does not select an owner.
 
 ---
 

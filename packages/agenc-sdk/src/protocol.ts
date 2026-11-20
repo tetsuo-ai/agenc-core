@@ -23,7 +23,7 @@ export type {
 /** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
 /** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.36.0" as const;
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.37.0" as const;
 
 /** Preserve named wire fields while allowing helpers to supply cwd. */
 export type AgencDefaultCwdParams<Params extends { readonly cwd: string }> =
@@ -116,12 +116,14 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "session.detach",
   "session.terminate",
   "session.clear",
+  "session.compact",
   "session.snapshot",
   "session.processes.list",
   "session.processes.stop",
   "session.goal",
   "session.transcript",
   "session.transcript.v2",
+  "session.turn.diff",
   "session.artifact.read",
   "session.cancelTurn",
   "session.resolveToolCall",
@@ -279,6 +281,8 @@ export type SessionProcessSnapshot = Wire.SessionProcessSnapshot;
 
 export type SessionTranscriptParams = Wire.SessionTranscriptParams;
 
+export type SessionTurnDiffParams = Wire.SessionTurnDiffParams;
+export type SessionTurnDiffResult = Wire.SessionTurnDiffResult;
 export type SessionTranscriptV2Params = Wire.SessionTranscriptV2Params;
 
 export type SessionCancelTurnParams = Wire.SessionCancelTurnParams;
@@ -418,6 +422,9 @@ export type RunWorkflowStatus = Wire.RunWorkflowStatus;
 export type RunEvidenceBundle = Wire.RunEvidenceBundle;
 
 export type RunDurableRecord = Wire.RunDurableRecord;
+
+/** Present on a run inspection source when the answer leaves out records of a split run. */
+export type RunPartialAnswer = Wire.RunPartialAnswer;
 
 export type RunStateSource = Wire.RunStateSource;
 

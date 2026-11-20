@@ -3,7 +3,7 @@
   "$id": "urn:agenc:app-server:protocol",
   "title": "AgenC Daemon JSON-RPC Protocol",
   "description": "Initial AgenC daemon JSON-RPC method surface.",
-  "x-agenc-protocol-version": "1.36.0",
+  "x-agenc-protocol-version": "1.37.0",
   "x-agenc-package": {
     "name": "@tetsuo-ai/protocol",
     "export": "./daemon-json-rpc.schema.json"
@@ -73,12 +73,14 @@
     "session.detach",
     "session.terminate",
     "session.clear",
+    "session.compact",
     "session.snapshot",
     "session.processes.list",
     "session.processes.stop",
     "session.goal",
     "session.transcript",
     "session.transcript.v2",
+    "session.turn.diff",
     "session.artifact.read",
     "session.cancelTurn",
     "session.resolveToolCall",
@@ -2809,6 +2811,19 @@
         "sessionId"
       ]
     },
+    "SessionCompactParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sessionId"
+      ]
+    },
     "SessionSnapshotParams": {
       "type": "object",
       "additionalProperties": false,
@@ -2973,10 +2988,41 @@
         "sessionId": {
           "type": "string",
           "minLength": 1
+        },
+        "schemaVersion": {
+          "enum": [
+            2,
+            3
+          ]
         }
       },
       "required": [
         "sessionId"
+      ]
+    },
+    "SessionTurnDiffParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "path"
       ]
     },
     "SessionArtifactReadParams": {
@@ -3405,6 +3451,12 @@
         },
         "metadata": {
           "$ref": "#/definitions/JsonObject"
+        },
+        "includeToolProgress": {
+          "type": "boolean"
+        },
+        "turnChanges": {
+          "$ref": "#/definitions/MessageTurnChanges"
         }
       },
       "required": [
@@ -3436,12 +3488,27 @@
         },
         "skillInvocation": {
           "$ref": "#/definitions/MessageSkillInvocation"
+        },
+        "includeToolProgress": {
+          "type": "boolean"
+        },
+        "turnChanges": {
+          "$ref": "#/definitions/MessageTurnChanges"
         }
       },
       "required": [
         "sessionId",
         "content"
       ]
+    },
+    "MessageTurnChanges": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "includeDiff": {
+          "type": "boolean"
+        }
+      }
     },
     "MessageSkillInvocation": {
       "description": "Protocol 1.35: settings of a skill the user invoked by name, for that turn only. Sent only to a daemon advertising the message.stream.skillInvocation capability.",
@@ -5134,6 +5201,9 @@
           "$ref": "#/definitions/SessionClearRequest"
         },
         {
+          "$ref": "#/definitions/SessionCompactRequest"
+        },
+        {
           "$ref": "#/definitions/SessionSnapshotRequest"
         },
         {
@@ -5150,6 +5220,9 @@
         },
         {
           "$ref": "#/definitions/SessionTranscriptV2Request"
+        },
+        {
+          "$ref": "#/definitions/SessionTurnDiffRequest"
         },
         {
           "$ref": "#/definitions/SessionArtifactReadRequest"
@@ -6300,6 +6373,30 @@
         "params"
       ]
     },
+    "SessionCompactRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.compact"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionCompactParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
     "SessionSnapshotRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -6435,6 +6532,30 @@
         },
         "params": {
           "$ref": "#/definitions/SessionTranscriptV2Params"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "SessionTurnDiffRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.turn.diff"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionTurnDiffParams"
         }
       },
       "required": [

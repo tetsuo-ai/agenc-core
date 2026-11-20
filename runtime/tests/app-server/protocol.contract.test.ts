@@ -117,12 +117,14 @@ const expectedMethods = [
   "session.detach",
   "session.terminate",
   "session.clear",
+  "session.compact",
   "session.snapshot",
   "session.processes.list",
   "session.processes.stop",
   "session.goal",
   "session.transcript",
   "session.transcript.v2",
+  "session.turn.diff",
   "session.artifact.read",
   "session.cancelTurn",
   "session.resolveToolCall",
@@ -209,6 +211,7 @@ const expectedInternalMethods = [
   "session.mcp.reconnectServer",
   "session.mcp.enableServer",
   "session.mcp.disableServer",
+  "session.mcp.removeServer",
 ] as const;
 
 function readProtocolSchema(): ProtocolSchema {
@@ -249,7 +252,7 @@ function compileDefinitionValidator(
 
 describe("AgenC daemon protocol surface", () => {
   it("defines the current live attach-settings contract", () => {
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.36.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.37.0");
 
     const status: AgenCDaemonInternalResultByMethod["session.hooks.status"] = {
       sessionId: "session-bare",
@@ -666,6 +669,38 @@ describe("AgenC daemon protocol surface", () => {
     expect(validate(request({ config: { ...config, desktopAuthority: { ...config.desktopAuthority, trusted: true } } }))).toBe(false);
     expect(validate(request({ replace: "true" }))).toBe(false);
     expect(validate(request({ trusted: true }))).toBe(false);
+  });
+
+  it("publishes the timeline request fields and session.turn.diff without widening other requests", () => {
+    const validate = compileRequestValidator(readProtocolSchema());
+    const request = (method: string, params: unknown) => ({ jsonrpc: JSON_RPC_VERSION, id: "timeline", method, params });
+    for (const schemaVersion of [2, 3]) {
+      expect(validate(request("session.transcript.v2", { sessionId: "s1", schemaVersion })), JSON.stringify(validate.errors)).toBe(true);
+    }
+    for (const schemaVersion of [1, 4, "3", null]) {
+      expect(validate(request("session.transcript.v2", { sessionId: "s1", schemaVersion }))).toBe(false);
+    }
+    expect(validate(request("session.snapshot", { sessionId: "s1", schemaVersion: 3 }))).toBe(false);
+    for (const method of ["message.send", "message.stream"]) {
+      const prompt = { sessionId: "s1", content: "Run tests" };
+      for (const fields of [{ includeToolProgress: true, turnChanges: { includeDiff: true } }, { includeToolProgress: false }, { turnChanges: {} }]) {
+        expect(validate(request(method, { ...prompt, ...fields })), JSON.stringify(validate.errors)).toBe(true);
+      }
+      for (const fields of [{ includeToolProgress: "yes" }, { turnChanges: { includeDiff: "yes" } }, { turnChanges: { includeDiff: true, paths: ["a"] } }, { turnChanges: true }]) {
+        expect(validate(request(method, { ...prompt, ...fields }))).toBe(false);
+      }
+    }
+    const diff = { sessionId: "s1", turnId: "turn-1", path: "src/math.js" };
+    expect(validate(request("session.turn.diff", diff)), JSON.stringify(validate.errors)).toBe(true);
+    for (const params of [
+      { sessionId: "s1", turnId: "turn-1" },
+      { ...diff, path: "" },
+      { ...diff, turnId: "t".repeat(257) },
+      { ...diff, path: "p".repeat(513) },
+      { ...diff, includeDiff: true },
+    ]) {
+      expect(validate(request("session.turn.diff", params))).toBe(false);
+    }
   });
 
   it("publishes only passive, non-authority MCP status fields", () => {

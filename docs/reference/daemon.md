@@ -333,7 +333,7 @@ LF is the same delimiter rather than an empty extra frame. The SDK socket and
 subprocess transports share that rule and `AGENC_SDK_MAX_FRAME_BYTES`.
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
-- Protocol version constant: **`1.16.0`**
+- Protocol version constant: **`1.37.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).
 - Clients send `initialize` with the protocol version. Negotiation compares the
   numeric major and minor versions: the server accepts the same major when the
@@ -376,6 +376,16 @@ subprocess transports share that rule and `AGENC_SDK_MAX_FRAME_BYTES`.
 - Protocol 1.16 adds `project.trustStatus` and `project.trust`. A client that
   negotiates 1.15 or older sees both advertised `false` and gets
   `METHOD_NOT_FOUND`, so it keeps whatever it did before.
+- Protocol 1.37 adds `session.compact` (see
+  [Compacting a session](#compacting-a-session)); `daemon.methods` lists it
+  whatever version the client negotiated. The timeline capabilities
+  (`turn.failure.v1`, `turn.usage.v1`, `transcript.tools.v3`,
+  `transcript.plans.v3`, `tool.progress.shell.v1`, `turn.changes.v1` and
+  `turn.diff.read.v1`, with `session.turn.diff`) take no protocol version: a
+  client asks for them in its own `initialize`
+  ([timeline-core-contract.md](../../runtime/docs/timeline-core-contract.md)).
+  Neither does the `partial` mark on run inspection answers for a split run,
+  an additive response field.
 
 ### Public methods (`AGENC_DAEMON_METHODS`)
 
@@ -396,10 +406,12 @@ Never retry after admission may have arrived.
 | `csvJob.review.list` / `csvJob.review.show` / `csvJob.review.resolve`                                       | Inspect and settle durable CSV batch-review items                                                                  |
 | `session.create` / `session.list` / `session.attach` / `session.detach`                                     | Session lifecycle                                                                                                  |
 | `session.terminate` / `session.clear` / `session.snapshot` / `session.transcript` / `session.transcript.v2` | Session control and identity-bearing history sync                                                                  |
+| `session.compact`                                                                                           | Compact an idle session's conversation the way the TUI's `/compact` does, and return the context tokens before and after. See [Compacting a session](#compacting-a-session) (protocol 1.37) |
 | `session.cancelTurn`                                                                                        | Abort the current turn, optionally only when `expectedTurnId` still matches                                        |
 | `session.resolveToolCall`                                                                                   | Resolve a tool call whose durable outcome requires review                                                          |
 | `session.mcp.status`                                                                                        | Read the owning session's revisioned, credential-free MCP status projection                                        |
 | `session.mcp.addServer`                                                                                     | Attach MCP server to a session                                                                                     |
+| `session.turn.diff`                                                                                         | Read one file's patch from a turn's workspace checkpoint, for a connection that negotiated `turn.changes.v1` and `turn.diff.read.v1`. See [timeline-core-contract.md](../../runtime/docs/timeline-core-contract.md) |
 | `session.artifact.read`                                                                                     | Read a display artifact's bytes by its digest id, at most 512 KiB per call, for clients on protocol 1.18. See [display-attachments.md](../display-attachments.md) |
 | `plugin.settings.get` / `plugin.settings.set` / `plugin.settings.reset`                                     | Read, write or clear a plugin's manifest settings. Secrets are kept in the OS secure storage and never returned. See [skills-plugins.md](skills-plugins.md) |
 | `message.send` / `message.stream`                                                                           | Prompt turns                                                                                                       |
@@ -424,10 +436,22 @@ Never retry after admission may have arrived.
 | `auth.login` / `auth.whoami` / `auth.logout`                                                                | Auth backend                                                                                                       |
 
 `session.snapshot.tokenUsage.costUsd` is the cost of the session's own model
-turns plus the charges of its own tool calls as the admission ledger settled
-them (web search and fetch fees, media generation, and the model calls tools
-make such as `web_fetch` prompt extraction). A tool call without a price adds
-nothing. `costKnown` is also `false` when the ledger cannot be read.
+calls and tool calls as the admission ledger settled them, the ledger
+`/status`, `/cost` and `agenc -p` read: its model turns, compaction, the model
+calls tools make such as `web_fetch` prompt extraction, and tool fees (web
+search and fetch, media generation). Sub-agents are not included. A tool call
+without a price adds nothing. The ledger commits each call when it settles, so
+a session revived after its daemon was killed (or ran out of memory) still
+reports the cost of every call settled before. The ledger's writes are synced,
+so this holds after a power loss too, except in a fresh `agenc -p` run without
+`--full-durability` ([print-mode durability](cli.md#print-mode-durability)).
+
+The tokens count what the session's model turns reported; for a resumed
+session, every `token_count` its rollout recorded plus what the current daemon
+process ran. `costKnown` is `false` when the ledger holds fewer calls than the
+turns reported (for example a resumed run whose earlier calls were admitted in
+another project's database), when a call has no price, or when the ledger
+cannot be read.
 
 `agenc -p --output-format json` reports `tokenUsage` from the run's ledger
 summary, the same one `/cost` reads: sub-agents recorded in the ledger are
@@ -447,6 +471,35 @@ reviews are still pending. See
 [durable-runs-effects-events.md](../design/durable-runs-effects-events.md#resume-and-effect-review)
 and
 [provider-aware-token-accounting.md](../design/provider-aware-token-accounting.md#session-context-estimate).
+
+#### Compacting a session
+
+`session.compact { sessionId }` runs the TUI's `/compact` on a daemon-owned
+session: the runner calls `session.partialCompactFromMessage` with
+`messageOrdinal: 0` and `direction: "from"`, the same request the TUI sends,
+so the session gets the same durable compaction, rollback attempt ID,
+`transcript_epoch` and `history_replaced` events. There is no second
+compaction path.
+
+A success answers `{ sessionId, ok: true, tokensBefore, tokensAfter,
+attemptId, displayText }`. The token counts are the compaction's own measure
+of the active conversation before and after; `attemptId` is what
+`session.rollbackCompaction` takes, and `displayText` is the text `/compact`
+prints. Nothing changes when the answer is `ok: false`, with a `code` and a
+`message`:
+
+- `ACTIVE_TURN`: a turn is running, a prompt was accepted and has not started,
+  a shell command runs, or a tool call is open. Compact once the turn ends.
+- `MESSAGE_NOT_FOUND`: the active conversation has nothing to compact.
+- `ROLLOUT_UNAVAILABLE` or `ROLLOUT_DEGRADED`: the session has no healthy
+  durable history to compact.
+- `ABORTED`: the request was cancelled (`request.cancel`) before it finished.
+
+A compaction that cannot shrink the conversation fails the request with its
+reason. The method is advertised in `daemon.methods` whenever the daemon's
+runner can compact, whatever protocol version the client negotiated: nothing
+the daemon sends asks a client to call it, so a client that does not know it
+never does. A remote browser connection is not offered it.
 
 #### Session mode (Light)
 
@@ -884,6 +937,17 @@ fields that name the call's target (`command`, `cmd`, `file_path`, `path`,
 can say what was denied without the call's full arguments. Clients ignore
 notice types they do not know.
 
+A client that sends `schemaVersion: 3` (the daemon advertises
+`transcript.tools.v3` and `transcript.plans.v3`) gets the same answer with
+`schemaVersion: 3` and `turns`: for each visible turn, its tool calls (name,
+the fields that name the call's target, error and duration, never outputs),
+its plan and to-do list, the usage Core recorded when it ended and its
+workspace change summary. Without the field the answer stays schema 2. The
+other timeline capabilities (`turn.failure.v1`, `turn.usage.v1`,
+`tool.progress.shell.v1`, `turn.changes.v1`, `turn.diff.read.v1`) are asked
+for in `initialize` and change nothing for a client that does not ask. See
+[timeline-core-contract.md](../../runtime/docs/timeline-core-contract.md).
+
 Live notifications carry the same `eventId`, `sequence`, `runId`,
 `historyEpoch`, `turnId`, `clientMessageId`, and `messageId` correlation where
 available. `event.message_chunk` is an assistant delta only; a durable
@@ -1163,7 +1227,27 @@ projection from its canonical active or archived JSONL source and recovers any
 missing v15 effect or terminal projection. This repair writes indexes/state but
 does not dispatch work, publish events, or rewrite the journal. If one run id
 exists in multiple project databases, the methods fail with
-`RUN_ID_AMBIGUOUS` instead of choosing silently.
+`RUN_ID_AMBIGUOUS` instead of choosing silently, except for a run split by an
+earlier resume, which they read and mark partial (below).
+
+A session's state lives in the project that holds its rollout
+(`projects/<project>/sessions/<id>/`). A resumed session stays there even when
+its folder would now resolve to another project: a root marker added in or
+above the folder or removed, a daemon with another `HOME` (the marker search
+stops there), or `project_root_markers` in config. Before this, such a resume
+wrote its new epoch, journal binding and admission records into a second
+project database while it kept appending to the rollout.
+
+The four methods read a run split that way from the project that holds its
+rollout, when every journal binding and thread row in the other databases
+names that same rollout and none of their epoch-scoped rows starts before
+their first binding. The answer is then partial: its `source.partial` is
+`{ reason: "split_run", omittedProjectDirs }`, naming the databases it leaves
+out. The replay is complete, since it reads the rollout. The admission summary
+leaves out those databases' records, `durableRun` is the first project's run
+row, and `run.evidence` reports completeness `partial`. Nothing is moved or
+deleted. Any other run with state in more than one database still fails with
+`RUN_ID_AMBIGUOUS`.
 
 The full persistence, replay, gap, effect, migration, and crash semantics are
 documented in
@@ -1484,6 +1568,23 @@ as do normal model-admission checks.
 | Pre-sampling | Thrown compact only. A no-op continues the turn. | `warning` cause `pre_sampling_compact_failed`, then `turn_failed` code `compact_failed` |
 | Post-tool checkpoint | After the outer token gate, compact returns no committed result, except a safely deferred `no_shrink`. | `warning` cause `mid_turn_compact_failed`, then `turn_failed` code `compact_failed` |
 | Provider context refusal (413) | Every compaction ladder tier declined the bounded collapse, or the collapse was already attempted for this overflow. A tier that declines steps down first (`warning` cause `auto_compact_degraded`, prefixed `reactive_recovery/in_turn`). | `warning` cause `context_collapse_ladder_exhausted` (when tiers ran), then `error` cause `prompt_too_long_exhausted` |
+
+#### Advice in a context-full failure
+
+A `compact_failed` message that says the conversation is too large for the
+next reply ends with advice worded for whoever reads it
+(`runtime/src/session/turn-advice.ts`). The reader is the client that
+prompted the turn, as it declared itself in `initialize`; before any prompt it
+is the client that started the session (`metadata.mode: "tui"` for the TUI):
+
+| Reader | Client capability | Advice |
+| --- | --- | --- |
+| The TUI | `turn.advice.slashCommands.v1` | `Run /compact to retry, or start a new conversation with /clear.` (with a larger model too when even the shortened request cannot fit) |
+| A client that offers Compact itself | `turn.advice.compactAction.v1` | None: the client shows its own action (Desktop's Compact runs `session.compact`) |
+| Any other client | neither | `Compact the conversation and retry, or start a new conversation.` (with a larger model too, as above) |
+
+A session nobody answers (`nonInteractive`, such as `agenc -p`) gets no
+advice, as before. The capabilities only change wording; they grant nothing.
 
 Keep-alive (interactive / desktop / `keepAlive` subagent) sessions
 stay promptable. A later `message.send` can start a new turn. The

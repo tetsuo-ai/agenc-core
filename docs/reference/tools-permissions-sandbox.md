@@ -844,7 +844,10 @@ entry itself and to its execution surface: a command cannot create a nested
 `.git`, rename a directory onto one, create a gitfile or symlink pointer there,
 or write a nested hook or config, while inert writes inside an existing nested
 repository (refs, objects, HEAD) still work. macOS has no run-time monitor, so it
-refuses these up front where Linux moves them aside after the command. Each
+refuses these up front where Linux moves them aside after the command. The one
+exception is AgenC's own `git worktree add` and `git worktree remove` for a Goal
+run or an isolated agent: each is granted exactly the new worktree's own `.git`
+pointer, which it must create or delete. A command never gets that grant. Each
 file tool call is also bound to the files it was checked
 against before any approval prompt: if a link on its path is pointed
 elsewhere before it runs, the tool changes, reads or sends nothing and says
