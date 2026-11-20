@@ -12,7 +12,7 @@
  * the project that holds its rollout and says the answer is partial.
  */
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import Database from "better-sqlite3";
@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgenCDaemonRunInspectionService } from "../../src/app-server/run-inspection.js";
 import type { RunJournalEvent } from "../../src/app-server/protocol/index.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
+import { serializeRolloutItem } from "../../src/session/rollout-item.js";
 import { RolloutStore } from "../../src/session/rollout-store.js";
 import { upsertAgentRun } from "../../src/state/agent-runs.js";
 import { discoverStateDatabasePaths } from "../../src/state/database-paths.js";
@@ -288,6 +289,26 @@ describe("a run split across two project databases by an earlier resume", () => 
     expect(status.source).toMatchObject({ projectDir: firstProject, partial });
     expect(status.admission).toMatchObject({ reservationCount: 2, actualTokens: 11 + 31 });
     expect(service.evidence({ runId: RUN_ID }).source).toMatchObject({ completeness: "partial", partial });
+  });
+
+  it("refuses an admission event of the run that neither period's journal holds", async () => {
+    await splitTheRun();
+    expect(() => replayAll(inspection())).not.toThrow();
+    // A copy of the second period's last admission event under an identity no journal wrote.
+    const last = (rowsOf(folderProject).execution_admission_journal as { event_id: string }[]).at(-1)!;
+    const copied = inspection().replay({ runId: RUN_ID, limit: 200 }).events
+      .find((event) => event.eventId === last.event_id)!.payload as Record<string, unknown>;
+    sequence += 1;
+    appendFileSync(rolloutPath, serializeRolloutItem({ type: "event_msg", payload: { id: "forged-admission", eventId: "forged-admission",
+      seq: sequence, msg: { type: "execution_admission", payload: { ...copied, eventId: "forged-admission" } } } }));
+    const service = inspection();
+    for (const read of [
+      () => service.replay({ runId: RUN_ID }),
+      () => service.status({ runId: RUN_ID }),
+      () => service.evidence({ runId: RUN_ID }),
+    ]) {
+      expect(read).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS", reason: "admission_owner_unproved" }));
+    }
   });
 
   it("still refuses when the other project's thread row names another rollout", async () => {

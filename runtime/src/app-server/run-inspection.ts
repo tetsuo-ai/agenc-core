@@ -457,6 +457,9 @@ export class AgenCDaemonRunInspectionService {
     const proveCompactions = (admissionPaths: StateDatabasePaths): void =>
       proveCompactionAdmissions([admissionPaths, ...(strays ?? [])], authority.compactions, runId);
     if (kept.length === 1 && authority.owner === undefined) {
+      // One database holds the run: its own admission was journaled there,
+      // or for a split run where each period's admission went.
+      proveOwnAdmissions([canonical.paths, ...(strays ?? [])], authority.events, runId);
       proveCompactions(canonical.paths);
       return marked(canonical);
     }
@@ -576,6 +579,52 @@ function proveCompactionAdmissions(
     });
   }
   if (events.some((event) => proven.get(String(event.eventId)) !== 1)) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+}
+
+/**
+ * Prove each of the run's own admission events in its bound rollout against
+ * an admission journal: exactly one of the given databases holds its journal
+ * row, the row is the run's, and every copy of the event in the rollout is
+ * that row. Anything else refuses. One event can be in more than one bound
+ * rollout of the run (admission recovery accepts that); each copy must be
+ * the row.
+ */
+function proveOwnAdmissions(
+  journals: readonly StateDatabasePaths[],
+  events: readonly JsonObject[],
+  runId: string,
+): void {
+  if (events.length === 0) return;
+  const copies = new Map<string, JsonObject[]>();
+  for (const event of events) {
+    const eventId = String(event.eventId);
+    const known = copies.get(eventId);
+    if (known === undefined) copies.set(eventId, [event]);
+    else known.push(event);
+  }
+  const unique = journals.filter((paths, index) =>
+    journals.findIndex((other) => other.stateDbPath === paths.stateDbPath) === index);
+  const holders = new Map<string, number>();
+  for (const paths of unique) {
+    withReadonlyStateDatabase(paths, (db) => {
+      if (!tableExists(db, "execution_admission_journal")) return;
+      const journalRow = db.prepare<[string], AdmissionJournalRow>(
+        "SELECT * FROM execution_admission_journal WHERE event_id = ?",
+      );
+      for (const [eventId, eventCopies] of copies) {
+        const row = journalRow.get(eventId);
+        if (row === undefined) continue;
+        if (row.run_id !== runId) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+        const { category: ignoredCategory, ...admissionEvent } = legacyJournalEventFromRow(row);
+        const journaled = canonicalJson(admissionEvent);
+        if (eventCopies.some((event) => canonicalJson(event) !== journaled)) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+        holders.set(eventId, (holders.get(eventId) ?? 0) + 1);
+      }
+    });
+  }
+  for (const eventId of copies.keys()) {
+    if (holders.get(eventId) !== 1) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+  }
 }
 
 /**
