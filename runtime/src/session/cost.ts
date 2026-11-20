@@ -272,12 +272,14 @@ const FREE_TIER: Readonly<ModelCostEntry> = Object.freeze({
 /**
  * Ollama Cloud per-token rates (input, cached input, output per 1M), read
  * 2026-10-20 from https://ollama.com/pricing (the Inkling, Kimi K3.1 Pro and
- * MiMo rows 2026-11-20). Cloud usage bills per token
+ * MiMo rows 2026-11-20; on that day Beam had a row of its own and Mistral
+ * Large 4 had moved). Cloud usage bills per token
  * since 2026-08-31; plan credits pay for it first. The DeepSeek rows are the
  * peak rate, off-peak costs half. The price list names a family once
  * (deepseek-v4.1-flash covers its dated :1017 snapshot).
  */
 const OLLAMA_CLOUD_RATES: Readonly<Record<string, readonly [number, number | undefined, number]>> = Object.freeze({
+  "beam": [0.125, 0.015, 0.4],
   "deepseek-v4.1-flash:1017": [0.3, 0.006, 1.2],
   "deepseek-v4-pro:0813": [1.32, 0.044, 3.96],
   "gemma4:31b": [0.14, 0.05, 0.4],
@@ -297,7 +299,7 @@ const OLLAMA_CLOUD_RATES: Readonly<Record<string, readonly [number, number | und
   "minimax-m3": [0.6, 0.12, 2.4],
   "minimax-m3.1-flash": [0.15, 0.015, 0.6],
   "mistral-large-3:675b": [0.5, undefined, 1.5],
-  "mistral-large-4": [0.68, 0.07, 2.09],
+  "mistral-large-4": [0.7, 0.07, 2.1],
   "muse-spark-open": [1.25, 0.15, 4.25],
   "nemotron-3-nano:30b": [0.06, undefined, 0.24],
   "nemotron-3-super": [0.015, 0.015, 0.6],
@@ -305,19 +307,14 @@ const OLLAMA_CLOUD_RATES: Readonly<Record<string, readonly [number, number | und
 });
 
 function ollamaCloudCostEntries(): Record<string, ModelCostEntry> {
-  return {
-    ...Object.fromEntries(Object.entries(OLLAMA_CLOUD_RATES).map(([model, [input, cached, output]]) => [
-      `ollama-cloud:${model}`,
-      Object.freeze({
-        inputUsdPer1K: input / 1000,
-        outputUsdPer1K: output / 1000,
-        ...(cached === undefined ? {} : { cachedInputUsdPer1K: cached / 1000, cachedInputIncludedInInputTokens: true }),
-      }),
-    ])),
-    // Beam carries Ollama's "free" badge (https://ollama.com/search?c=cloud,
-    // 2026-10-20) and has no row on the price list.
-    "ollama-cloud:beam": FREE_TIER,
-  };
+  return Object.fromEntries(Object.entries(OLLAMA_CLOUD_RATES).map(([model, [input, cached, output]]) => [
+    `ollama-cloud:${model}`,
+    Object.freeze({
+      inputUsdPer1K: input / 1000,
+      outputUsdPer1K: output / 1000,
+      ...(cached === undefined ? {} : { cachedInputUsdPer1K: cached / 1000, cachedInputIncludedInInputTokens: true }),
+    }),
+  ]));
 }
 
 /** Copilot rates are independent of direct-provider fast/search charges.

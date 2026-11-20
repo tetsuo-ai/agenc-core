@@ -27,10 +27,9 @@ describe("independent Ollama Cloud cost authority review", () => {
         expect(resolution.known).toBe(false);
       } else {
         expect(match.key).toBe(`ollama-cloud:${model}`);
-        // Only a model Ollama itself marks free (Beam's "free" badge, no row
-        // on the price list) is an audited known zero; never the local entry.
-        if (model === "beam") expect(match.entry).toMatchObject({ localZeroCost: true, label: "free" });
-        else expect(match.entry.localZeroCost).not.toBe(true);
+        // Every Cloud model is priced (Beam too, since its row on the price
+        // list of 2026-11-20); none takes the local provider's zero.
+        expect(match.entry.localZeroCost).not.toBe(true);
       }
     },
   );

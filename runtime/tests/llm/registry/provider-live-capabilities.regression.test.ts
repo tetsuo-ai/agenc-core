@@ -91,11 +91,12 @@ describe("live provider capabilities (fail on base, pass after)", () => {
     expect(resolveRegisteredModelCatalogEntry({ provider: "ollama-cloud", model: "minimax-m3.9-preview" })).toBeUndefined();
     expect(resolveRegisteredModelCatalogEntry({ provider: "ollama-cloud", model: "deepseek-v4.1-flash" })?.supportedReasoningLevels)
       .toContain("none");
-    // Base: no price of its own (https://ollama.com/pricing lists 0.68/0.07/2.09 USD per million).
+    // Base: no price of its own (https://ollama.com/pricing listed 0.68/0.07/2.09 USD per million
+    // on 2026-10-20 and 0.70/0.07/2.10 on 2026-11-20).
     const price = resolveModelCostEntry({ provider: "ollama-cloud", model: "mistral-large-4" }, DEFAULT_MODEL_COSTS);
     expect(price?.key).toBe("ollama-cloud:mistral-large-4");
-    expect(price?.entry.inputUsdPer1K).toBeCloseTo(0.00068, 10);
-    expect(price?.entry.outputUsdPer1K).toBeCloseTo(0.00209, 10);
+    expect(price?.entry.inputUsdPer1K).toBeCloseTo(0.0007, 10);
+    expect(price?.entry.outputUsdPer1K).toBeCloseTo(0.0021, 10);
   });
 
   test("Ollama Cloud: a model's default effort is the level it thinks at when no effort is sent", () => {
