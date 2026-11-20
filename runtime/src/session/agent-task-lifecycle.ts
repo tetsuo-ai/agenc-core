@@ -20,6 +20,7 @@
 
 import type { Session, SessionState } from "./session.js";
 import { restorePromptCacheState } from "./prompt-cache-state.js";
+import { restorePromptCacheDeltas } from "./prompt-cache-deltas.js";
 import {
   sessionStateUpdateAddressesSlot,
   type RolloutItem,
@@ -320,6 +321,9 @@ export async function recordInitialHistoryOnResume(
   },
 ): Promise<void> {
   restorePromptCacheState(session, session.provider, rolloutItems, session.services.registry);
+  // What the conversation recorded after its last turn end: the ledger
+  // blocks and item ids of a turn its process did not finish.
+  restorePromptCacheDeltas(session, session.provider, rolloutItems);
   // 1. Agent-task restore. Run first so the cached task lines up with
   // the restored session
   // identity before any model-dependent state mutations.

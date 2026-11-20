@@ -78,6 +78,13 @@ export interface SessionStateUpdate {
    * the conversation, a resume above all, reuse them.
    */
   readonly promptEnvironment?: import("./prompt-environment.js").PromptEnvironment;
+  /**
+   * Prompt cache state as it happens between turn-end snapshots: the ledger
+   * blocks one request placed, or the item ids of one response's calls
+   * (prompt-cache-deltas.ts). A resume applies the ones after the last
+   * snapshot, so a process that died mid-turn keeps them.
+   */
+  readonly promptCacheDelta?: import("./prompt-cache-deltas.js").PromptCacheDelta;
   readonly agentTask?: SessionAgentTask;
   readonly memoryExtraction?: SessionMemoryExtractionState;
   readonly userStop?: {
