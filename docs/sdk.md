@@ -478,7 +478,11 @@ the execution-admission journal; its source declares
 other runs. `run.evidence` declares
 `workflowEvidenceIncluded: true` for canonical journal pages and `false` for
 that compatibility source, together with an explicit completeness value and
-content hashes.
+content hashes. A run inspection call that fails with `RUN_ID_AMBIGUOUS`
+says why in the error's `data.reason` (`RunInspectionErrorData`,
+`RunIdAmbiguousReason`): `project_split`, `duplicate_run_id`,
+`admission_owner_unproved` or `admission_record_limit`. Older daemons send
+no reason.
 
 ## Daemon method surface (54 methods)
 

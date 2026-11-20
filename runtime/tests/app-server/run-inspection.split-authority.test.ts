@@ -153,7 +153,7 @@ describe("split canonical journal and admission ownership", () => {
     { legacy: true, omitEvents: true, compaction: true },
   ])("refuses unproved or conflicting ownership %j", async (options) => {
     await seedSplitRun(options);
-    expect(() => service.replay({ runId: RUN_ID })).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS" }));
+    expect(() => service.replay({ runId: RUN_ID })).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS", reason: "admission_owner_unproved" }));
   });
 
   it("does not treat a distinct journal with the same run ID as an admission mirror", async () => {
@@ -161,6 +161,6 @@ describe("split canonical journal and admission ownership", () => {
     const store = new RolloutStore({ cwd: join(root, "parent"), agencHome: home, sessionId: RUN_ID, agencVersion: "0.17.0", sessionTempRoot: join(root, "session-tmp") });
     store.open({ sessionId: RUN_ID, cwd: join(root, "parent"), timestamp: new Date().toISOString(), originator: "agenc-subagent", agencVersion: "0.17.0" });
     store.close();
-    expect(() => service.status({ runId: RUN_ID })).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS" }));
+    expect(() => service.status({ runId: RUN_ID })).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS", reason: "duplicate_run_id" }));
   });
 });
