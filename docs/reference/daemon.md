@@ -1638,8 +1638,15 @@ Two recovery paths apply; if both are spent the turn fails:
 | Continuation | Escalation is not allowed or its override is still active, and `maxOutputTokensRecoveryCount` plus `reasoningOnlyRecoveryCount` is under 3 (`MAX_OUTPUT_TOKENS_RECOVERY_LIMIT`). | Appends a user meta message, transition `max_output_tokens_recovery`. A reasoning-only retry on native DeepSeek increments `reasoningOnlyRecoveryCount`. Any other retry increments `maxOutputTokensRecoveryCount`. Incomplete streamed tools are not executed. |
 | Exhausted | The counted retries reached 3. | Emits `error` cause `max_output_tokens_exhausted` (`max_output_tokens_recovery_limit (3)`), then the turn ends as `model_error`: `The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete.` `run-agent` maps that to `stopReason: "error"`. |
 
-The escalate retry drops the truncated assistant batch. `messagesAtSampleStart`
-is recorded by `prepareAgenCTurnContext` on every sampling request. Copying
+The escalate retry drops the truncated assistant batch. Before the retry it
+emits `stream_error` with cause `stream_attempt_discarded`, as a reconnect
+does, because the retry streams the reply again from its first token: live
+views and a transcript read during the retry drop what the cut attempt
+streamed, and `agenc -p` ends that attempt's line and prints the reply once
+after it (text it already wrote stays on screen). In fast one-shot mode the
+cut attempt streamed nothing, and the discard drops nothing.
+`messagesAtSampleStart` is recorded by `prepareAgenCTurnContext` on every
+sampling request. Copying
 the query projection used to put per-request attachments into the durable
 prefix; the next compaction then failed with
 `caller history is not an ordered projection of canonical active history`.
