@@ -26,7 +26,7 @@ describe("current native provider catalog", () => {
     expect(entry.maxOutputTokensUpperLimit).toBeGreaterThan(0);
   });
   test("preserves provider defaults and excludes retired picker aliases", () => {
-    expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.openai).toBe("gpt-5");
+    expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.openai).toBe("gpt-6.2-astra");
     expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.gemini).toBe("gemini-3.8-flash");
     // openai/gpt-oss-120b used to lead the NIM list. NVIDIA ended it on 2026-09-03 (HTTP 410) and no
     // longer lists it, so it is now one of the retired picker aliases this test excludes.

@@ -473,12 +473,12 @@ describe("strict layered repository", () => {
 
     expect(resolved.config).toMatchObject({
       model_provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.2-astra",
     });
     expect(resolved.provenance.model_provider?.scope).toBe("user");
     expect(resolved.provenance.model?.scope).toBe("user");
     expect(resolved.sources.find((layer) => layer.scope === "user")?.config)
-      .toMatchObject({ model_provider: "openai", model: "gpt-5" });
+      .toMatchObject({ model_provider: "openai", model: "gpt-6.2-astra" });
   });
 
   test("keeps the provider/model pair atomic across every authority layer", async () => {
@@ -508,7 +508,7 @@ describe("strict layered repository", () => {
     });
 
     expect(resolved.sources.find((layer) => layer.scope === "user")?.config)
-      .toMatchObject({ model_provider: "openai", model: "gpt-5" });
+      .toMatchObject({ model_provider: "openai", model: "gpt-6.2-astra" });
     expect(
       resolved.sources.find((layer) => layer.scope === "environment")?.config,
     ).toMatchObject({

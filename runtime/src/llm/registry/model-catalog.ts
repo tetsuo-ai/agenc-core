@@ -27,7 +27,7 @@ import {
   publishedModelCatalogEntry,
 } from "./published-model-catalog.js";
 import { NVIDIA_CURRENT_MODEL_CATALOG, NVIDIA_ENDED_MODEL_CATALOG } from "./nvidia-current-models.js";
-import { OPENAI_CURRENT_MODEL_CATALOG, openAiModelIsSnapshotOf } from "./openai-current-models.js";
+import { OPENAI_CURRENT_MODEL_CATALOG, OPENAI_SHUT_DOWN_SNAPSHOT_CATALOG, openAiModelIsSnapshotOf } from "./openai-current-models.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
 import { OPENROUTER_MODELS, openRouterCatalogEntry } from "./openrouter-models.js";
 import { OPENROUTER_MODEL_IDS } from "./openrouter-model-ids.js";
@@ -1323,12 +1323,13 @@ const NON_OPENROUTER_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "list",
     },
     {
-      // openai built-in provider default (BUILT_IN_PROVIDER_DEFAULT_MODELS.openai).
-      // Registered here so the default resolves through the single-source
-      // registry instead of falling back to heuristics: "gpt-5" is not a prefix
-      // of "gpt-5.5"/"gpt-5.4"/... (those are longer), so findLongestPrefix
-      // cannot recover it without an explicit entry. Lowest priority so it
-      // leads the openai catalog ordering in deriveFlatCatalog.
+      // GPT-5, the openai built-in provider default until 2026-11-20. It has
+      // its own row instead of a heuristic match: "gpt-5" is not a prefix of
+      // "gpt-5.5"/"gpt-5.4"/... (those are longer), so findLongestPrefix
+      // cannot recover it without an explicit entry. Listed after the GPT-5.2
+      // row; the provider default (GPT-6.2 Astra) leads the openai catalog.
+      // OpenAI shuts it down on 2026-12-11 (developers.openai.com/api/docs/
+      // deprecations; replacement gpt-6.1-sol).
       provider: "openai",
       model: "gpt-5",
       displayName: "GPT-5",
@@ -1349,8 +1350,9 @@ const NON_OPENROUTER_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportedReasoningLevels: OPENAI_GPT5_REASONING_LEVELS,
       defaultReasoningLevel: "medium",
       additionalSpeedTiers: FAST_SPEED_TIER,
-      priority: -1,
+      priority: 11,
       visibility: "list",
+      retiresOn: "2026-12-11",
     },
     {
       provider: "openai",
@@ -1731,7 +1733,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] = 
  * lookup does.
  */
 const RETIREMENT_ONLY_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
-  Object.freeze([...NVIDIA_ENDED_MODEL_CATALOG]);
+  Object.freeze([...NVIDIA_ENDED_MODEL_CATALOG, ...OPENAI_SHUT_DOWN_SNAPSHOT_CATALOG]);
 
 /**
  * The registered Claude rows, keyed by the canonical id the shared parser

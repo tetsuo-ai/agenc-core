@@ -3992,7 +3992,7 @@ describe("AgenC delegate background-agent runner", () => {
         objective: "resume with explicit settings",
         explicitColdResume: true,
         runtimeSettings: baseline,
-        model: "gpt-5",
+        model: "gpt-6.1-terra",
         provider: "openai",
         profile: "override-profile",
         permissionMode: "plan",
@@ -4017,7 +4017,7 @@ describe("AgenC delegate background-agent runner", () => {
           reason: "permission_mode_changed",
           permissionMode: "plan",
           prePlanMode: "default",
-          model: "gpt-5",
+          model: "gpt-6.1-terra",
           provider: "openai",
           profile: "override-profile",
         },
@@ -4029,7 +4029,7 @@ describe("AgenC delegate background-agent runner", () => {
     });
     expect(harness.session.pendingProviderSwitch).toEqual({
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
       profile: "override-profile",
     });
   });
@@ -4044,8 +4044,8 @@ describe("AgenC delegate background-agent runner", () => {
     {
       label: "model-only override",
       config: {},
-      override: { model: "gpt-5" },
-      expected: { provider: "openai", model: "gpt-5" },
+      override: { model: "gpt-6.1-terra" },
+      expected: { provider: "openai", model: "gpt-6.1-terra" },
     },
   ])("canonically resolves a $label before durable restore", async (entry) => {
     const runId = `session-settings-${entry.label.replaceAll(" ", "-")}`;
@@ -4205,7 +4205,7 @@ describe("AgenC delegate background-agent runner", () => {
   it.each([
     {
       label: "a conflicting pair",
-      override: { provider: "grok", model: "gpt-5" },
+      override: { provider: "grok", model: "gpt-6.1-terra" },
     },
     {
       label: "an unknown provider",
@@ -4241,7 +4241,7 @@ describe("AgenC delegate background-agent runner", () => {
       permissionMode: "plan",
       prePlanMode: "default",
       provider: "grok",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
     });
     const rolloutItems = [runtimeSettingsRolloutItem(runId, invalid)];
     const harness = makeTopLevelRunner({
@@ -6743,7 +6743,7 @@ describe("AgenC delegate background-agent runner", () => {
     await runner.startAgent({
       objective: "compile the daemon",
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
       profile: "fast",
       configPath: "/workspace/explicit-config.toml",
       taskTokenBudget: 219000,
@@ -6766,7 +6766,7 @@ describe("AgenC delegate background-agent runner", () => {
           "--provider",
           "openai",
           "--model",
-          "gpt-5",
+          "gpt-6.1-terra",
           "--profile",
           "fast",
           "--config",
@@ -6794,7 +6794,7 @@ describe("AgenC delegate background-agent runner", () => {
         agentId: "add-dir-cold-restore-session",
         objective: "resume the daemon",
         provider: "openai",
-        model: "gpt-5",
+        model: "gpt-6.1-terra",
         taskTokenBudget: 219000,
         taskMaxCalls: 17,
         addDirs: ["../shared workspace", "/tmp/shared"],
@@ -6810,7 +6810,7 @@ describe("AgenC delegate background-agent runner", () => {
           "--provider",
           "openai",
           "--model",
-          "gpt-5",
+          "gpt-6.1-terra",
           "--task-token-budget",
           "219000",
           "--task-max-calls",
@@ -6999,13 +6999,13 @@ describe("AgenC delegate background-agent runner", () => {
     });
 
     const result = await runner.setAgentModel(agentId, {
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
       provider: "openai",
     });
     expect(result).toMatchObject({
       applied: true,
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
     });
     unsubscribe();
 
@@ -7018,12 +7018,12 @@ describe("AgenC delegate background-agent runner", () => {
 
     expect(observations).toEqual([
       {
-        pending: { provider: "openai", model: "gpt-5" },
+        pending: { provider: "openai", model: "gpt-6.1-terra" },
         snapshotSettled: false,
       },
     ]);
     await expect(attachSnapshot).resolves.toMatchObject({
-      runtimeSettings: { provider: "openai", model: "gpt-5" },
+      runtimeSettings: { provider: "openai", model: "gpt-6.1-terra" },
     });
     await attachBarrierProbe;
     expect(attachBarrierHeld).toBe(true);
@@ -7039,22 +7039,22 @@ describe("AgenC delegate background-agent runner", () => {
     await runner.startAgent({ objective: "work", cwd: process.cwd() });
 
     await expect(
-      runner.setAgentModel(agentId, { model: "gpt-5" }),
+      runner.setAgentModel(agentId, { model: "gpt-6.1-terra" }),
     ).resolves.toMatchObject({ applied: true });
 
     expect(session.pendingProviderSwitch).toEqual({
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
     });
     expect(
       recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload,
     ).toMatchObject({
       reason: "model_provider_changed",
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
     });
     await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
-      runtimeSettings: { provider: "openai", model: "gpt-5" },
+      runtimeSettings: { provider: "openai", model: "gpt-6.1-terra" },
     });
   });
 
@@ -7073,7 +7073,7 @@ describe("AgenC delegate background-agent runner", () => {
     await expect(
       runner.setAgentModel(agentId, {
         provider: "openai",
-        model: "gpt-5",
+        model: "gpt-6.1-terra",
       }),
     ).rejects.toThrow("injected provider preparation failure");
 
@@ -7174,7 +7174,7 @@ describe("AgenC delegate background-agent runner", () => {
 
     const result = await runner.setAgentModel(agentId, {
       provider: "grok",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
     });
     expect(result).toMatchObject({
       applied: false,
@@ -7221,7 +7221,7 @@ describe("AgenC delegate background-agent runner", () => {
     const agentId = "response-detail-update";
     const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
     h.sessionState.sessionConfiguration.provider.slug = "openai";
-    h.sessionState.sessionConfiguration.collaborationMode.model = "gpt-5";
+    h.sessionState.sessionConfiguration.collaborationMode.model = "gpt-6.1-terra";
     await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
     const initialCount = recordedRuntimeSettingsEvents(h.rolloutItems).length;
     for (const modelVerbosity of ["low", "medium", "high", null] as const) {
@@ -7795,7 +7795,7 @@ describe("AgenC delegate background-agent runner", () => {
 
     await expect(
       runner.setAgentModel(agentId, {
-        model: "gpt-5",
+        model: "gpt-6.1-terra",
         provider: "openai",
       }),
     ).rejects.toThrow("injected isolated snapshot staging failure");
@@ -7871,7 +7871,7 @@ describe("AgenC delegate background-agent runner", () => {
 
     await expect(
       runner.setAgentModel(agentId, {
-        model: "gpt-5",
+        model: "gpt-6.1-terra",
         provider: "openai",
       }),
     ).rejects.toThrow("injected provider staging failure");
@@ -7928,7 +7928,7 @@ describe("AgenC delegate background-agent runner", () => {
 
     await expect(
       runner.setAgentModel(agentId, {
-        model: "gpt-5",
+        model: "gpt-6.1-terra",
         provider: "openai",
       }),
     ).rejects.toBe(publishError);
@@ -7938,15 +7938,15 @@ describe("AgenC delegate background-agent runner", () => {
     expect(settingsEvents[1]?.msg?.payload).toMatchObject({
       reason: "model_provider_changed",
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
     });
     expect(session.pendingProviderSwitch).toEqual({
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
     });
     await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
       runtimeSettingsEventId: settingsEvents[1]?.eventId,
-      runtimeSettings: { provider: "openai", model: "gpt-5" },
+      runtimeSettings: { provider: "openai", model: "gpt-6.1-terra" },
     });
     expect(
       sandboxExecutionBroker.isClosedAfterLifecycleAuthorityFailure(),
@@ -8003,7 +8003,7 @@ describe("AgenC delegate background-agent runner", () => {
 
     await expect(
       runner.setAgentModel(agentId, {
-        model: "gpt-5",
+        model: "gpt-6.1-terra",
         provider: "openai",
       }),
     ).rejects.toThrow(`agent model rollback failed for ${agentId}`);
@@ -8014,7 +8014,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(settingsEvents[1]?.msg?.payload).toMatchObject({
       reason: "model_provider_changed",
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
     });
     expect(
       sandboxExecutionBroker.isClosedAfterLifecycleAuthorityFailure(),
@@ -9192,7 +9192,7 @@ describe("AgenC delegate background-agent runner", () => {
         ...(session as { services: Record<string, unknown> }).services,
         configStore: {
           current: () => ({
-            model: "gpt-5",
+            model: "gpt-6.1-terra",
             model_provider: "openai",
           }),
         },

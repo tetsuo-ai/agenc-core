@@ -21,25 +21,25 @@ describe("session provider/model policy boundary", () => {
     expect(
       resolveProviderModelSelection(defaultConfig(), CURRENT, {
         model_provider: "openai",
-        model: "gpt-5",
+        model: "gpt-6.1-terra",
       }),
     ).toMatchObject({
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
       providerChanged: true,
     });
   });
 
   test("allows only models admitted by the final managed policy", () => {
     const config = mergeConfigs(defaultConfig(), {
-      availableModels: ["gpt-5"],
+      availableModels: ["gpt-6.1-terra"],
     });
     expect(
       resolveProviderModelSelection(config, CURRENT, {
         model_provider: "openai",
-        model: "gpt-5",
+        model: "gpt-6.1-terra",
       }),
-    ).toMatchObject({ provider: "openai", model: "gpt-5" });
+    ).toMatchObject({ provider: "openai", model: "gpt-6.1-terra" });
     expect(() =>
       resolveProviderModelSelection(config, CURRENT, {
         model_provider: "grok",
@@ -65,7 +65,7 @@ describe("session provider/model policy boundary", () => {
       resolveProviderModelSelection(config, CURRENT, {
         model_provider: "openai",
       })
-    ).toThrow(/model 'gpt-5' is not allowed/u);
+    ).toThrow(/model 'gpt-6.2-astra' is not allowed/u);
   });
 
   test("uses collision-safe policy IDs without storing them in session state", () => {

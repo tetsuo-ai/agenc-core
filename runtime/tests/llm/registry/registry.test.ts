@@ -32,16 +32,17 @@ const DONOR_MODEL_IDS = Object.freeze([
   "codex-auto-review",
 ]);
 const EXTENDED_REASONING_MODEL_IDS = Object.freeze([
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-  "gpt-6-astra",
+  // In default order: GPT-6.2 Astra, OpenAI's default, first.
   "gpt-6.2-astra",
+  "gpt-6-astra",
+  "gpt-5.6-sol",
   "gpt-6.2-sol",
   "gpt-6.1-sol",
   "gpt-6.1-terra",
   "gpt-6-sol",
+  "gpt-5.6-terra",
   "gpt-6-luna",
+  "gpt-5.6-luna",
 ]);
 
 describe("LLM registry", () => {

@@ -1,3 +1,5 @@
+import { OPENAI_DEFAULT_MODEL } from '../llm/registry/openai-reasoning-models.js'
+
 export type RecommendationGoal = 'latency' | 'balanced' | 'coding'
 
 export type OllamaModelDescriptor = {
@@ -212,16 +214,13 @@ export function normalizeRecommendationGoal(
   return 'balanced'
 }
 
-export function getGoalDefaultOpenAIModel(goal: RecommendationGoal): string {
-  switch (goal) {
-    case 'latency':
-      return 'gpt-4o-mini'
-    case 'coding':
-      return 'gpt-4o'
-    case 'balanced':
-    default:
-      return 'gpt-4o'
-  }
+/**
+ * OpenAI's setup default for a goal. Every goal takes OpenAI's default,
+ * GPT-6.2 Astra (owner, 2026-11-20): gpt-4o and gpt-4o-mini shut down on
+ * 2027-01-14.
+ */
+export function getGoalDefaultOpenAIModel(_goal: RecommendationGoal): string {
+  return OPENAI_DEFAULT_MODEL
 }
 
 export function rankOllamaModels(

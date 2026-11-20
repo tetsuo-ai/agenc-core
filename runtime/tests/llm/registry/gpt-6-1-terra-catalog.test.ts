@@ -49,8 +49,8 @@ describe("GPT-6.1 Terra, official docs and live API reviewed 2026-10-28", () => 
     // OpenRouter lists its newest models first; Terra is newer than every bundled row.
     expect(openrouter.indexOf(`openai/${model}-pro`)).toBeLessThan(openrouter.indexOf(`openai/${model}`));
     expect(openrouter.indexOf(`openai/${model}`)).toBeLessThan(openrouter.indexOf("openai/gpt-6.1-sol"));
-    expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.openai).toBe("gpt-5");
-    expect(openai[0]).toBe("gpt-5");
+    expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.openai).toBe("gpt-6.2-astra");
+    expect(openai[0]).toBe("gpt-6.2-astra");
     expect(openrouter[0]).toBe("x-ai/grok-4.5");
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).not.toContain(`github:copilot:${model}`);
     expect(resolveRegisteredModelCatalogEntry({ provider: "openai", model: `${model}-pro` })).toBeUndefined();

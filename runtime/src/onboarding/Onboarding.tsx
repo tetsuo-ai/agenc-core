@@ -53,6 +53,7 @@ import { resolveProviderRuntimeAuthority } from "../llm/provider-options.js";
 import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
 import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
 import { retiredBundledModel } from "../llm/registry/model-retirement.js";
+import { chatGptDefaultModel } from "../llm/registry/openai-chatgpt-default.js";
 import { isModelAllowed } from "../utils/model/modelAllowlist.js";
 import {
   geminiEndpointFor,
@@ -134,8 +135,13 @@ export interface ProviderConnectionCheck {
   readonly credentialProvenance?: ProviderConnectionCredentialProvenance;
   readonly baseURL?: string;
   readonly canSkip?: boolean;
-  /** Local providers: the models the running server lists. */
+  /**
+   * Local providers: the models the running server lists. A ChatGPT
+   * sign-in: the models its account lists.
+   */
   readonly localModels?: readonly string[];
+  /** The model the list marks as the default, when it is not the provider's built-in one. */
+  readonly defaultModel?: string;
 }
 
 export type ProviderConnectionCredentialProvenance =
@@ -232,6 +238,12 @@ export interface FirstRunOnboardingContext {
    * so wizard tests never open a browser; the default lazily imports it.
    */
   readonly runProviderSignIn?: (provider: SignInProvider) => Promise<ProviderSignInResult>;
+  /**
+   * The models the signed-in ChatGPT account lists, read after an OpenAI
+   * sign-in (llm/providers/openai/chatgpt-account-models.ts). Injectable for
+   * tests; the default reads them through the captured home and environment.
+   */
+  readonly readChatGptAccountModels?: () => Promise<readonly string[] | undefined>;
   /** Reports the URL/code while a browser or device sign-in is pending. */
   readonly onAuthPrompt?: (prompt: OnboardingAuthPrompt) => void;
 }
@@ -1067,6 +1079,19 @@ function providerConnectionCredentialProvenanceLabel(
   if (provenance.kind === "verified-input") return "pasted API key";
   if (provenance.kind === "account") return `${SIGN_IN_NAMES[provenance.provider]} sign-in`;
   return provenance.fields.map((field) => field.envVar).join(" + ");
+}
+
+/** The ChatGPT account's models, read with the wizard's captured home and environment. */
+async function defaultReadChatGptAccountModels(
+  context: FirstRunOnboardingContext,
+): Promise<readonly string[] | undefined> {
+  const ingress = captureSecureStorageIngress(context.env ?? process.env, context.agencHome);
+  const { readChatGptAccountModels } = await import("../llm/providers/openai/chatgpt-account-models.js");
+  return readChatGptAccountModels({
+    home: ingress.home,
+    environment: ingress.environment,
+    ...(context.fetchImpl === undefined ? {} : { fetchImpl: context.fetchImpl }),
+  });
 }
 
 /** A provider account sign-in that just finished. */
@@ -1915,10 +1940,25 @@ export async function submitFirstRunOnboardingInput(
               completed: false,
             };
           }
+          // A ChatGPT plan may not offer OpenAI's default: list what the
+          // account offers and start on its default (Astra when listed).
+          const listed = provider === "openai"
+            ? await (context.readChatGptAccountModels ?? (() => defaultReadChatGptAccountModels(context)))()
+            : undefined;
+          const accountDefault = listed === undefined ? undefined : chatGptDefaultModel(listed);
+          const model = accountDefault ?? state.selectedModel;
+          const connection = signedInConnection(provider, model, result.accountLabel);
           return {
             state: withModelChoices(
-              state,
-              signedInConnection(provider, state.selectedModel, result.accountLabel),
+              { ...state, selectedModel: model },
+              listed === undefined || accountDefault === undefined
+                ? connection
+                : {
+                    ...connection,
+                    localModels: [accountDefault, ...listed.filter((entry) => entry !== accountDefault &&
+                      retiredBundledModel(provider, entry) === undefined)],
+                    defaultModel: accountDefault,
+                  },
               context,
             ),
             completed: false,
@@ -2450,7 +2490,8 @@ function modelsCardView(state: FirstRunOnboardingState): OnboardingCardView {
       hint: "Delete some letters to see more.",
     };
   }
-  const defaultModel = BUILT_IN_PROVIDER_DEFAULT_MODELS[state.selectedProvider];
+  const defaultModel = state.connection?.defaultModel ??
+    BUILT_IN_PROVIDER_DEFAULT_MODELS[state.selectedProvider];
   return {
     lead,
     rows: [

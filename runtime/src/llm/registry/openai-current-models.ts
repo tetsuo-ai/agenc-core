@@ -2,6 +2,8 @@
  * (o3 2026-11-20).
  * Each row's source is https://developers.openai.com/api/docs/models/<model>.
  * Dated snapshots and retired ChatGPT/Codex aliases are not picker duplicates.
+ * Shutdown dates come from https://developers.openai.com/api/docs/deprecations
+ * (read 2026-11-20).
  */
 import type { RegisteredModelCatalogEntry } from "./model-catalog.js";
 import type { ReasoningEffort } from "../../session/turn-context.js";
@@ -31,9 +33,11 @@ const MODELS: readonly OpenAiCurrentModel[] = [
   { model: "gpt-5.4-nano", context: 400_000, output: 128_000, efforts: GPT54, defaultEffort: "none", search: true, verbosity: true },
   { model: "gpt-5.2-pro", context: 400_000, output: 128_000, efforts: PRO, structured: false, search: true, verbosity: true },
   { model: "gpt-5.1", context: 400_000, output: 128_000, efforts: GPT51, defaultEffort: "none", search: true, verbosity: true },
-  { model: "gpt-5-pro", context: 400_000, output: 272_000, efforts: ["high"], defaultEffort: "high", search: true, verbosity: true },
-  { model: "gpt-5-mini", context: 400_000, output: 128_000, efforts: GPT5, defaultEffort: "medium", search: true, verbosity: true },
-  { model: "gpt-5-nano", context: 400_000, output: 128_000, efforts: GPT5, defaultEffort: "medium", search: true, verbosity: true },
+  // OpenAI shuts gpt-5-pro, gpt-5-mini and gpt-5-nano down on 2026-12-11
+  // (replacements gpt-6.1-sol in pro mode, gpt-6.1-terra and gpt-6-luna).
+  { model: "gpt-5-pro", context: 400_000, output: 272_000, efforts: ["high"], defaultEffort: "high", search: true, verbosity: true, retiresOn: "2026-12-11" },
+  { model: "gpt-5-mini", context: 400_000, output: 128_000, efforts: GPT5, defaultEffort: "medium", search: true, verbosity: true, retiresOn: "2026-12-11" },
+  { model: "gpt-5-nano", context: 400_000, output: 128_000, efforts: GPT5, defaultEffort: "medium", search: true, verbosity: true, retiresOn: "2026-12-11" },
   { model: "gpt-4.1", context: 1_047_576, output: 32_768, search: true },
   { model: "gpt-4.1-mini", context: 1_047_576, output: 32_768, search: true },
   { model: "gpt-4.1-nano", context: 1_047_576, output: 32_768 },
@@ -48,7 +52,8 @@ const MODELS: readonly OpenAiCurrentModel[] = [
   // and image in, function calling, structured outputs, reasoning tokens.
   // Deprecated: OpenAI shuts it down on 2026-12-11 (replacement gpt-6.1-sol).
   { model: "o3", context: 200_000, output: 100_000, efforts: STANDARD, defaultEffort: "medium", retiresOn: "2026-12-11" },
-  { model: "o3-pro", context: 200_000, output: 100_000, search: true },
+  // Shuts down on 2026-12-11 too (replacement gpt-6.1-sol in pro mode).
+  { model: "o3-pro", context: 200_000, output: 100_000, search: true, retiresOn: "2026-12-11" },
   { model: "o3-mini", context: 200_000, output: 100_000, vision: false, efforts: STANDARD, defaultEffort: "medium" },
   { model: "o4-mini", context: 200_000, output: 100_000, efforts: STANDARD, defaultEffort: "medium", search: true },
   { model: "chat-latest", context: 400_000, output: 128_000, search: true },
@@ -79,6 +84,42 @@ export const OPENAI_CURRENT_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[
     priority: 100 + index,
     visibility: "list" as const,
     ...(entry.retiresOn ? { retiresOn: entry.retiresOn } : {}),
+  })));
+
+/**
+ * The dated snapshots OpenAI shuts down with their models on 2026-12-11. They
+ * are date-only rows (model-catalog.ts, RETIREMENT_ONLY_MODEL_CATALOG): the
+ * exact-id retirement lookup finds them, no list or capability lookup does,
+ * so a snapshot keeps borrowing its model's contract until the date.
+ */
+const SHUT_DOWN_SNAPSHOTS: readonly (readonly [string, string])[] = [
+  ["gpt-5-2025-08-07", "2026-12-11"],
+  ["gpt-5-mini-2025-08-07", "2026-12-11"],
+  ["gpt-5-nano-2025-08-07", "2026-12-11"],
+  ["gpt-5-pro-2025-10-06", "2026-12-11"],
+  ["o3-2025-04-16", "2026-12-11"],
+  ["o3-pro-2025-06-10", "2026-12-11"],
+];
+
+export const OPENAI_SHUT_DOWN_SNAPSHOT_CATALOG: readonly RegisteredModelCatalogEntry[] =
+  Object.freeze(SHUT_DOWN_SNAPSHOTS.map(([model, retiresOn], index) => Object.freeze({
+    provider: "openai",
+    model,
+    displayName: model,
+    inputModalities: ["text", "image"] as const,
+    supportsToolUse: true,
+    supportsParallelToolCalls: false,
+    supportsStructuredOutput: false,
+    supportsSearchTool: false,
+    supportsVerbosity: false,
+    webSearchToolType: "none" as const,
+    supportsReasoningSummaries: false,
+    defaultReasoningSummary: "none" as const,
+    supportedReasoningLevels: [],
+    additionalSpeedTiers: [],
+    priority: 400 + index,
+    visibility: "none" as const,
+    retiresOn,
   })));
 
 const RESPONSES_ONLY = ["gpt-5-pro", "gpt-5.2-pro", "gpt-5.4-pro", "gpt-5.5-pro", "o1-pro", "o3-pro"];

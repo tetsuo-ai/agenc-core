@@ -45,7 +45,7 @@ describe("provider/model configuration authority", () => {
       resolveProviderModelLayer(defaultConfig(), {
         model_provider: "openai",
       }),
-    ).toMatchObject({ model_provider: "openai", model: "gpt-5" });
+    ).toMatchObject({ model_provider: "openai", model: "gpt-6.2-astra" });
   });
 
   test("provider-only selection respects that provider's configured default", () => {
@@ -280,7 +280,7 @@ describe("provider/model configuration authority", () => {
       }),
     ).toMatchObject({
       model_provider: "openai",
-      model: "gpt-4o",
+      model: "gpt-6.2-astra",
     });
   });
 

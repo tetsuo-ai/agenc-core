@@ -14,15 +14,26 @@ const EFFORTS_WITH_NONE = ["none", ...POSITIVE_EFFORTS] as const;
 /** Rows whose model page names `medium` as the default effort. */
 const DEFAULTS_TO_MEDIUM: ReadonlySet<string> = new Set(["gpt-6.1-sol", "gpt-6.1-terra"]);
 
+/**
+ * OpenAI's default model, chosen by the owner on 2026-11-20: the former
+ * default gpt-5 shuts down on 2026-12-11. It is the first row below.
+ */
+export const OPENAI_DEFAULT_MODEL = "gpt-6.2-astra";
+
+/**
+ * The rows in the order a default is taken from them: the default first,
+ * then the strongest tier to the lightest (the tiers in
+ * agents/provider-selector-profiles.ts), the newer generation first within a
+ * tier. A ChatGPT plan that does not offer the default gets the first row its
+ * account lists (openai-chatgpt-default.ts), and Desktop shows the rows in
+ * this order.
+ */
 export const OPENAI_REASONING_MODELS = [
-  { model: "gpt-5.6-sol", label: "GPT-5.6 Sol", efforts: EFFORTS_WITH_NONE },
-  { model: "gpt-5.6-terra", label: "GPT-5.6 Terra", efforts: EFFORTS_WITH_NONE },
-  { model: "gpt-5.6-luna", label: "GPT-5.6 Luna", efforts: EFFORTS_WITH_NONE },
-  // Keep the existing default order. Adding Astra must not select it for users.
-  { model: "gpt-6-astra", label: "GPT-6 Astra", efforts: POSITIVE_EFFORTS },
   // The GPT-6.2 model pages publish the same limits. Codex Ultra uses
   // subagents. The highest single-model API effort is max.
-  { model: "gpt-6.2-astra", label: "GPT-6.2 Astra", efforts: POSITIVE_EFFORTS },
+  { model: OPENAI_DEFAULT_MODEL, label: "GPT-6.2 Astra", efforts: POSITIVE_EFFORTS },
+  { model: "gpt-6-astra", label: "GPT-6 Astra", efforts: POSITIVE_EFFORTS },
+  { model: "gpt-5.6-sol", label: "GPT-5.6 Sol", efforts: EFFORTS_WITH_NONE },
   { model: "gpt-6.2-sol", label: "GPT-6.2 Sol", efforts: POSITIVE_EFFORTS },
   // /api/docs/models/gpt-6.1-sol independently verifies the limits below
   // (2026-09-29); live Responses verifies low..max and rejects none/minimal.
@@ -31,9 +42,10 @@ export const OPENAI_REASONING_MODELS = [
   // with a medium default (2026-10-28); live Responses accepts all six
   // efforts, runs medium when the effort is omitted, and rejects minimal.
   { model: "gpt-6.1-terra", label: "GPT-6.1 Terra", efforts: EFFORTS_WITH_NONE },
-  // Appended after Astra for the same reason: the first row stays GPT-5.6 Sol.
   { model: "gpt-6-sol", label: "GPT-6 Sol", efforts: EFFORTS_WITH_NONE },
+  { model: "gpt-5.6-terra", label: "GPT-5.6 Terra", efforts: EFFORTS_WITH_NONE },
   { model: "gpt-6-luna", label: "GPT-6 Luna", efforts: EFFORTS_WITH_NONE },
+  { model: "gpt-5.6-luna", label: "GPT-5.6 Luna", efforts: EFFORTS_WITH_NONE },
 ].map(({ model, label, efforts }) => ({
   model,
   label,

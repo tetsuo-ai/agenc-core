@@ -21,7 +21,12 @@ import {
 } from "./model.js";
 import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
 import { configuredModelForProvider } from "../config/resolve-model.js";
-import { readCommandConfig } from "./config-context.js";
+import {
+  configStoreFromCommandContext,
+  providerEnvironmentFromCommandContext,
+  readCommandConfig,
+} from "./config-context.js";
+import { chatGptAccountDefaultModel } from "../llm/providers/openai/chatgpt-account-models.js";
 import { providerMenuFallback, readProviderMenuSnapshot } from "./provider-menu-snapshot.js";
 import {
   safeExecute,
@@ -313,6 +318,23 @@ export async function switchProviderModel(
   };
 }
 
+/**
+ * OpenAI's default for this session's ChatGPT sign-in: GPT-6.2 Astra when the
+ * account lists it, else the best model it lists. Undefined without a ChatGPT
+ * sign-in or a readable list, so the provider default applies.
+ */
+async function chatGptCommandDefault(ctx: SlashCommandContext): Promise<string | undefined> {
+  const store = configStoreFromCommandContext(ctx);
+  if (store === null) return undefined;
+  let environment;
+  try {
+    environment = providerEnvironmentFromCommandContext(ctx);
+  } catch {
+    return undefined;
+  }
+  return (await chatGptAccountDefaultModel({ home: store.homeContext, environment }))?.model;
+}
+
 export const providerCommand: SlashCommand = {
   name: "provider",
   aliases: ["providers"],
@@ -338,6 +360,10 @@ export const providerCommand: SlashCommand = {
       if (targetProvider === "venice" && targetModel === undefined &&
           configuredModelForProvider(readCommandConfig(ctx) ?? {}, "venice") === undefined) {
         targetModel = await ctx.session.services?.modelsManager?.getProviderDefaultModel?.("venice");
+      }
+      if (targetProvider === "openai" && targetModel === undefined &&
+          configuredModelForProvider(readCommandConfig(ctx) ?? {}, "openai") === undefined) {
+        targetModel = await chatGptCommandDefault(ctx);
       }
       let selection = resolveProviderCommandSelection(
         ctx,

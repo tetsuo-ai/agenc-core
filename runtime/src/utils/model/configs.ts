@@ -6,14 +6,16 @@ export type ModelConfig = {
 }
 
 // ---------------------------------------------------------------------------
-// openai-compatible model mappings
-// Maps AgenC model tiers to sensible defaults for popular providers.
+// OpenAI model mappings
+// Every AgenC model tier maps to OpenAI's default, GPT-6.2 Astra (owner,
+// 2026-11-20; gpt-5 shuts down on 2026-12-11, gpt-4o and gpt-4o-mini on
+// 2027-01-14).
 // Resolve through the canonical session model selection.
 // ---------------------------------------------------------------------------
 export const OPENAI_MODEL_DEFAULTS = {
-  opus: 'gpt-4o',           // best reasoning
-  sonnet: 'gpt-4o-mini',    // balanced
-  haiku: 'gpt-4o-mini',     // fast & cheap
+  opus: 'gpt-6.2-astra',
+  sonnet: 'gpt-6.2-astra',
+  haiku: 'gpt-6.2-astra',
 } as const
 
 // ---------------------------------------------------------------------------
@@ -29,13 +31,20 @@ export const GEMINI_MODEL_DEFAULTS = {
 
 // @[MODEL LAUNCH]: Add a new AGENC_*_CONFIG constant here. Double check the correct model strings
 // here since the pattern may change.
+//
+// `openai` is OpenAI's own column: GPT-6.2 Astra for every tier.
+// `openaiCompatible` keeps the names the OpenAI column held before, for the
+// providers without a column of their own (LM Studio, OpenAI-compatible
+// servers, Ollama, OpenRouter, Groq, DeepSeek, Meta and the rest), so the
+// OpenAI default does not change what an alias means on them.
 
 export const AGENC_3_7_SONNET_CONFIG = {
   firstParty: 'claude-3-7-sonnet-20250219',
   bedrock: 'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
   vertex: 'claude-3-7-sonnet@20250219',
   foundry: 'claude-3-7-sonnet',
-  openai: 'gpt-4o-mini',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o-mini',
   gemini: 'gemini-3.8-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -48,7 +57,8 @@ export const AGENC_3_5_V2_SONNET_CONFIG = {
   bedrock: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
   vertex: 'claude-3-5-sonnet-v2@20241022',
   foundry: 'claude-3-5-sonnet',
-  openai: 'gpt-4o-mini',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o-mini',
   gemini: 'gemini-3.8-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -61,7 +71,8 @@ export const AGENC_3_5_HAIKU_CONFIG = {
   bedrock: 'us.anthropic.claude-3-5-haiku-20241022-v1:0',
   vertex: 'claude-3-5-haiku@20241022',
   foundry: 'claude-3-5-haiku',
-  openai: 'gpt-4o-mini',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o-mini',
   gemini: 'gemini-3.5-flash-lite',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -74,7 +85,8 @@ export const AGENC_HAIKU_4_5_CONFIG = {
   bedrock: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
   vertex: 'claude-haiku-4-5@20251001',
   foundry: 'claude-haiku-4-5',
-  openai: 'gpt-4o-mini',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o-mini',
   gemini: 'gemini-3.5-flash-lite',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -87,7 +99,8 @@ export const AGENC_SONNET_4_CONFIG = {
   bedrock: 'us.anthropic.claude-sonnet-4-20250514-v1:0',
   vertex: 'claude-sonnet-4@20250514',
   foundry: 'claude-sonnet-4',
-  openai: 'gpt-4o-mini',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o-mini',
   gemini: 'gemini-3.8-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -100,7 +113,8 @@ export const AGENC_SONNET_4_5_CONFIG = {
   bedrock: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   vertex: 'claude-sonnet-4-5@20250929',
   foundry: 'claude-sonnet-4-5',
-  openai: 'gpt-4o',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o',
   gemini: 'gemini-3.8-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -113,7 +127,8 @@ export const AGENC_OPUS_4_CONFIG = {
   bedrock: 'us.anthropic.claude-opus-4-20250514-v1:0',
   vertex: 'claude-opus-4@20250514',
   foundry: 'claude-opus-4',
-  openai: 'gpt-4o',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o',
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -126,7 +141,8 @@ export const AGENC_OPUS_4_1_CONFIG = {
   bedrock: 'us.anthropic.claude-opus-4-1-20250805-v1:0',
   vertex: 'claude-opus-4-1@20250805',
   foundry: 'claude-opus-4-1',
-  openai: 'gpt-4o',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o',
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -139,7 +155,8 @@ export const AGENC_OPUS_4_5_CONFIG = {
   bedrock: 'us.anthropic.claude-opus-4-5-20251101-v1:0',
   vertex: 'claude-opus-4-5@20251101',
   foundry: 'claude-opus-4-5',
-  openai: 'gpt-4o',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o',
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -152,7 +169,8 @@ export const AGENC_OPUS_4_6_CONFIG = {
   bedrock: 'us.anthropic.claude-opus-4-6-v1',
   vertex: 'claude-opus-4-6',
   foundry: 'claude-opus-4-6',
-  openai: 'gpt-4o',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o',
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -167,7 +185,8 @@ export const AGENC_OPUS_4_7_CONFIG = {
   bedrock: 'us.anthropic.claude-opus-4-7-v1',
   vertex: 'claude-opus-4-7',
   foundry: 'claude-opus-4-7',
-  openai: 'gpt-4o',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o',
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -180,7 +199,8 @@ export const AGENC_OPUS_4_8_CONFIG = {
   bedrock: 'us.anthropic.claude-opus-4-8-v1',
   vertex: 'claude-opus-4-8',
   foundry: 'claude-opus-4-8',
-  openai: 'gpt-4o',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o',
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -199,7 +219,8 @@ export const AGENC_FABLE_5_CONFIG = {
   bedrock: 'us.anthropic.claude-fable-5-v1',
   vertex: 'claude-fable-5',
   foundry: 'claude-fable-5',
-  openai: 'gpt-4o',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o',
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -212,7 +233,8 @@ export const AGENC_SONNET_4_6_CONFIG = {
   bedrock: 'us.anthropic.claude-sonnet-4-6',
   vertex: 'claude-sonnet-4-6',
   foundry: 'claude-sonnet-4-6',
-  openai: 'gpt-4o',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o',
   gemini: 'gemini-3.8-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -228,7 +250,8 @@ export const AGENC_FABLE_5_1_CONFIG = {
   bedrock: 'us.anthropic.claude-fable-5-1-v1',
   vertex: 'claude-fable-5-1',
   foundry: 'claude-fable-5-1',
-  openai: 'gpt-4o',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o',
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -246,7 +269,8 @@ export const AGENC_OPUS_5_5_CONFIG = {
   bedrock: 'us.anthropic.claude-opus-5-5-v1',
   vertex: 'claude-opus-5-5',
   foundry: 'claude-opus-5-5',
-  openai: 'gpt-4o',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o',
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -259,7 +283,8 @@ export const AGENC_OPUS_5_CONFIG = {
   bedrock: 'us.anthropic.claude-opus-5-v1',
   vertex: 'claude-opus-5',
   foundry: 'claude-opus-5',
-  openai: 'gpt-4o',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o',
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -272,7 +297,8 @@ export const AGENC_SONNET_5_CONFIG = {
   bedrock: 'us.anthropic.claude-sonnet-5-v1',
   vertex: 'claude-sonnet-5',
   foundry: 'claude-sonnet-5',
-  openai: 'gpt-4o',
+  openai: 'gpt-6.2-astra',
+  openaiCompatible: 'gpt-4o',
   gemini: 'gemini-3.8-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
@@ -335,14 +361,16 @@ export function modelConfigIdForProvider(
       case 'groq':
       case 'deepseek':
       case 'meta':
-        return 'openai'
+        return 'openaiCompatible'
       default:
         return provider
     }
   })()
   const config = ALL_MODEL_CONFIGS[key]
   const lookup = config as Readonly<Record<string, ModelName | undefined>>
-  return lookup[providerKey] ?? lookup.openai ?? config.firstParty
+  // Providers without a column of their own keep the OpenAI-style names the
+  // OpenAI column held before it moved to GPT-6.2 Astra.
+  return lookup[providerKey] ?? lookup.openaiCompatible ?? config.firstParty
 }
 
 /**

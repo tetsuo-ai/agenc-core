@@ -565,7 +565,7 @@ describe("configCommand — profile", () => {
         .pendingProviderSwitch,
     ).toEqual({
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.2-astra",
       profile: "remote",
     });
   });

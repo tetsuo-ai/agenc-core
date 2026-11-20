@@ -24,6 +24,7 @@ import {
 } from './providers.js'
 import type { ProviderEnvironment } from '../../llm/provider-options.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
+import { OPENAI_DEFAULT_MODEL } from '../../llm/registry/openai-reasoning-models.js'
 import { resolveSecureStorageHome } from '../secureStorage/home.js'
 
 function credentialHome() {
@@ -62,7 +63,7 @@ export function getSmallFastModel(): ModelName {
   }
   // OpenAI uses the session-owned canonical model.
   if (getAPIProvider() === 'openai') {
-    return getActiveProviderModel() || 'gpt-4o-mini'
+    return getActiveProviderModel() || OPENAI_DEFAULT_MODEL
   }
   // AgenC uses the session-owned canonical model.
   if (getAPIProvider() === 'agenc') {
@@ -158,7 +159,7 @@ export function getDefaultOpusModel(): ModelName {
   }
   // openai provider: use user-specified model or default
   if (getAPIProvider() === 'openai') {
-    return getActiveProviderModel() || 'gpt-4o'
+    return getActiveProviderModel() || OPENAI_DEFAULT_MODEL
   }
   // Agenc provider: use user-specified model or default to gpt-5.5
   if (getAPIProvider() === 'agenc') {
@@ -200,7 +201,7 @@ export function getDefaultSonnetModel(): ModelName {
   }
   // openai provider
   if (getAPIProvider() === 'openai') {
-    return getActiveProviderModel() || 'gpt-4o'
+    return getActiveProviderModel() || OPENAI_DEFAULT_MODEL
   }
   // Agenc provider
   if (getAPIProvider() === 'agenc') {
@@ -237,7 +238,7 @@ export function getDefaultHaikuModel(): ModelName {
   }
   // openai provider
   if (getAPIProvider() === 'openai') {
-    return getActiveProviderModel() || 'gpt-4o-mini'
+    return getActiveProviderModel() || OPENAI_DEFAULT_MODEL
   }
   // Agenc provider
   if (getAPIProvider() === 'agenc') {
@@ -297,7 +298,7 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
   }
   // OpenAI provider: canonical selection, then default.
   if (getAPIProvider() === 'openai') {
-    return getActiveProviderModel() || 'gpt-4o'
+    return getActiveProviderModel() || OPENAI_DEFAULT_MODEL
   }
   // AgenC provider: canonical selection, then default (gpt-5.5).
   if (getAPIProvider() === 'agenc') {

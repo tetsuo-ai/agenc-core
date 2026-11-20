@@ -4,6 +4,8 @@ import { resolve as resolvePath } from "node:path";
 
 import { ModelMetadataResolver, type ModelMetadataResolverOptions } from "../llm/model-metadata.js";
 import { veniceDefaultModel } from "../llm/registry/venice-models.js";
+import { chatGptAccountDefaultModel } from "../llm/providers/openai/chatgpt-account-models.js";
+import type { HomeContext } from "../config/home.js";
 import type { ProviderName } from "../llm/provider.js";
 import {
   resolveProviderModelLayer,
@@ -208,12 +210,32 @@ export function resolveCanonicalStartupSelection(params: {
   };
 }
 
+/** How long a start waits for a ChatGPT account's model list before it keeps the provider default. */
+const CHATGPT_DEFAULT_TIMEOUT_MS = 5_000;
+
 /** Discover only a provider default. Explicit CLI/config model choices stay pinned. */
 export async function resolveDiscoveredStartupDefault(
   startup: StartupSelection,
   modelSelectionSource: "explicit" | "provider_default" | undefined,
-  metadata: ModelMetadataResolverOptions,
+  metadata: ModelMetadataResolverOptions & {
+    /** The home whose OpenAI sign-in the session uses (ChatGPT account default). */
+    readonly credentialHome?: HomeContext;
+  },
 ): Promise<StartupSelection> {
+  // A ChatGPT plan may not offer OpenAI's default (GPT-6.2 Astra): a start on
+  // the provider default with a ChatGPT sign-in takes the best model the
+  // account lists instead. Without a list it keeps the default.
+  if (startup.provider === "openai" && modelSelectionSource === "provider_default" &&
+      !startup.config.providers?.openai?.default_model && metadata.credentialHome !== undefined) {
+    const chosen = await chatGptAccountDefaultModel({
+      home: metadata.credentialHome,
+      environment: metadata.env ?? process.env,
+      ...(metadata.fetchImpl === undefined ? {} : { fetchImpl: metadata.fetchImpl }),
+      timeoutMs: CHATGPT_DEFAULT_TIMEOUT_MS,
+    });
+    if (chosen === undefined || chosen.model === startup.model) return startup;
+    return { ...startup, model: chosen.model, config: { ...startup.config, model: chosen.model } };
+  }
   if (startup.provider === "openrouter" && modelSelectionSource === "provider_default" &&
       !startup.config.providers?.openrouter?.default_model) {
     const resolver = new ModelMetadataResolver(metadata);
