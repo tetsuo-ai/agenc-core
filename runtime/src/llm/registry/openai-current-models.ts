@@ -1,4 +1,5 @@
-/** Current canonical tool models verified against OpenAI model pages, 2026-09-29.
+/** Current canonical tool models verified against OpenAI model pages, 2026-09-29
+ * (o3 2026-11-20).
  * Each row's source is https://developers.openai.com/api/docs/models/<model>.
  * Dated snapshots and retired ChatGPT/Codex aliases are not picker duplicates.
  */
@@ -15,6 +16,8 @@ interface OpenAiCurrentModel {
   readonly defaultEffort?: ReasoningEffort;
   readonly search?: boolean;
   readonly verbosity?: boolean;
+  /** OpenAI's shutdown date (developers.openai.com/api/docs/deprecations). */
+  readonly retiresOn?: string;
 }
 const STANDARD = ["low", "medium", "high"] as const;
 const GPT5 = ["minimal", ...STANDARD] as const;
@@ -41,6 +44,10 @@ const MODELS: readonly OpenAiCurrentModel[] = [
   // Pro o-series pages verify reasoning but publish no effort enum. Leave
   // the dial unset instead of borrowing a sibling's unsupported settings.
   { model: "o1-pro", context: 200_000, output: 100_000 },
+  // /api/docs/models/o3 (2026-11-20): 200,000 context, 100,000 output, text
+  // and image in, function calling, structured outputs, reasoning tokens.
+  // Deprecated: OpenAI shuts it down on 2026-12-11 (replacement gpt-6.1-sol).
+  { model: "o3", context: 200_000, output: 100_000, efforts: STANDARD, defaultEffort: "medium", retiresOn: "2026-12-11" },
   { model: "o3-pro", context: 200_000, output: 100_000, search: true },
   { model: "o3-mini", context: 200_000, output: 100_000, vision: false, efforts: STANDARD, defaultEffort: "medium" },
   { model: "o4-mini", context: 200_000, output: 100_000, efforts: STANDARD, defaultEffort: "medium", search: true },
@@ -71,6 +78,7 @@ export const OPENAI_CURRENT_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[
     additionalSpeedTiers: [],
     priority: 100 + index,
     visibility: "list" as const,
+    ...(entry.retiresOn ? { retiresOn: entry.retiresOn } : {}),
   })));
 
 const RESPONSES_ONLY = ["gpt-5-pro", "gpt-5.2-pro", "gpt-5.4-pro", "gpt-5.5-pro", "o1-pro", "o3-pro"];
@@ -81,6 +89,10 @@ function matchesModel(model: string, ids: readonly string[]): boolean {
 }
 export function openAiModelRequiresResponses(model: string): boolean {
   return matchesModel(model, RESPONSES_ONLY);
+}
+/** The id itself or one of its dated snapshots (`o3-2025-04-16`), never another variant. */
+export function openAiModelIsSnapshotOf(model: string, id: string): boolean {
+  return matchesModel(model, [id]);
 }
 export function openAiModelRequiresBufferedResponse(model: string): boolean {
   return matchesModel(model, ["o1-pro", "o3-pro"]);

@@ -39,7 +39,7 @@ export const AGENC_3_7_SONNET_CONFIG = {
   gemini: 'gemini-3.8-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -52,7 +52,7 @@ export const AGENC_3_5_V2_SONNET_CONFIG = {
   gemini: 'gemini-3.8-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -65,7 +65,7 @@ export const AGENC_3_5_HAIKU_CONFIG = {
   gemini: 'gemini-3.5-flash-lite',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -78,7 +78,7 @@ export const AGENC_HAIKU_4_5_CONFIG = {
   gemini: 'gemini-3.5-flash-lite',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -91,7 +91,7 @@ export const AGENC_SONNET_4_CONFIG = {
   gemini: 'gemini-3.8-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -104,7 +104,7 @@ export const AGENC_SONNET_4_5_CONFIG = {
   gemini: 'gemini-3.8-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -117,7 +117,7 @@ export const AGENC_OPUS_4_CONFIG = {
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -130,7 +130,7 @@ export const AGENC_OPUS_4_1_CONFIG = {
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -143,7 +143,7 @@ export const AGENC_OPUS_4_5_CONFIG = {
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -156,7 +156,7 @@ export const AGENC_OPUS_4_6_CONFIG = {
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M2.5',
   mistral: 'mistral-medium-latest',
   xai: 'grok-4.3',
@@ -171,7 +171,7 @@ export const AGENC_OPUS_4_7_CONFIG = {
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -184,7 +184,7 @@ export const AGENC_OPUS_4_8_CONFIG = {
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -203,7 +203,7 @@ export const AGENC_FABLE_5_CONFIG = {
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -216,7 +216,7 @@ export const AGENC_SONNET_4_6_CONFIG = {
   gemini: 'gemini-3.8-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
@@ -232,7 +232,7 @@ export const AGENC_FABLE_5_1_CONFIG = {
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M3',
 } as const satisfies ModelConfig
 
@@ -250,7 +250,7 @@ export const AGENC_OPUS_5_5_CONFIG = {
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M3',
 } as const satisfies ModelConfig
 
@@ -263,7 +263,7 @@ export const AGENC_OPUS_5_CONFIG = {
   gemini: 'gemini-3.1-pro-preview',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M3',
 } as const satisfies ModelConfig
 
@@ -276,7 +276,7 @@ export const AGENC_SONNET_5_CONFIG = {
   gemini: 'gemini-3.8-flash',
   github: 'github:copilot',
   agenc: 'gpt-5.5',
-  'nvidia-nim': 'nvidia/nemotron-3-super-120b-a12b',
+  'nvidia-nim': 'nvidia/nemotron-3.5-super-vl-120b-a12b',
   minimax: 'MiniMax-M3',
 } as const satisfies ModelConfig
 

@@ -59,49 +59,25 @@ const GITHUB_COPILOT_CATALOG_MODELS = Object.freeze(
   ),
 );
 
-// NVIDIA NIM ids without a registry row that NVIDIA's hosted API still lists.
-// On 2026-10-17 GET https://integrate.api.nvidia.com/v1/models returned 81
-// models, and 80 of the 115 ids this picker offered were not among them. A chat
-// call to each of those 80 answered HTTP 410 ("The model 'openai/gpt-oss-120b'
-// has reached its end of life on 2026-09-03T08:00:00Z and is no longer
-// available.") or HTTP 404. They are hidden here; the registry rows join through
-// mergeDerivedProviderModels, so a retired row (visibility "none") stays out too.
-// Old sessions keep working: a saved nvidia-nim route is admitted without catalog
-// validation, and an explicit nvidia-nim pair keeps its vendor/model id.
-// The full retired list is pinned in tests/llm/registry/nvidia-nim-catalog.test.ts.
+// NVIDIA NIM chat ids without a registry row that NVIDIA's hosted API still
+// serves. On 2026-11-20 GET https://integrate.api.nvidia.com/v1/models listed 33
+// models, and a chat call without a key answered HTTP 401 (served) for each id
+// here; their hosted schema pages could not be read, so they have no contract
+// row. Only 5 of the 35 ids this picker offered before were still served:
+// bigcode/starcoder2-15b is listed but has no chat route (HTTP 404), and the
+// other 29 answered HTTP 410, end of life. Ended ids keep hidden, dated rows
+// (nvidia-current-models.ts), so a saved choice is refused with a plain
+// message. Embedding, guard, safety, translation and detector models are left
+// out: they are not chat models. The lists are pinned in
+// tests/llm/registry/nvidia-nim-catalog.test.ts.
 const NVIDIA_PROVIDER_MODEL_IDS = Object.freeze([
+  "minimaxai/minimax-m3.1-flash",
+  "z-ai/glm-5.3-flash",
+  "nvidia/nemotron-3.5-lightning-30b-a3b",
+  "poolside/laguna-xs-2.1",
   "nvidia/cosmos-reason2-8b",
-  "meta/codellama-70b",
-  "bigcode/starcoder2-15b",
-  "mistralai/codestral-22b-instruct-v0.1",
-  "deepseek-ai/deepseek-coder-6.7b-instruct",
-  "google/codegemma-7b",
-  "google/codegemma-1.1-7b",
-  "ibm/granite-34b-code-instruct",
-  "ibm/granite-8b-code-instruct",
-  "nvidia/llama-3.1-nemotron-70b-instruct",
-  "nvidia/llama-3.1-nemotron-51b-instruct",
-  "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-  "nvidia/nemotron-4-340b-instruct",
-  "nvidia/nemotron-3-super-120b-a12b",
-  "nvidia/llama3-chatqa-1.5-70b",
-  "meta/llama-3.2-90b-vision-instruct",
-  "meta/llama-3.2-11b-vision-instruct",
-  "google/gemma-4-31b-it",
   "google/gemma-3-12b-it",
   "google/gemma-3-4b-it",
-  "mistralai/mistral-large-2-instruct",
-  "mistralai/mistral-large",
-  "mistralai/mistral-7b-instruct-v0.3",
-  "ibm/granite-3.0-8b-instruct",
-  "ibm/granite-3.0-3b-a800m-instruct",
-  "databricks/dbrx-instruct",
-  "01-ai/yi-large",
-  "ai21labs/jamba-1.5-large-instruct",
-  "writer/palmyra-creative-122b",
-  "writer/palmyra-fin-70b-32k",
-  "writer/palmyra-med-70b",
-  "writer/palmyra-med-70b-32k",
 ] as const);
 
 // Single source of truth: model lists for providers that have entries in
@@ -466,12 +442,12 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   }),
   "nvidia-nim": providerDefinition({
     name: "NVIDIA NIM",
-    // The previous default, nvidia/llama-3.1-nemotron-70b-instruct, is still
-    // listed by GET /v1/models, but every chat call to it answered HTTP 404
-    // ("Function ... Not found for account") on 2026-10-17. This model answered
-    // 200 with plain text and with a tool call, and takes the 32,000 output
-    // tokens AgenC requests (the hosted schema caps max_tokens at 32,768).
-    defaultModel: "nvidia/nemotron-3-super-120b-a12b",
+    // NVIDIA ended the previous default, nvidia/nemotron-3-super-120b-a12b, on
+    // 2026-10-03 (HTTP 410). Its successor is listed and served (HTTP 401
+    // without a key, 2026-11-20), and its hosted schema takes tools,
+    // tool_choice, image input and reasoning_effort none|low|high, with
+    // max_tokens up to 131,072.
+    defaultModel: "nvidia/nemotron-3.5-super-vl-120b-a12b",
     baseURL: "https://integrate.api.nvidia.com/v1",
     credentials: apiKeyCredentials(["NVIDIA_API_KEY"]),
     baseURLEnvVars: ["NVIDIA_BASE_URL"],
@@ -599,11 +575,8 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   // grok is fully covered by REGISTERED_MODEL_CATALOG: derived directly.
   grok: mergeDerivedProviderModels("grok"),
   // openai is registry-derived (gpt-5, the provider default, now leads from the
-  // registry via its lowest priority) plus o3, which still lives only as a bare
-  // string and trails the registry entries, matching the prior literal's tail.
-  openai: mergeDerivedProviderModels("openai", {
-    trailingExtras: ["o3"],
-  }),
+  // registry via its lowest priority).
+  openai: mergeDerivedProviderModels("openai"),
   // Current lineup verified against the authenticated Models API and
   // platform.claude.com (2026-09-29), followed by older supported choices.
   // Haiku 5.5 joins on 2026-10-07; Haiku 4.5 stays selectable as legacy.
@@ -625,7 +598,6 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   openrouter: mergeDerivedProviderModels("openrouter", { leadingExtras: [
     "x-ai/grok-4.5",
     "x-ai/grok-4.3",
-    "x-ai/grok-build-0.1",
     "x-ai/grok-4.20",
     "openai/gpt-5",
     "openai/gpt-4o-mini",
@@ -665,7 +637,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   gemini: mergeDerivedProviderModels("gemini"),
   mistral: mergeDerivedProviderModels("mistral"),
   "nvidia-nim": mergeDerivedProviderModels("nvidia-nim", {
-    leadingExtras: NVIDIA_PROVIDER_MODEL_IDS,
+    trailingExtras: NVIDIA_PROVIDER_MODEL_IDS,
   }),
   minimax: mergeDerivedProviderModels("minimax"),
   // Copilot proxies models owned by several providers. Keep those entries
