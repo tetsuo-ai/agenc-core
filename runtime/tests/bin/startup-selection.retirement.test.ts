@@ -167,13 +167,14 @@ describe("a cached list from before the saved model's date", () => {
 describe("a retired model typed with --model", () => {
   test("is refused with its date, and accepted the day before", () => {
     const warning = silenceWarnings();
-    const model = "poolside/laguna-s-2.1";
+    // A row of the bundled snapshot that OpenRouter dates 2026-12-31.
+    const model = "z-ai/glm-4.5";
     for (const explicitModel of [model, `openrouter:${model}`]) {
       expect(() => resolveCanonicalStartupSelection({
-        config: saved(model), env: {}, explicitModel, now: at("2026-10-31", "00:00:00.000"),
-      })).toThrow(new Error(notice(model, "2026-10-31")));
+        config: saved(model), env: {}, explicitModel, now: at("2026-12-31", "00:00:00.000"),
+      })).toThrow(new Error(notice(model, "2026-12-31")));
       expect(resolveCanonicalStartupSelection({
-        config: saved(model), env: {}, explicitModel, now: at("2026-10-30", "23:59:59.999"),
+        config: saved(model), env: {}, explicitModel, now: at("2026-12-30", "23:59:59.999"),
       }).model).toBe(model);
     }
     expect(warning).not.toHaveBeenCalled();

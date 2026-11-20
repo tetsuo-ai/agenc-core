@@ -68,6 +68,19 @@ export function assertModelNotRetired(
   if (notice !== undefined) throw new Error(notice);
 }
 
+/**
+ * Whether the provider's retirement dates bind this route. NVIDIA's are its
+ * hosted API's: a self-hosted NIM endpoint (NVIDIA_BASE_URL or a configured
+ * base URL elsewhere) serves whatever it runs.
+ */
+export function providerRetirementApplies(
+  config: AgenCConfig,
+  provider: BuiltInProviderSlug,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return !(provider === "nvidia-nim" && hasDynamicProviderModelCatalog(config, provider, env));
+}
+
 /** Validate resolved intent before an interactive switch or startup mutates state. */
 export function assertModelCatalogSelection(
   config: AgenCConfig,
@@ -79,7 +92,7 @@ export function assertModelCatalogSelection(
   // Before any rule below accepts an id: a provider with its own list, an
   // operator mapping, or OpenRouter's vendor/model shape would otherwise let
   // a retired bundled model through unverified.
-  assertModelNotRetired(provider, model, now);
+  if (providerRetirementApplies(config, provider, env)) assertModelNotRetired(provider, model, now);
   if (provider === "openrouter") {
     const live = publishedModelCatalogEntries(provider);
     if (live?.some(entry => entry.model === model)) return;

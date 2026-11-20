@@ -26,11 +26,12 @@ import {
   PUBLISHED_CATALOG_PROVIDERS,
   publishedModelCatalogEntry,
 } from "./published-model-catalog.js";
-import { NVIDIA_CURRENT_MODEL_CATALOG } from "./nvidia-current-models.js";
-import { OPENAI_CURRENT_MODEL_CATALOG } from "./openai-current-models.js";
+import { NVIDIA_CURRENT_MODEL_CATALOG, NVIDIA_ENDED_MODEL_CATALOG } from "./nvidia-current-models.js";
+import { OPENAI_CURRENT_MODEL_CATALOG, openAiModelIsSnapshotOf } from "./openai-current-models.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
 import { OPENROUTER_MODELS, openRouterCatalogEntry } from "./openrouter-models.js";
 import { OPENROUTER_MODEL_IDS } from "./openrouter-model-ids.js";
+import { OPENROUTER_RETIRED_MODEL_CATALOG } from "./openrouter-retired-models.js";
 import { frozenLazyArray } from "./catalog-array.js";
 import { DEEPSEEK_MODELS, DEEPSEEK_MODEL_ALIASES } from "./deepseek-models.js";
 import { QWEN_FLASH_NEXT_MODEL } from "./qwen-flash-next.js";
@@ -1700,6 +1701,10 @@ const NON_OPENROUTER_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "list",
     },
     ...OPENAI_CURRENT_MODEL_CATALOG,
+    // OpenRouter models gone from its listing, hidden: rows only for their
+    // retirement dates (findBundledModelCatalogEntry). Lookups by provider
+    // read the generated OpenRouter snapshot, which does not have them.
+    ...OPENROUTER_RETIRED_MODEL_CATALOG,
   ]);
 
 // Names, ordering and provider authority do not require capability/pricing rows.
@@ -1718,6 +1723,15 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] = 
     ? openRouterCatalogEntries()[index]!
     : NON_OPENROUTER_MODEL_CATALOG[index - OPENROUTER_MODEL_IDS.length]!,
 );
+
+/**
+ * Hidden rows that only carry a retirement date, outside the registered
+ * catalog: the exact-id lookup the retirement rule reads
+ * (findBundledModelCatalogEntry) finds them, and no list or capability
+ * lookup does.
+ */
+const RETIREMENT_ONLY_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
+  Object.freeze([...NVIDIA_ENDED_MODEL_CATALOG]);
 
 /**
  * The registered Claude rows, keyed by the canonical id the shared parser
@@ -1764,6 +1778,11 @@ function bundledRowPosition(provider: string, model: string): number | undefined
       bundledRowKey(modelCatalogProviderIdentity(entry.provider), entry.model),
       OPENROUTER_MODEL_IDS.length + position,
     ] as const),
+    // Positions past the registered catalog name the retirement-only rows.
+    ...RETIREMENT_ONLY_MODEL_CATALOG.map((entry, position) => [
+      bundledRowKey(modelCatalogProviderIdentity(entry.provider), entry.model),
+      OPENROUTER_MODEL_IDS.length + NON_OPENROUTER_MODEL_CATALOG.length + position,
+    ] as const),
     // Last to first, so the first row registered under an id is the one
     // kept: the row findExactModel reads.
   ].reverse());
@@ -1785,7 +1804,10 @@ export function findBundledModelCatalogEntry(input: {
   const model = input.model?.trim() ?? "";
   if (provider.length === 0 || model.length === 0) return undefined;
   const position = bundledRowPosition(provider, model);
-  return position === undefined ? undefined : REGISTERED_MODEL_CATALOG[position];
+  if (position === undefined) return undefined;
+  return position < REGISTERED_MODEL_CATALOG.length
+    ? REGISTERED_MODEL_CATALOG[position]
+    : RETIREMENT_ONLY_MODEL_CATALOG[position - REGISTERED_MODEL_CATALOG.length];
 }
 
 const fastCatalogEntries = new Map<string, RegisteredModelCatalogEntry | undefined>();
@@ -1827,7 +1849,14 @@ function resolveRegisteredModelCatalogEntryUncached(input: {
   const model = input.model?.trim() ?? "";
   if (provider.length === 0 || model.length === 0) return undefined;
   if (provider === "openrouter") {
-    const match = findExactModel(model, OPENROUTER_INDEX) ??
+    const exact = findExactModel(model, OPENROUTER_INDEX);
+    // A model OpenRouter stopped listing keeps its own hidden, dated row,
+    // never a neighbouring model's by suffix or prefix.
+    if (exact === undefined) {
+      const retired = findExactModel(model, OPENROUTER_RETIRED_MODEL_CATALOG);
+      if (retired !== undefined) return retired;
+    }
+    const match = exact ??
       findNamespacedSuffix(model, OPENROUTER_INDEX, true) ??
       findNamespacedSuffix(model, OPENROUTER_INDEX) ??
       findLongestPrefix(model, OPENROUTER_INDEX);
@@ -1886,6 +1915,10 @@ function resolveRegisteredModelCatalogEntryUncached(input: {
     findLongestPrefix(model, candidates);
   // Newly documented models do not grant their highest tier to unknown variants.
   if (provider === "openai" && OPENAI_REASONING_MODELS.some((entry) => entry.model === fallback?.model)) {
+    return undefined;
+  }
+  // The o3 row, documented 2026-11-20, reaches o3's dated snapshots only.
+  if (provider === "openai" && fallback?.model === "o3" && !openAiModelIsSnapshotOf(model, "o3")) {
     return undefined;
   }
   // Keep historical metadata/prefix fallback without granting an unverified

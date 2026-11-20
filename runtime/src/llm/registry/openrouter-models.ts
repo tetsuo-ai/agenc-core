@@ -1,7 +1,10 @@
-/** Generated from https://openrouter.ai/api/v1/models, verified 2026-10-20.
- * The bundled snapshot is the offline fallback. Live discovery and future
- * regeneration retain every advertised model, including models without tools.
+/** Generated from https://openrouter.ai/api/v1/models, verified 2026-11-20.
+ * The bundled snapshot is the offline fallback: the listing's tool models,
+ * without the `:batch` variants (326 of 478 models on 2026-11-20). Live
+ * discovery keeps every advertised model, including models without tools.
  * Regenerate: node runtime/scripts/generate-openrouter-catalog.mjs [snapshot.json]
+ * with the listing's tool rows; a model the listing no longer has moves to
+ * openrouter-retired-models.ts with its date.
  */
 import { readFileSync } from 'node:fs';
 import { OPENROUTER_MODEL_IDS } from './openrouter-model-ids.js';

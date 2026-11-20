@@ -2124,9 +2124,10 @@ describe("model access checks in place", () => {
   });
 
   test("a bundled model past its retirement date is not offered", async () => {
-    // OpenRouter's bundled rows (issue #3447): two retire on 2026-12-31, seven earlier.
+    // OpenRouter's bundled rows (issue #3447): six retire on 2026-12-11, three
+    // on 2026-12-31 and one on 2027-01-31.
     const retiring = ["dots-studio/dots-3-note-preview:free", "z-ai/glm-4.5"];
-    const retired = ["poolside/laguna-s-2.1", "bytedance-seed/seed-1.6", "bytedance-seed/seed-2.0-code"];
+    const retired = ["openai/o3", "openai/gpt-5-pro", "openai/gpt-5-mini"];
     const context = {
       config: defaultConfig(),
       env: { OPENROUTER_API_KEY: "sk-or-fixture-key" },
@@ -2146,14 +2147,14 @@ describe("model access checks in place", () => {
     };
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
-      const whole = await offeredOn("2026-10-20");
+      const whole = await offeredOn("2026-11-20");
       expect(whole).toMatchObject({ currentStepId: "model-access", modelAccessInput: "models" });
       expect(whole.modelChoices).toEqual(expect.arrayContaining([...retiring, ...retired]));
 
-      const today = await offeredOn("2026-11-12");
+      const today = await offeredOn("2026-12-20");
       expect(today.modelChoices).toEqual(expect.arrayContaining(retiring));
       for (const model of retired) expect(today.modelChoices, model).not.toContain(model);
-      expect(today.modelChoices).toHaveLength(whole.modelChoices.length - 7);
+      expect(today.modelChoices).toHaveLength(whole.modelChoices.length - 6);
 
       const nextYear = await offeredOn("2027-01-01");
       for (const model of [...retiring, ...retired]) expect(nextYear.modelChoices, model).not.toContain(model);
@@ -2161,7 +2162,7 @@ describe("model access checks in place", () => {
 
       // The configured model leads the list while it is offered at all.
       const configured = { ...context.config, model_provider: "openrouter" as const, model: "z-ai/glm-4.5" };
-      expect((await offeredOn("2026-11-12", configured)).modelChoices[0]).toBe("z-ai/glm-4.5");
+      expect((await offeredOn("2026-12-20", configured)).modelChoices[0]).toBe("z-ai/glm-4.5");
       const afterItsDate = await offeredOn("2027-01-01", configured);
       expect(afterItsDate.modelChoices).not.toContain("z-ai/glm-4.5");
       expect(afterItsDate.modelChoices[0]).toBe("x-ai/grok-4.5");

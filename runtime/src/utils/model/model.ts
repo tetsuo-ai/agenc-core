@@ -74,7 +74,7 @@ export function getSmallFastModel(): ModelName {
   }
   // NVIDIA NIM uses the session-owned canonical model.
   if (getAPIProvider() === 'nvidia-nim') {
-    return getActiveProviderModel() || 'meta/llama-3.1-8b-instruct'
+    return getActiveProviderModel() || 'nvidia/nemotron-3.5-super-vl-120b-a12b'
   }
   // MiniMax — fall back to the fastest tier (M2.5-highspeed) when missing.
   if (getAPIProvider() === 'minimax') {
@@ -170,7 +170,7 @@ export function getDefaultOpusModel(): ModelName {
   }
   // NVIDIA NIM
   if (getAPIProvider() === 'nvidia-nim') {
-    return getActiveProviderModel() || 'nvidia/nemotron-3-super-120b-a12b'
+    return getActiveProviderModel() || 'nvidia/nemotron-3.5-super-vl-120b-a12b'
   }
   // MiniMax — flagship tier for "opus"-equivalent.
   if (getAPIProvider() === 'minimax') {
@@ -212,7 +212,7 @@ export function getDefaultSonnetModel(): ModelName {
   }
   // NVIDIA NIM
   if (getAPIProvider() === 'nvidia-nim') {
-    return getActiveProviderModel() || 'nvidia/nemotron-3-super-120b-a12b'
+    return getActiveProviderModel() || 'nvidia/nemotron-3.5-super-vl-120b-a12b'
   }
   // MiniMax — mid tier for "sonnet"-equivalent.
   if (getAPIProvider() === 'minimax') {
@@ -253,7 +253,7 @@ export function getDefaultHaikuModel(): ModelName {
   }
   // NVIDIA NIM
   if (getAPIProvider() === 'nvidia-nim') {
-    return getActiveProviderModel() || 'meta/llama-3.1-8b-instruct'
+    return getActiveProviderModel() || 'nvidia/nemotron-3.5-super-vl-120b-a12b'
   }
   // MiniMax — fastest tier for "haiku"-equivalent.
   if (getAPIProvider() === 'minimax') {
@@ -308,7 +308,7 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
     return getActiveProviderModel() || DEFAULT_XAI_MODEL
   }
   if (getAPIProvider() === 'nvidia-nim') {
-    return getActiveProviderModel() || 'nvidia/nemotron-3-super-120b-a12b'
+    return getActiveProviderModel() || 'nvidia/nemotron-3.5-super-vl-120b-a12b'
   }
   if (getAPIProvider() === 'minimax') {
     return getActiveProviderModel() || 'MiniMax-M2.5'

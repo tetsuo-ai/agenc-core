@@ -26,47 +26,29 @@ import {
 } from "../../../src/llm/registry/provider-info.js";
 
 /**
- * Evidence, 2026-10-17: GET https://integrate.api.nvidia.com/v1/models listed 81 models.
- * 35 of the 115 ids this catalog used to offer were among them. A chat call to each of the
- * other 80 answered HTTP 410 (end of life, for example "The model 'openai/gpt-oss-120b' has
- * reached its end of life on 2026-09-03T08:00:00Z and is no longer available.") or HTTP 404.
+ * Evidence, 2026-11-20: GET https://integrate.api.nvidia.com/v1/models listed 33 models. A
+ * chat call without a key answered HTTP 401 (served) for the 16 chat ids below and HTTP 410
+ * (end of life, with its date) or HTTP 404 for every id in RETIRED. Only 5 of the 35 ids this
+ * catalog offered on 2026-10-17 were still served; bigcode/starcoder2-15b is listed but has no
+ * chat route (HTTP 404) and is no longer offered.
  */
 const LISTED = [
-  "nvidia/cosmos-reason2-8b",
-  "meta/codellama-70b",
-  "bigcode/starcoder2-15b",
-  "mistralai/codestral-22b-instruct-v0.1",
-  "deepseek-ai/deepseek-coder-6.7b-instruct",
-  "google/codegemma-7b",
-  "google/codegemma-1.1-7b",
-  "ibm/granite-34b-code-instruct",
-  "ibm/granite-8b-code-instruct",
-  "nvidia/llama-3.1-nemotron-70b-instruct",
-  "nvidia/llama-3.1-nemotron-51b-instruct",
-  "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-  "nvidia/nemotron-4-340b-instruct",
-  "nvidia/nemotron-3-super-120b-a12b",
-  "nvidia/llama3-chatqa-1.5-70b",
-  "meta/llama-3.2-90b-vision-instruct",
-  "meta/llama-3.2-11b-vision-instruct",
+  "nvidia/nemotron-3.5-super-vl-120b-a12b",
+  "nvidia/nemotron-3-ultra-550b-a55b",
+  "moonshotai/kimi-k3.1-pro",
+  "mistralai/mistral-large-4-1t-a52b",
+  "stepfun-ai/step-5-preview",
+  "meta/muse-glimmer-30b",
   "google/gemma-4-31b-it",
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+  "nvidia/nemotron-3.5-bolt-e4b",
+  "minimaxai/minimax-m3.1-flash",
+  "z-ai/glm-5.3-flash",
+  "nvidia/nemotron-3.5-lightning-30b-a3b",
+  "poolside/laguna-xs-2.1",
+  "nvidia/cosmos-reason2-8b",
   "google/gemma-3-12b-it",
   "google/gemma-3-4b-it",
-  "mistralai/mistral-large-2-instruct",
-  "mistralai/mistral-large",
-  "mistralai/mistral-7b-instruct-v0.3",
-  "ibm/granite-3.0-8b-instruct",
-  "ibm/granite-3.0-3b-a800m-instruct",
-  "databricks/dbrx-instruct",
-  "01-ai/yi-large",
-  "ai21labs/jamba-1.5-large-instruct",
-  "writer/palmyra-creative-122b",
-  "writer/palmyra-fin-70b-32k",
-  "writer/palmyra-med-70b",
-  "writer/palmyra-med-70b-32k",
-  "moonshotai/kimi-k2.6",
-  "meta/muse-glimmer-30b",
-  "openai/gpt-oss-20b",
 ] as const;
 
 const RETIRED = [
@@ -150,13 +132,44 @@ const RETIRED = [
   "moonshotai/kimi-k2.5-thinking",
   "moonshotai/kimi-k2-instruct-0905",
   "moonshotai/kimi-k3",
+  // Ended between 2026-10-17 and 2026-11-20: 29 of the 35 ids offered on 2026-10-17.
+  "meta/codellama-70b",
+  "mistralai/codestral-22b-instruct-v0.1",
+  "deepseek-ai/deepseek-coder-6.7b-instruct",
+  "google/codegemma-7b",
+  "google/codegemma-1.1-7b",
+  "ibm/granite-34b-code-instruct",
+  "ibm/granite-8b-code-instruct",
+  "nvidia/llama-3.1-nemotron-70b-instruct",
+  "nvidia/llama-3.1-nemotron-51b-instruct",
+  "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+  "nvidia/nemotron-4-340b-instruct",
+  "nvidia/nemotron-3-super-120b-a12b",
+  "nvidia/llama3-chatqa-1.5-70b",
+  "meta/llama-3.2-90b-vision-instruct",
+  "meta/llama-3.2-11b-vision-instruct",
+  "mistralai/mistral-large-2-instruct",
+  "mistralai/mistral-large",
+  "mistralai/mistral-7b-instruct-v0.3",
+  "ibm/granite-3.0-8b-instruct",
+  "ibm/granite-3.0-3b-a800m-instruct",
+  "databricks/dbrx-instruct",
+  "01-ai/yi-large",
+  "ai21labs/jamba-1.5-large-instruct",
+  "writer/palmyra-creative-122b",
+  "writer/palmyra-fin-70b-32k",
+  "writer/palmyra-med-70b",
+  "writer/palmyra-med-70b-32k",
+  "moonshotai/kimi-k2.6",
+  "openai/gpt-oss-20b",
 ] as const;
 
 // moonshotai/kimi-k3 is the one retired id with a registry row. NVIDIA ended it on
 // 2026-10-15, so its row stays for old sessions and the picker no longer offers it.
 const RETIRED_WITH_ROW = "moonshotai/kimi-k3";
-const NEW_DEFAULT = "nvidia/nemotron-3-super-120b-a12b";
-const OLD_DEFAULT = "nvidia/llama-3.1-nemotron-70b-instruct";
+const NEW_DEFAULT = "nvidia/nemotron-3.5-super-vl-120b-a12b";
+// Ended by NVIDIA on 2026-10-03 (HTTP 410).
+const OLD_DEFAULT = "nvidia/nemotron-3-super-120b-a12b";
 
 const nimCatalog = (): readonly string[] => BUILT_IN_PROVIDER_MODEL_CATALOG["nvidia-nim"];
 
@@ -182,12 +195,12 @@ function menuContext(model: string): SlashCommandContext {
   return { session, argsRaw: "", cwd: "/ws", home: "/home/test", configStore } as unknown as SlashCommandContext;
 }
 
-describe("NVIDIA NIM picker after NVIDIA retired models (2026-10-17)", () => {
-  it("pins 35 listed and 80 retired ids that never overlap", () => {
-    expect(LISTED).toHaveLength(35);
-    expect(RETIRED).toHaveLength(80);
-    expect(new Set(LISTED).size).toBe(35);
-    expect(new Set(RETIRED).size).toBe(80);
+describe("NVIDIA NIM picker after NVIDIA retired models (2026-11-20)", () => {
+  it("pins 16 listed and 109 retired ids that never overlap", () => {
+    expect(LISTED).toHaveLength(16);
+    expect(RETIRED).toHaveLength(109);
+    expect(new Set(LISTED).size).toBe(16);
+    expect(new Set(RETIRED).size).toBe(109);
     expect(LISTED.filter((model) => (RETIRED as readonly string[]).includes(model))).toEqual([]);
   });
 
@@ -205,12 +218,15 @@ describe("NVIDIA NIM picker after NVIDIA retired models (2026-10-17)", () => {
   });
 
   it("keeps the NIM default among the listed ids", () => {
-    // nvidia/llama-3.1-nemotron-70b-instruct is still listed, but a chat call to it answered
-    // HTTP 404 ("Function ... Not found for account") on every attempt, so it is no longer the default.
     expect(BUILT_IN_PROVIDER_DEFAULT_MODELS["nvidia-nim"]).toBe(NEW_DEFAULT);
     expect(LISTED).toContain(NEW_DEFAULT);
-    expect(LISTED).toContain(OLD_DEFAULT);
     expect(nimCatalog()).toContain(NEW_DEFAULT);
+    expect(RETIRED).toContain(OLD_DEFAULT);
+    expect(nimCatalog()).not.toContain(OLD_DEFAULT);
+    // A new session on NIM with no model lands on it.
+    expect(resolveProviderModelSelection({}, { provider: "deepseek", model: "deepseek-flash" },
+      { model_provider: "nvidia-nim" }, {}, { now: new Date("2026-11-20T12:00:00Z") }))
+      .toMatchObject({ provider: "nvidia-nim", model: NEW_DEFAULT });
   });
 
   it("hides the retired Kimi K3 row from every list but keeps it registered", () => {
@@ -303,17 +319,40 @@ describe("old NVIDIA NIM sessions that saved a retired model", () => {
       .toEqual(["low", "medium", "high"]);
   });
 
-  it("rejects a retired id typed on hosted NIM and suggests a listed one", () => {
-    for (const model of ["openai/gpt-oss-120b", "meta/llama-3.1-70b-instruct"]) {
-      expect(() => assertModelCatalogSelection({}, "nvidia-nim", model, {}), model)
-        .toThrow(/unknown model .* for provider 'nvidia-nim'.*did you mean/u);
+  it("refuses a retired id typed on hosted NIM with the day NVIDIA ended it", () => {
+    for (const [model, date] of [
+      ["openai/gpt-oss-120b", "2026-09-03"],
+      [OLD_DEFAULT, "2026-10-03"],
+      ["moonshotai/kimi-k2.6", "2026-11-15"],
+      ["openai/gpt-oss-20b", "2026-11-18"],
+      ["meta/llama-3.1-70b-instruct", "2026-08-26"],
+      // Answers HTTP 404 with no date: the day Core found it gone.
+      ["microsoft/phi-4-mini-flash-reasoning", "2026-10-17"],
+    ] as const) {
+      const refusal = `NVIDIA NIM retired '${model}' on ${date}. Pick another model.`;
+      expect(() => assertModelCatalogSelection({}, "nvidia-nim", model, {}), model).toThrow(new Error(refusal));
       expect(() => resolveCanonicalStartupSelection({ env: {}, config: config(model), explicitModel: model }), model)
-        .toThrow(/unknown model/u);
+        .toThrow(new Error(refusal));
+      expect(() => resolveProviderModelSelection(config(model), { provider: "nvidia-nim", model },
+        { model_provider: "nvidia-nim", model }, {}), model).toThrow(new Error(refusal));
     }
   });
 
-  it("still admits the retired Kimi K3 by name, like every other hidden registry row", () => {
-    expect(() => assertModelCatalogSelection({}, "nvidia-nim", RETIRED_WITH_ROW, {})).not.toThrow();
+  it("refuses every retired id typed on hosted NIM", () => {
+    const admitted = RETIRED.filter((model) => {
+      try {
+        assertModelCatalogSelection({}, "nvidia-nim", model, {});
+        return true;
+      } catch (error) {
+        return !(error instanceof Error && error.message.startsWith(`NVIDIA NIM retired '${model}' on 2026-`));
+      }
+    });
+    expect(admitted).toEqual([]);
+  });
+
+  it("refuses the retired Kimi K3 by name on hosted NIM", () => {
+    expect(() => assertModelCatalogSelection({}, "nvidia-nim", RETIRED_WITH_ROW, {}))
+      .toThrow(new Error(`NVIDIA NIM retired '${RETIRED_WITH_ROW}' on 2026-10-15. Pick another model.`));
   });
 
   it("still accepts a retired id typed against a self-hosted NIM endpoint", () => {
@@ -328,5 +367,38 @@ describe("old NVIDIA NIM sessions that saved a retired model", () => {
       expect(() => assertModelCatalogSelection({}, "nvidia-nim", model, {}), model).not.toThrow();
       expect(resolveProviderModelInput({}, "nvidia-nim", model)).toEqual({ provider: "nvidia-nim", model });
     }
+  });
+});
+
+describe("NVIDIA NIM models NVIDIA serves on 2026-11-20", () => {
+  it.each([
+    // [model, context, default output, output ceiling, image input, tools, efforts, default effort]
+    ["nvidia/nemotron-3.5-super-vl-120b-a12b", 262_144, 16_384, 131_072, true, true, ["none", "low", "high"], "high"],
+    ["nvidia/nemotron-3-ultra-550b-a55b", 262_144, 16_384, 32_768, false, false, ["none", "medium", "high"], "high"],
+    ["moonshotai/kimi-k3.1-pro", 1_048_576, 16_384, 65_536, true, true, ["low", "medium", "high", "max"], "low"],
+    ["mistralai/mistral-large-4-1t-a52b", 1_000_000, 4_096, 262_144, true, true, ["none", "high"], "none"],
+    ["stepfun-ai/step-5-preview", 1_048_576, 4_096, 1_048_576, true, true, [], undefined],
+    ["google/gemma-4-31b-it", 262_144, 16_384, 32_768, true, false, [], undefined],
+    ["nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", 262_144, 65_536, 65_536, true, false, [], undefined],
+    ["nvidia/nemotron-3.5-bolt-e4b", 65_536, 1_024, 65_536, false, true, [], undefined],
+  ] as const)("%s has the hosted schema's contract", (model, context, output, ceiling, image, tools, efforts, effort) => {
+    const entry = resolveRegisteredModelCatalogEntry({ provider: "nvidia-nim", model });
+    expect(entry).toMatchObject({
+      provider: "nvidia-nim", model, contextWindow: context, maxOutputTokens: output,
+      maxOutputTokensUpperLimit: ceiling, supportsToolUse: tools, supportedReasoningLevels: efforts, visibility: "list",
+    });
+    // Core reports no default level for NIM; the row records NVIDIA's.
+    expect(entry?.defaultReasoningLevel).toBeUndefined();
+    expect(resolveNvidiaCurrentModel(model)?.defaultEffort).toBe(effort);
+    expect(entry?.inputModalities.includes("image")).toBe(image);
+    expect(resolveReasoningEffort({ provider: "nvidia-nim", model }).levels).toEqual(efforts);
+  });
+
+  it("sends no tool_choice to the NIM Kimi models whose schema has none", async () => {
+    const { chatCompletionsCapabilityHintsForProvider } = await import("../../../src/llm/wire/capability-gating.js");
+    for (const model of ["moonshotai/kimi-k3.1-pro", "moonshotai/kimi-k3"]) {
+      expect(chatCompletionsCapabilityHintsForProvider("nvidia-nim", model).acceptsToolChoice, model).toBe(false);
+    }
+    expect(chatCompletionsCapabilityHintsForProvider("nvidia-nim", NEW_DEFAULT).acceptsToolChoice).not.toBe(false);
   });
 });

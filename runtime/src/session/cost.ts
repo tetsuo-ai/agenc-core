@@ -271,7 +271,8 @@ const FREE_TIER: Readonly<ModelCostEntry> = Object.freeze({
 
 /**
  * Ollama Cloud per-token rates (input, cached input, output per 1M), read
- * 2026-10-20 from https://ollama.com/pricing. Cloud usage bills per token
+ * 2026-10-20 from https://ollama.com/pricing (the Inkling, Kimi K3.1 Pro and
+ * MiMo rows 2026-11-20). Cloud usage bills per token
  * since 2026-08-31; plan credits pay for it first. The DeepSeek rows are the
  * peak rate, off-peak costs half. The price list names a family once
  * (deepseek-v4.1-flash covers its dated :1017 snapshot).
@@ -285,9 +286,13 @@ const OLLAMA_CLOUD_RATES: Readonly<Record<string, readonly [number, number | und
   "glm-5.3-flash": [0.15, 0.03, 0.5],
   "gpt-oss:120b": [0.15, 0.014, 0.6],
   "gpt-oss:20b": [0.07, 0.035, 0.3],
+  "inkling-2-small": [0.3, 0.03, 1],
   "kimi-k2.6": [0.95, 0.16, 4],
   "kimi-k2.7-code": [0.95, 0.19, 4],
   "kimi-k3": [3, 0.3, 15],
+  "kimi-k3.1-pro": [2, 0.2, 10],
+  "mimo-v2.6-flash": [0.14, 0.0028, 0.28],
+  "mimo-v2.6-pro": [0.435, 0.0036, 0.87],
   "minimax-m2.7": [0.3, 0.06, 1.2],
   "minimax-m3": [0.6, 0.12, 2.4],
   "minimax-m3.1-flash": [0.15, 0.015, 0.6],

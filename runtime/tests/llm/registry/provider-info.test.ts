@@ -35,9 +35,9 @@ describe("built-in provider info", () => {
       ["gemini", "Gemini", "gemini-3.8-flash", "https://generativelanguage.googleapis.com/v1beta", "api-key", ["GEMINI_API_KEY", "GOOGLE_API_KEY"], ["GEMINI_BASE_URL"], 100, "api-key", false],
       ["kimi", "Kimi (Moonshot)", "kimi-k3", "https://api.moonshot.ai/v1", "api-key", ["MOONSHOT_API_KEY"], [], 101, "api-key", false],
       ["mistral", "Mistral", "mistral-medium-latest", "https://api.mistral.ai/v1", "api-key", ["MISTRAL_API_KEY"], ["MISTRAL_BASE_URL"], 110, "api-key", false],
-      // Default moved off nvidia/llama-3.1-nemotron-70b-instruct on 2026-10-17: still listed by
-      // GET /v1/models, but every chat call answered HTTP 404. See nvidia-nim-catalog.test.ts.
-      ["nvidia-nim", "NVIDIA NIM", "nvidia/nemotron-3-super-120b-a12b", "https://integrate.api.nvidia.com/v1", "api-key", ["NVIDIA_API_KEY"], ["NVIDIA_BASE_URL"], 120, "api-key", false],
+      // NVIDIA ended the previous default, nvidia/nemotron-3-super-120b-a12b, on 2026-10-03
+      // (HTTP 410). See nvidia-nim-catalog.test.ts.
+      ["nvidia-nim", "NVIDIA NIM", "nvidia/nemotron-3.5-super-vl-120b-a12b", "https://integrate.api.nvidia.com/v1", "api-key", ["NVIDIA_API_KEY"], ["NVIDIA_BASE_URL"], 120, "api-key", false],
       ["minimax", "MiniMax", "MiniMax-M3", "https://api.minimax.io/v1", "api-key", ["MINIMAX_API_KEY"], ["MINIMAX_BASE_URL"], 130, "api-key", false],
       ["github", "GitHub Copilot", "gpt-5.3-codex", "https://api.githubcopilot.com", "api-key", ["GITHUB_TOKEN", "GH_TOKEN"], ["GITHUB_BASE_URL"], 140, "api-key", false],
       ["amazon-bedrock", "Amazon Bedrock", "amazon.nova-pro-v1:0", "https://bedrock-runtime.us-east-1.amazonaws.com", "aws-sigv4", [], ["AWS_BEDROCK_BASE_URL"], 150, "environment", false],
