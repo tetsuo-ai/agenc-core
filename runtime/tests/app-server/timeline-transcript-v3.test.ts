@@ -1,5 +1,5 @@
 import { serializeRolloutItem, parseRolloutLine } from "../../src/session/rollout-item.js";
-import { transcriptV3Turns } from "../../src/app-server/transcript-v3.js";
+import { toolInputDigest, transcriptV3Turns } from "../../src/app-server/transcript-v3.js";
 import { describe, expect, it } from "vitest";
 import { sessionTranscriptV2FromRollout } from "../../src/app-server/background-agent-runner/journal-reconstruction.js";
 import { AgenCDaemonJsonRpcDispatcher } from "../../src/app-server/daemon-dispatcher.js";
@@ -84,4 +84,70 @@ it.each([2, 3])("serves recorded usage and changes only to schema %s clients", a
     expect(result.result).not.toHaveProperty("turns");
   }
   await connection.close();
+});
+
+describe("apply_patch targets in transcript v3", () => {
+  const patchCall = (args: string): RolloutItem[] => [
+    event({ type: "turn_started", payload: { turnId: "p" } }, 1),
+    event({ type: "tool_call_started", payload: { callId: "patch", toolName: "apply_patch", args } }, 2),
+    event({ type: "tool_call_completed", payload: { callId: "patch", result: "Success. Updated the following files:\nM /run/notes-app/notes.txt", isError: false, durationMs: 5 } }, 3),
+    event({ type: "turn_complete", payload: { turnId: "p" } }, 4),
+  ];
+  const digestOf = (args: string): Record<string, string> =>
+    sessionTranscriptV2FromRollout(patchCall(args), "s", "r", undefined, undefined, { schemaVersion: 3 }).turns![0]!.toolCalls[0]!.inputDigest;
+  const onePatch = "*** Begin Patch\n*** Update File: /run/notes-app/notes.txt\n@@\n alpha\n+secret delta\n*** End Patch";
+
+  it("names the file a reopened edit changed, from the patch's own file line", () => {
+    const digest = digestOf(JSON.stringify({ input: onePatch }));
+    expect(digest).toEqual({ path: "/run/notes-app/notes.txt", paths: "/run/notes-app/notes.txt" });
+    expect(JSON.stringify(digest)).not.toContain("secret");
+  });
+
+  it("lists every file a patch names, move destinations included, without repeats", () => {
+    const patch = [
+      "*** Begin Patch",
+      "*** Add File: src/new.ts",
+      "+export const fresh = 1;",
+      "*** Delete File: src/old.ts",
+      "*** Update File: src/a.ts",
+      "*** Move to: src/b.ts",
+      "@@",
+      "-const a = 1;",
+      "+const b = 1;",
+      "*** Update File: src/new.ts",
+      "@@",
+      " export const fresh = 1;",
+      "+export const more = 2;",
+      "*** End Patch",
+    ].join("\n");
+    expect(digestOf(JSON.stringify({ input: patch }))).toEqual({ paths: "src/new.ts\nsrc/old.ts\nsrc/a.ts\nsrc/b.ts" });
+    const moved = "*** Begin Patch\n*** Update File: src/a.ts\n*** Move to: src/b.ts\n@@\n-x\n+y\n*** End Patch";
+    expect(digestOf(JSON.stringify({ input: moved }))).toEqual({ path: "src/a.ts", paths: "src/a.ts\nsrc/b.ts" });
+  });
+
+  it("reads a patch sent as a bare or JSON string, as the tool does", () => {
+    const expected = { path: "/run/notes-app/notes.txt", paths: "/run/notes-app/notes.txt" };
+    expect(digestOf(onePatch)).toEqual(expected);
+    expect(digestOf(JSON.stringify(onePatch))).toEqual(expected);
+    expect(digestOf(`<<'EOF'\n${onePatch}\nEOF`)).toEqual(expected);
+  });
+
+  it("keeps whole paths within the value limit and gives a refused patch no digest", () => {
+    const long = Array.from({ length: 12 }, (_, i) => `/run/${"d".repeat(60)}/file-${i}.ts`);
+    const patch = ["*** Begin Patch", ...long.map(path => `*** Delete File: ${path}`), "*** End Patch"].join("\n");
+    const digest = digestOf(JSON.stringify({ input: patch }));
+    expect(digest).not.toHaveProperty("path");
+    expect(digest.paths!.length).toBeLessThanOrEqual(512);
+    expect(digest.paths!.split("\n")).toEqual(long.slice(0, digest.paths!.split("\n").length));
+    expect(digest.paths!.split("\n").length).toBeGreaterThan(1);
+    const deep = `/run/${"x".repeat(600)}.ts`;
+    expect(digestOf(JSON.stringify({ input: `*** Begin Patch\n*** Delete File: ${deep}\n*** End Patch` }))).toEqual({ path: deep.slice(0, 512) });
+    expect(digestOf(JSON.stringify({ input: "*** Begin Patch\n*** Frobnicate File: a.ts\n*** End Patch" }))).toEqual({});
+    expect(digestOf(JSON.stringify({ patch: onePatch }))).toEqual({});
+  });
+
+  it("leaves other tools' digests as they were", () => {
+    expect(toolInputDigest(JSON.stringify({ input: onePatch, path: "ignored.ts" }), "Edit")).toEqual({ path: "ignored.ts" });
+    expect(toolInputDigest(JSON.stringify({ input: onePatch, path: "ignored.ts" }), "apply_patch")).toEqual({ path: "/run/notes-app/notes.txt", paths: "/run/notes-app/notes.txt" });
+  });
 });

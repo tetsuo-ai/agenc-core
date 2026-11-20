@@ -164,6 +164,12 @@ outside `refs/heads`, so it does not clutter branch listings. If the pin
 fails, the worktree stays: a leftover worktree is a nuisance and a lost
 deliverable is not. Operators inspect the product with
 `git rev-parse refs/agenc/runs/<runId>` after a successful finalize.
+When the run's worktree step made `.agenc-worktrees/` (it was not there
+before), removing the worktree after a completed or cancelled run takes that
+folder back too once it is empty, as a failed worktree step already does. A
+folder that was there before, or that still holds another worktree or a file,
+stays. A run resumed after a daemon restart rebuilds its worktree handle
+without that knowledge and leaves the folder.
 
 ## Verification and review are completion, not metadata
 

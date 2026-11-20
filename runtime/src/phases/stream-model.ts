@@ -105,6 +105,7 @@ import type {
 import { preservesQueryPrefix } from "../session/query-prefix-providers.js";
 import { snapshotCompactionQueryPrefix, rememberCompactionQueryPrefix } from "../services/compact/query-prefix.js";
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
+import { holdReplacementWhileOnWire } from "../session/replaced-model-call.js";
 
 export interface StreamModelRequestContract {
   readonly reasoningCapSample?: ReasoningCapSample;
@@ -1438,6 +1439,10 @@ export async function streamModel(
       recoveryFallback?.toModel ?? skillInvocationRequestModel(session, ctx) ??
         session.config?.model ?? ctx.config.model;
     let successfulPrefix: ReturnType<typeof snapshotCompactionQueryPrefix> | undefined;
+    // A new prompt that replaces this turn lets a call already on the wire
+    // settle, so its usage is recorded instead of held as unknown
+    // (replaced-model-call.ts). Every other stop still cuts the call.
+    const call = holdReplacementWhileOnWire(scoped.signal, session.replacedModelCalls);
     const response = await runAdmittedModelCall({
       session,
       provider: session.services.provider,
@@ -1447,7 +1452,7 @@ export async function streamModel(
       sessionId: session.conversationId,
       model,
       providerName,
-      signal: scoped.signal,
+      signal: call.signal,
       ...(recoveryFallback !== undefined
         ? {
             fallback: {
@@ -1480,12 +1485,12 @@ export async function streamModel(
             tools: admittedOptions.tools, promptCacheKey: admittedOptions.promptCacheKey,
             ...(admittedOptions.deepSeekAppTools === true ? { deepSeekAppTools: true } : {}) },
         });
-        return withStreamTransportActivity(
+        return call.onWire(() => withStreamTransportActivity(
           () => watchdog.kick("bytes"),
           () => provider.chatStream(messages, onChunk, admittedOptions),
-        );
+        ));
       },
-    });
+    }).finally(() => call.release());
     if (successfulPrefix && response.finishReason !== "error") rememberCompactionQueryPrefix(session, successfulPrefix);
     // Some providers return an empty/nonstreamed result without any chunks.
     flushStartupLogIndex();

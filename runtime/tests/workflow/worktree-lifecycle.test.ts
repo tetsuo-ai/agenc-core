@@ -17,7 +17,9 @@ import {
   captureBaseState,
   checkBaseMovement,
   cleanupAfterEvidence,
+  discardCancelledWorktree,
   exportPatchArtifacts,
+  mintCancelledRunProof,
   mintSealedEvidenceProof,
   provisionWorkflowWorktree,
   workflowRunRef,
@@ -270,6 +272,63 @@ describe("M5 worktree lifecycle", () => {
     expect(checkoutFingerprint(repo)).toBe(before);
     const { existsSync } = await import("node:fs");
     expect(existsSync(handle.path)).toBe(false);
+  });
+
+  it("cleanup after a finished run takes back the .agenc-worktrees folder its worktree step made", async () => {
+    const repo = join(tempWork(), "repo");
+    const base = initRepo(repo);
+    const finished = { runId: "conv-m5done01", repoPath: repo, baseCommit: base };
+    const handle = await provisionWorkflowWorktree(finished, broker);
+    expect(handle.createdWorkspaceRoot).toBe(join(repo, ".agenc-worktrees"));
+    const before = checkoutFingerprint(repo);
+    const warnings: string[] = [];
+    await cleanupAfterEvidence({
+      proof: mintSealedEvidenceProof({ runId: finished.runId, sealDigest: `sha256:${"e".repeat(64)}` }),
+      handle,
+      headCommit: git(handle.path, "rev-parse", "HEAD").trim(),
+      broker,
+      warn: (message) => warnings.push(message),
+    });
+    expect(warnings).toEqual([]);
+    expect(existsSync(join(repo, ".agenc-worktrees"))).toBe(false);
+    expect(checkoutFingerprint(repo)).toBe(before);
+    expect(git(repo, "status", "--porcelain=v1")).toBe("");
+
+    const cancelled = { runId: "conv-m5stop01", repoPath: repo, baseCommit: base };
+    const stopped = await provisionWorkflowWorktree(cancelled, broker);
+    await discardCancelledWorktree({
+      proof: mintCancelledRunProof({ runId: cancelled.runId }),
+      handle: stopped,
+      broker,
+      warn: (message) => warnings.push(message),
+    });
+    expect(warnings).toEqual([]);
+    expect(existsSync(join(repo, ".agenc-worktrees"))).toBe(false);
+  });
+
+  it("cleanup keeps a .agenc-worktrees folder that was there before the run, and one still in use", async () => {
+    const repo = join(tempWork(), "repo");
+    const base = initRepo(repo);
+    mkdirSync(join(repo, ".agenc-worktrees"));
+    const before = { runId: "conv-m5kept01", repoPath: repo, baseCommit: base };
+    const handle = await provisionWorkflowWorktree(before, broker);
+    expect(handle).not.toHaveProperty("createdWorkspaceRoot");
+    const proof = (runId: string) => mintSealedEvidenceProof({ runId, sealDigest: `sha256:${"c".repeat(64)}` });
+    await cleanupAfterEvidence({
+      proof: proof(before.runId), handle, headCommit: git(handle.path, "rev-parse", "HEAD").trim(), broker, warn: () => {},
+    });
+    expect(existsSync(join(repo, ".agenc-worktrees"))).toBe(true);
+    rmSync(join(repo, ".agenc-worktrees"), { recursive: true });
+
+    const first = { runId: "conv-m5frst01", repoPath: repo, baseCommit: base };
+    const second = { runId: "conv-m5scnd01", repoPath: repo, baseCommit: base };
+    const made = await provisionWorkflowWorktree(first, broker);
+    const sharing = await provisionWorkflowWorktree(second, broker);
+    await cleanupAfterEvidence({
+      proof: proof(first.runId), handle: made, headCommit: git(made.path, "rev-parse", "HEAD").trim(), broker, warn: () => {},
+    });
+    expect(existsSync(sharing.path)).toBe(true);
+    expect(git(sharing.path, "rev-parse", "HEAD").trim()).toBe(base);
   });
 
   it("cleanup pins the delivered commit before deleting its only branch", async () => {

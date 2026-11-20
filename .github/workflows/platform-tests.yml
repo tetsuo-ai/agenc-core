@@ -3,7 +3,7 @@ name: platform-tests
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, core-desktop]
 
 concurrency:
   group: platform-tests-${{ github.event.pull_request.number || github.ref }}
