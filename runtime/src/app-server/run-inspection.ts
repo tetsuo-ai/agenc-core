@@ -44,7 +44,7 @@ import {
 } from "../state/sqlite-driver.js";
 import { countRunJournalHomes, hasCanonicalRunState, splitRunStrays } from "../state/split-run.js";
 import { recoverCanonicalRunJournalForRun } from "../state/startup-run-journal-recovery.js";
-import { buildCanonicalRunReplay } from "./run-journal-replay.js";
+import { buildCanonicalRunReplay, journalSourceScope } from "./run-journal-replay.js";
 import { readWorkflowStepEvidence } from "./workflow/steps.js";
 import { projectWorkflowStatus } from "./workflow/status-projection.js";
 
@@ -788,23 +788,32 @@ function isRunAuthorityObject(value: JsonValue | undefined): value is JsonObject
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * The run's admission records in the rollout items its replay reads
+ * ({@link journalSourceScope}): the bound rollouts, or with no binding the
+ * thread's own rollout. Only a bound rollout's session metadata can declare
+ * an admission owner.
+ */
 function readRunAdmissionAuthority(db: BetterSqlite3.Database, runId: string): RunAdmissionAuthority {
-  if (!tableExists(db, "run_journal_bindings") || !tableExists(db, "thread_rollout_items")) {
+  if (!tableExists(db, "thread_rollout_items")) {
     return { identitiesValid: false, events: [], compactions: [] };
   }
-  const bindings = db.prepare<[string], { child_run_id: string; session_id: string }>(
-    "SELECT child_run_id, session_id FROM run_journal_bindings WHERE run_id = ? LIMIT 33",
-  ).all(runId);
+  const bindings = tableExists(db, "run_journal_bindings")
+    ? db.prepare<[string], { child_run_id: string; session_id: string }>(
+        "SELECT child_run_id, session_id FROM run_journal_bindings WHERE run_id = ? LIMIT 33",
+      ).all(runId)
+    : [];
   const identitiesValid = bindings.length > 0 && bindings.length <= 32 &&
     bindings.every((binding) => binding.child_run_id === runId && binding.session_id === runId);
   let owner: RunAdmissionAuthority["owner"];
-  const rows = db.prepare<[string], { item_type: string; payload_json: string }>(
+  const scope = journalSourceScope(db, runId);
+  const rows = db.prepare<unknown[], { item_type: string; payload_json: string }>(
     `SELECT item_type, payload_json FROM thread_rollout_items
-     WHERE source_path IN (SELECT source_path FROM run_journal_bindings WHERE run_id = ?)
-       AND (item_type = 'session_meta' OR
+     WHERE ${scope.predicate}
+       AND (${scope.bound ? "item_type = 'session_meta' OR " : ""}
          (item_type = 'event_msg' AND json_extract(payload_json, '$.msg.type') = 'execution_admission'))
      ORDER BY source_path, line_number LIMIT ${MAX_RUN_ADMISSION_RECORDS + 1}`,
-  ).all(runId);
+  ).all(...scope.params);
   if (rows.length > MAX_RUN_ADMISSION_RECORDS) throw ambiguousRunOwner(runId, "admission_record_limit");
   const events: JsonObject[] = [];
   const compactions: JsonObject[] = [];
