@@ -26,14 +26,17 @@ import {
   getProjectDir,
   isSafeSessionIdSegment,
 } from "../session/session-store.js";
+import { projectStorageKey } from "../utils/project-storage-key.js";
 import { sanitizePath } from "../utils/sessionStoragePortable.js";
 import {
   __setResumeSessionTestHooksForTest,
+  RESUME_SEARCH_LIMITS,
   reproveResumeSessionAllowingAppend,
   resolveInitialResumeSession,
   resolveLatestSessionId as resolveLatestSessionIdWithHome,
   resolveResumeSessionId as resolveResumeSessionIdWithHome,
   type ResolvedResumeSession,
+  type ResumeSessionResolution,
 } from "./resume-session.js";
 
 let workHome: string;
@@ -605,6 +608,215 @@ describe("resume-session CLI lookup", () => {
       reason: "source_unavailable",
     });
     expect(injected).toBe(true);
+  });
+});
+
+/** The most one session header read costs a lookup's metadata budget. */
+const HEADER_READ_BYTES = 64 * 1024;
+/** More sessions than the metadata budget has full header reads for. */
+const SESSIONS_PAST_HEADER_BUDGET =
+  Math.floor(RESUME_SEARCH_LIMITS.metadataBytes / HEADER_READ_BYTES) + 6;
+const ROOT = { originator: "agenc-cli", source: "interactive-root" } as const;
+
+/** A used session whose header read costs the full HEADER_READ_BYTES. */
+function writeLargeRollout(
+  sessionId: string,
+  mtimeSec: number,
+  meta: { readonly originator: string; readonly source?: string } = ROOT,
+): string {
+  const file = writeRolloutWithMeta(workHome, sessionId, mtimeSec, meta);
+  writeFileSync(
+    file,
+    `${JSON.stringify({
+      type: "response_item",
+      payload: { role: "assistant", content: "x".repeat(HEADER_READ_BYTES) },
+    })}\n`,
+    { flag: "a" },
+  );
+  utimesSync(file, mtimeSec, mtimeSec);
+  return file;
+}
+
+/** "ok", or where the lookup stopped, so a failure names the limit it hit. */
+function outcome(result: ResumeSessionResolution): string {
+  return result.kind === "search_incomplete" ? `stopped: ${result.reason}` : result.kind;
+}
+
+describe("--continue in a project with many sessions", () => {
+  it("opens the newest conversation and reads only its header", () => {
+    let newestId = "";
+    let newestPath = "";
+    for (let index = 0; index < SESSIONS_PAST_HEADER_BUDGET; index += 1) {
+      newestId = `conv-many${String(index).padStart(4, "0")}`;
+      newestPath = writeLargeRollout(newestId, 1_000 + index);
+    }
+    let headerReads = 0;
+    __setResumeSessionTestHooksForTest({
+      afterCandidateMetadataRead: () => {
+        headerReads += 1;
+      },
+    });
+
+    const resolved = resolveLatestSessionId(workHome);
+    expect(outcome(resolved)).toBe("ok");
+    expect(resolved).toMatchObject({ sessionId: newestId, rolloutPath: newestPath });
+    expect(headerReads).toBe(1);
+  });
+
+  it("never reads a session older than the one it opens", () => {
+    const sessionDir = join(projectDir(workHome), "sessions", "conv-olderbroken1");
+    mkdirSync(sessionDir, { recursive: true });
+    const broken = join(sessionDir, "rollout-2026-01-01T10-00-00-000Z-conv-olderbroken1.jsonl");
+    writeFileSync(broken, "not a session header\n");
+    utimesSync(broken, 1, 1);
+    const root = writeRolloutWithMeta(workHome, "conv-newerroot1", 2, ROOT);
+
+    const resolved = resolveLatestSessionId(workHome);
+    expect(outcome(resolved)).toBe("ok");
+    expect(resolved).toMatchObject({ sessionId: "conv-newerroot1", rolloutPath: root });
+  });
+
+  it("still stops when a session newer than the conversation cannot be read", () => {
+    writeRolloutWithMeta(workHome, "conv-olderroot1", 1, ROOT);
+    const sessionDir = join(projectDir(workHome), "sessions", "conv-newerbroken1");
+    mkdirSync(sessionDir, { recursive: true });
+    const broken = join(sessionDir, "rollout-2026-01-01T10-00-00-000Z-conv-newerbroken1.jsonl");
+    writeFileSync(broken, "not a session header\n");
+    utimesSync(broken, 2, 2);
+
+    expect(resolveLatestSessionId(workHome)).toEqual({
+      kind: "search_incomplete",
+      input: "--continue",
+      reason: "source_unavailable",
+    });
+  });
+
+  it("still stops when a session folder cannot be listed, however old", () => {
+    writeRolloutWithMeta(workHome, "conv-newestroot1", 2, ROOT);
+    writeRolloutWithMeta(workHome, "conv-hiddenold1", 1, ROOT);
+    const hiddenDir = join(projectDir(workHome), "sessions", "conv-hiddenold1");
+    __setResumeSessionTestHooksForTest({
+      beforeOpenDirectory: (path) => {
+        if (path !== hiddenDir) return;
+        throw Object.assign(new Error("injected directory I/O failure"), {
+          code: "EIO",
+        });
+      },
+    });
+
+    expect(resolveLatestSessionId(workHome)).toEqual({
+      kind: "search_incomplete",
+      input: "--continue",
+      reason: "source_unavailable",
+    });
+  });
+
+  it("keeps the header budget for background sessions newer than the conversation", () => {
+    writeLargeRollout("conv-buriedroot1", 1);
+    for (let index = 0; index < SESSIONS_PAST_HEADER_BUDGET; index += 1) {
+      writeLargeRollout(
+        `a1b2c3d4-0000-4000-8000-${String(index).padStart(12, "0")}`,
+        1_000 + index,
+        { originator: "agenc-subagent" },
+      );
+    }
+
+    expect(resolveLatestSessionId(workHome)).toEqual({
+      kind: "search_incomplete",
+      input: "--continue",
+      reason: "metadata_limit",
+    });
+  });
+
+  it("orders both project folders together and opens the newer copy of an id kept in both", () => {
+    const versionedSlug = projectStorageKey(workHome);
+    expect(join(agencHome, "projects", versionedSlug)).not.toBe(projectDir(workHome));
+    for (let index = 1; index <= 3; index += 1) {
+      writeRolloutWithMeta(workHome, `conv-folder${index}`, index, ROOT);
+    }
+    writeRolloutAtSlug(versionedSlug, "conv-versioned1", "2026-01-01T10-00-00-000Z", 4, workHome);
+    writeRolloutWithMeta(workHome, "conv-twice1", 5, ROOT);
+    const newerCopy = writeRolloutAtSlug(
+      versionedSlug,
+      "conv-twice1",
+      "2026-01-01T10-00-00-000Z",
+      6,
+      workHome,
+    );
+    let headerReads = 0;
+    __setResumeSessionTestHooksForTest({
+      afterCandidateMetadataRead: () => {
+        headerReads += 1;
+      },
+    });
+
+    const resolved = resolveLatestSessionId(workHome);
+    expect(outcome(resolved)).toBe("ok");
+    expect(resolved).toMatchObject({ sessionId: "conv-twice1", rolloutPath: newerCopy });
+    expect(headerReads).toBe(1);
+  });
+
+  it("looks again when the session it picked went back to an older generation", () => {
+    // A replacement that rolls back renames the prior generation into place,
+    // and a renamed file keeps its older mtime.
+    const sessionDir = join(projectDir(workHome), "sessions", "conv-rolledback1");
+    const published = writeRolloutWithMeta(workHome, "conv-rolledback1", 3, ROOT);
+    writeRolloutWithMeta(workHome, "conv-usedlater1", 2, ROOT);
+    const prior = join(sessionDir, ".prior-generation.tmp");
+    copyFileSync(published, prior);
+    utimesSync(prior, 1, 1);
+    let listings = 0;
+    __setResumeSessionTestHooksForTest({
+      beforeOpenDirectory: (path) => {
+        if (path !== sessionDir) return;
+        listings += 1;
+        // The second listing is the read pass finding the session again.
+        if (listings !== 2) return;
+        renameSync(published, join(sessionDir, ".displaced.tmp"));
+        renameSync(prior, published);
+      },
+    });
+
+    expect(resolveLatestSessionId(workHome)).toEqual({
+      kind: "search_incomplete",
+      input: "--continue",
+      reason: "source_unavailable",
+    });
+    expect(resolveLatestSessionId(workHome)).toMatchObject({
+      kind: "ok",
+      sessionId: "conv-usedlater1",
+    });
+  });
+
+  it("opens the generation a session published after the listing", () => {
+    const sessionDir = join(projectDir(workHome), "sessions", "conv-published1");
+    const listed = writeRolloutWithMeta(workHome, "conv-published1", 2, ROOT);
+    writeRolloutWithMeta(workHome, "conv-otherroot1", 1, ROOT);
+    const published = join(sessionDir, "rollout-2026-01-02T10-00-00-000Z-conv-published1.jsonl");
+    let listings = 0;
+    __setResumeSessionTestHooksForTest({
+      beforeOpenDirectory: (path) => {
+        if (path !== sessionDir) return;
+        listings += 1;
+        // A compaction publishes a new generation before the read pass.
+        if (listings !== 2) return;
+        writeFileSync(
+          published,
+          `${readFileSync(listed, "utf8")}${JSON.stringify({
+            type: "response_item",
+            payload: { role: "assistant", content: "after compaction" },
+          })}\n`,
+        );
+        utimesSync(published, 3, 3);
+      },
+    });
+
+    expect(resolveLatestSessionId(workHome)).toMatchObject({
+      kind: "ok",
+      sessionId: "conv-published1",
+      rolloutPath: published,
+      sourceSize: String(statSync(published).size),
+    });
   });
 });
 

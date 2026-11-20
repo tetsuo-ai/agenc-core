@@ -41,6 +41,7 @@ export const RESUME_SEARCH_LIMITS = Object.freeze({
   projects: 512,
   sessionsPerProject: 2_048,
   rolloutFilesPerSession: 256,
+  /** Session headers one lookup may read; a header read costs at most 64 KiB. */
   metadataBytes: 4 * 1024 * 1024,
   milliseconds: DEFAULT_MAX_STARTUP_RECOVERY_MS,
 });
@@ -590,12 +591,30 @@ function sealCandidate(
   return result;
 }
 
-function candidateUnderProjectDir(
+/** A session's newest rollout generation, known from directory entries and lstat alone. */
+interface DiscoveredRollout {
+  readonly projectDir: string;
+  readonly sessionId: string;
+  readonly path: string;
+  readonly mtimeNs: bigint;
+}
+
+function newestRolloutFirst(
+  left: { readonly path: string; readonly mtimeNs: bigint },
+  right: { readonly path: string; readonly mtimeNs: bigint },
+): number {
+  return left.mtimeNs === right.mtimeNs
+    ? right.path.localeCompare(left.path)
+    : left.mtimeNs > right.mtimeNs
+      ? -1
+      : 1;
+}
+
+function newestRolloutUnderProjectDir(
   projectDir: string,
   sessionId: string,
   budget: SearchBudget,
-  topLevelOnly = false,
-): ResumeCandidate | null {
+): DiscoveredRollout | null {
   const sessionDir = join(projectDir, "sessions", sessionId);
   const discoveredFiles = boundedEntries(
     sessionDir,
@@ -617,7 +636,7 @@ function candidateUnderProjectDir(
     (entry) => !entry.name.startsWith("rollout-recovery-"),
   );
   const files = normalFiles.length > 0 ? normalFiles : discoveredFiles;
-  const candidates = files
+  const generations = files
     .flatMap((entry) => {
       const path = join(sessionDir, entry.name);
       try {
@@ -628,38 +647,62 @@ function candidateUnderProjectDir(
         return [];
       }
     })
-    .sort((left, right) =>
-      left.mtimeNs === right.mtimeNs
-        ? right.path.localeCompare(left.path)
-        : left.mtimeNs > right.mtimeNs
-          ? -1
-          : 1,
-    );
-  const selected = candidates[0];
-  return selected === undefined
+    .sort(newestRolloutFirst);
+  const selected = generations[0];
+  return selected === undefined ? null : { projectDir, sessionId, ...selected };
+}
+
+function candidateUnderProjectDir(
+  projectDir: string,
+  sessionId: string,
+  budget: SearchBudget,
+  topLevelOnly = false,
+): ResumeCandidate | null {
+  const rollout = newestRolloutUnderProjectDir(projectDir, sessionId, budget);
+  return rollout === null
     ? null
-    : candidateFromPath(sessionId, selected.path, selected.mtimeNs, budget, topLevelOnly);
+    : candidateFromPath(sessionId, rollout.path, rollout.mtimeNs, budget, topLevelOnly);
+}
+
+function sessionIdsUnderProjectDir(
+  projectDir: string,
+  budget: SearchBudget,
+): readonly string[] {
+  return boundedEntries(
+    join(projectDir, "sessions"),
+    RESUME_SEARCH_LIMITS.sessionsPerProject,
+    budget,
+    "session_limit",
+  ).flatMap((entry) =>
+    entry.directory && isSafeSessionIdSegment(entry.name) ? [entry.name] : [],
+  );
 }
 
 function candidatesUnderProjectDir(
   projectDir: string,
   budget: SearchBudget,
-  topLevelOnly = false,
 ): readonly ResumeCandidate[] {
-  const sessions = boundedEntries(
-    join(projectDir, "sessions"),
-    RESUME_SEARCH_LIMITS.sessionsPerProject,
-    budget,
-    "session_limit",
-  );
   const candidates: ResumeCandidate[] = [];
-  for (const entry of sessions) {
+  for (const sessionId of sessionIdsUnderProjectDir(projectDir, budget)) {
     if (budget.incompleteReason !== undefined) break;
-    if (!entry.directory || !isSafeSessionIdSegment(entry.name)) continue;
-    const candidate = candidateUnderProjectDir(projectDir, entry.name, budget, topLevelOnly);
+    const candidate = candidateUnderProjectDir(projectDir, sessionId, budget);
     if (candidate !== null) candidates.push(candidate);
   }
   return candidates;
+}
+
+/** Every session's newest rollout in a project, found without reading one. */
+function newestRolloutsUnderProjectDir(
+  projectDir: string,
+  budget: SearchBudget,
+): readonly DiscoveredRollout[] {
+  const rollouts: DiscoveredRollout[] = [];
+  for (const sessionId of sessionIdsUnderProjectDir(projectDir, budget)) {
+    if (budget.incompleteReason !== undefined) break;
+    const rollout = newestRolloutUnderProjectDir(projectDir, sessionId, budget);
+    if (rollout !== null) rollouts.push(rollout);
+  }
+  return rollouts;
 }
 
 function legacyProjectDirFor(cwd: string, agencHome: string): string {
@@ -679,10 +722,9 @@ function projectCandidatesCrossSlug(
   cwd: string,
   agencHome: string,
   budget: SearchBudget,
-  topLevelOnly = false,
 ): readonly ResumeCandidate[] {
   const candidates = localProjectDirs(cwd, agencHome).flatMap((projectDir) =>
-    candidatesUnderProjectDir(projectDir, budget, topLevelOnly),
+    candidatesUnderProjectDir(projectDir, budget),
   );
   const byPath = new Map<string, ResumeCandidate>();
   for (const candidate of candidates)
@@ -815,21 +857,45 @@ export function resolveLatestSessionId(
   agencHome: string,
 ): ResumeSessionResolution {
   const search = budget(agencHome);
-  // --continue means the user's own conversation, never a background agent's.
-  const candidates = projectCandidatesCrossSlug(cwd, agencHome, search, true);
+  // Which session is newest takes directory entries and lstat alone, so every
+  // session is found before any is read; one that cannot be found could be it.
+  const rollouts = localProjectDirs(cwd, agencHome)
+    .flatMap((projectDir) => newestRolloutsUnderProjectDir(projectDir, search))
+    .sort(newestRolloutFirst);
   const stopped = incomplete("--continue", search);
   if (stopped !== undefined) return stopped;
-  // A session that records no input is one a TUI provisioned and could not
-  // retire (it crashed or was killed before its first prompt). Continue the
-  // newest session someone used instead.
-  const latest = candidates.find(
-    (candidate) => !canonicalRolloutHoldsNoInput(candidate.rolloutPath),
-  );
-  if (latest === undefined) return { kind: "none" };
-  const descriptor = sealCandidate(latest, search);
-  return descriptor === null
-    ? (incomplete("--continue", search) ?? { kind: "none" })
-    : { kind: "ok", ...descriptor };
+  // Headers are read newest first and only down to the session that opens,
+  // so the metadata budget bounds this one lookup, not how many sessions a
+  // project may hold. Each session is found again right before its header is
+  // read, so a writer still appending to it is proven as closely as before.
+  for (const rollout of rollouts) {
+    // --continue means the user's own conversation, never a background agent's.
+    const candidate = candidateUnderProjectDir(
+      rollout.projectDir,
+      rollout.sessionId,
+      search,
+      true,
+    );
+    const failed = incomplete("--continue", search);
+    if (failed !== undefined) return failed;
+    // A session that records no input is one a TUI provisioned and could not
+    // retire (it crashed or was killed before its first prompt). Continue the
+    // newest session someone used instead.
+    if (candidate === null || canonicalRolloutHoldsNoInput(candidate.rolloutPath)) {
+      continue;
+    }
+    // The order came from the listing pass. A newest generation older now than
+    // it was there (a replacement that rolled back) may have fallen behind the
+    // sessions after it, so this search stops and the caller looks again.
+    if (candidate.mtimeNs < rollout.mtimeNs) {
+      return { kind: "search_incomplete", input: "--continue", reason: "source_unavailable" };
+    }
+    const descriptor = sealCandidate(candidate, search);
+    return descriptor === null
+      ? (incomplete("--continue", search) ?? { kind: "none" })
+      : { kind: "ok", ...descriptor };
+  }
+  return { kind: "none" };
 }
 
 export function resolveResumeSessionId(
