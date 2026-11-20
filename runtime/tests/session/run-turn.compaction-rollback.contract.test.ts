@@ -125,6 +125,55 @@ describe("runTurn automatic compaction rollback wiring", () => {
     }
   });
 
+  it("reports the automatic compaction where it commits, before the reply that follows it", async () => {
+    const environment = saveCompactionEnvironment();
+    enableAutomaticCompaction();
+    const harness = createRunTurnHarness(createSourceMessages());
+    try {
+      await drain(runTurn(harness.session, mkCtx({
+        cwd: harness.cwd,
+        modelInfo: {
+          ...mkCtx().modelInfo,
+          slug: "grok-4.5",
+          contextWindow: 64_000,
+          maxOutputTokens: 512,
+          autoCompactTokenLimit: 1,
+        },
+      }), USER_MESSAGE));
+
+      const rows = harness.store.readAll();
+      const commitIndex = rows.findIndex((item) => item.type === "compaction_committed");
+      const boundaryIndexes = rows.flatMap((item, index) =>
+        item.type === "event_msg" && item.payload.msg.type === "context_compacted" ? [index] : []);
+      const replyIndex = rows.findIndex((item, index) =>
+        index > commitIndex && item.type === "event_msg" &&
+        (item.payload.msg.type === "agent_message_delta" || item.payload.msg.type === "agent_message"));
+      expect(commitIndex).toBeGreaterThanOrEqual(0);
+      expect(replyIndex).toBeGreaterThan(commitIndex);
+      // One boundary, between the commit and the reply: a client draws the
+      // line where the compaction ran, not after the reply.
+      expect(boundaryIndexes).toHaveLength(1);
+      expect(boundaryIndexes[0]).toBeGreaterThan(commitIndex);
+      expect(boundaryIndexes[0]).toBeLessThan(replyIndex);
+      expect(rows[boundaryIndexes[0]! + 1]?.type).toBe("session_meta");
+      // Between the commit and the boundary only the compaction's own rows
+      // (its checkpoint, a further refused attempt): no model output.
+      expect(rows.slice(commitIndex + 1, boundaryIndexes[0]).filter((item) =>
+        item.type === "event_msg" && ["token_count", "agent_message_delta", "agent_message"].includes(item.payload.msg.type),
+      )).toEqual([]);
+      // The turn is checkpointed after the boundary: a turn resumed after a
+      // crash in the model call does not report the same compaction again.
+      const tracking = rows.slice(0, replyIndex).flatMap((item) =>
+        item.type === "event_msg" && item.payload.msg.type === "turn_checkpoint"
+          ? [(item.payload.msg.payload as { resumableState?: { autoCompactTracking?: unknown } }).resumableState?.autoCompactTracking]
+          : []);
+      expect(tracking.at(-1)).toMatchObject({ compacted: true, turnCounter: 1 });
+    } finally {
+      harness.close();
+      restoreCompactionEnvironment(environment);
+    }
+  });
+
   it("refuses an effective window that cannot fit a compaction request before recording intent", async () => {
     const environment = saveCompactionEnvironment();
     enableAutomaticCompaction(1_000);

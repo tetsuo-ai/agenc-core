@@ -90,6 +90,9 @@ function mkDownshiftFixture(): {
     isDegraded: false,
     flushDurable: () => {},
     append: () => {},
+    // The compaction's boundary re-appends the session metadata where the
+    // compaction commits (auto-compact-boundary.ts).
+    store: { reAppendSessionMetadata: () => {} },
   };
 
   const state = buildInitialTurnState(

@@ -469,6 +469,8 @@ export function runMaxOutputTokensRecovery(
     state.reasoningOnlyRecoveryPending = reasoningOnly ? true : undefined;
     state.maxOutputTokensOverride = escalatedLimit;
     state.transition = { reason: "max_output_tokens_escalate" };
+    // The retry samples this part again; its earlier parts still stand.
+    state.cutReplyText = undefined;
     discardExecutorForMaxOutputTokens(session, state);
     removeTruncatedAssistantForRetry(state);
     if (reasoningOnly) {
@@ -493,6 +495,21 @@ export function runMaxOutputTokensRecovery(
     discardExecutorForMaxOutputTokens(session, state, {
       appendCompletedHistory: true,
     });
+    // The cut sample stays in the history, but no message committed its
+    // text. A reply cut before any tool input is continued: the sample that
+    // completes it commits every part together. One that stopped at a tool
+    // call, or with nothing but reasoning, does not continue: what streamed
+    // of it is committed now, as a message of its own.
+    if (!truncatedTools && !reasoningOnly && state.cutReplyText !== undefined) {
+      if (state.cutReplyText.length > 0) {
+        state.continuedReplyText = (state.continuedReplyText ?? "") + state.cutReplyText;
+      }
+    } else {
+      const ended = (state.continuedReplyText ?? "") + (state.assistantMessages.at(-1)?.text ?? "");
+      state.continuedReplyText = undefined;
+      if (ended.length > 0) state.endedReplyText = ended;
+    }
+    state.cutReplyText = undefined;
     const metaMessage: LLMMessage = {
       role: "user",
       content: truncatedTools
