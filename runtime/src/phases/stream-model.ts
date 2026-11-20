@@ -78,6 +78,7 @@ import {
   stripProposedPlanBlocks,
 } from "../llm/stream-parser.js";
 import { normalizeToolCallsForProvider } from "../llm/tool-call-normalize.js";
+import { ContinuationRepeatHold, joinedContinuation } from "./continuation-repeat.js";
 import {
   ensureStreamingToolExecutor,
   queueStreamingToolCall,
@@ -158,6 +159,9 @@ interface AssistantDisplayState {
   // re-sanitization. `emittedVisibleText` is no longer needed for diffing.
   sanitizer: IncrementalSpoofSanitizer;
   warnedMatches: Set<string>;
+  // A sample that continues a reply the output limit cut holds its first
+  // characters until its repeat of the reply's end is resolved.
+  repeatHold?: ContinuationRepeatHold;
 }
 
 interface ThinkingDisplayState {
@@ -675,22 +679,27 @@ function emitSanitizedAssistantDelta(
   display: AssistantDisplayState,
   delta: string,
   session: Session,
-): string {
+): { readonly sanitized: string; readonly streamed: string } {
   // gaphunt3 #43: sanitize only the new delta (plus the carry window) instead
   // of re-scanning display.visibleText on every chunk.
   const sanitized = display.sanitizer.push(delta);
   if (sanitized.newMatches.length > 0) {
     emitSpoofWarnings(display, sanitized.newMatches, session);
   }
-  if (sanitized.text.length === 0) return "";
+  const streamed = display.repeatHold?.push(sanitized.text) ?? sanitized.text;
+  emitAssistantDelta(streamed, session);
+  return { sanitized: sanitized.text, streamed };
+}
+
+function emitAssistantDelta(delta: string, session: Session): void {
+  if (delta.length === 0) return;
   session.emit({
     id: session.nextInternalSubId(),
     msg: {
       type: "agent_message_delta",
-      payload: { delta: sanitized.text },
+      payload: { delta },
     },
   });
-  return sanitized.text;
 }
 
 export function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
@@ -1173,12 +1182,21 @@ export async function streamModel(
     },
   });
 
+  // A sample that continues a reply the output limit cut opens by repeating
+  // the reply's last words, as the recovery note asks. Its start is held
+  // until that repeat is resolved: the repeat never streams, and the reply
+  // streams as it is committed.
+  const continuedReply = state.continuedReplyText;
+  const freshRepeatHold = (): ContinuationRepeatHold | undefined =>
+    continuedReply !== undefined ? new ContinuationRepeatHold(continuedReply) : undefined;
   const display: AssistantDisplayState = {
     parser: new AssistantVisibleTextStreamParser(planMode),
     visibleText: "",
     sanitizer: new IncrementalSpoofSanitizer(),
     warnedMatches: new Set<string>(),
+    repeatHold: freshRepeatHold(),
   };
+  state.joinedReplyPart = undefined;
   const thinkingDisplays = new Map<string, ThinkingDisplayState>();
   const providerName = session.services.provider.name;
   const progressTracker = new StreamProgressTracker();
@@ -1239,6 +1257,14 @@ export async function streamModel(
     }
   };
 
+  // Text the repeat hold still keeps shows now (a tool call starts, or the
+  // sample ended), without the repeat.
+  const releaseRepeatHold = (): void => {
+    const released = display.repeatHold?.flush() ?? "";
+    emitAssistantDelta(released, session);
+    writeCanonicalAssistantDelta(released);
+  };
+
   const onChunk = (chunk: LLMStreamChunk): void => {
     if (scoped.signal.aborted) return;
     // Includes tool-only chunks, before the early streaming executor can run.
@@ -1290,6 +1316,7 @@ export async function streamModel(
       display.parser = new AssistantVisibleTextStreamParser(planMode);
       display.sanitizer = new IncrementalSpoofSanitizer();
       display.visibleText = "";
+      display.repeatHold = freshRepeatHold();
     }
     if (chunk.content && chunk.content.length > 0) {
       let visibleDelta: string;
@@ -1305,13 +1332,14 @@ export async function streamModel(
         visibleDelta = display.parser.pushStr(chunk.content);
         display.visibleText += visibleDelta;
       }
-      const canonicalDelta = emitSanitizedAssistantDelta(
+      const { sanitized, streamed } = emitSanitizedAssistantDelta(
         display,
         visibleDelta,
         session,
       );
-      writeCanonicalAssistantDelta(canonicalDelta);
-      newVisibleText = canonicalDelta.trim().length > 0 &&
+      writeCanonicalAssistantDelta(streamed);
+      // Text the repeat hold keeps back is still new output from the model.
+      newVisibleText = sanitized.trim().length > 0 &&
         (!chunk.resetBuffer || display.visibleText !== previousVisibleText);
       const planDelta = display.parser.planText.slice(chunk.resetBuffer ? 0 : previousPlanText.length);
       newVisibleText ||= planDelta.trim().length > 0 && display.parser.planText !== previousPlanText;
@@ -1345,6 +1373,10 @@ export async function streamModel(
     // synthesises start/stop for the latter on first/last sight per index.
     emitThinkingChunkEvents(chunk, session, thinkingDisplays);
 
+    // Text written before a tool call shows before the call.
+    if (chunk.toolInputBlockStart !== undefined || (chunk.toolCalls?.length ?? 0) > 0) {
+      releaseRepeatHold();
+    }
     if (chunk.toolInputBlockStart !== undefined) {
       toolInputsStarted.set(chunk.toolInputBlockStart.callId, chunk.toolInputBlockStart.contentBlock.name);
     }
@@ -1596,16 +1628,10 @@ export async function streamModel(
     if (flushed.newMatches.length > 0) {
       emitSpoofWarnings(display, flushed.newMatches, session);
     }
-    if (flushed.text.length > 0) {
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: {
-          type: "agent_message_delta",
-          payload: { delta: flushed.text },
-        },
-      });
-      writeCanonicalAssistantDelta(flushed.text);
-    }
+    const streamed = display.repeatHold?.push(flushed.text) ?? flushed.text;
+    emitAssistantDelta(streamed, session);
+    writeCanonicalAssistantDelta(streamed);
+    releaseRepeatHold();
   }
 
   let assistant = assistantMessageFromResponse(
@@ -1615,16 +1641,28 @@ export async function streamModel(
   );
   const maxOutputTruncated = response.finishReason === "length";
   state.continuedReplyPart = undefined;
+  // This sample's text as it joins the reply it continues, without the words
+  // it repeated from the reply's end: what the hold let through, so the
+  // committed reply is what streamed. The same rule over the whole text only
+  // where the streamed text differs from it.
+  const visibleText = assistant.text ?? "";
+  const joinedPart = continuedReply === undefined
+    ? undefined
+    : display.repeatHold !== undefined && display.repeatHold.consumed === visibleText
+      ? display.repeatHold.released
+      : joinedContinuation(continuedReply, visibleText);
+  state.joinedReplyPart = joinedPart;
   if (!maxOutputTruncated && state.continuedReplyText !== undefined) {
     const own = assistant.text ?? "";
     if (own.trim().length > 0 || assistant.toolCalls.length > 0 || streamedToolCalls.size > 0) {
       // This sample completes a reply that reached the output limit. The
-      // reply is every part in order, as it streamed, checked again as a
-      // whole (a spoofed prompt can span the cut). The history keeps each
-      // part, and model-facing copies use this sample's own text.
+      // reply is every part in order, joined where each repeat ends, as it
+      // streamed, and checked again as a whole (a spoofed prompt can span
+      // the cut). The history keeps each part as sampled, and model-facing
+      // copies use this sample's own text.
       assistant = {
         ...assistant,
-        text: sanitizeModelOutput(state.continuedReplyText + own, { strict: true }).text,
+        text: sanitizeModelOutput(state.continuedReplyText + (joinedPart ?? own), { strict: true }).text,
       };
       state.continuedReplyPart = own;
     } else {
@@ -1634,7 +1672,10 @@ export async function streamModel(
     }
     state.continuedReplyText = undefined;
   }
-  const canonicalAssistantText = assistant.text ?? "";
+  // A cut continuation is a reply part as it streamed, without its repeat.
+  const canonicalAssistantText = maxOutputTruncated && joinedPart !== undefined
+    ? joinedPart
+    : assistant.text ?? "";
   if (
     assistantOutputSink !== undefined &&
     streamedCanonicalAssistantText !== canonicalAssistantText
@@ -1686,7 +1727,7 @@ export async function streamModel(
     // closed it at the call.
     const toolInput = toolInputsStarted.size > 0 || streamedToolCalls.size > 0 ||
       malformedToolCompletionIds.size > 0;
-    state.cutReplyText = toolInput ? undefined : assistant.text;
+    state.cutReplyText = toolInput ? undefined : (joinedPart ?? assistant.text);
     for (const [id, name] of unfinished) {
       session.emit({ id: session.nextInternalSubId(), msg: {
         type: "tool_call_completed", payload: { callId: id, toolName: name,

@@ -476,8 +476,10 @@ last assistant. `post-sample-recovery.ts` `onMaxOutputTokens` then calls
    (`MAX_OUTPUT_TOKENS_RECOVERY_LIMIT`). Reasoning-only replies (the capped
    sample has no text and no tool calls, and the last response reports
    `reasoningOutputTokens > 0`) ask for a next concrete step. Truncated
-   tool arguments ask for complete JSON. Ordinary truncated text uses the
-   resume-from-here line.
+   tool arguments ask for complete JSON. Ordinary truncated text asks the
+   model to start with its last five words, repeated exactly, and go on;
+   the parts join where that repeat ends, live and committed
+   (`phases/continuation-repeat.ts`).
 3. **Exhausted** ends the turn as `model_error` when the counted retries
    reach 3:
    `The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete.`

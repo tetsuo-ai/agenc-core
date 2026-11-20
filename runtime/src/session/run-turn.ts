@@ -1287,8 +1287,8 @@ async function finishSamplingRequest(
     isWithheldMaxOutputTokens(lastAssistant);
   if (unrecoveredMaxOutputTokens) {
     discardExecutorForMaxOutputTokens(session, state, { appendCompletedHistory: true });
-    // The reply ends cut: its earlier parts, then this one.
-    assistantText = (state.continuedReplyText ?? "") + assistantText;
+    // The reply ends cut: its earlier parts, then this one where it joins.
+    assistantText = (state.continuedReplyText ?? "") + (state.joinedReplyPart ?? assistantText);
     state.continuedReplyText = undefined;
     if (assistantText.length > 0) {
       events.push({ type: "assistant_text", content: assistantText });
