@@ -199,28 +199,20 @@ describe("canonical provider catalogs preserve supported selection rows", () => 
 
   it("keeps the complete unique NVIDIA NIM selection surface", () => {
     const models = BUILT_IN_PROVIDER_MODEL_CATALOG["nvidia-nim"];
-    // 115 ids until 2026-10-17, when GET /v1/models stopped listing 80 of them (end of life, HTTP
-    // 410, or gone, HTTP 404). The 35 NVIDIA still lists are the complete surface; the retired
-    // ids are pinned in nvidia-nim-catalog.test.ts.
-    expect(models).toHaveLength(35);
-    expect(new Set(models)).toHaveLength(35);
+    // 115 ids until 2026-10-17, 35 until 2026-11-20, when only 5 of those were still served
+    // (the rest answer HTTP 410, end of life, or HTTP 404). The 16 chat ids NVIDIA serves are
+    // the complete surface; the retired ids are pinned in nvidia-nim-catalog.test.ts.
+    expect(models).toHaveLength(16);
+    expect(new Set(models)).toHaveLength(16);
     expect(models).toEqual(
       expect.arrayContaining([
+        "nvidia/nemotron-3.5-super-vl-120b-a12b",
         "nvidia/cosmos-reason2-8b",
-        "meta/codellama-70b",
-        "nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/llama3-chatqa-1.5-70b",
-        "meta/llama-3.2-90b-vision-instruct",
-        "google/gemma-4-31b-it",
-        "mistralai/mistral-large",
-        "ibm/granite-3.0-8b-instruct",
-        "databricks/dbrx-instruct",
-        "writer/palmyra-med-70b-32k",
-        "moonshotai/kimi-k2.6",
         "meta/muse-glimmer-30b",
-        "openai/gpt-oss-20b",
+        "poolside/laguna-xs-2.1",
       ]),
     );
+    expect(models).not.toContain("nvidia/nemotron-3-super-120b-a12b");
     expect(models).not.toContain("openai/gpt-oss-120b");
     expect(buildProviderModelCatalog(defaultConfig())["nvidia-nim"]).toEqual(
       models,

@@ -327,7 +327,8 @@ describe("the bundled snapshot with the clock at 2026-11-12", () => {
   test.each(RETIRED_BY_2026_11_12)("refuses /model %s, naming %s", async (model, date) => {
     vi.useFakeTimers({ toFake: ["Date"], now: today });
     const ctx = context();
-    expect(text(await modelCommand.execute({ ...ctx, argsRaw: model })))
+    // poolside/laguna-xs-2.1 bare is NVIDIA NIM's now (NIM serves it), so name OpenRouter.
+    expect(text(await modelCommand.execute({ ...ctx, argsRaw: `openrouter:${model}` })))
       .toBe(`Model switch blocked: OpenRouter retired '${model}' on ${date}. Pick another model.`);
     expect((ctx.session as unknown as { pendingProviderSwitch: unknown }).pendingProviderSwitch).toBeNull();
   });
