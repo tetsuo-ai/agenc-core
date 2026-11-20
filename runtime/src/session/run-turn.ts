@@ -1,5 +1,6 @@
 import { withLiveShellProgress } from "./live-shell-progress.js";
 import { beginWorkspaceChanges, type WorkspaceChangeCheckpoint } from "./workspace-changes.js";
+import { beginToolBarrier } from "./tool-barrier.js";
 import { TurnUsageCollector } from "./turn-usage.js";
 import { leanEditMode, resolveLightRequest } from "./light-request/settings.js";
 import { announceLightRequest } from "./light-request/notice.js";
@@ -2463,8 +2464,16 @@ async function* runTurnKernelScoped(
   turnUsage = new TurnUsageCollector(admissionUsage?.getDirectUsageSummary?.bind(admissionUsage));
   const unsubscribeTurnUsage = session.eventLog.subscribe(event => turnUsage?.observe(event));
   signalCleanups.push(unsubscribeTurnUsage);
+  // Work the first tool call waits for, while the model request goes out at once.
+  const toolBarrier = beginToolBarrier(session);
+  signalCleanups.push(() => toolBarrier.end());
   try {
-    if (opts.turnChanges !== undefined) checkpoint = await beginWorkspaceChanges(ctx.cwd, opts.turnChanges.includeDiff === true);
+    if (opts.turnChanges !== undefined) {
+      // The snapshot only reads the workspace; a tool call is what can change it.
+      const started = beginWorkspaceChanges(ctx.cwd, opts.turnChanges.includeDiff === true);
+      toolBarrier.barrier.add(started);
+      checkpoint = deferredWorkspaceChanges(started);
+    }
     const inner = runTurnKernelInner(
       session,
       ctx,
@@ -4825,4 +4834,12 @@ function lightWorkspaceFilesFor(session: Session, ctx: TurnContext): boolean {
     binding?.provider ?? session.services.provider.name,
     binding?.model ?? ctx.modelInfo.slug ?? ctx.config.model,
   );
+}
+
+/** A workspace snapshot still being read: the turn reports from it once it is ready. */
+function deferredWorkspaceChanges(started: Promise<WorkspaceChangeCheckpoint>): WorkspaceChangeCheckpoint {
+  return {
+    async finish(turnId, runId) { return (await started).finish(turnId, runId); },
+    dispose() { void started.then(checkpoint => checkpoint.dispose(), () => undefined); },
+  };
 }
