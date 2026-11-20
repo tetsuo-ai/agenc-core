@@ -91,6 +91,7 @@ import {
   type ToolRuntimeScheduler,
 } from "./runtimes/parallel.js";
 import { asRecord } from "../utils/record.js";
+import { waitForToolBarrier } from "../session/tool-barrier.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -1582,6 +1583,15 @@ export class StreamingToolExecutor {
             tool.toolCall,
             tool.cancelBeforeDispatch,
           );
+        }
+        // The turn's workspace snapshot and a client's restore point come
+        // before anything a tool does (session/tool-barrier.ts).
+        try {
+          await waitForToolBarrier(this.liveToolDispatch?.options.session, dispatchSignal);
+        } catch {
+          const reason = this.getAbortReasonForTool(tool) ?? "user_interrupted";
+          tool.error = new Error(reason);
+          return this.createSyntheticError(tool.toolCall, reason);
         }
         tool.hasDispatched = true;
         const executionCall = { ...tool.toolCall, name: this.resolveModelToolName(tool.toolCall.name) };

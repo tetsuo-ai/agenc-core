@@ -131,6 +131,12 @@ function readUserPromptSubmitRuntimeAuthority(
   return undefined;
 }
 
+/** Whether this session would run a UserPromptSubmit hook for its next prompt. */
+export function hasUserPromptSubmitHooks(session: unknown): boolean {
+  const services = isRecord(session) ? session["services"] : undefined;
+  return readUserPromptSubmitHooks({ session, services }).length > 0;
+}
+
 function readUserPromptSubmitHooks(
   toolUseContext: unknown,
 ): readonly UserPromptSubmitHook[] {

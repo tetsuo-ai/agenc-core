@@ -3,7 +3,7 @@
   "$id": "urn:agenc:app-server:protocol",
   "title": "AgenC Daemon JSON-RPC Protocol",
   "description": "Initial AgenC daemon JSON-RPC method surface.",
-  "x-agenc-protocol-version": "1.37.0",
+  "x-agenc-protocol-version": "1.38.0",
   "x-agenc-package": {
     "name": "@tetsuo-ai/protocol",
     "export": "./daemon-json-rpc.schema.json"
@@ -74,6 +74,7 @@
     "session.terminate",
     "session.clear",
     "session.compact",
+    "session.releaseTools",
     "session.snapshot",
     "session.processes.list",
     "session.processes.stop",
@@ -2824,6 +2825,24 @@
         "sessionId"
       ]
     },
+    "SessionReleaseToolsParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clientMessageId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sessionId",
+        "clientMessageId"
+      ]
+    },
     "SessionSnapshotParams": {
       "type": "object",
       "additionalProperties": false,
@@ -3453,6 +3472,9 @@
           "$ref": "#/definitions/JsonObject"
         },
         "includeToolProgress": {
+          "type": "boolean"
+        },
+        "holdToolsUntilReleased": {
           "type": "boolean"
         },
         "turnChanges": {
@@ -5204,6 +5226,9 @@
           "$ref": "#/definitions/SessionCompactRequest"
         },
         {
+          "$ref": "#/definitions/SessionReleaseToolsRequest"
+        },
+        {
           "$ref": "#/definitions/SessionSnapshotRequest"
         },
         {
@@ -6388,6 +6413,30 @@
         },
         "params": {
           "$ref": "#/definitions/SessionCompactParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "SessionReleaseToolsRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.releaseTools"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionReleaseToolsParams"
         }
       },
       "required": [

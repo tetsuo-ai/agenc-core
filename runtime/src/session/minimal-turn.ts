@@ -1,4 +1,5 @@
 import { liveShellProgressEnabled } from "./live-shell-progress.js";
+import { waitForToolBarrier } from "./tool-barrier.js";
 import { validateToolCall } from "../llm/types.js";
 import type { Tool } from "../tools/types.js";
 import { filesystemRootsForDispatch } from "../tools/filesystem-dispatch-roots.js";
@@ -181,6 +182,8 @@ export async function* runMinimalTurn(
         yield { type: "turn_complete", content: response.content, usage, stopReason: "completed" };
         return { reason: "completed" };
       }
+      // The turn's workspace snapshot and a client's restore point come first.
+      if (toolCalls.length > 0) await waitForToolBarrier(session, signal);
       for (const call of toolCalls) {
         signal.throwIfAborted();
         let tool: Tool | undefined;

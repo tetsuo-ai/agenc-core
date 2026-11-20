@@ -83,10 +83,16 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * It also reads two optional client capabilities that only word the advice
  * of a context-full failure: `turn.advice.slashCommands.v1` (the TUI) and
  * `turn.advice.compactAction.v1` (a client that offers Compact itself).
+ * 1.38 adds `holdToolsUntilReleased` on `message.send` and
+ * `session.releaseTools`: the turn's model request goes out at once while
+ * its first tool call waits until the client names the message in
+ * `session.releaseTools` (AgenC Desktop records the chat's folder first). A
+ * client finds `session.releaseTools` in `daemon.methods` and sends the
+ * field only to such a daemon.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.37.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.38.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -228,6 +234,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.terminate",
   "session.clear",
   "session.compact",
+  "session.releaseTools",
   "session.snapshot",
   "session.processes.list",
   "session.processes.stop",
@@ -913,6 +920,14 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description:
       "Compact an idle daemon-owned session's conversation the way the TUI's /compact does.",
+  },
+  "session.releaseTools": {
+    method: "session.releaseTools",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Let the turn of a message sent with holdToolsUntilReleased run its tool calls.",
   },
   "session.snapshot": {
     method: "session.snapshot",
@@ -1988,6 +2003,12 @@ export interface SessionCompactParams extends JsonObject {
   readonly sessionId: string;
 }
 
+/** `session.releaseTools`: the message, sent with `holdToolsUntilReleased`, whose turn may run its tools. */
+export interface SessionReleaseToolsParams extends JsonObject {
+  readonly sessionId: string;
+  readonly clientMessageId: string;
+}
+
 /**
  * Protocol-1.0 compatibility request shipped with agenc-sdk 0.3.0.
  *
@@ -2437,6 +2458,13 @@ export type MessageContent = string | readonly MessageContentBlock[];
 export interface MessageSendParams extends JsonObject {
   readonly turnChanges?: { readonly includeDiff?: boolean };
   readonly includeToolProgress?: boolean;
+  /**
+   * The model request goes out at once, but the turn's tool calls (and a
+   * configured UserPromptSubmit hook) wait until `session.releaseTools` names
+   * this message's `clientMessageId`, which it then requires, or until 30
+   * seconds pass. For a client that records the workspace before each turn.
+   */
+  readonly holdToolsUntilReleased?: boolean;
   readonly sessionId: string;
   readonly content: MessageContent;
   readonly clientMessageId?: string;
@@ -3057,6 +3085,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"session.terminate", SessionTerminateParams>
   | AgenCDaemonRequestWithParams<"session.clear", SessionClearParams>
   | AgenCDaemonRequestWithParams<"session.compact", SessionCompactParams>
+  | AgenCDaemonRequestWithParams<"session.releaseTools", SessionReleaseToolsParams>
   | AgenCDaemonRequestWithParams<"session.snapshot", SessionSnapshotParams>
   | AgenCDaemonRequestWithParams<"session.processes.list", SessionProcessesListParams>
   | AgenCDaemonRequestWithParams<"session.processes.stop", SessionProcessesStopParams>
@@ -3936,6 +3965,16 @@ export interface SessionCompactResult extends JsonObject {
   readonly displayText?: string;
   readonly code?: string;
   readonly message?: string;
+}
+
+/**
+ * `session.releaseTools`. `released` is true when a held turn was waiting; a
+ * release that comes first is kept for that message's turn, which then does not
+ * wait.
+ */
+export interface SessionReleaseToolsResult extends JsonObject {
+  readonly sessionId: string;
+  readonly released: boolean;
 }
 
 export interface SessionResolveToolCallResult extends JsonObject {
@@ -4882,6 +4921,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.terminate": SessionTerminateResult;
   readonly "session.clear": SessionClearResult;
   readonly "session.compact": SessionCompactResult;
+  readonly "session.releaseTools": SessionReleaseToolsResult;
   readonly "session.snapshot": SessionSnapshotResult;
   readonly "session.processes.list": SessionProcessesListResult;
   readonly "session.processes.stop": SessionProcessesStopResult;

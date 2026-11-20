@@ -201,6 +201,7 @@ import {
   type SessionResolveToolCallParams,
   type SessionClearParams,
   type SessionCompactParams,
+  type SessionReleaseToolsParams,
   type SessionMcpStatusParams,
   type SessionMcpAddServerParams,
   type SessionMcpServerConfig,
@@ -422,6 +423,7 @@ function buildServerCapabilities(
     "session.terminate": hasMethod(sessionManager, "terminateSession"),
     "session.clear": hasMethod(agentManager, "clearSessionHistory"),
     "session.compact": hasMethod(agentManager, "compactSession"),
+    "session.releaseTools": hasMethod(agentManager, "releaseSessionTools"),
     "session.snapshot": hasMethod(agentManager, "snapshotSession"),
     "session.processes.list": hasMethod(agentManager, "listSessionProcesses"),
     "session.processes.stop": hasMethod(agentManager, "stopSessionProcess"),
@@ -628,6 +630,7 @@ export interface AgenCDaemonDispatcherOptions {
     readonly listSessionProcesses?: AgenCDaemonAgentManager["listSessionProcesses"];
     readonly stopSessionProcess?: AgenCDaemonAgentManager["stopSessionProcess"];
     readonly compactSession?: AgenCDaemonAgentManager["compactSession"];
+    readonly releaseSessionTools?: AgenCDaemonAgentManager["releaseSessionTools"];
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
     readonly pendingElicitations?: AgenCDaemonAgentManager["pendingElicitations"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
@@ -777,6 +780,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     readonly listSessionProcesses?: AgenCDaemonAgentManager["listSessionProcesses"];
     readonly stopSessionProcess?: AgenCDaemonAgentManager["stopSessionProcess"];
     readonly compactSession?: AgenCDaemonAgentManager["compactSession"];
+    readonly releaseSessionTools?: AgenCDaemonAgentManager["releaseSessionTools"];
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
     readonly pendingElicitations?: AgenCDaemonAgentManager["pendingElicitations"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
@@ -1635,6 +1639,14 @@ export class AgenCDaemonJsonRpcDispatcher {
           await this.#agentManager.clearSessionHistory(
             validateSessionClearParams(params),
           ),
+        );
+      case "session.releaseTools":
+        if (this.#agentManager.releaseSessionTools === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(
+          id,
+          await this.#agentManager.releaseSessionTools(validateSessionReleaseToolsParams(params)),
         );
       case "session.compact":
         if (this.#agentManager.compactSession === undefined) {
@@ -2700,6 +2712,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           content: sendParams.content,
           ...(sendParams.includeToolProgress === true && connection.initializeState?.clientCapabilities["tool.progress.shell.v1"] === true ? { includeToolProgress: true } : {}),
           ...(sendParams.turnChanges !== undefined && connection.initializeState?.clientCapabilities["turn.changes.v1"] === true ? { turnChanges: sendParams.turnChanges } : {}),
+          ...(sendParams.holdToolsUntilReleased === true ? { toolHoldId: messageId } : {}),
           ...displayUserMessageFromMetadata(
             "message.send",
             sendParams.metadata,
@@ -4132,6 +4145,16 @@ function validateSessionClearParams(params: JsonObject): SessionClearParams {
   return validated as SessionClearParams;
 }
 
+function validateSessionReleaseToolsParams(params: JsonObject): SessionReleaseToolsParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.releaseTools",
+    stringFields: ["sessionId", "clientMessageId"],
+  });
+  validateRequiredString(validated, "session.releaseTools", "sessionId");
+  validateRequiredString(validated, "session.releaseTools", "clientMessageId");
+  return validated as SessionReleaseToolsParams;
+}
+
 function validateSessionCompactParams(params: JsonObject): SessionCompactParams {
   const validated = validateObjectShape(params, {
     methodName: "session.compact",
@@ -4937,11 +4960,13 @@ function validateMessageSendParams(params: JsonObject): MessageSendParams {
     methodName: "message.send",
     stringFields: ["sessionId", "clientMessageId", "ifBusy"],
     objectFields: ["metadata", "turnChanges"],
-    valueFields: ["content", "includeToolProgress"],
+    valueFields: ["content", "includeToolProgress", "holdToolsUntilReleased"],
   });
   validateRequiredString(validated, "message.send", "sessionId");
   validateMessageContent("message.send", "content", validated.content);
   if (validated.includeToolProgress !== undefined && typeof validated.includeToolProgress !== "boolean") throw invalidParams("message.send includeToolProgress must be boolean");
+  if (validated.holdToolsUntilReleased !== undefined && typeof validated.holdToolsUntilReleased !== "boolean") throw invalidParams("message.send holdToolsUntilReleased must be boolean");
+  if (validated.holdToolsUntilReleased === true && typeof validated.clientMessageId !== "string") throw invalidParams("message.send holdToolsUntilReleased requires clientMessageId");
   if (validated.ifBusy !== undefined && validated.ifBusy !== "reject") {
     throw invalidParams("message.send param 'ifBusy' must be 'reject'");
   }

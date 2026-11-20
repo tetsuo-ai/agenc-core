@@ -306,6 +306,8 @@ export interface AgenCBackgroundAgentSessionEventBinding {
 export interface AgenCBackgroundAgentMessageParams {
   readonly includeToolProgress?: boolean;
   readonly turnChanges?: { readonly includeDiff?: boolean };
+  /** `message.send` `holdToolsUntilReleased`: the turn's tool calls wait for `session.releaseTools` on this message id. */
+  readonly toolHoldId?: string;
   readonly exactOutput?: boolean;
   /** Settings of the skill the user started this turn with (`message.stream`). */
   readonly skillInvocation?: SkillInvocationSettings;
