@@ -397,6 +397,31 @@ export interface TurnState {
 
   /** Names only: incomplete argument bytes never become executable history. */
   truncatedToolCallNames?: readonly string[];
+  /**
+   * Visible text of the last sample when the output limit cut it before any
+   * tool input: a part of a reply that the next sample can continue.
+   */
+  cutReplyText?: string;
+  /**
+   * Visible text of a reply that reached the output limit and is being
+   * continued: its earlier parts, in order. Each part stays in the history
+   * once, as sampled; the sample that completes the reply commits the whole
+   * text as one message.
+   */
+  continuedReplyText?: string;
+  /**
+   * The last sample's own text when its message holds earlier parts of the
+   * reply too (`continuedReplyText`). Model-facing copies use it, so no part
+   * reaches the model twice.
+   */
+  continuedReplyPart?: string;
+  /**
+   * Visible text of a reply that ended without completing: at a tool call
+   * the output limit cut, with a sample that only reasoned, or with an empty
+   * continuation. It stays in the history; it is committed once, as a
+   * message of its own, after the sample's recovery.
+   */
+  endedReplyText?: string;
   /** Cumulative non-thinking-off retry spending; not forgiven by productive recovery. */
   maxOutputTokensRecoveryCount: number;
   /** Durable intent for the next sample only; transport retries reuse it. */
@@ -956,6 +981,7 @@ export function advanceModelSampleOrdinal(state: TurnState): void {
  */
 export function resetIterationFields(state: TurnState): void {
   state.assistantMessages = [];
+  state.continuedReplyPart = undefined;
   state.toolUseBlocks = [];
   state.toolResults = [];
   state.needsFollowUp = false;

@@ -92,5 +92,6 @@ test.each([false, true])("native equal-limit recovery keeps the paid sample (fas
   expect(requests.map(request => request.maxOutputTokens)).toEqual([64_000, 64_000]);
   expect(fastCalls).toBe(fast ? 1 : 0);
   expect(JSON.stringify(requests[1]?.messages)).toContain("Paid partial draft.");
-  expect(phases.at(-1)).toMatchObject({ type: "turn_complete", content: "Finished draft." });
+  // The reply is the paid part and its continuation, in order, as it streamed.
+  expect(phases.at(-1)).toMatchObject({ type: "turn_complete", content: "Paid partial draft.Finished draft." });
 });

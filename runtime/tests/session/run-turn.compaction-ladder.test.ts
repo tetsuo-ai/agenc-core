@@ -283,4 +283,40 @@ describe("degraded compaction ladder", () => {
     expect(seen[1]).toEqual([{ role: "user", content: "small summary" }]);
     expect(terminals(events)).toContainEqual(expect.objectContaining({ outcome: "completed", code: 0 }));
   });
+
+  test("a compaction that commits twice in one call is reported once, where it committed, before the reply", async () => {
+    let streamCount = 0;
+    const provider = mkProvider({});
+    installPreparedCompactionPressure(provider, request => Math.max(request.messages.some(m => m.role === "tool" || (m.toolCalls?.length ?? 0) > 0) ? 18_130 : 100, Math.ceil(Buffer.byteLength(JSON.stringify(request.messages)) / 4)));
+    provider.chatStream = async (_messages, onChunk): Promise<LLMResponse> => {
+      streamCount += 1;
+      if (streamCount === 1) {
+        return { content: "need a tool", toolCalls: [{ id: "toolu_force", name: "Read", arguments: "{}" }],
+          usage: { promptTokens: 18_130, completionTokens: 10, totalTokens: 18_140 }, model: "test-model", finishReason: "tool_calls" };
+      }
+      onChunk({ content: "after compaction", done: false });
+      return { content: "after compaction", toolCalls: [], usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
+        model: "test-model", finishReason: "stop" };
+    };
+    setAutoCompactImplForTests(vi.fn(async (...args: unknown[]) => {
+      if ((args[5] as { force?: boolean }).force !== true) return { wasCompacted: false };
+      return tierOf(args) === "standard" ? committed("x".repeat(200_000)) : committed("small summary");
+    }));
+    const { session, events } = mkSession({ provider, modelInfo: { autoCompactTokenLimit: 18_129 } as never });
+
+    await drain(runTurn(session, mkCtx({ modelInfo: { ...mkCtx().modelInfo, autoCompactTokenLimit: 18_129 } as never }), "start"));
+
+    const types = events.map((event) => event.msg.type);
+    const boundaries = types.flatMap((type, index) => type === "context_compacted" ? [index] : []);
+    const secondCommit = events.findIndex((event) => event.msg.type === "warning" &&
+      String(event.msg.payload.message).includes("tier=aggressive_summary compacted"));
+    const reply = events.findIndex((event) => event.msg.type === "agent_message_delta" && event.msg.payload.delta === "after compaction");
+    // One line for one automatic compaction, after its last commit and
+    // before the model call that follows it.
+    expect(boundaries).toHaveLength(1);
+    expect(secondCommit).toBeGreaterThan(-1);
+    expect(reply).toBeGreaterThan(-1);
+    expect(boundaries[0]).toBeGreaterThan(secondCommit);
+    expect(boundaries[0]).toBeLessThan(reply);
+  });
 });
