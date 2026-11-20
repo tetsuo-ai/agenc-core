@@ -597,8 +597,8 @@ export function chatCompletionsCapabilityHintsForProvider(
       toolResultImagePolicy: nimModel.vision ? "relay_as_user" as const : "strip" as const,
       acceptsParallelToolCalls: false,
       outputTokensCeiling: nimModel.ceiling,
-      // NIM's Kimi K3 schema has tools but no tool_choice. K2.6 has both.
-      ...(nimModel.model === "moonshotai/kimi-k3" ? { acceptsToolChoice: false } : {}),
+      // NIM's Kimi K3 and K3.1 Pro schemas have tools but no tool_choice. K2.6 has both.
+      ...(nimModel.toolChoice === false ? { acceptsToolChoice: false } : {}),
       ...(nimModel.model === "meta/muse-glimmer-30b" ? { toolChoicePolicy: "no_required" as const } : {}),
       ...(nimModel.model.startsWith("moonshotai/") ? {
         replaysReasoningContent: true,

@@ -26,7 +26,7 @@ import {
   PUBLISHED_CATALOG_PROVIDERS,
   publishedModelCatalogEntry,
 } from "./published-model-catalog.js";
-import { NVIDIA_CURRENT_MODEL_CATALOG } from "./nvidia-current-models.js";
+import { NVIDIA_CURRENT_MODEL_CATALOG, NVIDIA_ENDED_MODEL_CATALOG } from "./nvidia-current-models.js";
 import { OPENAI_CURRENT_MODEL_CATALOG } from "./openai-current-models.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
 import { OPENROUTER_MODELS, openRouterCatalogEntry } from "./openrouter-models.js";
@@ -1725,6 +1725,15 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] = 
 );
 
 /**
+ * Hidden rows that only carry a retirement date, outside the registered
+ * catalog: the exact-id lookup the retirement rule reads
+ * (findBundledModelCatalogEntry) finds them, and no list or capability
+ * lookup does.
+ */
+const RETIREMENT_ONLY_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
+  Object.freeze([...NVIDIA_ENDED_MODEL_CATALOG]);
+
+/**
  * The registered Claude rows, keyed by the canonical id the shared parser
  * (utils/model/claudeModelId.ts) reads from each row.
  */
@@ -1769,6 +1778,11 @@ function bundledRowPosition(provider: string, model: string): number | undefined
       bundledRowKey(modelCatalogProviderIdentity(entry.provider), entry.model),
       OPENROUTER_MODEL_IDS.length + position,
     ] as const),
+    // Positions past the registered catalog name the retirement-only rows.
+    ...RETIREMENT_ONLY_MODEL_CATALOG.map((entry, position) => [
+      bundledRowKey(modelCatalogProviderIdentity(entry.provider), entry.model),
+      OPENROUTER_MODEL_IDS.length + NON_OPENROUTER_MODEL_CATALOG.length + position,
+    ] as const),
     // Last to first, so the first row registered under an id is the one
     // kept: the row findExactModel reads.
   ].reverse());
@@ -1790,7 +1804,10 @@ export function findBundledModelCatalogEntry(input: {
   const model = input.model?.trim() ?? "";
   if (provider.length === 0 || model.length === 0) return undefined;
   const position = bundledRowPosition(provider, model);
-  return position === undefined ? undefined : REGISTERED_MODEL_CATALOG[position];
+  if (position === undefined) return undefined;
+  return position < REGISTERED_MODEL_CATALOG.length
+    ? REGISTERED_MODEL_CATALOG[position]
+    : RETIREMENT_ONLY_MODEL_CATALOG[position - REGISTERED_MODEL_CATALOG.length];
 }
 
 const fastCatalogEntries = new Map<string, RegisteredModelCatalogEntry | undefined>();

@@ -1,5 +1,5 @@
 import { defaultModelForProvider } from "../config/resolve-model.js";
-import { assertModelCatalogSelection, openRouterSelectionNotice, retiredModelNotice } from "../llm/model-catalog-selection.js";
+import { assertModelCatalogSelection, openRouterSelectionNotice, providerRetirementApplies, retiredModelNotice } from "../llm/model-catalog-selection.js";
 import { resolve as resolvePath } from "node:path";
 
 import { ModelMetadataResolver, type ModelMetadataResolverOptions } from "../llm/model-metadata.js";
@@ -182,7 +182,9 @@ export function resolveCanonicalStartupSelection(params: {
     // A saved model the provider has retired still starts: refusing it here
     // would leave its owner unable to open AgenC and pick another one. They
     // are told instead.
-    noteRetiredSavedModel(provider, canonicalModel, params.now);
+    if (providerRetirementApplies(config, provider, params.env)) {
+      noteRetiredSavedModel(provider, canonicalModel, params.now);
+    }
   }
   if (!isModelAllowed(provider, canonicalModel, config)) {
     throw new ModelNotAllowedError(canonicalModel);
