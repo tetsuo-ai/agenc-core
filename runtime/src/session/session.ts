@@ -126,6 +126,7 @@ import type { ToolRegistry } from "./_deps/tool-registry.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
 import { capturePromptCacheState, coreCatalogSwitchItem } from "./prompt-cache-state.js";
+import { sessionPromptEnvironment } from "./prompt-environment.js";
 import type { QuerySource } from "./_deps/query-source.js";
 import {
   freshDenialTracking,
@@ -3011,9 +3012,13 @@ export class Session {
       ...(this.network !== undefined ? { network: this.network } : {}),
       permissionMode: permissionContext.mode,
     });
+    // The new provider's prompt keeps the conversation's recorded date and
+    // branch (prompt-environment.ts), like every other assembly for it.
+    const promptEnvironment = sessionPromptEnvironment(this);
     const baseInstructions = await assembleBaseInstructionsForModel({
       session: this,
       ...(configSnapshot !== undefined ? { configSnapshot } : {}),
+      ...(promptEnvironment !== undefined ? { promptEnvironment } : {}),
       ctx: promptContext,
       registry: this.services.registry,
       provider: provider.binding.provider,

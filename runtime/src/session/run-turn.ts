@@ -159,6 +159,12 @@ import {
 } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
+import { interruptedTurnNote } from "../prompts/interrupted-turn-note.js";
+import {
+  functionCallItemIdsDeltaItem,
+  promptCacheProvider,
+  retainedAttachmentsDeltaItem,
+} from "./prompt-cache-deltas.js";
 import {
   frameWorkspaceAgentRoleGuidance,
   LIGHT_LOADED_INSTRUCTIONS_NOTE,
@@ -1080,11 +1086,19 @@ async function prepareSamplingRequestBoundary(
     const attachmentMessages = attachmentsToMessages(attachments,
       resolveLightRequest(session, session.services.provider.name) !== undefined);
     if (attachmentMessages.length > 0) {
+      const ledger = getAttachmentTrackingState(session).retainedAttachments;
+      const recorded = ledger.blocks.length;
       state.messagesForQuery = placeRetainedAttachments(
         state,
-        getAttachmentTrackingState(session).retainedAttachments,
+        ledger,
         attachmentMessages,
       );
+      // The blocks go to the rollout before the request does, so a process
+      // that dies with the request in flight still resumes with them.
+      const delta = retainedAttachmentsDeltaItem(ledger.blocks.slice(recorded));
+      if (delta !== undefined && session.isRolloutPersistenceSuspended?.() !== true) {
+        session.rolloutStore?.appendRollout(delta);
+      }
     }
   }
   state.attachmentsAnchoredForTurn = true;
@@ -3052,10 +3066,15 @@ async function* runTurnKernelInner(
     }
     state.messages.push({
       role: "developer",
-      content: `The previous turn was interrupted by an app or daemon restart. ${completedToolResults} completed tool result(s) from that turn are already recorded in the conversation. Continue the unfinished user request from the recorded state and pending plan. Check the workspace before further writes. Do not repeat completed work. A tool without a settled result may have executed; check its outcome before any side-effecting retry.`,
+      content: interruptedTurnNote(completedToolResults),
       runtimeOnly: { excludeFromDurableHistory: true },
     });
     restoreFromCheckpoint(state, opts.resume.restoreSlice);
+    // The interrupted turn already placed its first request's reminders
+    // before its prompt (the resumed ledger holds them). New ones follow the
+    // newest history item, as the live turn's next request would have put
+    // them, instead of moving into the history the provider has cached.
+    state.attachmentsAnchoredForTurn = true;
     restoreModelSampleResumePrompt(state);
     // The request in flight at shutdown owns its original admission row.
     // A continuation is a new physical request, even when the old row is
@@ -3143,6 +3162,11 @@ async function* runTurnKernelInner(
       state.messages[messageIndex] = liveMessage;
       const store = session.rolloutStore;
       const queue = session.writeBehind;
+      // The item ids issued for a response's calls precede the response in
+      // the rollout: a resume that has the calls also sends their ids.
+      const issuedIds = message.role === "assistant" && (message.toolCalls?.length ?? 0) > 0
+        ? functionCallItemIdsDeltaItem(promptCacheProvider(session), message.toolCalls!.map((call) => call.id))
+        : undefined;
       if (queue?.deferring) {
         const resolve = captureDurableResponseItem(liveMessage);
         if (persistedIntegrity !== undefined) pendingPersistedIdentities.add(persistedIntegrity);
@@ -3151,6 +3175,7 @@ async function* runTurnKernelInner(
           if (persistedIntegrity !== undefined && durableItem.toolResultIntegrity !== undefined) {
             persistedIntegrity.persisted = durableItem.toolResultIntegrity.persisted;
           }
+          if (issuedIds !== undefined) store.appendRollout(issuedIds);
           store.appendRollout({ type: "response_item", payload: durableItem });
           if (persistedIntegrity !== undefined) pendingPersistedIdentities.delete(persistedIntegrity);
         });
@@ -3159,6 +3184,7 @@ async function* runTurnKernelInner(
         if (persistedIntegrity !== undefined && durableItem.toolResultIntegrity !== undefined) {
           persistedIntegrity.persisted = durableItem.toolResultIntegrity.persisted;
         }
+        if (issuedIds !== undefined) store.appendRollout(issuedIds);
         store.appendRollout({ type: "response_item", payload: durableItem });
       }
     }
