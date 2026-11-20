@@ -285,7 +285,7 @@ describe("the bundled OpenRouter snapshot of 2026-10-20", () => {
   });
 
   test("the day before the first date, no bundled row is retired", () => {
-    const retired = REGISTERED_MODEL_CATALOG.filter((entry) =>
+    const retired = REGISTERED_MODEL_CATALOG.filter((entry) => entry.provider === "openrouter" &&
       retiredBundledModel(entry.provider, entry.model, at("2026-10-30")) !== undefined);
     expect(retired).toEqual([]);
   });

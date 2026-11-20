@@ -1,5 +1,5 @@
 /** Ollama Cloud catalog snapshot, verified with /api/tags, /api/show and
- * https://ollama.com/pricing on 2026-10-20.
+ * https://ollama.com/pricing on 2026-11-20.
  * https://docs.ollama.com/cloud
  * https://docs.ollama.com/capabilities/thinking
  * https://docs.ollama.com/api/openai-compatibility (reasoning_effort takes the
@@ -21,14 +21,25 @@ export const OLLAMA_CLOUD_ORIGIN = "https://ollama.com";
 export const OLLAMA_CLOUD_API_KEY_ENV = "OLLAMA_API_KEY";
 export const OLLAMA_CLOUD_DEFAULT_MODEL = "deepseek-v4.1-flash";
 /**
- * Retired by Ollama: POST /api/show answers 410 "retired on September 25,
- * 2026" for each (checked 2026-10-20), and they are gone from /api/tags and
- * the price list. They stay hidden from the picker so a saved Desktop goal or
- * config still resolves; a request gets Ollama's own 410 explanation.
+ * Retired by Ollama, each on the day Ollama gives: POST /api/show answers
+ * HTTP 410 "<model> was retired on September 25, 2026" (or November 9,
+ * 2026), and they are gone from /api/tags and the price list (checked without
+ * a key on 2026-11-20). Their rows stay, hidden from the picker, so a saved
+ * Desktop goal or config still resolves, and the date refuses the model at
+ * selection with a plain message before any request is sent
+ * (model-retirement.ts).
  */
-export const OLLAMA_CLOUD_UNLISTED_MODELS: ReadonlySet<string> = new Set([
-  "deepseek-v4-flash:0731", "glm-5.1", "qwen3.5:397b",
-]);
+export const OLLAMA_CLOUD_RETIRED_ON: Readonly<Record<string, string>> = Object.freeze({
+  "deepseek-v4-flash:0731": "2026-09-25",
+  "glm-5.1": "2026-09-25",
+  "qwen3.5:397b": "2026-09-25",
+  "minimax-m2.7": "2026-11-09",
+  "mistral-large-3:675b": "2026-11-09",
+  "nemotron-3-nano:30b": "2026-11-09",
+});
+
+/** The retired ids, hidden from the picker (Desktop's generator reads this set). */
+export const OLLAMA_CLOUD_UNLISTED_MODELS: ReadonlySet<string> = new Set(Object.keys(OLLAMA_CLOUD_RETIRED_ON));
 
 export interface OllamaCloudModelRow {
   readonly model: string;
@@ -88,9 +99,13 @@ export const OLLAMA_CLOUD_MODELS: readonly OllamaCloudModelRow[] = Object.freeze
   row("glm-5.3-flash", "GLM 5.3 flash", 1048576, V, ["low", "high", "max"], "max"),
   row("gpt-oss:120b", "GPT OSS 120B", 131072, T, ["low", "medium", "high"], "medium"),
   row("gpt-oss:20b", "GPT OSS 20B", 131072, T, ["low", "medium", "high"], "medium"),
+  row("inkling-2-small", "Inkling 2 Small", 1048576, V, ["none", "low", "medium", "high", "max"], "high"),
   row("kimi-k2.6", "Kimi K2.6", 262144, V, ["none", "high"], "high"),
   row("kimi-k2.7-code", "Kimi K2.7 code", 262144, V, ["none", "high"], "high"),
   row("kimi-k3", "Kimi K3", 1048576, V, ["none", "low", "high", "max"], "max"),
+  row("kimi-k3.1-pro", "Kimi K3.1 Pro", 1048576, V, ["none", "low", "medium", "high", "max"], "max"),
+  row("mimo-v2.6-flash", "MiMo V2.6 Flash", 1048576, V, ["none", "high"], "high"),
+  row("mimo-v2.6-pro", "MiMo V2.6 Pro", 1048576, V, ["none", "high"], "high"),
   row("minimax-m2.7", "MiniMax m2.7", 196608, T, []),
   row("minimax-m3", "MiniMax m3", 512000, V, ["none", "high"], "high"),
   row("minimax-m3.1-flash", "MiniMax m3.1 flash", 1000000, V, []),
@@ -227,6 +242,7 @@ export function ollamaCloudCatalogEntry(
   priority: number,
   visibility: RegisteredModelCatalogEntry["visibility"] = OLLAMA_CLOUD_UNLISTED_MODELS.has(entry.model) ? "none" : "list",
 ): RegisteredModelCatalogEntry {
+  const retiresOn = Object.hasOwn(OLLAMA_CLOUD_RETIRED_ON, entry.model) ? OLLAMA_CLOUD_RETIRED_ON[entry.model] : undefined;
   return Object.freeze({
     provider: OLLAMA_CLOUD_PROVIDER_ID,
     model: entry.model,
@@ -251,5 +267,6 @@ export function ollamaCloudCatalogEntry(
     additionalSpeedTiers: Object.freeze([]),
     priority,
     visibility,
+    ...(retiresOn === undefined ? {} : { retiresOn }),
   });
 }
