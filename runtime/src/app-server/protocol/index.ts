@@ -4239,6 +4239,8 @@ export interface SessionTranscriptV2Result extends JsonObject {
       readonly callId: string;
       readonly toolName: string;
       readonly inputDigest: { readonly [key: string]: string };
+      /** An apply_patch call whose `inputDigest.paths` leaves out a file its patch names. */
+      readonly pathsTruncated?: true;
       readonly isError?: boolean;
       readonly durationMs?: number;
     }[];
