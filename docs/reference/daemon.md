@@ -1255,13 +1255,16 @@ in its rollout. On every path the four methods prove each of them in the
 rollout items they read (the run's bound rollouts, or with no journal binding
 its thread's own rollout): it must be a journal row of the run in the database
 that holds the run's admission (for a split run with no declared admission
-owner, possibly one of the databases it leaves out), and every copy of it must
-be that row. Finding the run, a split and a declared admission owner take
-short reads first; then the methods prove the admission and read their answer
-in one read transaction of each database the proof or the answer reads, so a
-line or row written after the proof cannot reach the answer unproven, and the
-next call proves it in turn. An admission event that no journal proves fails
-with `RUN_ID_AMBIGUOUS`.
+owner, when no other project database holds rows of the run, possibly one of
+the databases it leaves out), and every copy of it must be that row. Finding
+the run and a split take short reads first. Then the methods prove the
+admission and read their answer in one read transaction of each database the
+proof or the answer reads; a declared admission owner is found with short
+reads during the proof and proven again in its own snapshot. So a line or row
+written after the proof cannot reach the answer unproven, and the next call
+proves it in turn. An admission event that no journal proves fails with
+`RUN_ID_AMBIGUOUS`; a run that is gone by the time its snapshot opens fails
+with `RUN_NOT_FOUND`.
 
 A session's rollout also holds the admission events of its own compaction
 attempts. Core admits each attempt under its own run id, `compact-<uuid>`, as
