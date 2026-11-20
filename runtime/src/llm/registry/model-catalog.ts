@@ -27,7 +27,7 @@ import {
   publishedModelCatalogEntry,
 } from "./published-model-catalog.js";
 import { NVIDIA_CURRENT_MODEL_CATALOG, NVIDIA_ENDED_MODEL_CATALOG } from "./nvidia-current-models.js";
-import { OPENAI_CURRENT_MODEL_CATALOG } from "./openai-current-models.js";
+import { OPENAI_CURRENT_MODEL_CATALOG, openAiModelIsSnapshotOf } from "./openai-current-models.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
 import { OPENROUTER_MODELS, openRouterCatalogEntry } from "./openrouter-models.js";
 import { OPENROUTER_MODEL_IDS } from "./openrouter-model-ids.js";
@@ -1915,6 +1915,10 @@ function resolveRegisteredModelCatalogEntryUncached(input: {
     findLongestPrefix(model, candidates);
   // Newly documented models do not grant their highest tier to unknown variants.
   if (provider === "openai" && OPENAI_REASONING_MODELS.some((entry) => entry.model === fallback?.model)) {
+    return undefined;
+  }
+  // The o3 row, documented 2026-11-20, reaches o3's dated snapshots only.
+  if (provider === "openai" && fallback?.model === "o3" && !openAiModelIsSnapshotOf(model, "o3")) {
     return undefined;
   }
   // Keep historical metadata/prefix fallback without granting an unverified
