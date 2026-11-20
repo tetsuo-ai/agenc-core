@@ -35,10 +35,20 @@ import {
 let harness: CompactionTransactionHarness | undefined;
 
 afterEach(() => {
+  vi.useRealTimers();
   harness?.close();
   harness = undefined;
   removeSkillTurnHomes();
 });
+
+/**
+ * GPT-5 is the model with `minimal` here, and OpenAI shuts it down on
+ * 2026-12-11, after which a skill cannot ask for it: its cases run on a day
+ * it is still served.
+ */
+function onADayGpt5IsServed(): void {
+  vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-20T12:00:00.000Z"), shouldAdvanceTime: true });
+}
 
 function summaryResponse(): Response {
   const summary = JSON.stringify({
@@ -310,6 +320,7 @@ describe("model-downshift compaction before a skill turn, on the wire", () => {
   ] as const)(
     "after an Astra turn, %s summarizes on Astra at low",
     async (_label, sessionModel, skill, skillModelLevels) => {
+      if (skill.model === "gpt-5") onADayGpt5IsServed();
       const { session, fetchImpl } = sessionModel === "astra"
         ? await astraSession()
         : await gpt5Session();

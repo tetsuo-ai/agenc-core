@@ -379,7 +379,7 @@ describe("modelCommand", () => {
     };
     expect(payload.jsx?.props?.initialProvider).toBe("grok");
     await expect(
-      switchProviderModel(mkctx(session, ""), "grok", "gpt-5"),
+      switchProviderModel(mkctx(session, ""), "grok", "gpt-6.1-terra"),
     ).resolves.toMatchObject({
       applied: false,
       message: expect.stringContaining(
@@ -454,19 +454,19 @@ describe("modelCommand", () => {
       activeTurn: null,
     });
 
-    const res = await modelCommand.execute(mkctx(session, "openai:gpt-5"));
+    const res = await modelCommand.execute(mkctx(session, "openai:gpt-6.1-terra"));
 
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text).toMatch(/openai/);
-      expect(res.text).toMatch(/gpt-5/);
+      expect(res.text).toMatch(/gpt-6\.1-terra/);
     }
     const pending = (
       session as unknown as {
         pendingProviderSwitch: { provider: string; model: string } | null;
       }
     ).pendingProviderSwitch;
-    expect(pending).toEqual({ provider: "openai", model: "gpt-5" });
+    expect(pending).toEqual({ provider: "openai", model: "gpt-6.1-terra" });
   });
 
   it("stores provider-qualified Copilot input as one provider-local pair", async () => {
@@ -486,13 +486,13 @@ describe("modelCommand", () => {
   it("resolves a known bare model without inheriting the current provider", async () => {
     const session = stubSession({ provider: "grok", model: "grok-4.6" });
 
-    const res = await modelCommand.execute(mkctx(session, "gpt-5"));
+    const res = await modelCommand.execute(mkctx(session, "gpt-6.1-terra"));
 
     expect(res.kind).toBe("text");
     expect(
       (session as unknown as { pendingProviderSwitch: unknown })
         .pendingProviderSwitch,
-    ).toEqual({ provider: "openai", model: "gpt-5" });
+    ).toEqual({ provider: "openai", model: "gpt-6.1-terra" });
   });
 
   it.each(["xyz", "deepseek-flsh", "deepseek:deepseek-flsh", "deepseek-flahs"])(
@@ -583,21 +583,21 @@ describe("modelCommand", () => {
     });
 
     const res = await modelCommand.execute(
-      mkctx(session, "openai:gpt-5", { setModel, setAppState }),
+      mkctx(session, "openai:gpt-6.1-terra", { setModel, setAppState }),
     );
 
     expect(res.kind).toBe("text");
     expect(setModel).not.toHaveBeenCalled();
     expect(appState).toMatchObject({
-      mainLoopModel: "gpt-5",
-      mainLoopModelForSession: "gpt-5",
+      mainLoopModel: "gpt-6.1-terra",
+      mainLoopModelForSession: "gpt-6.1-terra",
     });
     const pending = (
       session as unknown as {
         pendingProviderSwitch: { provider: string; model: string } | null;
       }
     ).pendingProviderSwitch;
-    expect(pending).toEqual({ provider: "openai", model: "gpt-5" });
+    expect(pending).toEqual({ provider: "openai", model: "gpt-6.1-terra" });
   });
 
   it("stages a same-provider command once while updating cosmetic chrome", async () => {
@@ -652,7 +652,7 @@ describe("modelCommand", () => {
   it("returns an authoritative daemon rejection without updating chrome", async () => {
     const session = stubSession({ provider: "grok", model: "grok-4.6" });
     const summary =
-      'Model switch to "gpt-5" blocked: history incompatible with target model';
+      'Model switch to "gpt-6.1-terra" blocked: history incompatible with target model';
     Object.assign(session, {
       applyProviderModelSelection: vi.fn(async () => ({
         applied: false,
@@ -665,7 +665,7 @@ describe("modelCommand", () => {
     const setAppState = vi.fn();
 
     const result = await modelCommand.execute(
-      mkctx(session, "openai:gpt-5", { setModel, setAppState }),
+      mkctx(session, "openai:gpt-6.1-terra", { setModel, setAppState }),
     );
 
     expect(result).toEqual({ kind: "text", text: summary });
@@ -835,7 +835,7 @@ describe("modelCommand", () => {
     const stage = vi.spyOn(session, "setPendingProviderSwitch");
 
     await expect(
-      applyModelSwitch(session, "gpt-5", "openai", { beforeStage }),
+      applyModelSwitch(session, "gpt-6.1-terra", "openai", { beforeStage }),
     ).resolves.toMatchObject({
       applied: false,
       summary: expect.stringContaining("managed availableModels policy"),
@@ -857,7 +857,7 @@ describe("modelCommand", () => {
     const setAppState = vi.fn();
 
     const result = await modelCommand.execute(
-      mkctx(session, "openai:gpt-5", { setModel, setAppState }),
+      mkctx(session, "openai:gpt-6.1-terra", { setModel, setAppState }),
     );
 
     expect(result).toEqual({
@@ -896,17 +896,17 @@ describe("modelCommand", () => {
       provider: "grok",
       model: "grok-4.6",
       configStore: commandConfigStore(TEST_HOME, {
-        availableModels: ["gpt-5"],
+        availableModels: ["gpt-6.1-terra"],
       }),
     });
 
-    const result = await modelCommand.execute(mkctx(session, "openai:gpt-5"));
+    const result = await modelCommand.execute(mkctx(session, "openai:gpt-6.1-terra"));
 
     expect(result.kind).toBe("text");
     expect(
       (session as unknown as { pendingProviderSwitch: unknown })
         .pendingProviderSwitch,
-    ).toEqual({ provider: "openai", model: "gpt-5" });
+    ).toEqual({ provider: "openai", model: "gpt-6.1-terra" });
   });
 
   it("whitespace-only args are treated as empty", async () => {
@@ -975,7 +975,7 @@ describe("modelCommand", () => {
 
   it("focuses the first allowed row when the current model is forbidden", () => {
     const configStore = commandConfigStore(TEST_HOME, {
-      availableModels: ["gpt-5"],
+      availableModels: ["gpt-6.1-terra"],
     });
     const snapshot = readModelMenuSnapshot(
       mkctx(
@@ -989,7 +989,7 @@ describe("modelCommand", () => {
 
     expect(snapshot.rows[snapshot.activeIndex]).toMatchObject({
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
       selectable: true,
     });
     expect(snapshot.providerCounts.grok).toBe(0);
@@ -1008,7 +1008,7 @@ describe("modelCommand", () => {
           configStore,
           providerServiceSelection: {
             provider: "openai",
-            model: "gpt-5",
+            model: "gpt-6.1-terra",
           },
         }),
         "",
@@ -1019,10 +1019,10 @@ describe("modelCommand", () => {
     );
 
     expect(snapshot.provider).toBe("openai");
-    expect(snapshot.currentModel).toBe("gpt-5");
+    expect(snapshot.currentModel).toBe("gpt-6.1-terra");
     expect(snapshot.rows[snapshot.activeIndex]).toMatchObject({
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
       status: "current",
     });
   });
@@ -1037,7 +1037,7 @@ describe("modelCommand", () => {
         }),
         "",
         {
-          getAppState: () => ({ mainLoopModel: "gpt-5" }),
+          getAppState: () => ({ mainLoopModel: "gpt-6.1-terra" }),
         },
       ),
     );
@@ -1052,13 +1052,13 @@ describe("modelCommand", () => {
         stubSession({
           provider: "grok",
           model: "grok-4.6",
-          pendingProviderSwitch: { provider: "openai", model: "gpt-5" },
+          pendingProviderSwitch: { provider: "openai", model: "gpt-6.1-terra" },
         }),
       ),
     );
 
     expect(snapshot.provider).toBe("openai");
-    expect(snapshot.currentModel).toBe("gpt-5");
+    expect(snapshot.currentModel).toBe("gpt-6.1-terra");
   });
 
   it("uses native xAI sign-in as direct authority for the full Grok catalog", () => {
@@ -1078,7 +1078,7 @@ describe("modelCommand", () => {
         mkctx(
           stubSession({
             provider: "openai",
-            model: "gpt-5",
+            model: "gpt-6.1-terra",
             configStore: commandConfigStore(home, {
               auth: { managedKeys: { enabled: true } },
             }),

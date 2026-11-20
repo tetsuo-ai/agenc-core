@@ -232,7 +232,7 @@ describe("providerCommand", () => {
   it("re-exports the live I-57 implementation", () => {
     const session = stubSession({
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
       history: [
         {
           role: "assistant",
@@ -240,7 +240,7 @@ describe("providerCommand", () => {
         },
       ],
     });
-    const compat = checkModelHistoryCompat(session, "gpt-5", "ollama");
+    const compat = checkModelHistoryCompat(session, "gpt-6.1-terra", "ollama");
     expect(compat.compatible).toBe(false);
     expect(compat.missingCapabilities).toEqual(["thinking history"]);
   });
@@ -278,7 +278,7 @@ describe("providerCommand", () => {
     const setModel = vi.fn();
 
     await expect(
-      switchProviderModel(mkctx(session, "", { setModel }), "grok", "gpt-5"),
+      switchProviderModel(mkctx(session, "", { setModel }), "grok", "gpt-6.1-terra"),
     ).resolves.toMatchObject({
       applied: false,
       message: expect.stringContaining("belongs to provider 'openai'"),
@@ -362,18 +362,18 @@ describe("providerCommand", () => {
       provider: "grok",
       model: "grok-4",
     });
-    const res = await providerCommand.execute(mkctx(session, "openai gpt-5"));
+    const res = await providerCommand.execute(mkctx(session, "openai gpt-6.1-terra"));
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text).toMatch(/openai/);
-      expect(res.text).toMatch(/gpt-5/);
+      expect(res.text).toMatch(/gpt-6\.1-terra/);
     }
     const pending = (
       session as unknown as {
         pendingProviderSwitch: { provider: string; model: string } | null;
       }
     ).pendingProviderSwitch;
-    expect(pending).toEqual({ provider: "openai", model: "gpt-5" });
+    expect(pending).toEqual({ provider: "openai", model: "gpt-6.1-terra" });
   });
 
   describe("with a ChatGPT sign-in", () => {
@@ -446,7 +446,7 @@ describe("providerCommand", () => {
       provider: "grok",
       model: "grok-4",
       configModelByProvider: {
-        openai: "gpt-5-mini",
+        openai: "gpt-5.4-mini",
       },
     });
     await providerCommand.execute(mkctx(session, "openai"));
@@ -455,13 +455,13 @@ describe("providerCommand", () => {
         pendingProviderSwitch: { provider: string; model: string } | null;
       }
     ).pendingProviderSwitch;
-    expect(pending).toEqual({ provider: "openai", model: "gpt-5-mini" });
+    expect(pending).toEqual({ provider: "openai", model: "gpt-5.4-mini" });
   });
 
   it("restores the configured top-level pair after a temporary provider switch", async () => {
     const configStore = commandConfigStore(TEST_HOME, {
       model_provider: "openai",
-      model: "gpt-5-mini",
+      model: "gpt-5.4-mini",
     });
     const session = stubSession({
       provider: "grok",
@@ -474,18 +474,18 @@ describe("providerCommand", () => {
 
     await providerCommand.execute(mkctx(session, "openai"));
 
-    expect(openaiRow?.model).toBe("gpt-5-mini");
+    expect(openaiRow?.model).toBe("gpt-5.4-mini");
     expect(
       (session as unknown as { pendingProviderSwitch: unknown })
         .pendingProviderSwitch,
-    ).toEqual({ provider: "openai", model: "gpt-5-mini" });
+    ).toEqual({ provider: "openai", model: "gpt-5.4-mini" });
   });
 
   it("uses the same configured provider pair for menu, stage, and chrome", async () => {
     const session = stubSession({
       provider: "grok",
       model: "grok-4",
-      configModelByProvider: { openai: "gpt-5-mini" },
+      configModelByProvider: { openai: "gpt-5.4-mini" },
     });
     const openaiRow = readProviderMenuSnapshot(mkctx(session)).rows.find(
       (row) => row.provider === "openai",
@@ -495,7 +495,7 @@ describe("providerCommand", () => {
 
     await providerCommand.execute(mkctx(session, "openai", { setModel }));
 
-    expect(openaiRow.model).toBe("gpt-5-mini");
+    expect(openaiRow.model).toBe("gpt-5.4-mini");
     expect(
       (session as unknown as { pendingProviderSwitch: unknown })
         .pendingProviderSwitch,
@@ -529,7 +529,7 @@ describe("providerCommand", () => {
   it("blocks the switch when the target provider cannot satisfy current history", async () => {
     const session = stubSession({
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
       history: [
         {
           role: "assistant",
@@ -555,7 +555,7 @@ describe("providerCommand", () => {
   it("does not update TUI model chrome when provider compatibility blocks the switch", async () => {
     const session = stubSession({
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
       history: [
         {
           role: "assistant",
@@ -608,7 +608,7 @@ describe("providerCommand", () => {
     const session = stubSession();
 
     await expect(
-      applyProviderSwitch(session, "grok", "gpt-5"),
+      applyProviderSwitch(session, "grok", "gpt-6.1-terra"),
     ).resolves.toMatchObject({
       applied: false,
       summary: expect.stringContaining("belongs to provider 'openai'"),
@@ -730,7 +730,7 @@ describe("providerCommand", () => {
           configStore,
           providerServiceSelection: {
             provider: "openai",
-            model: "gpt-5",
+            model: "gpt-6.1-terra",
           },
         }),
         "",
@@ -741,10 +741,10 @@ describe("providerCommand", () => {
     );
 
     expect(snapshot.currentProvider).toBe("openai");
-    expect(snapshot.currentModel).toBe("gpt-5");
+    expect(snapshot.currentModel).toBe("gpt-6.1-terra");
     expect(snapshot.rows[snapshot.activeIndex]).toMatchObject({
       provider: "openai",
-      model: "gpt-5",
+      model: "gpt-6.1-terra",
       status: "current",
     });
   });

@@ -4862,7 +4862,7 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
 
   test("direct wire retries reuse sampling snapshots without sending account request headers", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0.5);
-    const model = "openai/gpt-5";
+    const model = "openai/gpt-5.5";
     const fetchImpl = vi.fn<typeof fetch>(async () => {
       const attempt = fetchImpl.mock.calls.length;
       if (attempt === 1) {

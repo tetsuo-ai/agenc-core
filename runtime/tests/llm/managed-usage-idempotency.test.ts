@@ -7,7 +7,7 @@ import { LLMManagedAdmissionError, LLMManagedUsagePendingError } from "../../src
 import { isTransientProviderError } from "../../src/recovery/api-errors.js";
 
 const baseURL = "https://id.agenc.ag/v1/auth/openrouter/v1";
-const model = "openai/gpt-5";
+const model = "openai/gpt-5.5";
 const messages: LLMMessage[] = [{ role: "user", content: "Synthetic request" }];
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const response = () => Response.json({ id: "synthetic-response", model, choices: [
