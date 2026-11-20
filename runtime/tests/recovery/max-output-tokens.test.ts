@@ -227,7 +227,7 @@ describe("runMaxOutputTokensRecovery — T8 hardening", () => {
     runMaxOutputTokensRecovery({ session: mkSession(new EventLog()), state, escalateAllowed: false });
     expect(state.messages.at(-1)?.content).not.toBe(RETRY_REASONING_ONLY_CONTENT);
     expect(state.reasoningOnlyRecoveryPending).toBeUndefined();
-    expect(state.messages.at(-1)?.content).toContain(tools.length ? "complete valid JSON" : "Pick up at the next token");
+    expect(state.messages.at(-1)?.content).toContain(tools.length ? "complete valid JSON" : "repeated exactly, then go on from there");
   });
 
   test.each([

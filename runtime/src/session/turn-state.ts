@@ -416,6 +416,12 @@ export interface TurnState {
    */
   continuedReplyPart?: string;
   /**
+   * The last sample's visible text as it joins the reply it continues
+   * (`continuedReplyText`): without the words it repeated from the reply's
+   * end, as it streamed. Undefined when the sample continued no reply.
+   */
+  joinedReplyPart?: string;
+  /**
    * Visible text of a reply that ended without completing: at a tool call
    * the output limit cut, with a sample that only reasoned, or with an empty
    * continuation. It stays in the history; it is committed once, as a
@@ -982,6 +988,7 @@ export function advanceModelSampleOrdinal(state: TurnState): void {
 export function resetIterationFields(state: TurnState): void {
   state.assistantMessages = [];
   state.continuedReplyPart = undefined;
+  state.joinedReplyPart = undefined;
   state.toolUseBlocks = [];
   state.toolResults = [];
   state.needsFollowUp = false;

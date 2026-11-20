@@ -56,8 +56,11 @@ export const RETRY_TRUNCATED_TOOL_CONTENT =
 export const RETRY_REFERENCED_HANDOFF_CONTENT =
   " For spawn_agent use message_ref to copy the current user message or a delimited excerpt without regenerating it.";
 
+// The repeat lets Core join the parts where they overlap
+// (phases/continuation-repeat.ts): models resume a cut reply without the
+// space or with words doubled, and a guessed join can split or glue a word.
 export const RESUME_META_CONTENT =
-  "Continue generating directly from where you left off. Do not apologize, do not restart, do not add preamble. Pick up at the next token.";
+  "Your previous message was cut off by the output limit. Continue it: start with the last five words of your previous message, repeated exactly, then go on from there. Do not apologize, do not restart, do not add preamble.";
 
 export const RETRY_REASONING_ONLY_CONTENT =
   "The previous response exhausted its output budget on reasoning without returning an answer or a tool call. " +
@@ -505,7 +508,8 @@ export function runMaxOutputTokensRecovery(
         state.continuedReplyText = (state.continuedReplyText ?? "") + state.cutReplyText;
       }
     } else {
-      const ended = (state.continuedReplyText ?? "") + (state.assistantMessages.at(-1)?.text ?? "");
+      const ended = (state.continuedReplyText ?? "") +
+        (state.joinedReplyPart ?? state.assistantMessages.at(-1)?.text ?? "");
       state.continuedReplyText = undefined;
       if (ended.length > 0) state.endedReplyText = ended;
     }

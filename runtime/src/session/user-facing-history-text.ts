@@ -21,6 +21,9 @@ export const RUNTIME_NOTE_PLACEHOLDER = "Runtime note for the model (hidden)";
 
 /** recovery/max-output-tokens.ts, exact message contents. */
 export const RUNTIME_RECOVERY_MESSAGES: readonly string[] = [
+  "Your previous message was cut off by the output limit. Continue it: start with the last five words of your previous message, repeated exactly, then go on from there. Do not apologize, do not restart, do not add preamble.",
+  // The continuation note before Core asked for the repeat. Sessions recorded
+  // with it still hold it.
   "Continue generating directly from where you left off. Do not apologize, do not restart, do not add preamble. Pick up at the next token.",
   "The previous response exhausted its output budget on reasoning without returning an answer or a tool call. " +
     "Choose the next concrete step now: make one short, complete call to an available tool, or give a concise final answer if the task is complete. " +

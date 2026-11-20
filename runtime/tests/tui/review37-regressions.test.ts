@@ -54,6 +54,9 @@ describe("runtime history envelopes are pinned to their producers", () => {
   test("recovery and completion-gate messages", () => {
     expect(RUNTIME_RECOVERY_MESSAGES).toEqual([
       RESUME_META_CONTENT,
+      // Core's continuation note before it asked for the repeat, still in
+      // sessions recorded with it.
+      "Continue generating directly from where you left off. Do not apologize, do not restart, do not add preamble. Pick up at the next token.",
       RETRY_REASONING_ONLY_CONTENT,
       RETRY_TRUNCATED_TOOL_CONTENT,
       RETRY_TRUNCATED_TOOL_CONTENT + RETRY_REFERENCED_HANDOFF_CONTENT,

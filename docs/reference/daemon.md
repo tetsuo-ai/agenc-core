@@ -1651,15 +1651,36 @@ Continuation text depends on what was truncated:
 - Reasoning-only (the capped sample has no text and no tool calls, and the
   last response reports `reasoningOutputTokens > 0`): ask for one short
   complete tool call or a concise final answer. The same instruction is
-  added on the escalate retry. The generic "continue from where you left
-  off" line is not used. There is nothing visible to continue.
+  added on the escalate retry. The continuation note below is not used.
+  There is nothing visible to continue.
 
   On native DeepSeek, the call after a reasoning-only cap is sent with
   thinking disabled. If it returns a tool call or a final answer,
   `reasoningOnlyRecoveryCount` resets to 0, so only unproductive
   reasoning-only retries count. Empty DeepSeek tool-call reasoning is kept
   and sent back, so the next thinking-on call is accepted.
-- Otherwise: `Continue generating directly from where you left off…`
+- Otherwise: `Your previous message was cut off by the output limit.
+  Continue it: start with the last five words of your previous message,
+  repeated exactly, then go on from there.…` The parts join where that
+  repeat ends (`phases/continuation-repeat.ts`), so a cut inside a word or
+  between words reads as one text with the model's own spacing. The repeat
+  is a suffix of the reply that the continuation writes at its start, after
+  at most a short lead of spaces and one ellipsis (a line break or a lone
+  period starts new text). It starts at a word boundary (in scripts written
+  without spaces, at any character) and is at most 1,000 characters long.
+  Its words match character for character; a run of spaces or line breaks
+  matches any other run, and the first letter of a repeat of more than one
+  word may differ in case. It may come in up to three pieces in a
+  row, each at least as long as the one before (the last word, then the
+  five), which together hold at least five letters or digits. When the reply
+  ends with
+  spacing, the continuation's spacing after the repeat adds only what the
+  reply's lacks. Without a repeat the continuation is kept as written;
+  nothing is added and nothing inside a word is dropped. While it streams,
+  the continuation's start is held until the repeat is resolved (text held
+  when a tool call starts shows before the call), so the repeat never
+  streams and the live reply equals the committed `agent_message`. The
+  model's history keeps each part as sampled, repeat included.
 
 There is no env or `config.toml` override for the 3-retry limit or the
 64_000 escalate target. Escalation runs only with no explicit budget
