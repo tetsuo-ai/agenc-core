@@ -31,6 +31,7 @@ import { OPENAI_CURRENT_MODEL_CATALOG } from "./openai-current-models.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
 import { OPENROUTER_MODELS, openRouterCatalogEntry } from "./openrouter-models.js";
 import { OPENROUTER_MODEL_IDS } from "./openrouter-model-ids.js";
+import { OPENROUTER_RETIRED_MODEL_CATALOG } from "./openrouter-retired-models.js";
 import { frozenLazyArray } from "./catalog-array.js";
 import { DEEPSEEK_MODELS, DEEPSEEK_MODEL_ALIASES } from "./deepseek-models.js";
 import { QWEN_FLASH_NEXT_MODEL } from "./qwen-flash-next.js";
@@ -1700,6 +1701,10 @@ const NON_OPENROUTER_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "list",
     },
     ...OPENAI_CURRENT_MODEL_CATALOG,
+    // OpenRouter models gone from its listing, hidden: rows only for their
+    // retirement dates (findBundledModelCatalogEntry). Lookups by provider
+    // read the generated OpenRouter snapshot, which does not have them.
+    ...OPENROUTER_RETIRED_MODEL_CATALOG,
   ]);
 
 // Names, ordering and provider authority do not require capability/pricing rows.
@@ -1827,7 +1832,14 @@ function resolveRegisteredModelCatalogEntryUncached(input: {
   const model = input.model?.trim() ?? "";
   if (provider.length === 0 || model.length === 0) return undefined;
   if (provider === "openrouter") {
-    const match = findExactModel(model, OPENROUTER_INDEX) ??
+    const exact = findExactModel(model, OPENROUTER_INDEX);
+    // A model OpenRouter stopped listing keeps its own hidden, dated row,
+    // never a neighbouring model's by suffix or prefix.
+    if (exact === undefined) {
+      const retired = findExactModel(model, OPENROUTER_RETIRED_MODEL_CATALOG);
+      if (retired !== undefined) return retired;
+    }
+    const match = exact ??
       findNamespacedSuffix(model, OPENROUTER_INDEX, true) ??
       findNamespacedSuffix(model, OPENROUTER_INDEX) ??
       findLongestPrefix(model, OPENROUTER_INDEX);

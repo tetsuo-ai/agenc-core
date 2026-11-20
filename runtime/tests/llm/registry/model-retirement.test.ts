@@ -43,8 +43,9 @@ function recordOpenRouterListReadAt(
   }, index)), { replace: true, readAt: readAt.getTime() });
 }
 
-// The bundled snapshot of 2026-10-20 as issue #3447 measured it. A
-// regeneration replaces these rows and this list with them.
+// Rows of the bundled snapshot of 2026-10-20 retired by 2026-11-12, as issue
+// #3447 measured them. OpenRouter's listing of 2026-11-20 no longer has them;
+// they stay as retired rows with these dates (openrouter-retired-models.ts).
 const RETIRED_BY_2026_11_12 = [
   ["poolside/laguna-s-2.1", "2026-10-31"],
   ["poolside/laguna-s-2.1:free", "2026-10-31"],
@@ -57,6 +58,14 @@ const RETIRED_BY_2026_11_12 = [
 const RETIRING_2026_12_31 = [
   ["dots-studio/dots-3-note-preview:free", "2026-12-31"],
   ["z-ai/glm-4.5", "2026-12-31"],
+] as const;
+// Every dated row of the snapshot of 2026-11-20 (OpenRouter's expiration_date).
+// A regeneration replaces these rows and this list with them.
+const SNAPSHOT_DATED = [
+  ["openai/gpt-5-pro", "2026-12-11"], ["openai/gpt-5", "2026-12-11"], ["openai/gpt-5-mini", "2026-12-11"],
+  ["openai/gpt-5-nano", "2026-12-11"], ["openai/o3-pro", "2026-12-11"], ["openai/o3", "2026-12-11"],
+  ["dots-studio/dots-3-note-preview:free", "2026-12-31"], ["z-ai/glm-4.5v", "2026-12-31"],
+  ["z-ai/glm-4.5", "2026-12-31"], ["mistralai/mistral-medium-3-5", "2027-01-31"],
 ] as const;
 
 describe("isModelRetired", () => {
@@ -262,15 +271,20 @@ describe("findBundledModelCatalogEntry", () => {
   });
 });
 
-describe("the bundled OpenRouter snapshot of 2026-10-20", () => {
-  test("carries the nine dated rows issue #3447 lists", () => {
+describe("the bundled OpenRouter snapshot of 2026-11-20", () => {
+  test("carries its ten dated rows and a dated row for each of the 33 models OpenRouter stopped listing", () => {
     const dated = REGISTERED_MODEL_CATALOG.filter((entry) =>
-      entry.provider === "openrouter" && entry.retiresOn !== undefined)
-      .map((entry) => [entry.provider, entry.model, entry.retiresOn]);
-    expect(dated).toHaveLength(9);
-    expect(dated).toEqual(expect.arrayContaining(
-      [...RETIRED_BY_2026_11_12, ...RETIRING_2026_12_31].map(([model, date]) => ["openrouter", model, date]),
+      entry.provider === "openrouter" && entry.retiresOn !== undefined);
+    expect(dated.filter((entry) => entry.visibility === "list").map((entry) => `${entry.model} ${entry.retiresOn}`).sort())
+      .toEqual(SNAPSHOT_DATED.map(([model, date]) => `${model} ${date}`).sort());
+    const gone = dated.filter((entry) => entry.visibility === "none");
+    expect(gone).toHaveLength(33);
+    expect(gone.map((entry) => [entry.model, entry.retiresOn])).toEqual(expect.arrayContaining(
+      RETIRED_BY_2026_11_12.map(([model, date]) => [model, date]),
     ));
+    // The rest left the listing without a date: the day it was read without them.
+    expect(gone.filter((entry) => !RETIRED_BY_2026_11_12.some(([model]) => model === entry.model))
+      .every((entry) => entry.retiresOn === "2026-11-20")).toBe(true);
   });
 
   test("on 2026-11-12 seven of them are retired and the two dated 2026-12-31 are not", () => {
