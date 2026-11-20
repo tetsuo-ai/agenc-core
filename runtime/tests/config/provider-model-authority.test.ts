@@ -222,6 +222,18 @@ describe("provider/model configuration authority", () => {
     })).toThrow(/not explicitly selected provider 'grok'/u);
   });
 
+  test("an explicit OpenRouter pair keeps a vendor/model id that only NIM lists", () => {
+    // Like poolside/laguna-xs-2.1 on 2026-11-20: NIM serves it, OpenRouter stopped listing it.
+    const model = "vendor/served-on-nim-only";
+    const base = mergeConfigs(defaultConfig(), { providers: { "nvidia-nim": { default_model: model } } });
+    expect(buildProviderModelCatalog(base)["nvidia-nim"]).toContain(model);
+    expect(buildProviderModelCatalog(base).openrouter).not.toContain(model);
+    for (const provider of ["openrouter", "nvidia-nim"] as const) {
+      expect(resolveProviderModelLayer(base, { model_provider: provider, model }))
+        .toMatchObject({ model_provider: provider, model });
+    }
+  });
+
   test("an explicit provider rejects a known foreign model", () => {
     expect(() =>
       resolveProviderModelLayer(defaultConfig(), {
