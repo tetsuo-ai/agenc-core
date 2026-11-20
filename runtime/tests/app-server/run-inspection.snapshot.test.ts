@@ -231,34 +231,29 @@ describe("a change between the proof and the read", () => {
     // The unproven event is in the projection when the read starts; it is
     // dropped just before the proof reads the admission records (as a
     // rebuild of the projection would drop it). The proof reads the same
-    // snapshot as the answer, so it sees the event and refuses; a proof
-    // read anywhere else would pass while the answer served the event.
+    // snapshot as the answer, so it sees the event and refuses. A proof read
+    // in a connection opened after the drop would pass, while an answer read
+    // from a snapshot opened before it would serve the event.
     lastSequence += 1;
     forgeAdmission({ runId: RUN_ID, rolloutPath, sequence: lastSequence, template, paths: projectPaths() });
-    const changed = changeBeforeTheProofRead(() => {
+    const dropForged = (): void => {
       const driver = openStateDatabasePaths(projectPaths());
       try {
-        driver.state.prepare("DELETE FROM thread_rollout_items WHERE thread_id = ? AND event_id = ?").run(RUN_ID, FORGED);
+        expect(driver.state.prepare("DELETE FROM thread_rollout_items WHERE thread_id = ? AND event_id = ?")
+          .run(RUN_ID, FORGED).changes).toBe(1);
       } finally {
         driver.close();
       }
-    });
+    };
+    // Each read's refresh imports the line again, and each read drops it again.
     for (const read of [
       () => inspection().replay({ runId: RUN_ID, limit: 200 }),
       () => inspection().evidence({ runId: RUN_ID, limit: 200 }),
     ]) {
+      const changed = changeBeforeTheProofRead(dropForged);
       expect(read).toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS", reason: "admission_owner_unproved" }));
       expect(changed()).toBe(true);
       vi.restoreAllMocks();
-      // The next read imports the line again; drop it again on the next read's proof.
-      changeBeforeTheProofRead(() => {
-        const driver = openStateDatabasePaths(projectPaths());
-        try {
-          driver.state.prepare("DELETE FROM thread_rollout_items WHERE thread_id = ? AND event_id = ?").run(RUN_ID, FORGED);
-        } finally {
-          driver.close();
-        }
-      });
     }
   });
 
@@ -386,38 +381,61 @@ describe("a change between the proof and the read of a worktree child", () => {
   });
 });
 
+/**
+ * Record the snapshot's connections (those that begin a read transaction);
+ * the first one's close fails and leaves it open.
+ */
+function failFirstSnapshotClose(): { readonly snapshots: BetterSqlite3.Database[]; readonly closeFirst: () => void } {
+  const snapshots: BetterSqlite3.Database[] = [];
+  const closers = new Map<BetterSqlite3.Database, () => unknown>();
+  const open = sqliteEngine.openSqliteDatabase;
+  vi.spyOn(sqliteEngine, "openSqliteDatabase").mockImplementation((path, options) => {
+    const db = open(path, options);
+    const exec = db.exec.bind(db);
+    db.exec = ((sql: string) => {
+      if (sql === "BEGIN") snapshots.push(db);
+      return exec(sql);
+    }) as typeof db.exec;
+    const close = db.close.bind(db);
+    closers.set(db, close);
+    db.close = (() => {
+      if (snapshots[0] === db) throw new Error("close failed on purpose");
+      return close();
+    }) as typeof db.close;
+    return db;
+  });
+  return { snapshots, closeFirst: () => { closers.get(snapshots[0]!)!(); } };
+}
+
 describe("closing the snapshot", () => {
   it("closes every connection and keeps the refusal when one connection fails to close", async () => {
     const run = await worktreeChild();
     try {
       run.forge();
-      // The snapshot's connections: the child's database, then its admission
-      // owner's. The first one's close fails (and leaves it open).
-      const snapshots: BetterSqlite3.Database[] = [];
-      const closers = new Map<BetterSqlite3.Database, () => unknown>();
-      const open = sqliteEngine.openSqliteDatabase;
-      vi.spyOn(sqliteEngine, "openSqliteDatabase").mockImplementation((path, options) => {
-        const db = open(path, options);
-        const exec = db.exec.bind(db);
-        db.exec = ((sql: string) => {
-          if (sql === "BEGIN") snapshots.push(db);
-          return exec(sql);
-        }) as typeof db.exec;
-        const close = db.close.bind(db);
-        closers.set(db, close);
-        db.close = (() => {
-          if (snapshots[0] === db) throw new Error("close failed on purpose");
-          return close();
-        }) as typeof db.close;
-        return db;
-      });
+      // The snapshot's connections: the child's database, then its admission owner's.
+      const failing = failFirstSnapshotClose();
       expect(() => run.inspection().replay({ runId: run.child, limit: 200 }))
         .toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS", reason: "admission_owner_unproved" }));
-      expect(snapshots).toHaveLength(2);
-      expect(snapshots[0]!.open).toBe(true);
-      expect(snapshots[1]!.open).toBe(false);
+      expect(failing.snapshots).toHaveLength(2);
+      expect(failing.snapshots[0]!.open).toBe(true);
+      expect(failing.snapshots[1]!.open).toBe(false);
       vi.restoreAllMocks();
-      closers.get(snapshots[0]!)!();
+      failing.closeFirst();
+    } finally {
+      run.close();
+    }
+  });
+
+  it("says a failure to close after a good read, and closes every other connection", async () => {
+    const run = await worktreeChild();
+    try {
+      const failing = failFirstSnapshotClose();
+      expect(() => run.inspection().replay({ runId: run.child, limit: 200 })).toThrow("close failed on purpose");
+      expect(failing.snapshots).toHaveLength(2);
+      expect(failing.snapshots[1]!.open).toBe(false);
+      vi.restoreAllMocks();
+      failing.closeFirst();
+      expect(run.inspection().replay({ runId: run.child, limit: 200 }).events).toHaveLength(4);
     } finally {
       run.close();
     }
