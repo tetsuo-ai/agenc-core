@@ -1250,6 +1250,17 @@ row, and `run.evidence` reports completeness `partial`. Nothing is moved or
 deleted. Any other run with state in more than one database still fails with
 `RUN_ID_AMBIGUOUS`.
 
+The SQLite admission journal is the authority for the run's admission events
+in its rollout. On every path the four methods prove each of them in the
+rollout items they read (the run's bound rollouts, or with no journal binding
+its thread's own rollout): it must be a journal row of the run in the database
+that holds the run's admission (for a split run, possibly one of the databases
+it leaves out), and every copy of it must be that row. They prove this and
+read their answer in one read transaction of each database they read, so a
+line or row written after the proof cannot reach the answer unproven; the next
+call proves it in turn. An admission event that no journal proves fails with
+`RUN_ID_AMBIGUOUS`.
+
 A session's rollout also holds the admission events of its own compaction
 attempts. Core admits each attempt under its own run id, `compact-<uuid>`, as
 an admission child of the session's run, with one step per summarizer call
