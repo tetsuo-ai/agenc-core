@@ -1,6 +1,6 @@
 import { withLiveShellProgress } from "./live-shell-progress.js";
 import { beginWorkspaceChanges, type WorkspaceChangeCheckpoint } from "./workspace-changes.js";
-import { beginToolBarrier } from "./tool-barrier.js";
+import { beginToolBarrier, toolHoldsFor } from "./tool-barrier.js";
 import { TurnUsageCollector } from "./turn-usage.js";
 import { leanEditMode, resolveLightRequest } from "./light-request/settings.js";
 import { announceLightRequest } from "./light-request/notice.js";
@@ -358,6 +358,12 @@ import { StepLimitTrail, stepLimitReminder, stepLimitWrapup, STEP_LIMIT_WRAPUP_I
 export interface RunTurnOptions {
   readonly includeToolProgress?: boolean;
   readonly turnChanges?: { readonly includeDiff?: boolean };
+  /**
+   * The message id of a client hold (`message.send` `holdToolsUntilReleased`):
+   * the turn's first tool call waits until `session.releaseTools` names it
+   * (session/tool-barrier.ts). The model request does not wait.
+   */
+  readonly toolHoldId?: string;
   /**
    * Read at each provider failure, with that failure. True while a live child
    * routing supervisor could still restart this task on another provider for
@@ -2467,6 +2473,7 @@ async function* runTurnKernelScoped(
   // Work the first tool call waits for, while the model request goes out at once.
   const toolBarrier = beginToolBarrier(session);
   signalCleanups.push(() => toolBarrier.end());
+  if (opts.toolHoldId !== undefined) toolBarrier.barrier.add(toolHoldsFor(session).hold(opts.toolHoldId));
   try {
     if (opts.turnChanges !== undefined) {
       // The snapshot only reads the workspace; a tool call is what can change it.
@@ -4738,6 +4745,7 @@ export function runTurn(
       opts?: {
         ctx?: TurnContext;
         turnChanges?: RunTurnOptions["turnChanges"];
+        toolHoldId?: string;
         includeToolProgress?: boolean;
         exactOutput?: boolean;
         stepLimitWrapup?: RunTurnOptions["stepLimitWrapup"];
@@ -4765,6 +4773,7 @@ export function runTurn(
       ctx,
       ...(opts.includeToolProgress === true ? { includeToolProgress: true } : {}),
       ...(opts.turnChanges !== undefined ? { turnChanges: opts.turnChanges } : {}),
+      ...(opts.toolHoldId !== undefined ? { toolHoldId: opts.toolHoldId } : {}),
       exactOutput: opts.exactOutput,
       stepLimitWrapup: opts.stepLimitWrapup,
       childRoutingOwnsRetries: opts.childRoutingOwnsRetries,

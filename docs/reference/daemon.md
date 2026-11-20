@@ -386,6 +386,11 @@ subprocess transports share that rule and `AGENC_SDK_MAX_FRAME_BYTES`.
   ([timeline-core-contract.md](../../runtime/docs/timeline-core-contract.md)).
   Neither does the `partial` mark on run inspection answers for a split run,
   an additive response field.
+- Protocol 1.38 adds `holdToolsUntilReleased` on `message.send` and
+  `session.releaseTools` (see
+  [Holding a turn's tool calls](#holding-a-turns-tool-calls));
+  `daemon.methods` lists `session.releaseTools` whatever version the client
+  negotiated, and a client sends the field only to a daemon that lists it.
 
 ### Public methods (`AGENC_DAEMON_METHODS`)
 
@@ -407,6 +412,7 @@ Never retry after admission may have arrived.
 | `session.create` / `session.list` / `session.attach` / `session.detach`                                     | Session lifecycle                                                                                                  |
 | `session.terminate` / `session.clear` / `session.snapshot` / `session.transcript` / `session.transcript.v2` | Session control and identity-bearing history sync                                                                  |
 | `session.compact`                                                                                           | Compact an idle session's conversation the way the TUI's `/compact` does, and return the context tokens before and after. See [Compacting a session](#compacting-a-session) (protocol 1.37) |
+| `session.releaseTools`                                                                                      | Let the turn of a message sent with `holdToolsUntilReleased` run its tool calls. See [Holding a turn's tool calls](#holding-a-turns-tool-calls) (protocol 1.38) |
 | `session.cancelTurn`                                                                                        | Abort the current turn, optionally only when `expectedTurnId` still matches                                        |
 | `session.resolveToolCall`                                                                                   | Resolve a tool call whose durable outcome requires review                                                          |
 | `session.mcp.status`                                                                                        | Read the owning session's revisioned, credential-free MCP status projection                                        |
@@ -471,6 +477,27 @@ reviews are still pending. See
 [durable-runs-effects-events.md](../design/durable-runs-effects-events.md#resume-and-effect-review)
 and
 [provider-aware-token-accounting.md](../design/provider-aware-token-accounting.md#session-context-estimate).
+
+#### Holding a turn's tool calls
+
+A client that records the workspace before each turn (AgenC Desktop keeps a
+restore point of the chat's folder) need not wait for that record before it
+sends the message. `message.send` with `holdToolsUntilReleased: true` (which
+requires `clientMessageId`) starts the turn at once: the model request goes
+out, and the turn's first tool call waits until the client sends
+`session.releaseTools { sessionId, clientMessageId }` naming that message, or
+until 30 seconds pass, after which the turn goes ahead as a turn whose restore
+point came too late. A configured `UserPromptSubmit` hook, which runs before
+the model request and can change the workspace, waits for the release too.
+
+The release may come in either order: one that arrives before its turn holds
+is kept for that message (two minutes, at most 64 per session), and the turn
+then does not wait. The answer is `{ sessionId, released }`, where `released`
+says whether a held turn was waiting. A cancelled turn stops waiting at once.
+
+The turn's own workspace snapshot for `turnChanges` (`turn.changes.v1`) uses
+the same wait: it is read beside the model request, and the first tool call
+waits for it, so neither one delays the request.
 
 #### Compacting a session
 

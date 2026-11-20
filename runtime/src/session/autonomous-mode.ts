@@ -13,6 +13,8 @@ export type SessionSubmitSource = "user" | typeof AUTONOMOUS_SUBMIT_SOURCE;
 export interface SessionSubmitOptions {
   readonly includeToolProgress?: boolean;
   readonly turnChanges?: { readonly includeDiff?: boolean };
+  /** A client hold on this turn's tool calls, by message id (session/tool-barrier.ts). */
+  readonly toolHoldId?: string;
   /** Explicit caller output contract, scoped to this submitted turn. */
   readonly exactOutput?: boolean;
   readonly clientMessageId?: string;

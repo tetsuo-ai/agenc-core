@@ -129,6 +129,8 @@ import type {
   SessionClearResult,
   SessionCompactParams,
   SessionCompactResult,
+  SessionReleaseToolsParams,
+  SessionReleaseToolsResult,
   SessionMcpAddServerParams,
   SessionMcpAddServerResult,
   SessionMcpStatusParams,
@@ -4096,6 +4098,27 @@ export class AgenCDaemonAgentManager {
    * `session.compact`: the TUI's `/compact` for one session. The runner
    * refuses it with `ACTIVE_TURN` while a turn runs.
    */
+  /** `session.releaseTools`: the held turn of this message may run its tools. */
+  async releaseSessionTools(params: SessionReleaseToolsParams): Promise<SessionReleaseToolsResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.releaseTools requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.releaseAgentTools === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.releaseTools requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(params.sessionId);
+    return {
+      sessionId: params.sessionId,
+      released: this.#runner.releaseAgentTools(agentId, params.clientMessageId),
+    };
+  }
+
   async compactSession(
     params: SessionCompactParams,
     signal?: AbortSignal,
@@ -4513,6 +4536,8 @@ export class AgenCDaemonAgentManager {
   async streamAgentMessage(params: {
     readonly includeToolProgress?: boolean;
     readonly turnChanges?: { readonly includeDiff?: boolean };
+    /** `message.send` `holdToolsUntilReleased`: the message id `session.releaseTools` names. */
+    readonly toolHoldId?: string;
     readonly exactOutput?: boolean;
     /** Settings of the skill the user started this turn with. */
     readonly skillInvocation?: MessageSkillInvocation;
@@ -4593,6 +4618,7 @@ export class AgenCDaemonAgentManager {
         originalContent: params.content,
         ...(params.includeToolProgress === true ? { includeToolProgress: true } : {}),
         ...(params.turnChanges !== undefined ? { turnChanges: params.turnChanges } : {}),
+        ...(params.toolHoldId !== undefined ? { toolHoldId: params.toolHoldId } : {}),
         ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
         ...(params.skillInvocation !== undefined
           ? { skillInvocation: params.skillInvocation }
