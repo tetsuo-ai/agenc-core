@@ -23,7 +23,7 @@ import {
 import { basename, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { networkConfigRoutesTraffic, SandboxManager, type SandboxType } from "../sandbox/engine/index.js";
+import { macosHostCommand, networkConfigRoutesTraffic, SandboxManager, type SandboxType } from "../sandbox/engine/index.js";
 import {
   approximateTokenCount,
   maxCharsForTokens,
@@ -1374,7 +1374,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const callId = request.callId ?? `exec-detached-${processId}`;
     let child: ChildProcess;
     try {
-      child = spawn(shell, args, {
+      // Outside the sandbox by definition: on macOS in the profile that opens
+      // no window or dialog and starts nothing outside it.
+      const [program = shell, ...programArgs] = macosHostCommand([shell, ...args]);
+      child = spawn(program, programArgs, {
         cwd,
         env,
         detached: true,
@@ -2652,12 +2655,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const sessionTempRoot =
       params.runtimeSandbox?.sessionTempRoot ?? this.sessionTempRoot;
     if (params.runtimeSandbox === undefined) {
+      // Full access or an approved escalation: on macOS the command still opens
+      // no window or dialog and starts nothing outside its profile.
+      const [program = params.program, ...args] = macosHostCommand([params.program, ...params.args]);
       return {
-        program: params.program,
-        args: params.args,
+        program,
+        args,
         cwd: params.cwd,
         env: withChildTempAuthority(params.env, sessionTempRoot),
-        argv0: basename(params.program),
+        argv0: basename(program),
       };
     }
 
