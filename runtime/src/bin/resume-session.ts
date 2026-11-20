@@ -681,10 +681,15 @@ function sessionIdsUnderProjectDir(
 function candidatesUnderProjectDir(
   projectDir: string,
   budget: SearchBudget,
+  idPrefix: string,
 ): readonly ResumeCandidate[] {
   const candidates: ResumeCandidate[] = [];
   for (const sessionId of sessionIdsUnderProjectDir(projectDir, budget)) {
     if (budget.incompleteReason !== undefined) break;
+    // A session folder is named for its id, and candidateFromPath proves the
+    // header agrees, so a folder outside the prefix can never match: it is
+    // not read, and its cost or failure does not reach this search.
+    if (!sessionId.startsWith(idPrefix)) continue;
     const candidate = candidateUnderProjectDir(projectDir, sessionId, budget);
     if (candidate !== null) candidates.push(candidate);
   }
@@ -722,9 +727,10 @@ function projectCandidatesCrossSlug(
   cwd: string,
   agencHome: string,
   budget: SearchBudget,
+  idPrefix: string,
 ): readonly ResumeCandidate[] {
   const candidates = localProjectDirs(cwd, agencHome).flatMap((projectDir) =>
-    candidatesUnderProjectDir(projectDir, budget),
+    candidatesUnderProjectDir(projectDir, budget, idPrefix),
   );
   const byPath = new Map<string, ResumeCandidate>();
   for (const candidate of candidates)
@@ -918,7 +924,8 @@ export function resolveResumeSessionId(
     cwd,
     agencHome,
     prefixSearch,
-  ).filter((candidate) => candidate.sessionId.startsWith(trimmed));
+    trimmed,
+  );
   const prefixStopped = incomplete(trimmed, prefixSearch);
   if (prefixStopped !== undefined) return prefixStopped;
   if (prefixMatches.length > 0) {

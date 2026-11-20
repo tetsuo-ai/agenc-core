@@ -820,6 +820,73 @@ describe("--continue in a project with many sessions", () => {
   });
 });
 
+describe("--resume by prefix in a project with many sessions", () => {
+  function writeManySessions(): void {
+    for (let index = 0; index < SESSIONS_PAST_HEADER_BUDGET; index += 1) {
+      writeLargeRollout(`conv-many${String(index).padStart(4, "0")}`, 1_000 + index);
+    }
+  }
+
+  function writeBrokenSession(sessionId: string): void {
+    const sessionDir = join(projectDir(workHome), "sessions", sessionId);
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      join(sessionDir, `rollout-2026-01-01T10-00-00-000Z-${sessionId}.jsonl`),
+      "not a session header\n",
+    );
+  }
+
+  it("resolves a unique prefix without reading the other sessions", () => {
+    writeManySessions();
+    const target = writeLargeRollout("conv-target01", 1);
+
+    const resolved = resolveResumeSessionId(workHome, "conv-targ");
+    expect(outcome(resolved)).toBe("ok");
+    expect(resolved).toMatchObject({ sessionId: "conv-target01", rolloutPath: target });
+  });
+
+  it("still reaches the global search for an id from another project", () => {
+    writeManySessions();
+    const foreignProject = join(workHome, "some-other-checkout");
+    mkdirSync(foreignProject, { recursive: true });
+    const rolloutPath = writeRolloutAtSlug(
+      sanitizePath(foreignProject),
+      "conv-foreign02",
+      "2026-01-01T10-00-00-000Z",
+      1,
+      foreignProject,
+    );
+
+    const resolved = resolveResumeSessionId(workHome, "conv-foreign02");
+    expect(outcome(resolved)).toBe("ok");
+    expect(resolved).toMatchObject({
+      sessionId: "conv-foreign02",
+      rolloutPath,
+      cwd: foreignProject,
+    });
+  });
+
+  it("is not stopped by a session outside the prefix it cannot read", () => {
+    writeBrokenSession("conv-otherbroken1");
+    const target = writeRolloutWithMeta(workHome, "conv-pick01", 1, ROOT);
+
+    const resolved = resolveResumeSessionId(workHome, "conv-pick");
+    expect(outcome(resolved)).toBe("ok");
+    expect(resolved).toMatchObject({ sessionId: "conv-pick01", rolloutPath: target });
+  });
+
+  it("still stops when a session inside the prefix cannot be read", () => {
+    writeBrokenSession("conv-pickbroken1");
+    writeRolloutWithMeta(workHome, "conv-pick01", 1, ROOT);
+
+    expect(resolveResumeSessionId(workHome, "conv-pick")).toEqual({
+      kind: "search_incomplete",
+      input: "conv-pick",
+      reason: "source_unavailable",
+    });
+  });
+});
+
 describe("initial resume search during startup writes", () => {
   it.each(["latest", "exact"] as const)("retries a %s search whose source grows while metadata is read", async (kind) => {
     const id = "conv-startupappend1";
