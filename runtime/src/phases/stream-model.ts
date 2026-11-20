@@ -1595,6 +1595,27 @@ export async function streamModel(
     planMode,
     providerName,
   );
+  const maxOutputTruncated = response.finishReason === "length";
+  state.continuedReplyPart = undefined;
+  if (!maxOutputTruncated && state.continuedReplyText !== undefined) {
+    const own = assistant.text ?? "";
+    if (own.trim().length > 0 || assistant.toolCalls.length > 0 || streamedToolCalls.size > 0) {
+      // This sample completes a reply that reached the output limit. The
+      // reply is every part in order, as it streamed, checked again as a
+      // whole (a spoofed prompt can span the cut). The history keeps each
+      // part, and model-facing copies use this sample's own text.
+      assistant = {
+        ...assistant,
+        text: sanitizeModelOutput(state.continuedReplyText + own, { strict: true }).text,
+      };
+      state.continuedReplyPart = own;
+    } else {
+      // Nothing came after the cut: the reply ends as far as it got, as a
+      // message of its own, and the empty answer is retried as before.
+      state.endedReplyText = state.continuedReplyText;
+    }
+    state.continuedReplyText = undefined;
+  }
   const canonicalAssistantText = assistant.text ?? "";
   if (
     assistantOutputSink !== undefined &&
@@ -1603,7 +1624,6 @@ export async function streamModel(
     resetCanonicalAssistantOutput();
     writeCanonicalAssistantDelta(canonicalAssistantText);
   }
-  const maxOutputTruncated = response.finishReason === "length";
   const mergedToolCalls = maxOutputTruncated
     ? new Map<string, LLMToolCall>()
     : new Map(streamedToolCalls);
@@ -1643,6 +1663,12 @@ export async function streamModel(
     }
     const unfinished = [...toolInputsStarted].filter(([id]) => !streamedToolCalls.has(id));
     state.truncatedToolCallNames = unfinished.map(([, name]) => name);
+    // Text cut before any tool input is a part of a reply that recovery can
+    // continue. Text before a tool call is not continued: renderers already
+    // closed it at the call.
+    const toolInput = toolInputsStarted.size > 0 || streamedToolCalls.size > 0 ||
+      malformedToolCompletionIds.size > 0;
+    state.cutReplyText = toolInput ? undefined : assistant.text;
     for (const [id, name] of unfinished) {
       session.emit({ id: session.nextInternalSubId(), msg: {
         type: "tool_call_completed", payload: { callId: id, toolName: name,
@@ -1653,6 +1679,7 @@ export async function streamModel(
     state.toolUseBlocks = [];
     state.needsFollowUp = false;
   } else {
+    state.cutReplyText = undefined;
     const mergedToolBlocks = new Map(streamedToolBlocks);
     for (const block of parseToolUseBlocks([...assistant.toolCalls])) {
       mergedToolBlocks.set(block.id, block);
