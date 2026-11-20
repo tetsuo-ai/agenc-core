@@ -424,7 +424,14 @@ export class AgenCDaemonRunInspectionService {
     const canonical = canonicalMatches[0]!;
     this.#refreshStatusProjection(canonical.paths, runId, observedStop);
     const authority = withReadonlyStateDatabase(canonical.paths, (db) => readRunAdmissionAuthority(db, runId));
-    if (matches.length === 1 && authority.owner === undefined) return canonical;
+    // The session's own compaction attempts are admitted where the session
+    // is: each is proven against the admission journal of the run.
+    const proveCompactions = (admissionPaths: StateDatabasePaths): void =>
+      proveCompactionAdmissions([admissionPaths], authority.compactions, runId);
+    if (matches.length === 1 && authority.owner === undefined) {
+      proveCompactions(canonical.paths);
+      return canonical;
+    }
     const admissionMatches = matches.filter((match) => match.hasAdmission);
     const declaredOwners = authority.owner === undefined ? [] : discovered.filter((paths) =>
       paths.projectDir === authority.owner?.workspaceId || withReadonlyStateDatabase(paths, (db) =>
@@ -448,6 +455,7 @@ export class AgenCDaemonRunInspectionService {
         : 0;
       return { paths: owner.paths, summary: admissionSummary(db, runId), lastSequence };
     })());
+    proveCompactions(owner.paths);
     return owner.paths.stateDbPath === canonical.paths.stateDbPath ? canonical : { ...canonical, admission };
   }
 }
@@ -455,7 +463,84 @@ export class AgenCDaemonRunInspectionService {
 interface RunAdmissionAuthority {
   readonly identitiesValid: boolean;
   readonly owner?: { readonly workspaceId: string; readonly runId: string; readonly parentRunId?: string };
+  /** The run's own admission events in its bound rollout. */
   readonly events: readonly JsonObject[];
+  /**
+   * Admission events of the session's own compaction attempts in its bound
+   * rollout. They are never the run's own events: they prove no owner, and
+   * each must be proven against an admission journal on its own.
+   */
+  readonly compactions: readonly JsonObject[];
+}
+
+/**
+ * A compaction attempt is admitted under its own run id, `compact-<uuid>`,
+ * as a child of the session's run, one step per summarizer call:
+ * `compact:<attempt run id>:<call>` (services/compact/transaction.ts). Its
+ * admission events are written into the session's rollout.
+ */
+const COMPACTION_ATTEMPT_RUN_ID = /^compact-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const COMPACTION_ATTEMPT_CALL = /^[1-9][0-9]{0,8}$/u;
+
+function isCompactionAttemptEvent(event: JsonObject): boolean {
+  const { runId, stepId } = event;
+  if (typeof runId !== "string" || typeof stepId !== "string" || !COMPACTION_ATTEMPT_RUN_ID.test(runId)) return false;
+  const prefix = `compact:${runId}:`;
+  return stepId.startsWith(prefix) && COMPACTION_ATTEMPT_CALL.test(stepId.slice(prefix.length));
+}
+
+interface CompactionAdmissionJobRow {
+  readonly admission_run_id: string | null;
+  readonly admission_step_id: string | null;
+  readonly admission_parent_run_id: string | null;
+  readonly admission_session_id: string | null;
+}
+
+/**
+ * Prove each compaction admission event of the session's rollout against an
+ * admission journal: exactly one of the given databases holds its journal
+ * row, the row is the event, and the row's admission job is that attempt's
+ * step, a child of this run in this session. Anything else refuses.
+ */
+function proveCompactionAdmissions(
+  journals: readonly StateDatabasePaths[],
+  events: readonly JsonObject[],
+  runId: string,
+): void {
+  if (events.length === 0) return;
+  const unique = journals.filter((paths, index) =>
+    journals.findIndex((other) => other.stateDbPath === paths.stateDbPath) === index);
+  const proven = new Map<string, number>();
+  for (const paths of unique) {
+    withReadonlyStateDatabase(paths, (db) => {
+      if (!tableExists(db, "execution_admission_journal")) return;
+      const jobsReadable = tableExists(db, "agent_jobs") &&
+        ["admission_run_id", "admission_step_id", "admission_parent_run_id", "admission_session_id"]
+          .every((column) => columnExists(db, "agent_jobs", column));
+      const journalRow = db.prepare<[string], AdmissionJournalRow & { readonly job_id: string | null }>(
+        "SELECT * FROM execution_admission_journal WHERE event_id = ?",
+      );
+      const jobRow = db.prepare<[string], CompactionAdmissionJobRow>(
+        `SELECT admission_run_id, admission_step_id, admission_parent_run_id, admission_session_id
+         FROM agent_jobs WHERE id = ?`,
+      );
+      for (const event of events) {
+        const eventId = String(event.eventId);
+        const row = journalRow.get(eventId);
+        if (row === undefined) continue;
+        if (row.run_id !== event.runId || row.step_id !== event.stepId) throw ambiguousRunOwner(runId);
+        const { category: ignoredCategory, ...admissionEvent } = legacyJournalEventFromRow(row);
+        if (canonicalJson(admissionEvent) !== canonicalJson(event)) throw ambiguousRunOwner(runId);
+        const job = jobsReadable && row.job_id !== null ? jobRow.get(row.job_id) : undefined;
+        if (job === undefined || job.admission_run_id !== row.run_id || job.admission_step_id !== row.step_id ||
+            job.admission_parent_run_id !== runId || job.admission_session_id !== runId) {
+          throw ambiguousRunOwner(runId);
+        }
+        proven.set(eventId, (proven.get(eventId) ?? 0) + 1);
+      }
+    });
+  }
+  if (events.some((event) => proven.get(String(event.eventId)) !== 1)) throw ambiguousRunOwner(runId);
 }
 
 function ambiguousRunOwner(runId: string): AgenCDaemonRunInspectionError {
@@ -471,7 +556,7 @@ function isRunAuthorityObject(value: JsonValue | undefined): value is JsonObject
 
 function readRunAdmissionAuthority(db: BetterSqlite3.Database, runId: string): RunAdmissionAuthority {
   if (!tableExists(db, "run_journal_bindings") || !tableExists(db, "thread_rollout_items")) {
-    return { identitiesValid: false, events: [] };
+    return { identitiesValid: false, events: [], compactions: [] };
   }
   const bindings = db.prepare<[string], { child_run_id: string; session_id: string }>(
     "SELECT child_run_id, session_id FROM run_journal_bindings WHERE run_id = ? LIMIT 33",
@@ -488,6 +573,7 @@ function readRunAdmissionAuthority(db: BetterSqlite3.Database, runId: string): R
   ).all(runId);
   if (rows.length > 100000) throw ambiguousRunOwner(runId);
   const events: JsonObject[] = [];
+  const compactions: JsonObject[] = [];
   for (const row of rows) {
     const payload = parseJsonObject(row.payload_json);
     if (row.item_type === "session_meta") {
@@ -505,12 +591,14 @@ function readRunAdmissionAuthority(db: BetterSqlite3.Database, runId: string): R
     } else {
       const message = payload.msg;
       const event = isRunAuthorityObject(message) ? message.payload : undefined;
-      if (!isRunAuthorityObject(event) || event.runId !== runId ||
+      if (!isRunAuthorityObject(event) ||
           typeof event.eventId !== "string" || event.eventId !== payload.eventId) throw ambiguousRunOwner(runId);
-      events.push(event);
+      if (event.runId === runId) events.push(event);
+      else if (isCompactionAttemptEvent(event)) compactions.push(event);
+      else throw ambiguousRunOwner(runId);
     }
   }
-  return { identitiesValid, ...(owner !== undefined ? { owner } : {}), events };
+  return { identitiesValid, ...(owner !== undefined ? { owner } : {}), events, compactions };
 }
 
 function verifyRunAdmissionAuthority(db: BetterSqlite3.Database, authority: RunAdmissionAuthority, runId: string): void {
