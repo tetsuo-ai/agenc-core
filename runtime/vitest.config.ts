@@ -166,6 +166,7 @@ export const POWERSHELL_TEST_INCLUDE = Object.freeze([
 export const DARWIN_ONLY_DEFAULT_TEST_FILES = Object.freeze([
   "tests/utils/supervisedProcess.watchdog-spawn-failure.test.ts",
   "tests/sandbox/engine/seatbelt-chromium.darwin.test.ts",
+  "tests/sandbox/engine/seatbelt-dialogs.darwin.test.ts",
 ]);
 
 /** Whole-file process-table and POSIX signal fixtures have no Windows tests. */
