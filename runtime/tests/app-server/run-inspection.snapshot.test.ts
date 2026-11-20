@@ -296,57 +296,107 @@ describe("a change between the proof and the read", () => {
   });
 });
 
+/**
+ * A child run in a worktree project whose admission is journaled in its
+ * parent's project, as session/child-run-journal.ts declares it.
+ */
+async function worktreeChild() {
+  const child = "worktree-child";
+  const parentCwd = join(root, "parent");
+  const worktreeCwd = join(root, "worktree");
+  mkdirSync(join(parentCwd, ".git"), { recursive: true });
+  mkdirSync(join(worktreeCwd, ".git"), { recursive: true });
+  const parent = openStateDatabases({ cwd: parentCwd, agencHome: home });
+  const worktree = openStateDatabases({ cwd: worktreeCwd, agencHome: home });
+  const kernel = new ExecutionAdmissionKernel({ agencHome: home, ownerId: "snapshot-child-test", ownerPid: process.pid });
+  const store = new RolloutStore({ cwd: worktreeCwd, sessionId: child, agencVersion: VERSION, agencHome: home,
+    sessionTempRoot: join(root, "session-tmp"), autoStartScheduler: false });
+  let sequence = 0;
+  let last: AdmissionJournalEvent | undefined;
+  try {
+    const client = kernel.bindClient({ cwd: parentCwd, scope: { runId: "parent-run", sessionId: "parent-run", autonomous: false },
+      budget: { runMaxCostUsd: 1 } }).forSession({ runId: child, sessionId: child });
+    const lease = await client.acquire({ stepId: "model:1", kind: "model_turn", maxInputTokens: 10, maxOutputTokens: 5, maxCostUsd: 0.1 });
+    client.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+    client.reconcile(lease.reservation.reservationId, { inputTokens: 4, outputTokens: 2, costUsd: 0.03 });
+    store.open({ sessionId: child, cwd: worktreeCwd, timestamp: new Date().toISOString(), originator: "agenc-subagent",
+      agencVersion: VERSION, admissionOwner: { workspaceId: parent.projectDir, runId: child, parentRunId: "parent-run" } });
+    for (const event of client.replayJournal?.() ?? []) {
+      sequence += 1;
+      store.append({ id: event.eventId, eventId: event.eventId, seq: sequence, msg: { type: "execution_admission", payload: event } },
+        { durable: true });
+      last = event;
+    }
+  } finally {
+    store.close();
+    kernel.close();
+  }
+  const paths = { projectDir: worktree.projectDir, stateDbPath: worktree.stateDbPath, logsDbPath: worktree.logsDbPath };
+  return {
+    child, parent, worktree,
+    forge: () => forgeAdmission({ runId: child, rolloutPath: store.rolloutPath, sequence: sequence + 1, template: last!, paths }),
+    inspection: () => new AgenCDaemonRunInspectionService({ agencHome: home, stateDatabasePaths: () => [parent, worktree] }),
+    close: () => {
+      parent.close();
+      worktree.close();
+    },
+  };
+}
+
 describe("a change between the proof and the read of a worktree child", () => {
   it("does not reach run.replay when the admission owner is another project", async () => {
-    // A child run in a worktree project whose admission is journaled in its
-    // parent's project, as session/child-run-journal.ts declares it.
-    const child = "worktree-child";
-    const parentCwd = join(root, "parent");
-    const worktreeCwd = join(root, "worktree");
-    mkdirSync(join(parentCwd, ".git"), { recursive: true });
-    mkdirSync(join(worktreeCwd, ".git"), { recursive: true });
-    const parent = openStateDatabases({ cwd: parentCwd, agencHome: home });
-    const worktree = openStateDatabases({ cwd: worktreeCwd, agencHome: home });
-    const kernel = new ExecutionAdmissionKernel({ agencHome: home, ownerId: "snapshot-child-test", ownerPid: process.pid });
-    const store = new RolloutStore({ cwd: worktreeCwd, sessionId: child, agencVersion: VERSION, agencHome: home,
-      sessionTempRoot: join(root, "session-tmp"), autoStartScheduler: false });
-    let sequence = 0;
-    let last: AdmissionJournalEvent | undefined;
+    const run = await worktreeChild();
     try {
-      const client = kernel.bindClient({ cwd: parentCwd, scope: { runId: "parent-run", sessionId: "parent-run", autonomous: false },
-        budget: { runMaxCostUsd: 1 } }).forSession({ runId: child, sessionId: child });
-      const lease = await client.acquire({ stepId: "model:1", kind: "model_turn", maxInputTokens: 10, maxOutputTokens: 5, maxCostUsd: 0.1 });
-      client.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
-      client.reconcile(lease.reservation.reservationId, { inputTokens: 4, outputTokens: 2, costUsd: 0.03 });
-      store.open({ sessionId: child, cwd: worktreeCwd, timestamp: new Date().toISOString(), originator: "agenc-subagent",
-        agencVersion: VERSION, admissionOwner: { workspaceId: parent.projectDir, runId: child, parentRunId: "parent-run" } });
-      for (const event of client.replayJournal?.() ?? []) {
-        sequence += 1;
-        store.append({ id: event.eventId, eventId: event.eventId, seq: sequence, msg: { type: "execution_admission", payload: event } },
-          { durable: true });
-        last = event;
-      }
-    } finally {
-      store.close();
-      kernel.close();
-    }
-    const paths = { projectDir: worktree.projectDir, stateDbPath: worktree.stateDbPath, logsDbPath: worktree.logsDbPath };
-    const childInspection = () => new AgenCDaemonRunInspectionService({ agencHome: home, stateDatabasePaths: () => [parent, worktree] });
-    try {
-      expect(childInspection().status({ runId: child }).source).toMatchObject({ projectDir: worktree.projectDir,
-        admissionProjectDir: parent.projectDir });
-      const changed = changeAfterTheProofRead(() => forgeAdmission({ runId: child, rolloutPath: store.rolloutPath,
-        sequence: sequence + 1, template: last!, paths }));
-      const page = childInspection().replay({ runId: child, limit: 200 });
+      expect(run.inspection().status({ runId: run.child }).source).toMatchObject({ projectDir: run.worktree.projectDir,
+        admissionProjectDir: run.parent.projectDir });
+      const changed = changeAfterTheProofRead(run.forge);
+      const page = run.inspection().replay({ runId: run.child, limit: 200 });
       expect(changed()).toBe(true);
       expect(page.events.map((event) => event.eventId)).not.toContain(FORGED);
       expect(page.events).toHaveLength(4);
       vi.restoreAllMocks();
-      expect(() => childInspection().replay({ runId: child, limit: 200 }))
+      expect(() => run.inspection().replay({ runId: run.child, limit: 200 }))
         .toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS", reason: "admission_owner_unproved" }));
     } finally {
-      parent.close();
-      worktree.close();
+      run.close();
+    }
+  });
+});
+
+describe("closing the snapshot", () => {
+  it("closes every connection and keeps the refusal when one connection fails to close", async () => {
+    const run = await worktreeChild();
+    try {
+      run.forge();
+      // The snapshot's connections: the child's database, then its admission
+      // owner's. The first one's close fails (and leaves it open).
+      const snapshots: BetterSqlite3.Database[] = [];
+      const closers = new Map<BetterSqlite3.Database, () => unknown>();
+      const open = sqliteEngine.openSqliteDatabase;
+      vi.spyOn(sqliteEngine, "openSqliteDatabase").mockImplementation((path, options) => {
+        const db = open(path, options);
+        const exec = db.exec.bind(db);
+        db.exec = ((sql: string) => {
+          if (sql === "BEGIN") snapshots.push(db);
+          return exec(sql);
+        }) as typeof db.exec;
+        const close = db.close.bind(db);
+        closers.set(db, close);
+        db.close = (() => {
+          if (snapshots[0] === db) throw new Error("close failed on purpose");
+          return close();
+        }) as typeof db.close;
+        return db;
+      });
+      expect(() => run.inspection().replay({ runId: run.child, limit: 200 }))
+        .toThrow(expect.objectContaining({ code: "RUN_ID_AMBIGUOUS", reason: "admission_owner_unproved" }));
+      expect(snapshots).toHaveLength(2);
+      expect(snapshots[0]!.open).toBe(true);
+      expect(snapshots[1]!.open).toBe(false);
+      vi.restoreAllMocks();
+      closers.get(snapshots[0]!)!();
+    } finally {
+      run.close();
     }
   });
 });

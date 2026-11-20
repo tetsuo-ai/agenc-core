@@ -519,27 +519,39 @@ class RunSnapshot {
     return fn(db);
   }
 
-  close(): void {
+  /** End every read transaction and close every connection; returns the first failure to close one. */
+  close(): unknown {
+    let failure: unknown;
     for (const db of this.#databases.values()) {
       try {
         if (db.inTransaction) db.exec("ROLLBACK");
       } catch {
         // Closing the connection ends the read transaction anyway.
-      } finally {
+      }
+      try {
         db.close();
+      } catch (error) {
+        failure ??= error;
       }
     }
     this.#databases.clear();
+    return failure;
   }
 }
 
+/** A failure to close is thrown only when the read itself succeeded: it never replaces the read's own error. */
 function withRunSnapshot<T>(fn: (snapshot: RunSnapshot) => T): T {
   const snapshot = new RunSnapshot();
+  let result: T;
   try {
-    return fn(snapshot);
-  } finally {
+    result = fn(snapshot);
+  } catch (error) {
     snapshot.close();
+    throw error;
   }
+  const failure = snapshot.close();
+  if (failure !== undefined) throw failure;
+  return result;
 }
 
 /**
