@@ -6,6 +6,9 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { SandboxExecutionBroker, type SandboxExecutionSurface } from "../../../src/sandbox/execution-broker.js";
+import type { SandboxMode } from "../../../src/tools/orchestrator.js";
+import { UnifiedExecProcessManager } from "../../../src/unified-exec/process-manager.js";
 import { SandboxManager, restrictedFileSystemPolicy, unrestrictedFileSystemPolicy } from "./index.js";
 import { MACOS_PATH_TO_SEATBELT_EXECUTABLE, createSeatbeltCommandArgs } from "./seatbelt.js";
 
@@ -132,5 +135,48 @@ describe.skipIf(!windowServer)("macOS: a command outside the sandbox opens no wi
   it("leaves the Browser tool's Chromium launch to its own rules", () => {
     expect(unsandboxed("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", ["--headless=new"], { chromiumBrowser: true })[0])
       .toBe("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+  });
+});
+
+describe.skipIf(!windowServer)("macOS: full access and approved escalations run their commands in that profile", () => {
+  // In full access (AgenC Desktop's bypass) and after an approved escalation a tool's command has no runtime sandbox, and
+  // a broker in full access prepares host commands for hooks, MCP servers and the rest: none of them reaches the
+  // sandbox manager, so each needs the profile where it starts.
+  function probe(): string {
+    const script = join(dir, "window-server.js");
+    writeFileSync(script, WINDOW_SERVER_SESSION);
+    return script;
+  }
+
+  it("runs an exec command in it", async () => {
+    const manager = new UnifiedExecProcessManager({ cwd: dir, sessionTempRoot: dir, shellPath: "/bin/sh" });
+    try {
+      const result = await manager.execCommand({ cmd: `/usr/bin/osascript -l JavaScript '${probe()}'`, yield_time_ms: 15_000 });
+      expect(result.exit_code).toBe(0);
+      expect(result.output.trim()).toBe("none");
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
+  it("runs a detached service in it", async () => {
+    const manager = new UnifiedExecProcessManager({ cwd: dir, sessionTempRoot: dir, shellPath: "/bin/sh" });
+    const result = await manager.startDetachedProcess({ cmd: `/usr/bin/osascript -l JavaScript '${probe()}'`, yield_time_ms: 15_000 });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("none");
+  });
+
+  it("runs a full-access broker's spawns in it, but not the Browser tool's Chromium or an external sandbox's", () => {
+    const script = probe();
+    const prepared = (mode: SandboxMode, surface: SandboxExecutionSurface, browserCdp = false) =>
+      new SandboxExecutionBroker({ mode, cwd: dir }).prepareSpawn(surface, {
+        program: "/usr/bin/osascript", args: ["-l", "JavaScript", script], cwd: dir, env: { PATH: "/usr/bin:/bin" },
+        ...(browserCdp ? { browserCdp: true } : {}),
+      }).runSync((command) => command);
+    const hook = prepared("danger_full_access", "hook");
+    expect(hook.program).toBe(MACOS_PATH_TO_SEATBELT_EXECUTABLE);
+    expect(run([hook.program, ...hook.args]).stdout.trim()).toBe("none");
+    expect(prepared("danger_full_access", "browser", true).program).toBe("/usr/bin/osascript");
+    expect(prepared("external_sandbox", "hook").program).toBe("/usr/bin/osascript");
   });
 });

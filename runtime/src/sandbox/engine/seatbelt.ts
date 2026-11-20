@@ -134,6 +134,34 @@ export function createUnsandboxedCommandArgs(command: readonly string[]): string
   return ["-p", MACOS_UNSANDBOXED_COMMAND_POLICY, "--", ...command];
 }
 
+let hostProfileStarts: boolean | undefined;
+
+/**
+ * Whether this process can start a command in a profile. One that runs in a
+ * sandbox already (AgenC under another program's sandbox) cannot: macOS
+ * refuses a second one, and the outer sandbox is the boundary there.
+ */
+function canStartHostProfile(): boolean {
+  hostProfileStarts ??= process.platform === "darwin" &&
+    spawnSync(MACOS_PATH_TO_SEATBELT_EXECUTABLE, ["-p", "(version 1)(allow default)", "--", "/usr/bin/true"], {
+      stdio: "ignore",
+      timeout: 10_000,
+    }).status === 0;
+  return hostProfileStarts;
+}
+
+/**
+ * The command line for a command that runs outside AgenC's sandbox (full
+ * access, an approved escalation): on macOS in
+ * {@link MACOS_UNSANDBOXED_COMMAND_POLICY}, elsewhere, or when this process
+ * cannot start a profile, the command as given.
+ */
+export function macosHostCommand(command: readonly string[], platform: NodeJS.Platform = process.platform): readonly string[] {
+  return platform === "darwin" && canStartHostProfile()
+    ? [MACOS_PATH_TO_SEATBELT_EXECUTABLE, ...createUnsandboxedCommandArgs(command)]
+    : command;
+}
+
 export interface CreateSeatbeltCommandArgsParams {
   readonly command: readonly string[];
   readonly fileSystemSandboxPolicy: FileSystemSandboxPolicy;
