@@ -575,11 +575,8 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   // grok is fully covered by REGISTERED_MODEL_CATALOG: derived directly.
   grok: mergeDerivedProviderModels("grok"),
   // openai is registry-derived (gpt-5, the provider default, now leads from the
-  // registry via its lowest priority) plus o3, which still lives only as a bare
-  // string and trails the registry entries, matching the prior literal's tail.
-  openai: mergeDerivedProviderModels("openai", {
-    trailingExtras: ["o3"],
-  }),
+  // registry via its lowest priority).
+  openai: mergeDerivedProviderModels("openai"),
   // Current lineup verified against the authenticated Models API and
   // platform.claude.com (2026-09-29), followed by older supported choices.
   // Haiku 5.5 joins on 2026-10-07; Haiku 4.5 stays selectable as legacy.
