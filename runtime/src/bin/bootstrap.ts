@@ -112,7 +112,14 @@ import {
   type ToolRegistry,
 } from "../tool-registry.js";
 import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
-import { assembleBaseInstructionsForModel } from "../prompts/system-prompt.js";
+import { assembleBaseInstructionsForModel, readGitBranch } from "../prompts/system-prompt.js";
+import {
+  promptEnvironmentItem,
+  recordedPromptEnvironment,
+  samePromptEnvironment,
+  setSessionPromptEnvironment,
+  type PromptEnvironment,
+} from "../session/prompt-environment.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import {
   NON_INTERACTIVE_HIDDEN_TOOLS,
@@ -1664,28 +1671,41 @@ async function bootstrapLocalRuntimeSessionScoped(
     sessionConfiguration: authorizedSessionConfiguration,
     permissionMode: toolPermissionContext.mode,
   });
-  const baseInstructions = await assembleBaseInstructionsForModel({
-    session: {
-      services: {
-        configStore,
-        userShell: commandExecutionAuthority,
-        runtimeOptions,
-        sandboxExecutionBroker,
-        providerEnvironment,
+  const promptProfile = coordinatorModeEnabled
+    ? "coordinator"
+    : runtimeOptions.lightMode === true
+      ? "light"
+      : usesLocalToolProfile(resolvedProvider)
+      ? "compact"
+      : "standard";
+  // The date and branch of the session tail, kept for the conversation's
+  // whole life (prompt-environment.ts). Only the standard profile prints the
+  // branch. A resume replaces both below with the conversation's record.
+  const livePromptEnvironment: PromptEnvironment = {
+    currentDate: promptContext.currentDate ?? new Date().toISOString().slice(0, 10),
+    ...(promptProfile === "standard"
+      ? { gitBranch: readGitBranch(promptContext.cwd, sandboxExecutionBroker) }
+      : {}),
+  };
+  const assembleBaseInstructions = (promptEnvironment: PromptEnvironment): Promise<string> =>
+    assembleBaseInstructionsForModel({
+      session: {
+        services: {
+          configStore,
+          userShell: commandExecutionAuthority,
+          runtimeOptions,
+          sandboxExecutionBroker,
+          providerEnvironment,
+        },
       },
-    },
-    ctx: promptContext,
-    registry,
-    provider: resolvedProvider,
-    permissionContext: toolPermissionContext,
-    profile: coordinatorModeEnabled
-      ? "coordinator"
-      : runtimeOptions.lightMode === true
-        ? "light"
-        : usesLocalToolProfile(resolvedProvider)
-        ? "compact"
-        : "standard",
-  });
+      ctx: promptContext,
+      registry,
+      provider: resolvedProvider,
+      permissionContext: toolPermissionContext,
+      profile: promptProfile,
+      promptEnvironment,
+    });
+  const baseInstructions = await assembleBaseInstructions(livePromptEnvironment);
   const sessionConfiguration = {
     ...authorizedSessionConfiguration,
     baseInstructions,
@@ -2129,6 +2149,43 @@ async function bootstrapLocalRuntimeSessionScoped(
           ),
         );
         bootstrapServices.bindSession(s);
+
+        // A resumed conversation keeps the date and branch its base
+        // instructions were first built with, as its live session did, so
+        // the resumed request repeats the prefix the provider has cached. A
+        // new date still reaches the model as the date_change reminder. A
+        // conversation without a record (new, or written before records
+        // existed) records the values just used.
+        const recordedEnvironment = recordedPromptEnvironment(existingItems);
+        if (recordedEnvironment === undefined) {
+          const record = promptEnvironmentItem(livePromptEnvironment);
+          if (record !== undefined) {
+            rolloutStore.appendRollout(record);
+            setSessionPromptEnvironment(s, livePromptEnvironment);
+          }
+        } else if (samePromptEnvironment(recordedEnvironment, livePromptEnvironment)) {
+          setSessionPromptEnvironment(s, recordedEnvironment);
+        } else {
+          // Only a cache optimization: when the recorded tail cannot be
+          // assembled, the session keeps the instructions built above.
+          const recordedBaseInstructions = await assembleBaseInstructions(recordedEnvironment)
+            .catch(() => undefined);
+          if (recordedBaseInstructions !== undefined) {
+            const withRecordedBase = (state: SessionState): SessionState => ({
+              ...state,
+              sessionConfiguration: {
+                ...state.sessionConfiguration,
+                baseInstructions: recordedBaseInstructions,
+              },
+            });
+            await s.state.update((current) => {
+              const next = withRecordedBase(current);
+              return { next, result: next };
+            });
+            initialState = withRecordedBase(initialState);
+            setSessionPromptEnvironment(s, recordedEnvironment);
+          }
+        }
 
         try {
           if (existingItems.length > 0) {
