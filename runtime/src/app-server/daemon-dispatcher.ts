@@ -57,6 +57,7 @@ import {
   AgenCSessionLifecycleError,
   type AgenCDaemonSessionManager,
 } from "./session-lifecycle.js";
+import { CompactionDeclinedError } from "../services/compact/operator.js";
 import {
   FuzzyFileSearchBoundaryError,
   MAX_FUZZY_QUERY_CODEPOINTS,
@@ -5890,6 +5891,19 @@ function mapDispatchError(
       }`,
     );
     return errorResponse(id, -32000, damaged.message, { code: damaged.code });
+  }
+  if (error instanceof CompactionDeclinedError) {
+    // An expected answer, not a handler fault. The client gets the plain
+    // sentence and the declined attempt's id as data; the daemon log keeps
+    // the id, so the attempt can be found in the session's rollout.
+    console.warn(
+      `agenc: compaction declined (${error.code})` +
+        (error.attemptId !== undefined ? `; compaction attempt ID: ${error.attemptId}` : ""),
+    );
+    return errorResponse(id, -32000, error.message, {
+      code: error.code,
+      ...(error.attemptId !== undefined ? { attemptId: error.attemptId } : {}),
+    });
   }
   // The daemon owns a bounded console sink. Keep internal handler failures
   // diagnosable there, including their stack, without logging request params.

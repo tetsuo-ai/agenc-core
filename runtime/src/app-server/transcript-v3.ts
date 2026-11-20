@@ -5,6 +5,8 @@ import type { SessionTranscriptV2Result } from "./protocol/index.js";
 
 type Turn = NonNullable<SessionTranscriptV2Result["turns"]>[number];
 type Call = Turn["toolCalls"][number];
+/** A call's target preview, and the mark for an apply_patch file list that left a file out. */
+type CallTargets = Pick<Call, "inputDigest" | "pathsTruncated">;
 const TARGETS = ["command", "cmd", "path", "file_path", "url", "pattern", "query", "description"];
 const DIGEST_VALUE_MAX = 512;
 /** The model-facing name of the patch tool (`APPLY_PATCH_TOOL_NAME`). */
@@ -33,16 +35,18 @@ function applyPatchText(args: string): string | undefined {
  * lines, as Core's patch parser reads them. `path` is the file of a patch
  * with one file section (a move keeps the file it moves); `paths` lists every
  * file the patch names, one per line, in patch order, without repeats, whole
- * paths only. A patch the parser refuses has no safe digest.
+ * paths only. When those do not all fit, the call is marked `pathsTruncated`,
+ * so a client can say "12 or more files" instead of "12 files". A patch the
+ * parser refuses has no safe digest.
  */
-function applyPatchDigest(args: string): Record<string, string> {
+function applyPatchTargets(args: string): CallTargets {
   const patch = applyPatchText(args);
-  if (patch === undefined) return {};
+  if (patch === undefined) return { inputDigest: {} };
   let hunks: ReturnType<typeof parsePatch>["hunks"];
   try {
     hunks = parsePatch(patch).hunks;
   } catch {
-    return {};
+    return { inputDigest: {} };
   }
   const digest: Record<string, string> = {};
   const only = hunks.length === 1 ? hunks[0]!.path : "";
@@ -54,20 +58,26 @@ function applyPatchDigest(args: string): Record<string, string> {
     }
   }
   let paths = "";
+  let listed = 0;
   for (const path of named) {
     const next = paths.length === 0 ? path : `${paths}\n${path}`;
     if (next.length > DIGEST_VALUE_MAX) break;
     paths = next;
+    listed += 1;
   }
   if (paths.length > 0) digest.paths = paths;
-  return digest;
+  return { inputDigest: digest, ...(listed < named.length ? { pathsTruncated: true as const } : {}) };
 }
 
 /** Target preview only. Never persist content, replacement text or outputs. */
 export function toolInputDigest(args: string, toolName?: string): Record<string, string> {
+  return toolCallTargets(args, toolName).inputDigest;
+}
+
+function toolCallTargets(args: string, toolName?: string): CallTargets {
   const digest: Record<string, string> = {};
-  if (args.length > 64 * 1024) return digest;
-  if (toolName === APPLY_PATCH) return applyPatchDigest(args);
+  if (args.length > 64 * 1024) return { inputDigest: digest };
+  if (toolName === APPLY_PATCH) return applyPatchTargets(args);
   try {
     const value = JSON.parse(args);
     let remaining = 1024;
@@ -78,7 +88,7 @@ export function toolInputDigest(args: string, toolName?: string): Record<string,
       remaining -= digest[key]!.length;
     }
   } catch { /* Malformed inputs have no safe digest. */ }
-  return digest;
+  return { inputDigest: digest };
 }
 
 function recordedUsage(usage: NonNullable<Extract<import("../session/event-log.js").EventMsg, { type: "turn_complete" }>["payload"]["usage"]>): NonNullable<Turn["usage"]> {
@@ -129,7 +139,7 @@ export function transcriptV3Turns(items: readonly RolloutItem[], boundaryIndex: 
         } catch { /* Invalid tool inputs do not replace the last valid list. */ }
       }
       if (current.toolCalls.length >= 128) { truncated = true; continue; }
-      const call: Call = { callId: msg.payload.callId.slice(0, 256), toolName: msg.payload.toolName.slice(0, 256), inputDigest: toolInputDigest(msg.payload.args, msg.payload.toolName) };
+      const call: Call = { callId: msg.payload.callId.slice(0, 256), toolName: msg.payload.toolName.slice(0, 256), ...toolCallTargets(msg.payload.args, msg.payload.toolName) };
       calls.set(msg.payload.callId, { turn: current, index: current.toolCalls.length });
       (current.toolCalls as Call[]).push(call);
     } else if (msg.type === "tool_call_completed") {

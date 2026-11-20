@@ -29,7 +29,7 @@ import { qualifyReasoningCapRecovery } from "../session/reasoning-cap-policy.js"
  */
 
 import type { LLMMessage, LLMToolCall } from "../llm/types.js";
-import { emitWarning } from "../session/event-log.js";
+import { emitError, emitWarning } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import { supportsThinkingOffRecovery } from "../session/session-reasoning-effort.js";
 import type { TurnState } from "../session/turn-state.js";
@@ -473,6 +473,17 @@ export function runMaxOutputTokensRecovery(
     state.cutReplyText = undefined;
     discardExecutorForMaxOutputTokens(session, state);
     removeTruncatedAssistantForRetry(state);
+    // The retry streams the reply again from its first token. Mark the cut
+    // attempt discarded, as a reconnect does, so live views, a reload during
+    // the retry and `agenc -p` drop what it streamed instead of showing it
+    // ahead of the retry. Fast one-shot mode streamed nothing of the cut
+    // attempt (run-turn.ts hands its response here unstreamed); there the
+    // mark drops nothing.
+    emitError(session, session.nextInternalSubId(), {
+      cause: "stream_attempt_discarded",
+      message: "Discarded model output cut by the output limit before retrying with a higher limit.",
+      streamError: true,
+    });
     if (reasoningOnly) {
       state.messages.push({ role: "user", content: RETRY_REASONING_ONLY_CONTENT });
     }

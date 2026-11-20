@@ -146,6 +146,37 @@ describe("apply_patch targets in transcript v3", () => {
     expect(digestOf(JSON.stringify({ patch: onePatch }))).toEqual({});
   });
 
+  it("marks a call whose file list left files out, so a client can say there are more", async () => {
+    const callOf = (args: string) =>
+      sessionTranscriptV2FromRollout(patchCall(args), "s", "r", undefined, undefined, { schemaVersion: 3 }).turns![0]!.toolCalls[0]!;
+    const deletes = (paths: readonly string[]) =>
+      JSON.stringify({ input: ["*** Begin Patch", ...paths.map(path => `*** Delete File: ${path}`), "*** End Patch"].join("\n") });
+    const long = Array.from({ length: 12 }, (_, i) => `/run/${"d".repeat(60)}/file-${i}.ts`);
+    const cut = callOf(deletes(long));
+    const listed = cut.inputDigest.paths!.split("\n");
+    expect(listed).toEqual(long.slice(0, listed.length));
+    expect(listed.length).toBeLessThan(long.length);
+    expect(cut.pathsTruncated).toBe(true);
+    // The mark is a field of the call; the digest keeps only target fields.
+    expect(Object.keys(cut.inputDigest)).toEqual(["paths"]);
+    // One path longer than the value limit: no list, the cut path, the mark.
+    const deep = `/run/${"x".repeat(600)}.ts`;
+    expect(callOf(deletes([deep]))).toMatchObject({ inputDigest: { path: deep.slice(0, 512) }, pathsTruncated: true });
+    // A list that names every file, a refused patch and other tools have no mark.
+    expect(callOf(deletes(long.slice(0, listed.length)))).not.toHaveProperty("pathsTruncated");
+    expect(callOf(JSON.stringify({ input: onePatch }))).not.toHaveProperty("pathsTruncated");
+    expect(callOf(JSON.stringify({ input: "*** Begin Patch\n*** Frobnicate File: a.ts\n*** End Patch" }))).not.toHaveProperty("pathsTruncated");
+    expect(sessionTranscriptV2FromRollout(items, "s", "r", undefined, undefined, { schemaVersion: 3 }).turns![0]!.toolCalls[0]).not.toHaveProperty("pathsTruncated");
+    // A schema 3 client gets it over the protocol.
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: { getSessionTranscriptV2: async (_: unknown, options: any) =>
+      sessionTranscriptV2FromRollout(patchCall(deletes(long)), "s", "r", undefined, undefined, options) } as never });
+    const connection = dispatcher.createConnection();
+    await connection.dispatch({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION } } });
+    const result: any = await connection.dispatch({ jsonrpc: "2.0", id: 2, method: "session.transcript.v2", params: { sessionId: "s", schemaVersion: 3 } });
+    expect(result.result.turns[0].toolCalls[0]).toMatchObject({ toolName: "apply_patch", pathsTruncated: true });
+    await connection.close();
+  });
+
   it("leaves other tools' digests as they were", () => {
     expect(toolInputDigest(JSON.stringify({ input: onePatch, path: "ignored.ts" }), "Edit")).toEqual({ path: "ignored.ts" });
     expect(toolInputDigest(JSON.stringify({ input: onePatch, path: "ignored.ts" }), "apply_patch")).toEqual({ path: "/run/notes-app/notes.txt", paths: "/run/notes-app/notes.txt" });

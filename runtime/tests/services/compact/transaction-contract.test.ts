@@ -29,6 +29,7 @@ import {
   CompactionTransactionFailureWithDetails,
   compactionFailureDetails,
 } from "../../../src/services/compact/failure-details.js";
+import { declinedCompactionAttemptId } from "../../../src/services/compact/operator.js";
 import {
   MAX_TOKEN_ACCOUNTING_REQUEST_BYTES,
   tokenAccountingService,
@@ -970,7 +971,11 @@ describe("transactional compaction production path", () => {
       const recorded = store.readAll().find(item => item.type === "compaction_failed");
       expect(recorded?.type).toBe("compaction_failed");
       if (recorded?.type !== "compaction_failed") throw new Error("missing failure record");
-      expect(failure.message).toContain(`Compaction attempt ID: ${recorded.payload.attempt_id}`);
+      // The attempt is data beside the error, never part of its sentence.
+      expect(failure.message).not.toContain("attempt");
+      expect(failure.message).not.toContain(recorded.payload.attempt_id);
+      expect(declinedCompactionAttemptId(failure)).toBe(recorded.payload.attempt_id);
+      expect(compactionFailureDetails(failure)).toMatchObject({ attempt_id: recorded.payload.attempt_id });
       expect(failure.message).toContain("history was not changed");
       expect(provider.chat).toHaveBeenCalledOnce();
       expect(

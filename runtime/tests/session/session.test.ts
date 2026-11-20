@@ -90,6 +90,12 @@ import {
   createProvider as createCompactionProvider,
 } from "../helpers/compaction-transaction-harness.js";
 import { sessionTranscriptV2FromRollout } from "../app-server/background-agent-runner/journal-reconstruction.js";
+import { AgenCDaemonJsonRpcDispatcher } from "../app-server/daemon-dispatcher.js";
+import { AgenCDaemonResponseError } from "../app-server/agent-cli.js";
+import type { AgenCDaemonErrorResponse } from "../app-server/protocol/index.js";
+import { compactCommand } from "../commands/session-compact.js";
+import { AgencRpcError } from "../../../packages/agenc-sdk/src/client.js";
+import { AGENC_DAEMON_PROTOCOL_VERSION } from "../app-server/protocol/index.js";
 import { daemonTranscriptSnapshotEvents } from "../tui/daemon-transcript-snapshot.js";
 import { adaptTranscriptEvents } from "../tui/session-transcript.js";
 import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
@@ -2631,6 +2637,83 @@ describe("Session.partialCompactFromMessage", () => {
       expect(result.postCompactTokens).toBeGreaterThan(0);
       expect(result.preCompactTokens).toBeGreaterThan(result.postCompactTokens!);
     } finally {
+      harness.close();
+    }
+  });
+
+  it("declines a compaction that cannot shrink in a plain sentence, with the attempt id as data", async () => {
+    // Too short to summarize: the summary would not be smaller.
+    const sourceHistory: LLMMessage[] = [
+      { role: "user", content: "a short question" },
+      { role: "assistant", content: "a short answer" },
+    ];
+    const harness = createCompactionTransactionHarness(sourceHistory, {
+      sessionId: "conv-test",
+    });
+    const session = buildSession({
+      modelInfo: { ...mkModelInfo(), slug: "grok-4.5" },
+      services: {
+        provider: harness.provider,
+        executionAdmission: harness.session.services.executionAdmission,
+        admissionRequired: true,
+      },
+    });
+    attachCompactionSession(session, harness);
+    const daemonLog = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await session.state.with((state) => {
+        state.history = sourceHistory;
+      });
+
+      const declined = await session.partialCompactFromMessage({
+        messageOrdinal: 0,
+        direction: "from",
+      }).then(
+        () => undefined,
+        (error: unknown) => error as Error & { readonly code?: unknown; readonly attemptId?: unknown },
+      );
+
+      const failed = harness.store.readAll().flatMap((item) =>
+        item.type === "compaction_failed" ? [item.payload] : []);
+      expect(failed).toMatchObject([{ reason: "no_shrink" }]);
+      const attemptId = failed[0]!.attempt_id;
+      expect(attemptId).toMatch(/^compact-/u);
+      // The sentence people read names no attempt; the id rides as data.
+      expect(declined?.message).toBe(
+        "Nothing to compact yet. A summary would not reduce this conversation enough; history was not changed.",
+      );
+      expect(declined).toMatchObject({ code: "NOTHING_TO_COMPACT", attemptId });
+
+      // A daemon client (Desktop, the SDK, the daemon TUI's /compact) gets
+      // that sentence as the error message and the id in the error's data;
+      // the daemon log keeps the id.
+      const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+        agentManager: { compactSession: async () => { throw declined; } } as never,
+      });
+      const connection = dispatcher.createConnection();
+      try {
+        await connection.dispatch({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION } } });
+        const answer = await connection.dispatch({ jsonrpc: "2.0", id: 2, method: "session.compact", params: { sessionId: "conv-test" } });
+        expect(answer).toMatchObject({
+          error: { code: -32000, message: declined!.message, data: { code: "NOTHING_TO_COMPACT", attemptId } },
+        });
+        expect(daemonLog.mock.calls.flat().join("\n")).toContain(`compaction attempt ID: ${attemptId}`);
+        const rpcError = (answer as { error: AgenCDaemonErrorResponse["error"] }).error;
+        // The daemon TUI's /compact shows the client error's message.
+        const tui = await compactCommand.execute({
+          session: { partialCompactFromMessage: async () => { throw new AgenCDaemonResponseError(rpcError); } } as unknown as Session,
+          argsRaw: "", cwd: tmpdir(), home: tmpdir(),
+        });
+        expect(tui).toEqual({ kind: "error", message: declined!.message });
+        // An SDK caller gets the sentence and the id apart.
+        const sdkError = new AgencRpcError(rpcError, "session.compact", 2);
+        expect(sdkError.message).toBe(declined!.message);
+        expect(sdkError.data).toEqual({ code: "NOTHING_TO_COMPACT", attemptId });
+      } finally {
+        await connection.close();
+      }
+    } finally {
+      daemonLog.mockRestore();
       harness.close();
     }
   });

@@ -523,9 +523,17 @@ prints. Nothing changes when the answer is `ok: false`, with a `code` and a
   durable history to compact.
 - `ABORTED`: the request was cancelled (`request.cancel`) before it finished.
 
-A compaction that cannot shrink the conversation fails the request with its
-reason. The method is advertised in `daemon.methods` whenever the daemon's
-runner can compact, whatever protocol version the client negotiated: nothing
+A compaction that cannot shrink the conversation fails the request (here
+and on `session.partialCompactFromMessage`) with JSON-RPC error `-32000`,
+the message `Nothing to compact yet. A summary would not reduce this
+conversation enough; history was not changed.` and `data` `{ code:
+"NOTHING_TO_COMPACT", attemptId }`. `attemptId` names the declined attempt's
+`compaction_failed` record; the sentence never carries it, and the daemon
+log keeps it (`agenc: compaction declined (NOTHING_TO_COMPACT); compaction
+attempt ID: <id>`).
+
+The method is advertised in `daemon.methods` whenever the daemon's runner can
+compact, whatever protocol version the client negotiated: nothing
 the daemon sends asks a client to call it, so a client that does not know it
 never does. A remote browser connection is not offered it.
 
@@ -983,7 +991,9 @@ A client that sends `schemaVersion: 3` (the daemon advertises
 `transcript.tools.v3` and `transcript.plans.v3`) gets the same answer with
 `schemaVersion: 3` and `turns`: for each visible turn, its tool calls (name,
 the fields that name the call's target, for `apply_patch` the files its patch
-names, error and duration, never outputs),
+names (`inputDigest.paths`, whole paths within 512 characters; the call's
+`pathsTruncated: true` says the list left a file out, so a client can say
+"12 or more files"), error and duration, never outputs),
 its plan and to-do list, the usage Core recorded when it ended and its
 workspace change summary. Without the field the answer stays schema 2. The
 other timeline capabilities (`turn.failure.v1`, `turn.usage.v1`,
@@ -1736,8 +1746,15 @@ Two recovery paths apply; if both are spent the turn fails:
 | Continuation | Escalation is not allowed or its override is still active, and `maxOutputTokensRecoveryCount` plus `reasoningOnlyRecoveryCount` is under 3 (`MAX_OUTPUT_TOKENS_RECOVERY_LIMIT`). | Appends a user meta message, transition `max_output_tokens_recovery`. A reasoning-only retry on native DeepSeek increments `reasoningOnlyRecoveryCount`. Any other retry increments `maxOutputTokensRecoveryCount`. Incomplete streamed tools are not executed. |
 | Exhausted | The counted retries reached 3. | Emits `error` cause `max_output_tokens_exhausted` (`max_output_tokens_recovery_limit (3)`), then the turn ends as `model_error`: `The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete.` `run-agent` maps that to `stopReason: "error"`. |
 
-The escalate retry drops the truncated assistant batch. `messagesAtSampleStart`
-is recorded by `prepareAgenCTurnContext` on every sampling request. Copying
+The escalate retry drops the truncated assistant batch. Before the retry it
+emits `stream_error` with cause `stream_attempt_discarded`, as a reconnect
+does, because the retry streams the reply again from its first token: live
+views and a transcript read during the retry drop what the cut attempt
+streamed, and `agenc -p` ends that attempt's line and prints the reply once
+after it (text it already wrote stays on screen). In fast one-shot mode the
+cut attempt streamed nothing, and the discard drops nothing.
+`messagesAtSampleStart` is recorded by `prepareAgenCTurnContext` on every
+sampling request. Copying
 the query projection used to put per-request attachments into the durable
 prefix; the next compaction then failed with
 `caller history is not an ordered projection of canonical active history`.
@@ -1916,8 +1933,11 @@ A prompt that arrives while such a continuation runs replaces it. When the
 continuation's model call is already on the wire, the new turn waits for that
 call to finish, at most 30 seconds, and the continuation then stops without
 using the answer: the call settles in the admission ledger with the usage the
-provider reported, so the session's cost stays known. Cutting it would leave
-the ledger holding the call as `held_unknown`
+provider reported, so the session's cost stays known. It also writes its
+`token_count` in the continuation's turn, before that turn's `turn_aborted`,
+so `session.snapshot` counts its tokens with its cost (a call that comes back
+after its turn stopped for another reason is counted the same way). Cutting
+it would leave the ledger holding the call as `held_unknown`
 (`cancelled_after_dispatch:replaced`), and `costKnown` false from then on. A
 call still out after 30 seconds is cut as before. Every other stop (an
 interrupt, a daemon shutdown, a provider switch) cuts the call at once, also

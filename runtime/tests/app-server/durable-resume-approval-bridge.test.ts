@@ -1394,6 +1394,36 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
     }
   }, 60_000);
 
+  it("counts a replaced continuation's tokens with its cost in the session snapshot", async () => {
+    const run = await replaceContinuationOnTheWire({ content: "The held answer.", toolCalls: [] });
+    try {
+      run.answerFirstModel.resolve();
+      await expect(run.next).resolves.toMatchObject({ disposition: "started" });
+      await run.until(() => run.events().some((msg) => msg.type === "turn_complete" && msg.payload.turnId !== TURN_ID),
+        "the new turn to end");
+      const ledger = run.ledgerRows();
+      expect(ledger).toMatchObject({ hasUnknownCost: false, modelCalls: 2, inputTokens: 2_000, outputTokens: 200 });
+      // The held call wrote its token_count in its own turn, before that
+      // turn's abort, so the new turn's usage does not take it. (The seeded
+      // rollout holds an earlier abort of the same turn: take the last.)
+      const events = run.events();
+      const aborted = events.findLastIndex((msg) => msg.type === "turn_aborted" && msg.payload.turnId === TURN_ID);
+      const nextStarted = events.findIndex((msg, index) => index > aborted && msg.type === "turn_started");
+      const counts = events.flatMap((msg, index) => msg.type === "token_count" ? [{ index, ...msg.payload }] : []);
+      expect(counts.map(({ promptTokens, completionTokens }) => [promptTokens, completionTokens])).toEqual([[1_000, 100], [1_000, 100]]);
+      expect(counts[0]!.index).toBeLessThan(aborted);
+      expect(counts[1]!.index).toBeGreaterThan(nextStarted);
+      // The snapshot's tokens cover the same two calls its cost covers.
+      const snapshot = await run.runner.snapshotAgentSession(CONVERSATION_ID, { sessionId: CONVERSATION_ID } as never);
+      expect(snapshot.tokenUsage).toMatchObject({
+        inputTokens: ledger.inputTokens, outputTokens: ledger.outputTokens, costKnown: true,
+      });
+    } finally {
+      run.answerFirstModel.resolve();
+      await run.runner.stopAgent(CONVERSATION_ID).catch(() => undefined);
+    }
+  }, 60_000);
+
   it("lets a Stop during that wait cut the held call at once", async () => {
     const run = await replaceContinuationOnTheWire({ content: "late", toolCalls: [] });
     try {

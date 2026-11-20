@@ -242,7 +242,10 @@ command result. A replacement-history boundary also displays the ID, so it
 remains available in transcript history. `/compact-rollback` and
 `/compact-retain` accept that ID; it is also recorded on the
 `compaction_committed` payload and retention pin. Both commands refuse during
-an active turn (`ACTIVE_TURN`). Syntax:
+an active turn (`ACTIVE_TURN`). A compaction Core declines because a summary
+would not shrink the conversation says so in a plain sentence; it has nothing
+to roll back, so its attempt ID stays out of the text (the daemon log and the
+error's `data.attemptId` keep it). Syntax:
 [cli.md](cli.md#compaction-operator-commands).
 
 ## `/theme`

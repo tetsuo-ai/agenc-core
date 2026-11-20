@@ -9,6 +9,7 @@ import { lstatSync, mkdirSync, readFileSync } from "node:fs";
 import { normalize } from "node:path";
 import { randomUUID } from "node:crypto";
 import { APPROVAL_DENIED_ABORT_REASON, classifyTurnTerminal, type TurnTerminal } from "../contracts/turn-terminal.js";
+import { isStreamAttemptDiscard } from "../contracts/stream-attempt-boundary.js";
 import { extractFlagValues, stripRoutingFlags, type OneShotContinueSession, type ResumeTUIArgs } from "./route.js";
 import { readPromptStdin } from "./prompt-stdin.js";
 import type { LLMMessage } from "../llm/types.js";
@@ -521,10 +522,14 @@ function daemonOneShotCompletionWarning(
  * complete message the daemon emits once the deltas are done. The daemon
  * sends both for the same message, so the caller must reconcile them
  * (see oneShotFinalMessageRemainder) or print mode writes the answer twice.
+ * A discard says the deltas streamed since the last complete message belong
+ * to an attempt the daemon dropped (a reconnect, or a retry at a higher
+ * output limit) and will stream again.
  */
 type OneShotMessageChunk =
   | { readonly kind: "delta"; readonly text: string }
-  | { readonly kind: "final"; readonly text: string };
+  | { readonly kind: "final"; readonly text: string }
+  | { readonly kind: "discard" };
 
 function daemonOneShotMessageChunk(
   event: unknown,
@@ -557,6 +562,7 @@ function daemonOneShotMessageChunk(
   ) {
     return { kind: "final", text: payload.message };
   }
+  if (isStreamAttemptDiscard(transcriptEvent)) return { kind: "discard" };
   return null;
 }
 
@@ -1270,7 +1276,20 @@ export async function awaitDaemonOneShotRun(params: {
           sessionUsage = oneShotSessionUsage(event, params.agentId) ?? sessionUsage;
 
           const chunk = daemonOneShotMessageChunk(event);
-          if (chunk !== null) {
+          if (chunk?.kind === "discard") {
+            // What the dropped attempt printed cannot be taken back. End its
+            // line so the reply that streams again starts on its own, keep it
+            // out of the answer, and reconcile the complete message with the
+            // new attempt's deltas only, so the reply is written once.
+            if (streamedMessage.length > 0 && assistantOutput.endsWith(streamedMessage)) {
+              assistantOutput = assistantOutput.slice(0, assistantOutput.length - streamedMessage.length);
+              if (outputFormat === "text" && lastPrintedChar !== "\n") {
+                io.stdout.write("\n");
+                lastPrintedChar = "\n";
+              }
+            }
+            streamedMessage = "";
+          } else if (chunk !== null) {
             // Deltas stream as they arrive; the complete message that
             // follows them contributes only what was not streamed, so the
             // answer is written once whichever events the daemon sends.

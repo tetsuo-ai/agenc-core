@@ -8,14 +8,64 @@ const MAX_SESSION_ID_LENGTH = 128;
 const MAX_JAVASCRIPT_DATE_MS = 8_640_000_000_000_000;
 const CANONICAL_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/u;
 
+/**
+ * The attempt each declined compaction wrote its durable failure record
+ * under. It is kept beside the error as data, for the daemon log and a
+ * client's diagnostics, never in a sentence a person reads.
+ */
+const declinedAttempts = new WeakMap<Error, string>();
+
+/** Records the attempt a declined compaction's failure record was written under. */
+export function recordDeclinedCompactionAttempt(error: Error, attemptId: string): void {
+  declinedAttempts.set(error, attemptId);
+}
+
+/** The attempt recorded for a declined compaction, on the error or one of its causes. */
+export function declinedCompactionAttemptId(error: unknown): string | undefined {
+  let current = error;
+  for (let depth = 0; depth < 8 && current instanceof Error; depth += 1) {
+    const attemptId = declinedAttempts.get(current);
+    if (attemptId !== undefined) return attemptId;
+    current = current.cause;
+  }
+  return undefined;
+}
+
+/**
+ * A manual compaction Core declined because a summary would not shrink the
+ * conversation. The message is the plain sentence; the attempt id is data.
+ */
+export class CompactionDeclinedError extends Error {
+  readonly code = "NOTHING_TO_COMPACT";
+
+  constructor(
+    message: string,
+    readonly attemptId: string | undefined,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "CompactionDeclinedError";
+  }
+}
+
 /** Keep accounting diagnostics on the underlying error, with plain operator text. */
 export function compactionCannotShrinkDisplay(error: unknown): string | undefined {
   if (!(error instanceof CompactionCannotReduceError) || error.code !== "no_shrink") {
     return undefined;
   }
-  const attempt = error.message.match(/\nCompaction attempt ID: ([^\n]+)$/u)?.[1];
-  return "Nothing to compact yet. A summary would not reduce this conversation enough; history was not changed." +
-    (attempt === undefined ? "" : `\nCompaction attempt ID: ${attempt}`);
+  return "Nothing to compact yet. A summary would not reduce this conversation enough; history was not changed.";
+}
+
+/**
+ * What a manual compaction answers when Core declined it: the plain
+ * sentence, with the declined attempt's id as data. Undefined for any other
+ * failure.
+ */
+export function compactionDeclinedError(error: unknown): CompactionDeclinedError | undefined {
+  const message = compactionCannotShrinkDisplay(error);
+  return message === undefined
+    ? undefined
+    : new CompactionDeclinedError(message, declinedCompactionAttemptId(error), { cause: error });
 }
 
 export interface CompactionOperatorStore {

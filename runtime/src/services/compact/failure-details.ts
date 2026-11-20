@@ -17,6 +17,7 @@ import {
   CompactionTransactionError,
   type CompactionFailureReason,
 } from "./transaction-types.js";
+import { declinedCompactionAttemptId } from "./operator.js";
 
 /** Scalar-only so the rollout schema stays additive and readers stay simple. */
 export type CompactionFailureDetailValue = string | number | boolean | null;
@@ -115,6 +116,8 @@ export function compactionFailureDetails(error: unknown): CompactionFailureDetai
     ...(error instanceof CompactionTransactionFailureWithDetails ? error.details : {}),
   };
   describeOneError(error, "error", details);
+  // A declined attempt's id: its message no longer carries it.
+  scalarField(details, "attempt_id", declinedCompactionAttemptId(error));
   const seen = new Set<unknown>([error]);
   const first = causeOf(error);
   if (first === undefined) return details;

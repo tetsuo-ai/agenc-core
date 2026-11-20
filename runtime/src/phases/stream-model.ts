@@ -49,6 +49,7 @@ import type {
   LLMTool,
   LLMToolCall,
   LLMToolChoice,
+  LLMUsage,
 } from "../llm/types.js";
 import { cloneLlmMessageSnapshot } from "../llm/content-conversion.js";
 import {
@@ -1490,6 +1491,18 @@ export async function streamModel(
           () => provider.chatStream(messages, onChunk, admittedOptions),
         ));
       },
+    }).then(async (returned) => {
+      // A call that came back after its turn stopped (a replacement held it
+      // on the wire until it settled, or a stop landed as it returned) spent
+      // its tokens, and the ledger already counts its cost. Count its tokens
+      // too, so the session's tokens and cost cover the same calls. Do it
+      // before the hold ends: the replacing turn starts once it has, and the
+      // count belongs to this turn. The answer is still not used (below).
+      if (scoped.signal.aborted && returned.usage) {
+        await addToSessionTokenUsage(session, returned.usage);
+        emitTokenCount(session, returned.model, returned.usage, providerName);
+      }
+      return returned;
     }).finally(() => call.release());
     if (successfulPrefix && response.finishReason !== "error") rememberCompactionQueryPrefix(session, successfulPrefix);
     // Some providers return an empty/nonstreamed result without any chunks.
@@ -1770,40 +1783,7 @@ export async function streamModel(
       ...(provenance !== undefined ? { provenance } : {}),
     };
     // Cross-turn token accumulator.
-    // Runs under the session state lock so the mid-turn compact gate in
-    // run-turn.ts sees a consistent read even when a concurrent
-    // recovery path also touches state. Providers that don't surface
-    // cache/reasoning fields contribute 0 to those slots, so missing
-    // breakdowns don't leak as phantom tokens.
-    const last = response.usage;
-    const cachedForTotal = last.cachedInputTokens ?? 0;
-    const reasoningForTotal = last.reasoningOutputTokens ?? 0;
-    await session.state.with((s) => {
-      const current = s.totalTokenUsage;
-      const prev =
-        typeof current === "number"
-          ? {
-              promptTokens: 0,
-              completionTokens: 0,
-              totalTokens: current,
-              cachedInputTokens: 0,
-              reasoningOutputTokens: 0,
-            }
-          : (current ?? {
-              promptTokens: 0,
-              completionTokens: 0,
-              totalTokens: 0,
-              cachedInputTokens: 0,
-              reasoningOutputTokens: 0,
-            });
-      s.totalTokenUsage = {
-        promptTokens: prev.promptTokens + last.promptTokens,
-        completionTokens: prev.completionTokens + last.completionTokens,
-        totalTokens: prev.totalTokens + last.totalTokens,
-        cachedInputTokens: prev.cachedInputTokens + cachedForTotal,
-        reasoningOutputTokens: prev.reasoningOutputTokens + reasoningForTotal,
-      };
-    });
+    await addToSessionTokenUsage(session, response.usage);
   }
 
   state.messages.push({
@@ -1850,45 +1830,7 @@ export async function streamModel(
   // CostSidecar updates do not feed the current iteration's
   // completion tokens back into the tracker before boundary truth is
   // resolved.
-  if (response.usage) {
-    const cached = response.usage.cachedInputTokens;
-    const cacheCreation = response.usage.cacheCreationInputTokens;
-    const cacheCreation1h = response.usage.cacheCreation1hInputTokens;
-    const reasoning = response.usage.reasoningOutputTokens;
-    const webSearch = response.usage.webSearchRequests;
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
-        type: "token_count",
-        payload: {
-          promptTokens: response.usage.promptTokens,
-          completionTokens: response.usage.completionTokens,
-          totalTokens: response.usage.totalTokens,
-          model: response.model,
-          provider: providerName,
-          ...(response.usage.billingMode === "plan" ? { billingMode: "plan" as const } : {}),
-          ...(cached !== undefined ? { cachedInputTokens: cached } : {}),
-          ...(cacheCreation1h !== undefined ? { cacheCreation1hInputTokens: cacheCreation1h } : {}),
-          ...(cacheCreation !== undefined
-            ? { cacheCreationInputTokens: cacheCreation }
-            : {}),
-          ...(reasoning !== undefined
-            ? { reasoningOutputTokens: reasoning }
-            : {}),
-          ...(response.usage.reasoningIncludedInCompletion === true
-            ? { reasoningIncludedInCompletion: true as const }
-            : {}),
-          ...(webSearch !== undefined ? { webSearchRequests: webSearch } : {}),
-          // Served speed, not requested speed: fast mode bills at its own
-          // rates only when the provider says the turn ran fast.
-          ...(response.usage.speed === "fast" ? { speed: "fast" as const } : {}),
-          ...(response.usage.providerCostUsd !== undefined
-            ? { providerCostUsd: response.usage.providerCostUsd }
-            : {}),
-        },
-      },
-    });
-  }
+  if (response.usage) emitTokenCount(session, response.model, response.usage, providerName);
 
   if (response.error) {
     throw new StreamModelError(response.error, response);
@@ -1940,4 +1882,89 @@ export async function streamModel(
     state.reasoningOnlyRecoveryCount = 0;
   }
   return state;
+}
+
+/**
+ * Adds one model call's provider-reported usage to the session's cross-turn
+ * token counter, `totalTokenUsage` (the tokens `session.snapshot` reports).
+ * Runs under the session state lock so the mid-turn compact gate in
+ * run-turn.ts sees a consistent read even when a concurrent recovery path
+ * also touches state. Providers that don't surface cache/reasoning fields
+ * contribute 0 to those slots, so missing breakdowns don't leak as phantom
+ * tokens.
+ */
+async function addToSessionTokenUsage(session: Session, last: LLMUsage): Promise<void> {
+  const cachedForTotal = last.cachedInputTokens ?? 0;
+  const reasoningForTotal = last.reasoningOutputTokens ?? 0;
+  await session.state.with((s) => {
+    const current = s.totalTokenUsage;
+    const prev =
+      typeof current === "number"
+        ? {
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: current,
+            cachedInputTokens: 0,
+            reasoningOutputTokens: 0,
+          }
+        : (current ?? {
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: 0,
+            cachedInputTokens: 0,
+            reasoningOutputTokens: 0,
+          });
+    s.totalTokenUsage = {
+      promptTokens: prev.promptTokens + last.promptTokens,
+      completionTokens: prev.completionTokens + last.completionTokens,
+      totalTokens: prev.totalTokens + last.totalTokens,
+      cachedInputTokens: prev.cachedInputTokens + cachedForTotal,
+      reasoningOutputTokens: prev.reasoningOutputTokens + reasoningForTotal,
+    };
+  });
+}
+
+/**
+ * T6 gap #119: one model call's `token_count` event with its
+ * provider-reported usage, so durable rollouts capture per-call token
+ * accounting.
+ */
+function emitTokenCount(session: Session, model: string, usage: LLMUsage, providerName: string): void {
+  const cached = usage.cachedInputTokens;
+  const cacheCreation = usage.cacheCreationInputTokens;
+  const cacheCreation1h = usage.cacheCreation1hInputTokens;
+  const reasoning = usage.reasoningOutputTokens;
+  const webSearch = usage.webSearchRequests;
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "token_count",
+      payload: {
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        totalTokens: usage.totalTokens,
+        model,
+        provider: providerName,
+        ...(usage.billingMode === "plan" ? { billingMode: "plan" as const } : {}),
+        ...(cached !== undefined ? { cachedInputTokens: cached } : {}),
+        ...(cacheCreation1h !== undefined ? { cacheCreation1hInputTokens: cacheCreation1h } : {}),
+        ...(cacheCreation !== undefined
+          ? { cacheCreationInputTokens: cacheCreation }
+          : {}),
+        ...(reasoning !== undefined
+          ? { reasoningOutputTokens: reasoning }
+          : {}),
+        ...(usage.reasoningIncludedInCompletion === true
+          ? { reasoningIncludedInCompletion: true as const }
+          : {}),
+        ...(webSearch !== undefined ? { webSearchRequests: webSearch } : {}),
+        // Served speed, not requested speed: fast mode bills at its own
+        // rates only when the provider says the turn ran fast.
+        ...(usage.speed === "fast" ? { speed: "fast" as const } : {}),
+        ...(usage.providerCostUsd !== undefined
+          ? { providerCostUsd: usage.providerCostUsd }
+          : {}),
+      },
+    },
+  });
 }

@@ -84,6 +84,35 @@ it("keeps a transport failure distinct from completed one-shot cleanup and JSON 
     durationMs: 125, remainingDeadlineMs: 500, usableFinalAnswer: false, transportFailure: { category: "http_5xx", status: 502 } });
 });
 
+it.each(["text", "json"])("prints a reply once after the daemon discards a streamed attempt and samples it again (%s)", async format => {
+  // A retry at a higher output limit (or a reconnect) drops the attempt that
+  // streamed, then streams the whole reply again.
+  process.argv = ["node", "agenc", "-p", "--light", "--output-format", format, "hello"];
+  const cut = "The first attempt stops at the default out";
+  const whole = "The retry writes the whole reply.";
+  const nested = (event: unknown) => ({ method: "event.session_event", params: { sessionId: "session", event } });
+  mocks.connect.mockResolvedValue({ request, close, subscribeToConnectionState: () => () => {},
+    subscribeToSessionEvents: (_id: string, callback: (event: unknown) => void) => {
+      queueMicrotask(() => {
+        callback({ method: "event.message_chunk", params: { sessionId: "session", delta: cut } });
+        callback(nested({ type: "stream_error", payload: { cause: "stream_attempt_discarded",
+          message: "Discarded model output cut by the output limit before retrying with a higher limit." } }));
+        callback({ method: "event.message_chunk", params: { sessionId: "session", delta: whole } });
+        callback(nested({ type: "agent_message", payload: { message: whole } }));
+        callback({ method: "event.agent_status", params: { sessionId: "session", status: "idle", runStatus: "completed" } });
+      });
+      return () => {};
+    },
+  });
+  expect(await oneShotCLI("hello")).toBe(0);
+  if (format === "text") {
+    // The dropped attempt was already written; the reply follows on its own line, once.
+    expect(writes.join("")).toBe(`${cut}\n${whole}\n`);
+  } else {
+    expect(JSON.parse(writes.join(""))).toMatchObject({ exitCode: 0, finalMessage: whole });
+  }
+});
+
 it("loads continuation only for the existing resume selector and forwards its exact prepared inputs", async () => {
   const selector = { kind: "latest" as const };
   expect(await oneShotCLI("next turn", [], { permissionMode: "plan", model: "grok-4.7" }, selector)).toBe(23);

@@ -59,7 +59,7 @@ The RPC name remains `session.transcript.v2`. Its default response stays schema 
     turnId: string,
     toolCalls: Array<{
       callId: string, toolName: string,
-      inputDigest: Record<string, string>,
+      inputDigest: Record<string, string>, pathsTruncated?: true,
       isError?: boolean, durationMs?: number
     }>,
     plan?: {
@@ -85,7 +85,7 @@ The RPC name remains `session.transcript.v2`. Its default response stays schema 
 
 `inputDigest` selects command, cmd, path, file_path, url, pattern, query and description. Each value is at most 512 characters. All values together are at most 1,024 characters. Inputs above 64 KiB or invalid JSON produce an empty digest. It never includes file contents, replacement text or tool outputs. Unfinished calls omit result status and duration.
 
-An `apply_patch` call carries one patch text, so its digest names the files that patch names instead, read by Core's patch parser from its `*** Add File:`, `*** Update File:`, `*** Delete File:` and `*** Move to:` lines. `path` is the file of a patch with one file section; a move keeps the file it moves, as the live step names it. `paths` lists every file the patch names, one per line, in patch order, without repeats, as many whole paths as fit in 512 characters. The patch is read as the tool reads it, so a bare patch string works too. A patch the parser refuses produces an empty digest.
+An `apply_patch` call carries one patch text, so its digest names the files that patch names instead, read by Core's patch parser from its `*** Add File:`, `*** Update File:`, `*** Delete File:` and `*** Move to:` lines. `path` is the file of a patch with one file section; a move keeps the file it moves, as the live step names it. `paths` lists every file the patch names, one per line, in patch order, without repeats, as many whole paths as fit in 512 characters. When that leaves a file out, the call carries `pathsTruncated: true`, so a client can say "12 or more files" instead of "12 files"; `paths` is then absent when the first path alone is longer than 512 characters. The mark is a field of the call, not a digest key, and is absent when `paths` names every file. The patch is read as the tool reads it, so a bare patch string works too. A patch the parser refuses produces an empty digest.
 
 The projection keeps at most 128 turns and 128 calls per turn. The entire `turns` JSON is capped at 128 KiB by dropping older turns. It reports `turnsTruncated`. It follows the visible transcript boundary. Ordinary v2 messages, results and notices keep their existing retention policy.
 
