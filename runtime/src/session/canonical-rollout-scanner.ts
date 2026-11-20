@@ -65,6 +65,7 @@ import {
   readCompactionPersistedIntentV1,
   readCompactionPersistedRollbackCommittedV1,
   readCompactionRolloutPayload,
+  readStoredCompactionCommit,
 } from "./compaction-event-reader.js";
 
 const MAX_COMPACTION_LIFECYCLE_RECORDS = MAX_COMPACTION_PIN_HISTORY_TOTAL * 6;
@@ -1264,7 +1265,7 @@ function hydratePersistedCommitRecord(
   intent: CompactionIntentV1,
   payloadRegistry: DiskCompactionPayloadRegistry,
 ): StrictCanonicalJournalRecord {
-  const hydrated = readCompactionRolloutPayload("compaction_committed", {
+  const hydrated = readStoredCompactionCommit({
     format_version: persisted.format_version,
     minimum_reader_runtime: persisted.minimum_reader_runtime,
     attempt_id: persisted.attempt_id,
