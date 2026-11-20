@@ -39,10 +39,13 @@ interface ThreadSourceRow {
   readonly archived_rollout_path: string | null;
 }
 
-interface JournalSourceScope {
+/** The rollout items of `thread_rollout_items` that a run's replay reads. */
+export interface JournalSourceScope {
   readonly predicate: string;
   readonly params: readonly unknown[];
   readonly known: boolean;
+  /** The run's journal bindings name the rollouts; otherwise the thread's own rollout is read. */
+  readonly bound: boolean;
   readonly firstAvailableSequence?: number;
   readonly lastSequence?: number;
   readonly retiredThroughSequence?: number;
@@ -483,7 +486,12 @@ function selectedSourcePath(
   return row?.rollout_path ?? row?.archived_rollout_path ?? undefined;
 }
 
-function journalSourceScope(
+/**
+ * The rollouts a run's replay reads: the ones its journal bindings name, or
+ * with no binding the thread's own rollout. Run inspection proves the run's
+ * admission events over the same items.
+ */
+export function journalSourceScope(
   db: BetterSqlite3.Database,
   runId: string,
 ): JournalSourceScope {
@@ -525,6 +533,7 @@ function journalSourceScope(
           "source_path IN (SELECT source_path FROM run_journal_bindings WHERE run_id = ?)",
         params: [runId],
         known: true,
+        bound: true,
         ...(binding?.first_available_sequence !== null &&
         binding?.first_available_sequence !== undefined
           ? { firstAvailableSequence: binding.first_available_sequence }
@@ -546,11 +555,12 @@ function journalSourceScope(
 
   const sourcePath = selectedSourcePath(db, runId);
   return sourcePath === undefined
-    ? { predicate: "thread_id = ?", params: [runId], known: false }
+    ? { predicate: "thread_id = ?", params: [runId], known: false, bound: false }
     : {
         predicate: "thread_id = ? AND source_path = ?",
         params: [runId, sourcePath],
         known: true,
+        bound: false,
       };
 }
 

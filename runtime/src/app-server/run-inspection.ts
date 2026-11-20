@@ -44,7 +44,7 @@ import {
 } from "../state/sqlite-driver.js";
 import { countRunJournalHomes, hasCanonicalRunState, splitRunStrays } from "../state/split-run.js";
 import { recoverCanonicalRunJournalForRun } from "../state/startup-run-journal-recovery.js";
-import { buildCanonicalRunReplay } from "./run-journal-replay.js";
+import { buildCanonicalRunReplay, journalSourceScope } from "./run-journal-replay.js";
 import { readWorkflowStepEvidence } from "./workflow/steps.js";
 import { projectWorkflowStatus } from "./workflow/status-projection.js";
 
@@ -86,7 +86,6 @@ interface AgentRunRow {
 
 interface LocatedRun {
   readonly paths: StateDatabasePaths;
-  readonly run?: AgentRunRow;
   readonly admission?: {
     readonly paths: StateDatabasePaths;
     readonly summary: RunStatusResult["admission"];
@@ -191,10 +190,10 @@ export class AgenCDaemonRunInspectionService {
   status(params: RunStatusParams): RunStatusResult {
     const runId = normalizeRunId(params.runId, "run.status");
     const observedStop = this.#runtimeFailure?.(runId) !== undefined;
-    const located = this.#locate(runId, observedStop);
-    this.#refreshStatusProjection(located.paths, runId, observedStop);
-    const result = withReadonlyStateDatabase(located.paths, (db) =>
-      buildRunStatus(db, located, runId),
+    const result = this.#inspect(
+      runId,
+      (paths) => this.#refreshStatusProjection(paths, runId, observedStop),
+      (db, located) => buildRunStatus(db, located, runId),
     );
     const runtimeFailure = result.workflow !== undefined && !result.terminal
       ? this.#runtimeFailure?.(runId) : undefined;
@@ -228,22 +227,18 @@ export class AgenCDaemonRunInspectionService {
     const runId = normalizeRunId(params.runId, "run.replay");
     const afterSequence = normalizeAfterSequence(params.afterSequence);
     const limit = normalizeReplayLimit(params.limit);
-    const located = this.#locate(runId);
-    refreshRunJournalProjection(located.paths, runId);
-    const page = withReadonlyStateDatabase(located.paths, (db) =>
-      buildRunReplay(db, located, runId, afterSequence, limit),
-    );
-    return located.partial === undefined
-      ? page
-      : { ...page, source: { ...page.source, partial: located.partial } };
+    return this.#inspect(runId, (paths) => refreshRunJournalProjection(paths, runId), (db, located) => {
+      const page = buildRunReplay(db, located, runId, afterSequence, limit);
+      return located.partial === undefined
+        ? page
+        : { ...page, source: { ...page.source, partial: located.partial } };
+    });
   }
 
   result(params: RunResultParams): RunResultResult {
     const runId = normalizeRunId(params.runId, "run.result");
-    const located = this.#locate(runId);
-    refreshRunJournalProjection(located.paths, runId);
-    return withReadonlyStateDatabase(located.paths, (db) => {
-      const run = readAgentRun(db, runId) ?? located.run;
+    return this.#inspect(runId, (paths) => refreshRunJournalProjection(paths, runId), (db, located) => {
+      const run = readAgentRun(db, runId);
       const durableTerminal = readCurrentTerminalResult(db, runId);
       const status = buildRunStatus(db, located, runId);
       if (
@@ -304,94 +299,90 @@ export class AgenCDaemonRunInspectionService {
     const runId = normalizeRunId(params.runId, "run.evidence");
     const afterSequence = normalizeAfterSequence(params.afterSequence);
     const limit = normalizeReplayLimit(params.limit);
-    const located = this.#locate(runId);
-    refreshRunJournalProjection(located.paths, runId);
-    return withReadonlyStateDatabase(located.paths, (db) => {
-      // A single read transaction gives the status summary and journal page a
-      // coherent SQLite snapshot without taking a write reservation.
-      return db.transaction(() => {
-        const status = buildRunStatus(db, located, runId);
-        const replay = buildRunReplay(db, located, runId, afterSequence, limit);
-        const eventHashes = replay.events.map((event) => ({
-          sequence: event.sequence,
-          eventId: event.eventId,
-          sha256: sha256(event),
-        }));
-        const runStateSha256 = sha256({
-          durableRun: status.durableRun ?? null,
-          status: status.status,
-          terminal: status.terminal,
-        });
-        const admissionSummarySha256 = sha256(status.admission);
-        const gapSha256 = sha256(replay.gap);
-        const canonicalJournal =
-          replay.source.available && replay.source.kind === "run_journal";
-        const completeness: RunEvidenceResult["source"]["completeness"] =
-          !replay.source.available
-            ? "admission_source_unavailable"
-            : replay.gap !== null
-              ? "journal_gap"
-            : afterSequence > 0 || replay.hasMore || located.admission !== undefined ||
-                located.partial !== undefined
-              ? "partial"
-              : "complete";
-        const bundleDocument = {
-          runId,
-          source: canonicalJournal
+    // The status summary and the journal page come from the snapshot the
+    // proof was made on, without taking a write reservation.
+    return this.#inspect(runId, (paths) => refreshRunJournalProjection(paths, runId), (db, located) => {
+      const status = buildRunStatus(db, located, runId);
+      const replay = buildRunReplay(db, located, runId, afterSequence, limit);
+      const eventHashes = replay.events.map((event) => ({
+        sequence: event.sequence,
+        eventId: event.eventId,
+        sha256: sha256(event),
+      }));
+      const runStateSha256 = sha256({
+        durableRun: status.durableRun ?? null,
+        status: status.status,
+        terminal: status.terminal,
+      });
+      const admissionSummarySha256 = sha256(status.admission);
+      const gapSha256 = sha256(replay.gap);
+      const canonicalJournal =
+        replay.source.available && replay.source.kind === "run_journal";
+      const completeness: RunEvidenceResult["source"]["completeness"] =
+        !replay.source.available
+          ? "admission_source_unavailable"
+          : replay.gap !== null
+            ? "journal_gap"
+          : afterSequence > 0 || replay.hasMore || located.admission !== undefined ||
+              located.partial !== undefined
+            ? "partial"
+            : "complete";
+      const bundleDocument = {
+        runId,
+        source: canonicalJournal
+          ? "canonical_run_journal"
+          : "existing_m3_admission_state",
+        completeness,
+        ...(located.partial !== undefined ? { partial: located.partial } : {}),
+        afterSequence,
+        nextAfterSequence: replay.nextAfterSequence,
+        runStateSha256,
+        admissionSummarySha256,
+        gap: replay.gap,
+        gapSha256,
+        eventHashes,
+        ...(located.admission !== undefined
+          ? { admissionSource: runStateSource(located) }
+          : {}),
+      } as const;
+      const bundle = workflowEvidenceBundle(this.#agencHome, db, runId);
+      const result: RunEvidenceResult = {
+        runId,
+        source: {
+          kind: canonicalJournal
             ? "canonical_run_journal"
             : "existing_m3_admission_state",
+          projectDir: located.paths.projectDir,
+          ...(located.admission !== undefined
+            ? {
+                admissionProjectDir: located.admission.paths.projectDir,
+                admissionLastSequence: located.admission.lastSequence,
+              }
+            : {}),
+          admissionJournal: status.admission.sources.journal,
+          workflowEvidenceIncluded: canonicalJournal,
           completeness,
           ...(located.partial !== undefined ? { partial: located.partial } : {}),
+        },
+        cursor: {
           afterSequence,
           nextAfterSequence: replay.nextAfterSequence,
+          limit,
+        },
+        hasMore: replay.hasMore,
+        gap: replay.gap,
+        events: replay.events,
+        hashes: {
+          algorithm: "sha256",
           runStateSha256,
           admissionSummarySha256,
-          gap: replay.gap,
           gapSha256,
           eventHashes,
-          ...(located.admission !== undefined
-            ? { admissionSource: runStateSource(located) }
-            : {}),
-        } as const;
-        const bundle = workflowEvidenceBundle(this.#agencHome, db, runId);
-        const result: RunEvidenceResult = {
-          runId,
-          source: {
-            kind: canonicalJournal
-              ? "canonical_run_journal"
-              : "existing_m3_admission_state",
-            projectDir: located.paths.projectDir,
-            ...(located.admission !== undefined
-              ? {
-                  admissionProjectDir: located.admission.paths.projectDir,
-                  admissionLastSequence: located.admission.lastSequence,
-                }
-              : {}),
-            admissionJournal: status.admission.sources.journal,
-            workflowEvidenceIncluded: canonicalJournal,
-            completeness,
-            ...(located.partial !== undefined ? { partial: located.partial } : {}),
-          },
-          cursor: {
-            afterSequence,
-            nextAfterSequence: replay.nextAfterSequence,
-            limit,
-          },
-          hasMore: replay.hasMore,
-          gap: replay.gap,
-          events: replay.events,
-          hashes: {
-            algorithm: "sha256",
-            runStateSha256,
-            admissionSummarySha256,
-            gapSha256,
-            eventHashes,
-            bundleSha256: sha256(bundleDocument),
-          },
-          ...(bundle !== undefined ? { bundle } : {}),
-        };
-        return result;
-      })();
+          bundleSha256: sha256(bundleDocument),
+        },
+        ...(bundle !== undefined ? { bundle } : {}),
+      };
+      return result;
     });
   }
 
@@ -404,8 +395,32 @@ export class AgenCDaemonRunInspectionService {
     }
   }
 
-  #locate(runId: string, observedStop = false): LocatedRun {
-    const matches: (LocatedRun & { readonly canonical: boolean; readonly hasAdmission: boolean })[] = [];
+  /**
+   * Locate the run, bring its projection up to the JSONL tail, then prove its
+   * admission authority and read the answer in one read transaction of each
+   * database they read: the answer is read from the snapshot the proof was
+   * made on, so nothing written after the proof reaches it unproven.
+   */
+  #inspect<T>(
+    runId: string,
+    refresh: (paths: StateDatabasePaths) => void,
+    read: (db: BetterSqlite3.Database, located: LocatedRun) => T,
+  ): T {
+    const layout = this.#locate(runId);
+    refresh(layout.located.paths);
+    return withRunSnapshot((snapshot) => {
+      const located = proveRunAuthority(snapshot, layout, runId);
+      return snapshot.read(located.paths, (db) => read(db, located));
+    });
+  }
+
+  /**
+   * Which project databases hold rows of the run, from one short read of
+   * each. Nothing here is proven yet: {@link proveRunAuthority} proves the
+   * run's admission authority in the snapshot the answer is read from.
+   */
+  #locate(runId: string): RunLayout {
+    const matches: RunMatch[] = [];
     const discovered: StateDatabasePaths[] = [];
     const seen = new Set<string>();
     for (const paths of this.#stateDatabasePaths()) {
@@ -417,9 +432,7 @@ export class AgenCDaemonRunInspectionService {
         const run = readAgentRun(db, runId);
         const canonical = hasCanonicalRunState(db, runId);
         const hasAdmission = hasAdmissionState(db, runId);
-        return run !== undefined || hasAdmission || canonical
-          ? { paths, canonical, hasAdmission, ...(run !== undefined ? { run } : {}) }
-          : undefined;
+        return run !== undefined || hasAdmission || canonical ? { paths, canonical, hasAdmission } : undefined;
       });
       if (match !== undefined) matches.push(match);
     }
@@ -436,63 +449,180 @@ export class AgenCDaemonRunInspectionService {
     const strays = readSplitRunStrays(matches.filter((match) => match.canonical), runId);
     const isStray = (paths: StateDatabasePaths): boolean =>
       strays?.some((stray) => stray.stateDbPath === paths.stateDbPath) === true;
-    const partial: RunPartialAnswer | undefined = strays === undefined ? undefined : {
-      reason: "split_run",
-      omittedProjectDirs: strays.map((stray) => stray.projectDir).sort(),
-    };
-    const marked = (located: LocatedRun): LocatedRun =>
-      partial === undefined ? located : { ...located, partial };
     const kept = matches.filter((match) => !isStray(match.paths));
     const canonicalMatches = kept.filter((match) => match.canonical);
-    if (canonicalMatches.length === 0 && kept.length === 1) return kept[0]!;
+    if (canonicalMatches.length === 0 && kept.length === 1) {
+      return { located: kept[0]!, canonical: false, kept, discovered, strays: [] };
+    }
     if (canonicalMatches.length !== 1) {
       const homes = journalHomes(canonicalMatches, runId);
       throw ambiguousRunOwner(runId, homes === undefined ? undefined : homes > 1 ? "duplicate_run_id" : "project_split");
     }
     const canonical = canonicalMatches[0]!;
-    this.#refreshStatusProjection(canonical.paths, runId, observedStop);
-    const authority = withReadonlyStateDatabase(canonical.paths, (db) => readRunAdmissionAuthority(db, runId));
-    // The session's own compaction attempts are admitted where the session
-    // is; a split run's earlier attempts, where its strays are.
-    const proveCompactions = (admissionPaths: StateDatabasePaths): void =>
-      proveCompactionAdmissions([admissionPaths, ...(strays ?? [])], authority.compactions, runId);
-    if (kept.length === 1 && authority.owner === undefined) {
-      proveCompactions(canonical.paths);
-      return marked(canonical);
-    }
-    const admissionMatches = kept.filter((match) => match.hasAdmission);
-    const declaredOwners = authority.owner === undefined ? [] : discovered.filter((paths) => !isStray(paths) && (
-      paths.projectDir === authority.owner?.workspaceId || withReadonlyStateDatabase(paths, (db) =>
-        hasDeclaredAdmissionWorkspace(db, authority.owner!, runId),
-      )),
-    );
-    if (declaredOwners.length > 1) throw ambiguousRunOwner(runId, "admission_owner_unproved");
-    const declaredOwnerPaths = declaredOwners[0];
-    const owner: LocatedRun | undefined = authority.owner === undefined
-      ? admissionMatches.length === 1 ? admissionMatches[0] : undefined
-      : declaredOwnerPaths === undefined ? undefined : { paths: declaredOwnerPaths };
-    // Rows of the run in another database, and no admission records anywhere
-    // to name an owner: the records are split across databases.
-    if (owner === undefined && authority.owner === undefined && admissionMatches.length === 0) {
-      throw ambiguousRunOwner(runId, "project_split");
-    }
-    if (owner === undefined || !authority.identitiesValid) throw ambiguousRunOwner(runId, "admission_owner_unproved");
-    if (kept.some((match) => match.paths.stateDbPath !== canonical.paths.stateDbPath && match.paths.stateDbPath !== owner.paths.stateDbPath)) {
-      throw ambiguousRunOwner(runId, "project_split");
-    }
-    const admission = withReadonlyStateDatabase(owner.paths, (db) => db.transaction(() => {
-      verifyRunAdmissionAuthority(db, authority, runId);
-      const runIds = collectRunTreeIds(db, runId);
-      const lastSequence = tableExists(db, "execution_admission_journal")
-        ? db.prepare<unknown[], { last_sequence: number | null }>(
-            `SELECT MAX(sequence) AS last_sequence FROM execution_admission_journal WHERE run_id IN (${placeholders(runIds.length)})`,
-          ).get(...runIds)?.last_sequence ?? 0
-        : 0;
-      return { paths: owner.paths, summary: admissionSummary(db, runId), lastSequence };
-    })());
-    proveCompactions(owner.paths);
-    return marked(owner.paths.stateDbPath === canonical.paths.stateDbPath ? canonical : { ...canonical, admission });
+    return {
+      located: strays === undefined ? canonical : {
+        ...canonical,
+        partial: { reason: "split_run", omittedProjectDirs: strays.map((stray) => stray.projectDir).sort() },
+      },
+      canonical: true,
+      kept,
+      discovered,
+      strays: strays ?? [],
+    };
   }
+}
+
+interface RunMatch extends LocatedRun {
+  readonly canonical: boolean;
+  readonly hasAdmission: boolean;
+}
+
+/** Where a run's rows are, found before its authority is proven. */
+interface RunLayout {
+  /**
+   * The database the answer is read from: the one with the run's canonical
+   * journal, or the run's only database when none has one.
+   */
+  readonly located: LocatedRun;
+  /** Whether {@link located} holds the run's canonical journal. */
+  readonly canonical: boolean;
+  /** The databases with rows of the run, the split run's strays left out. */
+  readonly kept: readonly RunMatch[];
+  /** Every project database found, for a declared admission owner. */
+  readonly discovered: readonly StateDatabasePaths[];
+  /** A split run's strays: their rows are left out, their journals still prove the run's admission. */
+  readonly strays: readonly StateDatabasePaths[];
+}
+
+/**
+ * Read-only connections, one per database, each in one read transaction from
+ * its first read until {@link withRunSnapshot} ends, so every read of one
+ * database sees the same snapshot. It lasts one call (the proof and the
+ * answer, nothing else) and holds what any reader holds. In WAL mode, which
+ * state databases use, writers go on; a FULL or TRUNCATE checkpoint, and new
+ * writers behind it, wait for it up to the checkpointing connection's busy
+ * timeout, and then the checkpoint returns busy. A database not in WAL mode
+ * would hold other connections' commits until it ends.
+ */
+class RunSnapshot {
+  readonly #databases = new Map<string, BetterSqlite3.Database>();
+
+  read<T>(paths: StateDatabasePaths, fn: (db: BetterSqlite3.Database) => T): T {
+    let db = this.#databases.get(paths.stateDbPath);
+    if (db === undefined) {
+      const opened = openReadonlyStateDatabase(paths);
+      try {
+        opened.exec("BEGIN");
+      } catch (error) {
+        opened.close();
+        throw error;
+      }
+      this.#databases.set(paths.stateDbPath, opened);
+      db = opened;
+    }
+    return fn(db);
+  }
+
+  /** End every read transaction and close every connection; returns the first failure to close one. */
+  close(): unknown {
+    let failure: unknown;
+    for (const db of this.#databases.values()) {
+      try {
+        if (db.inTransaction) db.exec("ROLLBACK");
+      } catch {
+        // Closing the connection ends the read transaction anyway.
+      }
+      try {
+        db.close();
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+    this.#databases.clear();
+    return failure;
+  }
+}
+
+/** A failure to close is thrown only when the read itself succeeded: it never replaces the read's own error. */
+function withRunSnapshot<T>(fn: (snapshot: RunSnapshot) => T): T {
+  const snapshot = new RunSnapshot();
+  let result: T;
+  try {
+    result = fn(snapshot);
+  } catch (error) {
+    snapshot.close();
+    throw error;
+  }
+  const failure = snapshot.close();
+  if (failure !== undefined) throw failure;
+  return result;
+}
+
+/**
+ * Prove the run's admission authority in the snapshot: its admission
+ * records in its bound rollout, read from the database the answer is read
+ * from, and the journal rows and admission owner that prove them. Refuses
+ * with RUN_ID_AMBIGUOUS when they are not proven.
+ */
+function proveRunAuthority(snapshot: RunSnapshot, layout: RunLayout, runId: string): LocatedRun {
+  const { located, kept, discovered, strays } = layout;
+  // Retention can prune a run after it was located; its snapshot then holds
+  // nothing of it to answer from.
+  const present = snapshot.read(located.paths, (db) =>
+    readAgentRun(db, runId) !== undefined || hasCanonicalRunState(db, runId) || hasAdmissionState(db, runId));
+  if (!present) {
+    throw new AgenCDaemonRunInspectionError("RUN_NOT_FOUND", `no durable run or admission state found for id: ${runId}`);
+  }
+  const authority = snapshot.read(located.paths, (db) => readRunAdmissionAuthority(db, runId));
+  if (!layout.canonical || (kept.length === 1 && authority.owner === undefined)) {
+    // One database holds the run: its own admission was journaled there,
+    // or for a split run where each period's admission went. The session's
+    // own compaction attempts are admitted where the session is; a split
+    // run's earlier attempts, where its strays are.
+    proveOwnAdmissions(snapshot, [located.paths, ...strays], authority.events, runId);
+    proveCompactionAdmissions(snapshot, [located.paths, ...strays], authority.compactions, runId);
+    return located;
+  }
+  const isStray = (paths: StateDatabasePaths): boolean =>
+    strays.some((stray) => stray.stateDbPath === paths.stateDbPath);
+  const admissionMatches = kept.filter((match) => match.hasAdmission);
+  // Found with a short read of each database; the owner is proven again in
+  // its snapshot below.
+  const declaredOwners = authority.owner === undefined ? [] : discovered.filter((paths) => !isStray(paths) && (
+    paths.projectDir === authority.owner?.workspaceId || withReadonlyStateDatabase(paths, (db) =>
+      hasDeclaredAdmissionWorkspace(db, authority.owner!, runId),
+    )),
+  );
+  if (declaredOwners.length > 1) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+  const declaredOwnerPaths = declaredOwners[0];
+  const owner: { readonly paths: StateDatabasePaths } | undefined = authority.owner === undefined
+    ? admissionMatches.length === 1 ? admissionMatches[0] : undefined
+    : declaredOwnerPaths === undefined ? undefined : { paths: declaredOwnerPaths };
+  // Rows of the run in another database, and no admission records anywhere
+  // to name an owner: the records are split across databases.
+  if (owner === undefined && authority.owner === undefined && admissionMatches.length === 0) {
+    throw ambiguousRunOwner(runId, "project_split");
+  }
+  if (owner === undefined || !authority.identitiesValid) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+  if (kept.some((match) => match.paths.stateDbPath !== located.paths.stateDbPath && match.paths.stateDbPath !== owner.paths.stateDbPath)) {
+    throw ambiguousRunOwner(runId, "project_split");
+  }
+  const admission = snapshot.read(owner.paths, (db) => {
+    if (authority.owner !== undefined && owner.paths.projectDir !== authority.owner.workspaceId &&
+        !hasDeclaredAdmissionWorkspace(db, authority.owner, runId)) {
+      throw ambiguousRunOwner(runId, "admission_owner_unproved");
+    }
+    verifyRunAdmissionAuthority(db, authority, runId);
+    const runIds = collectRunTreeIds(db, runId);
+    const lastSequence = tableExists(db, "execution_admission_journal")
+      ? db.prepare<unknown[], { last_sequence: number | null }>(
+          `SELECT MAX(sequence) AS last_sequence FROM execution_admission_journal WHERE run_id IN (${placeholders(runIds.length)})`,
+        ).get(...runIds)?.last_sequence ?? 0
+      : 0;
+    return { paths: owner.paths, summary: admissionSummary(db, runId), lastSequence };
+  });
+  proveCompactionAdmissions(snapshot, [owner.paths, ...strays], authority.compactions, runId);
+  return owner.paths.stateDbPath === located.paths.stateDbPath ? located : { ...located, admission };
 }
 
 interface RunAdmissionAuthority {
@@ -538,6 +668,7 @@ interface CompactionAdmissionJobRow {
  * step, a child of this run in this session. Anything else refuses.
  */
 function proveCompactionAdmissions(
+  snapshot: RunSnapshot,
   journals: readonly StateDatabasePaths[],
   events: readonly JsonObject[],
   runId: string,
@@ -547,7 +678,7 @@ function proveCompactionAdmissions(
     journals.findIndex((other) => other.stateDbPath === paths.stateDbPath) === index);
   const proven = new Map<string, number>();
   for (const paths of unique) {
-    withReadonlyStateDatabase(paths, (db) => {
+    snapshot.read(paths, (db) => {
       if (!tableExists(db, "execution_admission_journal")) return;
       const jobsReadable = tableExists(db, "agent_jobs") &&
         ["admission_run_id", "admission_step_id", "admission_parent_run_id", "admission_session_id"]
@@ -576,6 +707,53 @@ function proveCompactionAdmissions(
     });
   }
   if (events.some((event) => proven.get(String(event.eventId)) !== 1)) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+}
+
+/**
+ * Prove each of the run's own admission events in its bound rollout against
+ * an admission journal: exactly one of the given databases holds its journal
+ * row, the row is the run's, and every copy of the event in the rollout is
+ * that row. Anything else refuses. One event can be in more than one bound
+ * rollout of the run (admission recovery accepts that); each copy must be
+ * the row.
+ */
+function proveOwnAdmissions(
+  snapshot: RunSnapshot,
+  journals: readonly StateDatabasePaths[],
+  events: readonly JsonObject[],
+  runId: string,
+): void {
+  if (events.length === 0) return;
+  const copies = new Map<string, JsonObject[]>();
+  for (const event of events) {
+    const eventId = String(event.eventId);
+    const known = copies.get(eventId);
+    if (known === undefined) copies.set(eventId, [event]);
+    else known.push(event);
+  }
+  const unique = journals.filter((paths, index) =>
+    journals.findIndex((other) => other.stateDbPath === paths.stateDbPath) === index);
+  const holders = new Map<string, number>();
+  for (const paths of unique) {
+    snapshot.read(paths, (db) => {
+      if (!tableExists(db, "execution_admission_journal")) return;
+      const journalRow = db.prepare<[string], AdmissionJournalRow>(
+        "SELECT * FROM execution_admission_journal WHERE event_id = ?",
+      );
+      for (const [eventId, eventCopies] of copies) {
+        const row = journalRow.get(eventId);
+        if (row === undefined) continue;
+        if (row.run_id !== runId) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+        const { category: ignoredCategory, ...admissionEvent } = legacyJournalEventFromRow(row);
+        const journaled = canonicalJson(admissionEvent);
+        if (eventCopies.some((event) => canonicalJson(event) !== journaled)) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+        holders.set(eventId, (holders.get(eventId) ?? 0) + 1);
+      }
+    });
+  }
+  for (const eventId of copies.keys()) {
+    if (holders.get(eventId) !== 1) throw ambiguousRunOwner(runId, "admission_owner_unproved");
+  }
 }
 
 /**
@@ -630,23 +808,32 @@ function isRunAuthorityObject(value: JsonValue | undefined): value is JsonObject
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * The run's admission records in the rollout items its replay reads
+ * ({@link journalSourceScope}): the bound rollouts, or with no binding the
+ * thread's own rollout. Only a bound rollout's session metadata can declare
+ * an admission owner.
+ */
 function readRunAdmissionAuthority(db: BetterSqlite3.Database, runId: string): RunAdmissionAuthority {
-  if (!tableExists(db, "run_journal_bindings") || !tableExists(db, "thread_rollout_items")) {
+  if (!tableExists(db, "thread_rollout_items")) {
     return { identitiesValid: false, events: [], compactions: [] };
   }
-  const bindings = db.prepare<[string], { child_run_id: string; session_id: string }>(
-    "SELECT child_run_id, session_id FROM run_journal_bindings WHERE run_id = ? LIMIT 33",
-  ).all(runId);
+  const bindings = tableExists(db, "run_journal_bindings")
+    ? db.prepare<[string], { child_run_id: string; session_id: string }>(
+        "SELECT child_run_id, session_id FROM run_journal_bindings WHERE run_id = ? LIMIT 33",
+      ).all(runId)
+    : [];
   const identitiesValid = bindings.length > 0 && bindings.length <= 32 &&
     bindings.every((binding) => binding.child_run_id === runId && binding.session_id === runId);
   let owner: RunAdmissionAuthority["owner"];
-  const rows = db.prepare<[string], { item_type: string; payload_json: string }>(
+  const scope = journalSourceScope(db, runId);
+  const rows = db.prepare<unknown[], { item_type: string; payload_json: string }>(
     `SELECT item_type, payload_json FROM thread_rollout_items
-     WHERE source_path IN (SELECT source_path FROM run_journal_bindings WHERE run_id = ?)
-       AND (item_type = 'session_meta' OR
+     WHERE ${scope.predicate}
+       AND (${scope.bound ? "item_type = 'session_meta' OR " : ""}
          (item_type = 'event_msg' AND json_extract(payload_json, '$.msg.type') = 'execution_admission'))
      ORDER BY source_path, line_number LIMIT ${MAX_RUN_ADMISSION_RECORDS + 1}`,
-  ).all(runId);
+  ).all(...scope.params);
   if (rows.length > MAX_RUN_ADMISSION_RECORDS) throw ambiguousRunOwner(runId, "admission_record_limit");
   const events: JsonObject[] = [];
   const compactions: JsonObject[] = [];
@@ -714,7 +901,9 @@ function buildRunStatus(
   runId: string,
 ): RunStatusResult {
   const admission = located.admission?.summary ?? admissionSummary(db, runId);
-  const run = readAgentRun(db, runId) ?? located.run;
+  // The run row of the snapshot; the one found while locating the run was
+  // read before it.
+  const run = readAgentRun(db, runId);
   const currentLifecycleEpoch = readCurrentLifecycleEpoch(db, runId);
   const durableTerminal = readCurrentTerminalResult(db, runId);
   const workflow = workflowStatusProjection(db, runId, durableTerminal);
@@ -1681,6 +1870,15 @@ function withReadonlyStateDatabase<T>(
   paths: StateDatabasePaths,
   fn: (db: BetterSqlite3.Database) => T,
 ): T {
+  const db = openReadonlyStateDatabase(paths);
+  try {
+    return fn(db);
+  } finally {
+    db.close();
+  }
+}
+
+function openReadonlyStateDatabase(paths: StateDatabasePaths): BetterSqlite3.Database {
   const db = openSqliteDatabase(paths.stateDbPath, {
     readonly: true,
     fileMustExist: true,
@@ -1688,10 +1886,11 @@ function withReadonlyStateDatabase<T>(
   try {
     db.pragma("query_only = ON");
     db.pragma("busy_timeout = 250");
-    return fn(db);
-  } finally {
+  } catch (error) {
     db.close();
+    throw error;
   }
+  return db;
 }
 
 function normalizeRunId(value: string, method: string): string {
