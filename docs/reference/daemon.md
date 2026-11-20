@@ -1825,8 +1825,11 @@ A prompt that arrives while such a continuation runs replaces it. When the
 continuation's model call is already on the wire, the new turn waits for that
 call to finish, at most 30 seconds, and the continuation then stops without
 using the answer: the call settles in the admission ledger with the usage the
-provider reported, so the session's cost stays known. Cutting it would leave
-the ledger holding the call as `held_unknown`
+provider reported, so the session's cost stays known. It also writes its
+`token_count` in the continuation's turn, before that turn's `turn_aborted`,
+so `session.snapshot` counts its tokens with its cost (a call that comes back
+after its turn stopped for another reason is counted the same way). Cutting
+it would leave the ledger holding the call as `held_unknown`
 (`cancelled_after_dispatch:replaced`), and `costKnown` false from then on. A
 call still out after 30 seconds is cut as before. Every other stop (an
 interrupt, a daemon shutdown, a provider switch) cuts the call at once, also
