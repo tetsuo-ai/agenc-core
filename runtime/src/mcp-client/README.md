@@ -132,7 +132,8 @@ Read/UI classifications use a closed product-owned list, never MCP annotations.
 Ordinary approvals and plan restrictions still apply.
 
 Only those authenticated, audited inspection tools declare an `idempotent`
-recovery category: `desktop_state`, `desktop_window_state`, `browser_tabs`,
+recovery category: `desktop_chart_format` (Desktop's fixed chart and diagram
+format text), `desktop_state`, `desktop_window_state`, `browser_tabs`,
 `browser_screenshot`, `browser_downloads`, `browser_console`, `terminal_list`,
 and `terminal_read`. They can inspect a session that has a prior unresolved
 outcome without clearing it or

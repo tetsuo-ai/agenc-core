@@ -672,8 +672,8 @@ const DESKTOP_NATIVE_TERMINALS = new Set(["terminal_open", "terminal_run", "term
 // page-main-world JavaScript and may invoke page-defined getters or setters.
 // Do not replay those while another effect is unresolved.
 const DESKTOP_IDEMPOTENT_INSPECTIONS = new Set([
-  "desktop_state", "desktop_window_state", "desktop_routine_list", "desktop_routine_get", "desktop_routine_runs", "browser_tabs", "browser_screenshot",
-  "browser_downloads", "browser_console", "terminal_list", "terminal_read",
+  "desktop_chart_format", "desktop_state", "desktop_window_state", "desktop_routine_list", "desktop_routine_get", "desktop_routine_runs", "browser_tabs",
+  "browser_screenshot", "browser_downloads", "browser_console", "terminal_list", "terminal_read",
 ]);
 function nativeDesktopTerminalAllowed(args: Record<string, unknown>, callId: string,
   toolName: string, options: MCPToolBridgePermissionOptions | undefined): boolean {
