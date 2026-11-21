@@ -2155,11 +2155,16 @@ export class MCPManager {
     if (this.getServerConfig(name)?.localOnly === true) {
       if (!hasLocalMcpAccess() || !this.bridges.has(name)) return undefined;
       if (name !== "agenc-desktop-control" || !hasDesktopAuthority(this.getServerConfig(name)?.desktopAuthorityGrant)) return this.serverInstructions.get(name);
-      const tools = this.getAuthenticatedDesktopToolNames().join(", ");
-      const routineGuidance = tools.includes("mcp.agenc-desktop-control.desktop_routine_list")
-        ? " For the user's AgenC Desktop Routines, discover desktop_routine_list/get/create/update/delete/run/runs/cancel and desktop_routines_open here. These operate the app's real Routine records. CronCreate/CronList/CronDelete are a separate conversation scheduler, not a substitute for Desktop Routines. Inspect current records before updating, deleting or running them; preserve revision checks. Routine changes require ordinary approval and are unavailable in read-only/plan mode. A routine you create runs with this session's current permission mode; request a narrower permissionMode only when the user asks for one, and Core refuses a wider one. Changing a routine's instructions, workspace, model or permissions needs a session whose mode is at least the routine's. Scheduled runs have nobody to approve anything: default and plan runs are read-only, acceptEdits runs may edit files in the routine's workspace, bypassPermissions runs skip approvals, and every run writes files only inside its workspace."
+      // This block stays in the conversation and rides on every request, while
+      // the tools load on demand with their own descriptions (each Routine tool
+      // carries its rules). So it names every tool once, without the shared
+      // prefix, and keeps only what holds for all of them.
+      const prefix = `mcp.${name}.`;
+      const tools = this.getAuthenticatedDesktopToolNames().map(tool => tool.slice(prefix.length));
+      const routines = tools.some(tool => tool.startsWith("desktop_routine"))
+        ? " desktop_routine_* operate the app's real Routine records; CronCreate/CronList/CronDelete are a separate conversation scheduler, not a substitute for Desktop Routines."
         : "";
-      return `This is authenticated local AgenC Desktop app control, not a web page or the isolated Browser tool. Discover its tools with system.searchTools, then select the exact MCP tool name before calling it. Available tools: ${tools}. Use only for the user's requested app operation; this capability does not grant additional permissions.${routineGuidance} Native visible-terminal mutations require an explicitly full-access session. In restricted sessions use Core exec_command/system.bash for sandboxed commands; never loosen permissions just to control the visible terminal.\n\n${this.serverInstructions.get(name) ?? ""}`;
+      return `This is authenticated local AgenC Desktop app control, not a web page or the isolated Browser tool. Load a tool with system.searchTools select:${prefix}<name> before calling it. Tools: ${tools.join(", ")}. Use only for the user's requested app operation; this capability does not grant additional permissions.${routines} Native visible-terminal mutations require an explicitly full-access session. In restricted sessions use Core exec_command/system.bash for sandboxed commands; never loosen permissions just to control the visible terminal.\n\n${this.serverInstructions.get(name) ?? ""}`;
     }
     return this.serverInstructions.get(name);
   }
