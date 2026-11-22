@@ -57,25 +57,29 @@ function fixture() {
 describe("one skill per name", () => {
   it("lists and loads one skill for a name defined in two roots, and says which lost", async () => {
     const f = fixture();
+    const managedHome = tmpRoot("aa-managed");
+    const managedFile = writeSkill(join(managedHome, ".agenc", "skills"), "dup", "from managed policy");
     const agencFile = writeSkill(join(f.agencHome, "skills"), "dup", "from the AgenC home");
-    const sharedFile = writeSkill(join(f.home, ".agents", "skills"), "dup", "from the shared catalog");
-    const snapshot = await loadLocalSkillsSnapshot(f.options);
+    const snapshot = await loadLocalSkillsSnapshot({
+      ...f.options,
+      env: { ...f.options.env, AGENC_MANAGED_HOME: managedHome },
+    });
 
     const dups = snapshot.skills.filter((skill) => skill.name === "dup");
     expect(dups).toHaveLength(1);
-    expect(dups[0]?.path).toBe(agencFile);
+    expect(dups[0]?.path).toBe(managedFile);
     const { listing } = buildSkillListingWithinBudget(snapshot.skills);
     expect(listing.match(/^- dup: /gmu)).toHaveLength(1);
     expect(snapshot.warnings).toContainEqual({
-      path: sharedFile,
-      reason: `not loaded: ${agencFile} defines a skill with the same name ("dup") and takes precedence`,
+      path: agencFile,
+      reason: `not loaded: ${managedFile} defines a skill with the same name ("dup") and takes precedence`,
     });
   });
 
   it("prefers the user's skill over a repository's skill of the same name", async () => {
     const f = fixture();
-    const userFile = writeSkill(join(f.home, ".agents", "skills"), "deploy", "the user's deploy");
-    const projectFile = writeSkill(join(f.workspaceRoot, ".agents", "skills"), "deploy", "the repository's deploy");
+    const userFile = writeSkill(join(f.agencHome, "skills"), "deploy", "the user's deploy");
+    const projectFile = writeSkill(join(f.workspaceRoot, ".agenc", "skills"), "deploy", "the repository's deploy");
     const services = createLocalSkillsServices(f.options);
 
     await expect(services.skillsManager.resolveSkill?.("deploy"))

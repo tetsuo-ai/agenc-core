@@ -3211,8 +3211,8 @@ describe("model-facing tools", () => {
       skill: {
         name: "repo-skill",
         description: "Repository skill",
-        path: "/workspace/.agents/skills/repo-skill/SKILL.md",
-        root: "/workspace/.agents/skills/repo-skill",
+        path: "/workspace/.agenc/skills/repo-skill/SKILL.md",
+        root: "/workspace/.agenc/skills/repo-skill",
         scope: "project",
         source: "projectSettings",
         allowedTools: ["Bash(*)"],
@@ -3246,7 +3246,9 @@ describe("model-facing tools", () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-skill-tool-user-"));
     const legacyUserSkillRoot = ".legacy-agent";
     try {
-      await writeTestSkill(join(home, ".agents", "skills"), "shared-visible");
+      await writeTestSkill(join(agencHome, "skills"), "agenc-visible");
+      // Other agent tools share ~/.agents/skills; it is not one of AgenC's.
+      await writeTestSkill(join(home, ".agents", "skills"), "shared-hidden");
       await writeTestSkill(
         join(home, legacyUserSkillRoot, "skills"),
         "legacy-visible",
@@ -3292,18 +3294,18 @@ describe("model-facing tools", () => {
       expect(offered).not.toContain("batch");
       expect(offered).not.toContain("debug");
 
-      const retired = await skill.execute({ skill: "legacy-visible" });
-      expect(retired.isError).toBe(true);
-      expect(JSON.parse(retired.content).available).not.toContain(
-        "legacy-visible",
-      );
+      for (const name of ["legacy-visible", "shared-hidden"]) {
+        const retired = await skill.execute({ skill: name });
+        expect(retired.isError).toBe(true);
+        expect(JSON.parse(retired.content).available).not.toContain(name);
+      }
 
-      const loaded = await skill.execute({ skill: "shared-visible" });
+      const loaded = await skill.execute({ skill: "agenc-visible" });
       expect(loaded.isError).toBeUndefined();
       expect(loaded.content).toContain(
-        "<command-name>shared-visible</command-name>",
+        "<command-name>agenc-visible</command-name>",
       );
-      expect(loaded.content).toContain("Use shared-visible.");
+      expect(loaded.content).toContain("Use agenc-visible.");
       // Loading a bundled skill through this tool is covered by
       // tests/bin/skill-tool-bundled.test.ts — invoking one extracts its
       // reference files, which needs the MACRO stub this file does not set.

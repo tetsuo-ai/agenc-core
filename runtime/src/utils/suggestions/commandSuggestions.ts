@@ -390,8 +390,8 @@ export function generateCommandSuggestions(
 
   // A bare '/' lists AgenC's own commands, then a few of the repository's
   // skills. Every other skill, plugin command and MCP prompt waits until the
-  // typed text matches it: a shared catalog such as ~/.agents/skills can hold
-  // thousands of skills, and listing them all buried the built-ins.
+  // typed text matches it: a large skill catalog can hold thousands of
+  // skills, and listing them all buried the built-ins.
   if (query === '') {
     const visibleCommands = commands.filter(cmd => !cmd.isHidden)
     const byName = (a: Command, b: Command) =>

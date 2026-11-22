@@ -223,12 +223,12 @@ describe("skillsCommand", () => {
       ],
       effectiveSkillRoots: [],
       truncatedRoots: [
-        { root: "/home/dev/.agents/skills", loadedCount: 500, droppedCount: 1323 },
+        { root: "/home/dev/.agenc/skills", loadedCount: 500, droppedCount: 1323 },
       ],
     });
     const lines = text.split("\n");
     const notLoaded = lines.indexOf(
-      "  not loaded: 1323 SKILL.md files under /home/dev/.agents/skills (per-root cap reached after 500)",
+      "  not loaded: 1323 SKILL.md files under /home/dev/.agenc/skills (per-root cap reached after 500)",
     );
     expect(notLoaded).toBeGreaterThan(lines.indexOf("  available: 1"));
     expect(notLoaded).toBeLessThan(lines.indexOf("  invoked: none"));

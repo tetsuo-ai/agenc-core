@@ -216,9 +216,10 @@ const SKILL_FILE_NAME = "SKILL.md";
  * it (`droppedCount`) so the snapshot can say what it skipped, but a dropped
  * skill is invisible to the listing, to ranking and to the Skill tool.
  *
- * 500 was set when a catalog meant a handful of hand-written skills. A shared
- * catalog is now the normal case: the machine this was measured on holds
- * 1,820 skills in `~/.agents/skills`, so 1,320 of them — including three of
+ * 500 was set when a catalog meant a handful of hand-written skills. A large
+ * catalog is a normal case: the machine this was measured on held 1,820
+ * skills in one root (`~/.agents/skills`, a folder this Core no longer reads),
+ * so 1,320 of them — including three of
  * the four that matched the work in a live 15-turn run — were dropped before
  * any ranking or budget logic could see them, in readdir order. The ceiling
  * stays, because it is what stops a pathological directory from being walked
@@ -308,7 +309,18 @@ function normalizeDisplayPath(path: string): string {
   return process.platform === "win32" ? path.replace(/\\/g, "/") : path;
 }
 
-/** Walk from the workspace through its nearest git root, excluding HOME. */
+/** A project's own AgenC skills live in `<dir>/.agenc/skills`. */
+const AGENC_PROJECT_SKILLS_DIR = join(".agenc", "skills");
+
+/**
+ * The `.agenc/skills` folder of each directory from the workspace through its
+ * nearest git root, excluding HOME.
+ *
+ * `.agents/skills` is never read, here or under HOME. Other agent tools share
+ * that folder, and a skill installed there for one of them is not AgenC's: a
+ * Desktop chat once answered "what is my balance" with a third-party wallet
+ * skill it found there instead of Desktop's own Market.
+ */
 async function projectSkillDirs(
   workspaceRoot: string,
   home?: string,
@@ -337,10 +349,7 @@ async function projectSkillDirs(
     current = parent;
   }
   const projectDirs = foundGitRoot ? ancestors : ancestors.slice(0, 1);
-  return projectDirs.flatMap((dir) => [
-    join(dir, ".agents", "skills"),
-    join(dir, ".agenc", "skills"),
-  ]);
+  return projectDirs.map((dir) => join(dir, AGENC_PROJECT_SKILLS_DIR));
 }
 
 const warnedUnsafeProjectRoots = new Set<string>();
@@ -434,6 +443,9 @@ async function localSkillRootCandidates(
     });
   }
 
+  // The user's skills are the ones installed for AgenC, in $AGENC_HOME/skills.
+  // `~/.agents/skills` is the catalog every agent tool on the machine shares,
+  // so it is not read (see projectSkillDirs).
   roots.push({
     path: join(agencHome, "skills"),
     scope: "user",
@@ -441,14 +453,6 @@ async function localSkillRootCandidates(
     loadedFrom: "skills",
   });
 
-  if (home.length > 0) {
-    roots.push({
-      path: join(home, ".agents", "skills"),
-      scope: "user",
-      source: "userSettings",
-      loadedFrom: "skills",
-    });
-  }
   const managedHome = options.env?.AGENC_MANAGED_HOME;
   if (managedHome && managedHome.length > 0) {
     roots.push({
@@ -479,7 +483,9 @@ async function discoverSkillRootsWithWarnings(
     if (
       workspaceRelative.length === 0 ||
       workspaceRelative.startsWith("..") ||
-      isAbsolute(workspaceRelative)
+      isAbsolute(workspaceRelative) ||
+      // Only a nested AgenC skill folder, never another tool's.
+      !normalized.endsWith(`${sep}${AGENC_PROJECT_SKILLS_DIR}`)
     ) {
       continue;
     }
@@ -1419,10 +1425,9 @@ function byNameThenPath(a: LocalSkillMetadata, b: LocalSkillMetadata): number {
 
 /**
  * Which of two same-named skills the listing, `/skills` and the Skill tool
- * use. Managed policy first, then the user's own skills ($AGENC_HOME before
- * the shared ~/.agents catalog), then repository skills (the root nearest
- * the files being worked on first, `.agenc` before `.agents` in one
- * directory), then plugins, then AgenC's built-ins. A repository cannot
+ * use. Managed policy first, then the user's own skills ($AGENC_HOME), then
+ * repository skills (the root nearest the files being worked on first), then
+ * plugins, then AgenC's built-ins. A repository cannot
  * replace a skill the user installed for themselves, which matches the
  * upstream rule (managed > personal > project), and a local skill still
  * overrides a built-in, as the bundled-skill listing already did.
@@ -1440,10 +1445,6 @@ const SKILL_PRECEDENCE_TIER: Readonly<Record<LocalSkillScope, number>> = {
   bundled: 5,
 };
 
-function sharedCatalogRoot(root: string): number {
-  return root.endsWith(SHARED_AGENTS_SKILLS_SUFFIX) ? 1 : 0;
-}
-
 export function compareSkillPrecedence(
   a: LocalSkillMetadata,
   b: LocalSkillMetadata,
@@ -1454,10 +1455,7 @@ export function compareSkillPrecedence(
     const byDepth = b.root.split(sep).length - a.root.split(sep).length;
     if (byDepth !== 0) return byDepth;
   }
-  return (
-    sharedCatalogRoot(a.root) - sharedCatalogRoot(b.root) ||
-    a.path.localeCompare(b.path)
-  );
+  return a.path.localeCompare(b.path);
 }
 
 interface ShadowedSkill {
@@ -1620,21 +1618,15 @@ const SKILL_LISTING_SCOPE_RANK: Readonly<Record<string, number>> = {
   plugin: 3,
   mcp: 4,
 };
-const SHARED_AGENTS_SKILLS_SUFFIX = `${sep}${join(".agents", "skills")}`;
 
 /**
  * Order in which skills compete for the listing budget: the workspace's own
- * skills first, then managed and user skills, then plugins. Within the user
- * scope, `~/.agents/skills` is the catalog installed for every agent on the
- * machine and can hold thousands of entries, so the user's AgenC-specific
- * skills under $AGENC_HOME/skills go first.
+ * skills first, then managed and user skills, then plugins. The user scope is
+ * $AGENC_HOME/skills alone: the shared `~/.agents/skills` catalog is not
+ * loaded, so it needs no rank of its own below the user's AgenC skills.
  */
 function skillListingRank(skill: SkillListingEntry): number {
-  const scopeRank = SKILL_LISTING_SCOPE_RANK[skill.scope ?? ""] ?? 5;
-  const sharedCatalog =
-    skill.scope === "user" &&
-    skill.root?.endsWith(SHARED_AGENTS_SKILLS_SUFFIX) === true;
-  return scopeRank * 2 + (sharedCatalog ? 1 : 0);
+  return SKILL_LISTING_SCOPE_RANK[skill.scope ?? ""] ?? 5;
 }
 
 function formatHiddenSkillsLine(count: number): string {
@@ -2421,6 +2413,11 @@ function pluginConfigView(
     : undefined;
 }
 
+/**
+ * The `.agenc/skills` folders between a touched file and the workspace, the
+ * nearest first. Like the fixed project roots, a nested `.agents/skills`
+ * folder belongs to other agent tools and is not read.
+ */
 export async function discoverDynamicSkillDirsForPaths(
   filePaths: readonly string[],
   cwd: string,
@@ -2431,9 +2428,8 @@ export async function discoverDynamicSkillDirsForPaths(
   for (const filePath of filePaths) {
     let current = dirname(isAbsolute(filePath) ? filePath : resolve(cwd, filePath));
     while (current.startsWith(`${resolvedCwd}${sep}`)) {
-      for (const rootName of [".agenc", ".agents"]) {
-        const skillDir = join(current, rootName, "skills");
-        if (seen.has(skillDir)) continue;
+      const skillDir = join(current, AGENC_PROJECT_SKILLS_DIR);
+      if (!seen.has(skillDir)) {
         seen.add(skillDir);
         if (await pathIsDirectory(skillDir) && await projectSkillRootIsSafe(skillDir)) {
           dirs.push(skillDir);

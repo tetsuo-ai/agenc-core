@@ -148,7 +148,7 @@ describe("skillListingProducer", () => {
             invokedSkills: [],
             availableSkills: manySkills(200),
             truncatedSkillRoots: [
-              { root: "/home/u/.agents/skills", droppedCount: 1_320 },
+              { root: "/home/u/.agenc/skills", droppedCount: 1_320 },
             ],
           }),
         },
@@ -157,7 +157,7 @@ describe("skillListingProducer", () => {
       await skillListingProducer(opts, getAttachmentTrackingState(opts.sessionKey));
 
       expect(diagnostics[0]?.message).toContain("1320 more were never loaded");
-      expect(diagnostics[0]?.message).toContain("/home/u/.agents/skills holds 1320 past the per-root cap");
+      expect(diagnostics[0]?.message).toContain("/home/u/.agenc/skills holds 1320 past the per-root cap");
     });
 
     test("stays quiet when every skill fit", async () => {

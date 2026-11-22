@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, sep } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -190,10 +190,10 @@ describe("local skills loader", () => {
     const repo = join(outer, "repo");
     const workspaceRoot = join(repo, "packages", "ui");
     mkdirSync(join(repo, ".git"), { recursive: true });
-    const workspaceSkill = writeSkill(join(workspaceRoot, ".agents", "skills"), "workspace-skill");
+    const workspaceSkill = writeSkill(join(workspaceRoot, ".agenc", "skills"), "workspace-skill");
     const packageSkill = writeSkill(join(repo, "packages", ".agenc", "skills"), "package-skill");
-    const repoSkill = writeSkill(join(repo, ".agents", "skills"), "repo-skill");
-    const outsideRoot = join(outer, ".agents", "skills");
+    const repoSkill = writeSkill(join(repo, ".agenc", "skills"), "repo-skill");
+    const outsideRoot = join(outer, ".agenc", "skills");
     writeSkill(outsideRoot, "outside-skill");
     const agencHome = tmpRoot("skills-home");
     const options = {
@@ -208,15 +208,15 @@ describe("local skills loader", () => {
     expect(snapshot.skills.map((skill) => skill.name)).not.toContain("outside-skill");
     expect(snapshot.skillRoots).not.toContain(outsideRoot);
     const watches = await discoverSkillWatchRoots(options);
-    expect(watches).toContain(join(repo, ".agents", "skills"));
+    expect(watches).toContain(join(repo, ".agenc", "skills"));
     expect(watches).not.toContain(outsideRoot);
   });
 
   it("uses only the workspace for project skills when there is no git root", async () => {
     const outer = tmpRoot("skills-no-git");
     const workspaceRoot = join(outer, "workspace");
-    writeSkill(join(workspaceRoot, ".agents", "skills"), "workspace-only");
-    const outsideRoot = join(outer, ".agents", "skills");
+    writeSkill(join(workspaceRoot, ".agenc", "skills"), "workspace-only");
+    const outsideRoot = join(outer, ".agenc", "skills");
     writeSkill(outsideRoot, "outside-skill");
     const agencHome = tmpRoot("skills-home");
     const options = {
@@ -235,8 +235,8 @@ describe("local skills loader", () => {
     const repo = tmpRoot("skills-writable-parent");
     const workspaceRoot = join(repo, "workspace");
     mkdirSync(join(repo, ".git"));
-    writeSkill(join(repo, ".agents", "skills"), "unsafe-parent");
-    writeSkill(join(workspaceRoot, ".agents", "skills"), "safe-workspace");
+    writeSkill(join(repo, ".agenc", "skills"), "unsafe-parent");
+    writeSkill(join(workspaceRoot, ".agenc", "skills"), "safe-workspace");
     chmodSync(repo, mode);
     const agencHome = tmpRoot("skills-home");
     const options = {
@@ -249,10 +249,10 @@ describe("local skills loader", () => {
       expect(snapshot.skills.map((skill) => skill.name)).toContain("safe-workspace");
       expect(snapshot.skills.map((skill) => skill.name)).not.toContain("unsafe-parent");
       expect(snapshot.warnings).toContainEqual({
-        path: join(repo, ".agents", "skills"),
+        path: join(repo, ".agenc", "skills"),
         reason: "skipped world-writable project skill root",
       });
-      expect(await discoverSkillWatchRoots(options)).not.toContain(join(repo, ".agents", "skills"));
+      expect(await discoverSkillWatchRoots(options)).not.toContain(join(repo, ".agenc", "skills"));
       expect(warn).toHaveBeenCalledTimes(1);
     } finally {
       warn.mockRestore();
@@ -264,9 +264,9 @@ describe("local skills loader", () => {
     const workspaceRoot = tmpRoot("skills-writable-root");
     const unsafeRoot = join(workspaceRoot, ".agenc", "skills");
     writeSkill(unsafeRoot, "unsafe-skill");
-    writeSkill(join(workspaceRoot, ".agents", "skills"), "safe-skill");
     chmodSync(unsafeRoot, 0o777);
     const agencHome = tmpRoot("skills-home");
+    writeSkill(join(agencHome, "skills"), "safe-skill");
     const options = {
       agencHome, pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot, env: { HOME: tmpRoot("skills-user") },
@@ -285,7 +285,7 @@ describe("local skills loader", () => {
   it("skips a project skill reached through a link into a world-writable folder", async () => {
     if (process.platform === "win32") return;
     const workspaceRoot = tmpRoot("skills-linked-project");
-    const root = join(workspaceRoot, ".agents", "skills");
+    const root = join(workspaceRoot, ".agenc", "skills");
     writeSkill(root, "safe");
     const shared = tmpRoot("skills-linked-shared");
     writeSkill(shared, "external");
@@ -313,8 +313,8 @@ describe("local skills loader", () => {
     const target = join(shared, "catalog");
     writeSkill(target, "external");
     chmodSync(shared, 0o777);
-    mkdirSync(join(workspaceRoot, ".agents"));
-    const root = join(workspaceRoot, ".agents", "skills");
+    mkdirSync(join(workspaceRoot, ".agenc"));
+    const root = join(workspaceRoot, ".agenc", "skills");
     symlinkSync(target, root);
     const agencHome = tmpRoot("skills-home");
     const options = {
@@ -334,16 +334,18 @@ describe("local skills loader", () => {
   it("skips dynamic roots with a world-writable hidden directory or skills folder", async () => {
     if (process.platform === "win32") return;
     const workspaceRoot = tmpRoot("skills-dynamic-writable");
-    const nested = join(workspaceRoot, "packages", "ui");
-    const unsafeAgentRoot = join(nested, ".agents", "skills");
-    const unsafeAgencRoot = join(nested, ".agenc", "skills");
-    writeSkill(unsafeAgentRoot, "unsafe-agent");
-    writeSkill(unsafeAgencRoot, "unsafe-agenc");
-    chmodSync(join(nested, ".agents"), 0o777);
-    chmodSync(unsafeAgencRoot, 0o777);
+    const hiddenDirNested = join(workspaceRoot, "packages", "ui");
+    const skillsDirNested = join(workspaceRoot, "packages", "api");
+    const unsafeHiddenRoot = join(hiddenDirNested, ".agenc", "skills");
+    const unsafeSkillsRoot = join(skillsDirNested, ".agenc", "skills");
+    writeSkill(unsafeHiddenRoot, "unsafe-hidden");
+    writeSkill(unsafeSkillsRoot, "unsafe-skills");
+    chmodSync(join(hiddenDirNested, ".agenc"), 0o777);
+    chmodSync(unsafeSkillsRoot, 0o777);
 
     await expect(discoverDynamicSkillDirsForPaths(
-      [join(nested, "src", "Button.tsx")], workspaceRoot,
+      [join(hiddenDirNested, "src", "Button.tsx"), join(skillsDirNested, "src", "route.ts")],
+      workspaceRoot,
     )).resolves.toEqual([]);
   });
 
@@ -351,11 +353,11 @@ describe("local skills loader", () => {
     const home = tmpRoot("skills-git-home");
     mkdirSync(join(home, ".git"));
     const workspaceRoot = join(home, "repo", "workspace");
-    writeSkill(join(workspaceRoot, ".agents", "skills"), "workspace-skill");
-    writeSkill(join(home, "repo", ".agents", "skills"), "above-workspace");
+    writeSkill(join(workspaceRoot, ".agenc", "skills"), "workspace-skill");
+    writeSkill(join(home, "repo", ".agenc", "skills"), "above-workspace");
     writeSkill(join(home, ".agenc", "skills"), "home-project-skill");
-    writeSkill(join(home, ".agents", "skills"), "home-user-skill");
     const agencHome = tmpRoot("skills-home");
+    writeSkill(join(agencHome, "skills"), "home-user-skill");
     const options = { agencHome, pluginStorageRoot: join(agencHome, "plugins"), workspaceRoot, env: { HOME: home } };
 
     const snapshot = await loadLocalSkillsSnapshot(options);
@@ -372,7 +374,7 @@ describe("local skills loader", () => {
     const homeLink = join(tmpRoot("skills-home-link"), "home");
     symlinkSync(home, homeLink);
     const workspaceRoot = join(home, "repo", "workspace");
-    writeSkill(join(workspaceRoot, ".agents", "skills"), "workspace-skill");
+    writeSkill(join(workspaceRoot, ".agenc", "skills"), "workspace-skill");
     writeSkill(join(home, ".agenc", "skills"), "home-project-skill");
     const agencHome = tmpRoot("skills-home");
     const options = {
@@ -392,8 +394,8 @@ describe("local skills loader", () => {
     const workspaceRoot = join(repo, "package");
     mkdirSync(repo);
     writeFileSync(join(repo, ".git"), "gitdir: /private/tmp/other-git-dir\n");
-    writeSkill(join(repo, ".agents", "skills"), "worktree-skill");
-    writeSkill(join(outer, ".agents", "skills"), "outside-skill");
+    writeSkill(join(repo, ".agenc", "skills"), "worktree-skill");
+    writeSkill(join(outer, ".agenc", "skills"), "outside-skill");
     const agencHome = tmpRoot("skills-home");
     const snapshot = await loadLocalSkillsSnapshot({
       agencHome, pluginStorageRoot: join(agencHome, "plugins"),
@@ -404,13 +406,13 @@ describe("local skills loader", () => {
     expect(snapshot.skills.map((skill) => skill.name)).not.toContain("outside-skill");
   });
 
-  it("discovers AgenC, agent, user, and plugin skill roots", async () => {
+  it("discovers AgenC project, user, and plugin skill roots", async () => {
     const agencHome = tmpRoot("skills-home");
     const home = tmpRoot("skills-user");
     const defaultAgencHome = join(home, ".agenc");
     const workspaceRoot = tmpRoot("skills-workspace");
 
-    writeSkill(join(workspaceRoot, ".agents", "skills"), "project-skill");
+    writeSkill(join(workspaceRoot, ".agents", "skills"), "shared-project-skill");
     writeSkill(join(workspaceRoot, ".agenc", "skills"), "agenc-project-skill");
     writeSkill(join(agencHome, "skills"), "home-skill");
     writeSkill(join(defaultAgencHome, "skills"), "default-home-skill");
@@ -429,7 +431,6 @@ describe("local skills loader", () => {
         "agenc-project-skill",
         "home-skill",
         "plugin-skill",
-        "project-skill",
         "simplify",
         "loop",
         "ledger-wallet-cli",
@@ -440,6 +441,9 @@ describe("local skills loader", () => {
     ]);
     expect(snapshot.skills.map((skill) => skill.name)).not.toContain(
       "default-home-skill",
+    );
+    expect(snapshot.skills.map((skill) => skill.name)).not.toContain(
+      "shared-project-skill",
     );
   });
 
@@ -550,8 +554,9 @@ describe("local skills loader", () => {
     const home = tmpRoot("skills-user");
     const workspaceRoot = tmpRoot("skills-workspace");
 
-    writeSkill(join(workspaceRoot, ".agents", "skills"), "project-agent");
     writeSkill(join(workspaceRoot, ".agenc", "skills"), "project-agenc");
+    writeSkill(join(agencHome, "skills"), "user-agenc");
+    writeSkill(join(workspaceRoot, ".agents", "skills"), "project-agent");
     writeSkill(join(home, ".agents", "skills"), "user-agent");
     writeSkill(join(home, ".agenc", "skills"), "noncanonical-home");
 
@@ -565,17 +570,17 @@ describe("local skills loader", () => {
     const names = available.availableSkills?.map((skill) => skill.name) ?? [];
     expect(names).toEqual(
       expect.arrayContaining([
-        "project-agent",
         "project-agenc",
-        "user-agent",
+        "user-agenc",
       ]),
     );
-    expect(names).not.toContain("noncanonical-home");
+    for (const name of ["project-agent", "user-agent", "noncanonical-home"]) {
+      expect(names).not.toContain(name);
+    }
 
     for (const name of [
-      "project-agent",
       "project-agenc",
-      "user-agent",
+      "user-agenc",
     ]) {
       await expect(services.skillsManager.renderSkill?.({ name, args: "ok" }))
         .resolves.toMatchObject({
@@ -583,17 +588,25 @@ describe("local skills loader", () => {
           content: expect.stringContaining(`Use ${name}.`),
         });
     }
+    for (const name of ["project-agent", "user-agent"]) {
+      await expect(services.skillsManager.renderSkill?.({ name, args: "ok" }))
+        .resolves.toBeNull();
+    }
 
-    await expect(discoverSkillWatchRoots({
+    const watches = await discoverSkillWatchRoots({
       agencHome,
       pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       env: { HOME: home },
-    })).resolves.toEqual(expect.arrayContaining([
-      join(home, ".agents", "skills"),
+    });
+    expect(watches).toEqual(expect.arrayContaining([
+      join(agencHome, "skills"),
+      join(workspaceRoot, ".agenc", "skills"),
     ]));
+    expect(watches).not.toContain(join(home, ".agents", "skills"));
+    expect(watches).not.toContain(join(workspaceRoot, ".agents", "skills"));
 
-    writeSkill(join(home, ".agents", "skills"), "late-user-skill");
+    writeSkill(join(agencHome, "skills"), "late-user-skill");
     await expect(services.skillsManager.resolveSkill?.("late-user-skill"))
       .resolves.toBeNull();
     services.skillsManager.clearSkillCaches?.();
@@ -798,6 +811,60 @@ Body
     expect(names).not.toContain("deploy");
     expect(names).not.toContain("user-review");
     expect(names).not.toContain("user-deploy");
+  });
+
+  it("loads no skill from a shared .agents/skills folder, at home or in the project, and keeps AgenC's own", async () => {
+    // Other agent tools install skills into ~/.agents/skills and a project's
+    // .agents/skills. A Desktop chat once answered "what is my balance" with
+    // a third-party wallet skill from there instead of Desktop's own Market.
+    const home = tmpRoot("skills-shared-home");
+    const agencHome = join(home, ".agenc");
+    const repo = join(tmpRoot("skills-shared-outer"), "repo");
+    const workspaceRoot = join(repo, "app");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const agencUserSkill = writeSkill(join(agencHome, "skills"), "agenc-user-skill");
+    const agencProjectSkill = writeSkill(join(workspaceRoot, ".agenc", "skills"), "agenc-project-skill");
+    writeSkill(join(home, ".agents", "skills"), "shared-wallet-balance");
+    writeSkill(join(workspaceRoot, ".agents", "skills"), "shared-project-skill");
+    writeSkill(join(repo, ".agents", "skills"), "shared-repo-skill");
+    writeSkill(join(workspaceRoot, "packages", "pay", ".agents", "skills"), "shared-nested-skill");
+    const options = {
+      agencHome, pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot, env: { HOME: home },
+    };
+    const shared = [
+      "shared-wallet-balance",
+      "shared-project-skill",
+      "shared-repo-skill",
+      "shared-nested-skill",
+    ];
+    const isSharedRoot = (root: string) => root.split(sep).includes(".agents");
+
+    const snapshot = await loadLocalSkillsSnapshot(options);
+    expect(snapshot.skills).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "agenc-user-skill", path: agencUserSkill, scope: "user" }),
+      expect.objectContaining({ name: "agenc-project-skill", path: agencProjectSkill, scope: "project" }),
+    ]));
+    for (const name of shared) {
+      expect(snapshot.skills.map((skill) => skill.name)).not.toContain(name);
+    }
+    expect(snapshot.skillRoots.filter(isSharedRoot)).toEqual([]);
+    expect((await discoverSkillWatchRoots(options)).filter(isSharedRoot)).toEqual([]);
+
+    // Working on a file below a nested .agents/skills folder does not bring
+    // that folder in either.
+    const services = createLocalSkillsServices(options);
+    await expect(services.skillsManager.discoverSkillDirsForPaths?.([
+      join(workspaceRoot, "packages", "pay", "src", "index.ts"),
+    ])).resolves.toEqual([]);
+    const outcome = await services.skillsManager.skillsForConfig({}, null);
+    const available = outcome.availableSkills?.map((skill) => skill.name) ?? [];
+    expect(available).toEqual(expect.arrayContaining(["agenc-user-skill", "agenc-project-skill"]));
+    for (const name of shared) {
+      expect(available).not.toContain(name);
+      await expect(services.skillsManager.resolveSkill?.(name)).resolves.toBeNull();
+      await expect(services.skillsManager.renderSkill?.({ name })).resolves.toBeNull();
+    }
   });
 
   it("renders skill arguments through the loader path", async () => {
@@ -1412,18 +1479,18 @@ All=$ARGUMENTS
     );
   });
 
-  it("ranks workspace skills first and the shared agents catalog last when trimming", () => {
+  it("ranks workspace skills first, then the user's, then plugins when trimming", () => {
     const home = join("/home", "dev");
     // Descriptions longer than the closing count line, so a budget that
     // holds two lines plus the count cannot hold all three lines.
     const describe = (text: string) => text.padEnd(90, ".");
     const skills = [
       {
-        name: "shared",
-        description: describe("From the shared catalog"),
-        loadedFrom: "skills",
-        scope: "user",
-        root: join(home, ".agents", "skills"),
+        name: "plugin",
+        description: describe("From a plugin"),
+        loadedFrom: "plugin",
+        scope: "plugin",
+        root: join(home, ".agenc", "plugins", "demo", "skills"),
       },
       {
         name: "home",
@@ -1446,7 +1513,7 @@ All=$ARGUMENTS
       formatSkillListingWithinBudget(skills, 1_000_000).split("\n").map(
         (line) => line.split(":")[0],
       ),
-    ).toEqual(["- shared", "- home", "- proj"]);
+    ).toEqual(["- plugin", "- home", "- proj"]);
 
     // Budget for two full lines plus the closing count (1% of the window in
     // chars, so 25 tokens per char, plus a little slack for the reserve).

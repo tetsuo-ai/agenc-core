@@ -19,7 +19,7 @@ afterEach(async () => {
 describe("local-skill root containment", () => {
   it("loads a regular SKILL.md below the project skill root", async () => {
     const { agencHome, pluginStorageRoot, workspaceRoot, fakeHome } = await workspace();
-    await writeSkill(join(workspaceRoot, ".agents", "skills", "ok-skill"), "ok-skill", INSIDE);
+    await writeSkill(join(workspaceRoot, ".agenc", "skills", "ok-skill"), "ok-skill", INSIDE);
 
     const snapshot = await loadLocalSkillsSnapshot({
       agencHome,
@@ -35,7 +35,7 @@ describe("local-skill root containment", () => {
 
   it("loads a skill directory that is a symlink, matching main's follow policy", async () => {
     const { agencHome, pluginStorageRoot, workspaceRoot, root, fakeHome } = await workspace();
-    const skillRoot = join(workspaceRoot, ".agents", "skills");
+    const skillRoot = join(workspaceRoot, ".agenc", "skills");
     await writeSkill(join(skillRoot, "ok-skill"), "ok-skill", INSIDE);
     const outsideSkill = join(root, "followed-skill");
     await writeSkill(outsideSkill, "followed-skill", FOLLOWED);
