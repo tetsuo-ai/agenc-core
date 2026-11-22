@@ -13,7 +13,6 @@ describe("providerFundsMessage", () => {
     ["deepseek", "DeepSeek"],
     ["openrouter", "OpenRouter"],
     ["gemini", "Gemini"],
-    ["agenc", "AgenC"],
     ["custom", "custom"],
   ])("uses a fixed billing sentence for %s", (provider, displayName) => {
     expect(providerFundsMessage(provider, { status: 403, body: { error: "Insufficient credits." } })).toBe(

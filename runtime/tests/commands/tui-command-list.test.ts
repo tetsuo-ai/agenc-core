@@ -20,10 +20,6 @@ const MINIMAL_TUI_NAMES = [
   "hello",
   "status",
   "goal",
-  "login",
-  "logout",
-  "whoami",
-  "subscription",
   "usage",
   "grok-login",
   "grok-logout",
@@ -76,10 +72,6 @@ const DAEMON_TUI_NAMES = [
   "hello",
   "status",
   "goal",
-  "login",
-  "logout",
-  "whoami",
-  "subscription",
   "usage",
   "grok-login",
   "grok-logout",
@@ -147,6 +139,12 @@ const REMOVED_TUI_NAMES = [
   "sandbox",
   "terminal-setup",
   "wiki",
+  // Retired with the AgenC account sign-in.
+  "login",
+  "logout",
+  "whoami",
+  "subscription",
+  "remote",
 ] as const;
 
 describe("listTuiCommandList (minimal runtime slash surface)", () => {
@@ -192,7 +190,6 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
     const projected = new Map(listTuiCommandList().map((cmd) => [cmd.name, cmd]));
 
     expect(projected.get("provider")?.aliases).toEqual(["providers"]);
-    expect(projected.get("whoami")?.aliases).toEqual(["account"]);
     expect(projected.get("permissions")?.aliases).toEqual([
       "approvals",
       "allowed-tools",
@@ -208,9 +205,7 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
     expect(projected.get("exit")?.aliases).toEqual(["quit"]);
   });
 
-  it("hides /remote while the owner has not enabled remote control", () => {
-    // Remote control is off by default; /remote stays dispatchable for
-    // refusal and cleanup but is left out of help and completion.
+  it("has no /remote command: phone remote control is retired", () => {
     expect(listTuiCommandList().map((cmd) => cmd.name)).not.toContain("remote");
     expect(
       listTuiCommandList(buildDefaultRegistry({ surface: "daemon-tui" })).map((cmd) => cmd.name),
@@ -229,10 +224,9 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
 
     for (const name of MINIMAL_TUI_NAMES) expect(names.has(name)).toBe(true);
     expect(names.has("provider")).toBe(true);
-    expect(names.has("login")).toBe(true);
-    expect(names.has("logout")).toBe(true);
-    expect(names.has("whoami")).toBe(true);
-    expect(names.has("account")).toBe(true);
+    for (const name of ["login", "logout", "whoami", "account", "subscription", "remote"]) {
+      expect(names.has(name), name).toBe(false);
+    }
     expect(names.has("quit")).toBe(true);
     expect(names.has("reload-plugins")).toBe(false);
     expect(names.has("history")).toBe(false);

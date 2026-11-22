@@ -18,16 +18,14 @@ describe("agenc top-level help surface", () => {
     expect(source).toContain(
       '"       agenc doctor [--json | --apparmor-profile]",',
     );
-    expect(source).toContain('"       agenc remote <on|status|off>",');
+    expect(source).not.toContain('"       agenc remote <on|status|off>",');
     expect(source).toContain(
       '"  run                                     Start, inspect, replay, export, or cancel a durable run",',
     );
     expect(source).toContain(
       '"  doctor                                  Diagnose installation and runtime readiness",',
     );
-    expect(source).toContain(
-      '"  remote                                  Manage phone remote-control pairing",',
-    );
+    expect(source).not.toContain("Manage phone remote-control pairing");
     expect(source).toContain('"       agenc plugin <command> [options]",');
     expect(source).toContain('"       agenc permissions <command>",');
     expect(source).toContain(

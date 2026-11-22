@@ -1041,7 +1041,7 @@ describe("runAgent", () => {
     expect(prepare).toHaveBeenCalledWith(
       { provider: "deepseek", model: "deepseek-v4-pro" }, undefined,
       { signal: expect.any(AbortSignal) }, true,
-      undefined, plan.destination,
+      plan.destination,
     );
     expect(target.chatStream).toHaveBeenCalledOnce();
     expect(rootProvider.chatStream).not.toHaveBeenCalled();
