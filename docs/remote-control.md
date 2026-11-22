@@ -261,6 +261,12 @@ successful lookup refreshes the identity/tier snapshot in `auth.json`; HTTP
 and invalid-response failures surface as RPC errors instead of presenting the
 previous snapshot as verified.
 
+`auth.logout` first sends the persisted bearer to
+`POST https://id.agenc.ag/v1/auth/logout`, so the server ends that session,
+and then clears `auth.json` and the stored bearer. Override that endpoint with
+`AGENC_REMOTE_AUTH_LOGOUT_URL`. The request waits at most 5 seconds. When it
+fails or times out, sign-out still completes on this machine.
+
 The bearer remains private to the Core auth backend. `auth.login` persists it
 for subsequent remote calls but the app-server response only exposes the
 non-secret login state and identity.
