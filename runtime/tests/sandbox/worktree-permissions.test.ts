@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,6 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   hardenGitWorktreeMutationArgs,
+  linkedWorktreePointerPaths,
   resolveGitMetadataRoot,
   worktreeCheckoutPermissions,
   worktreeMutationPermissions,
@@ -82,6 +90,25 @@ describe("worktree mutation metadata permissions", () => {
     expect(paths?.find((path) => path !== linked)).toMatch(
       new RegExp(`${escapeRegExp(join(workRoot, ".git", "worktrees"))}.+`),
     );
+  });
+
+  it("names a linked worktree's own .git pointer on macOS only, spelled physically", () => {
+    const workRoot = realpathSync(mkdtempSync(join(tmpdir(), "agenc-pointer-permissions-")));
+    roots.push(workRoot);
+    const repo = join(workRoot, "repo");
+    mkdirSync(join(repo, ".agenc-worktrees"), { recursive: true });
+    const alias = join(workRoot, "alias");
+    symlinkSync(repo, alias, process.platform === "win32" ? "junction" : "dir");
+    // Before `git worktree add` neither the worktree nor its pointer exists.
+    const worktree = join(alias, ".agenc-worktrees", "m5-run");
+
+    expect(linkedWorktreePointerPaths(worktree, "darwin")).toEqual([
+      join(repo, ".agenc-worktrees", "m5-run", ".git"),
+    ]);
+    // The Linux monitor accepts the pointer, and its launcher would make the
+    // missing one a directory; no other platform needs the grant.
+    expect(linkedWorktreePointerPaths(worktree, "linux")).toEqual([]);
+    expect(linkedWorktreePointerPaths(worktree, "win32")).toEqual([]);
   });
 });
 
