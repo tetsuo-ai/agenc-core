@@ -6,7 +6,7 @@ Git history and are not product truth.
 
 Related: [INDEX](INDEX.md) · [quickstart](quickstart.md) · [install](install.md) ·
 [gateway](gateway.md) · [OpenRouter setup](managed-openrouter.md) ·
-[remote control](remote-control.md) · [VPS](deploy/vps.md).
+[VPS](deploy/vps.md).
 
 ## North star
 
@@ -73,7 +73,7 @@ Then you are in chat. Flags:
 
 No slash command is required during first run. Provider sign-in displays its
 browser URL or device code in the wizard. API keys and local Ollama or LM Studio
-are also available. AgenC account sign-in is separate and does not provide models.
+are also available. There is no AgenC account sign-in.
 See [grok-oauth.md](grok-oauth.md).
 
 ## Act 2a — identity
@@ -189,20 +189,6 @@ loginctl enable-linger "$USER"
 ```
 
 See [deploy/vps.md](deploy/vps.md).
-
-## Optional: remote phone control of the coding daemon
-
-Channels (Act 2b) put a **chat bot** on Telegram/Discord/Slack. Separately,
-**remote control** lets the **iOS or Android** app drive coding sessions on
-your machine through a signed relay:
-
-```bash
-agenc login
-agenc remote on
-```
-
-Requires a remote auth session; default daemon `ws://127.0.0.1:7766`.
-[remote-control.md](remote-control.md).
 
 ## Where state lives
 

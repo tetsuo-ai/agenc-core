@@ -1,10 +1,9 @@
 import { join } from "node:path";
 
-import { resolveHomeContext } from "../config/home.js";
+import { resolveHomeContext, type HomeContext } from "../config/home.js";
 import type { EnvSnapshot } from "../config/env.js";
 import type { AgenCConfig } from "../config/schema.js";
 import type { ConfigStore } from "../config/store.js";
-import type { RemoteAuthSessionReadContext } from "../auth/session-state.js";
 import { withConfiguredProviderAuth, type ConfiguredProviderAuth } from "../llm/provider-auth-selection.js";
 import { asRecord } from "../utils/record.js";
 import type { SlashCommandContext } from "./types.js";
@@ -98,9 +97,15 @@ function configForProviderAuth(ctx: SlashCommandContext): ConfiguredProviderAuth
   }
 }
 
-export function remoteAuthContextFromCommandContext(
+/** The home and environment a command captured at its ingress. */
+export interface CommandHomeEnvironment {
+  readonly home: HomeContext;
+  readonly environment: EnvSnapshot;
+}
+
+export function homeEnvironmentFromCommandContext(
   ctx: SlashCommandContext,
-): RemoteAuthSessionReadContext {
+): CommandHomeEnvironment {
   return Object.freeze({
     home: requireCommandConfigStore(ctx).homeContext,
     environment: providerEnvironmentFromCommandContext(ctx),

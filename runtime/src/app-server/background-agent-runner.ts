@@ -52,7 +52,6 @@ import type { AgentPath } from "../agents/registry.js";
 import type { ManagedThread } from "../agents/thread-manager.js";
 import { ConversationThreadManager, withoutSyntheticProcessKilledAborts } from "../conversation/thread-manager.js";
 import type { RunAgentProgressEvent } from "../agents/run-agent.js";
-import type { AuthBackend } from "../auth/backend.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { routerFromRegistry } from "../tools/router.js";
 import { buildLiveToolDispatchOptions } from "../phases/execute-tools.js";
@@ -186,10 +185,6 @@ import type {
 import type {
   RealtimeStartupContextSessionLike,
 } from "../conversation/realtime/context.js";
-import {
-  createAgenCDaemonRuntimeAuthBackend,
-  type AgenCDaemonRuntimeAuthBackend,
-} from "./provider-key-vending.js";
 import type {
   ExecutionAdmissionKernel,
 } from "../budget/execution-admission-kernel.js";
@@ -471,7 +466,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   readonly #bootstrap: AgenCBootstrapFunction;
   readonly #requireSandboxReadyAtStartup: boolean;
   readonly #ensureAgentControl: AgenCEnsureAgentControlFunction;
-  #authBackend: AgenCDaemonRuntimeAuthBackend | undefined;
   readonly #env: NodeJS.ProcessEnv | undefined;
   readonly #executionAdmissionKernel: ExecutionAdmissionKernel | undefined;
   readonly #csvAgentJobsRepositories:
@@ -507,7 +501,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     this.#bootstrap = options.bootstrap ?? bootstrapLocalRuntimeSession;
     this.#requireSandboxReadyAtStartup = options.bootstrap === undefined;
     this.#ensureAgentControl = options.ensureAgentControl ?? ensureAgentControl;
-    this.updateAuthBackend(options.authBackend);
     this.#executionAdmissionKernel = options.executionAdmissionKernel;
     this.#csvAgentJobsRepositories = options.csvAgentJobsRepositories;
     this.#env = options.env;
@@ -531,22 +524,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   updateRuntimeConfig(
     options: AgenCDelegateBackgroundAgentRunnerRuntimeConfig,
   ): void {
-    this.updateAuthBackend(options.authBackend);
     this.#realtimeCallClient = options.realtimeCallClient;
     this.#realtimeConnectTransport =
       options.realtimeConnectTransport ?? unavailableRealtimeTransport;
-  }
-
-  updateAuthBackend(authBackend: AuthBackend | undefined): void {
-    if (authBackend === undefined) {
-      this.#authBackend = undefined;
-      return;
-    }
-    if (this.#authBackend === undefined) {
-      this.#authBackend = createAgenCDaemonRuntimeAuthBackend(authBackend);
-      return;
-    }
-    this.#authBackend.replaceBackend(authBackend);
   }
 
   async startAgent(
@@ -589,9 +569,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           this.#bootstrap({
       ...(params.signal !== undefined ? { signal: params.signal } : {}),
       ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
-      ...(this.#authBackend !== undefined
-        ? { authBackend: this.#authBackend }
-        : {}),
       argv: buildBootstrapArgv(params, this.#argv),
       runtimeOptions,
       ...(params.toolPolicy !== undefined
@@ -1140,9 +1117,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               this.#bootstrap({
           ...(params.signal !== undefined ? { signal: params.signal } : {}),
           ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
-          ...(this.#authBackend !== undefined
-            ? { authBackend: this.#authBackend }
-            : {}),
           conversationId: params.agentId,
           runtimeOptions: restoreRuntimeOptions,
           ...(toolPolicy !== undefined
@@ -1704,7 +1678,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       this.#pendingEvents.delete(agentId);
       this.#assistantTextByAgent.delete(agentId);
     }
-    this.#authBackend?.clearVendedKeysForSession(agentId);
 
     const errors: unknown[] = [];
     try {
@@ -1875,10 +1848,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.unsubscribeElicitationEvents?.();
     active.unsubscribePhaseEvents?.();
     active.unsubscribeMcpSurfaceInvalidations?.();
-    // gaphunt3 #48: the agentId is the session/conversationId used as the
-    // vended-key cache key, so evict this session's entries on stop —
-    // otherwise non-expiring keys leak for the daemon's lifetime.
-    this.#authBackend?.clearVendedKeysForSession(agentId);
     if (stopError !== undefined) {
       active.status = "error";
       active.lastActiveAt = this.#now();
@@ -2034,7 +2003,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.unsubscribePhaseEvents?.();
     active.unsubscribeMcpSurfaceInvalidations?.();
     this.#abortPendingToolDecisions(agentId);
-    this.#authBackend?.clearVendedKeysForSession(agentId);
     if (shutdownErrors.length > 0) {
       active.status = "error";
       active.lastActiveAt = this.#now();
@@ -5763,10 +5731,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         active.unsubscribeElicitationEvents?.();
         active.unsubscribePhaseEvents?.();
         active.unsubscribeMcpSurfaceInvalidations?.();
-        // gaphunt3 #48: the agentId is the session/conversationId used as the
-        // vended-key cache key, so evict this session's entries on terminal
-        // cleanup — otherwise non-expiring keys leak for the daemon's lifetime.
-        this.#authBackend?.clearVendedKeysForSession(agentId);
       })
       .catch(() => {});
   }

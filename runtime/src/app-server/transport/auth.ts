@@ -27,8 +27,28 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { InitializeParams, JsonObject } from "../protocol/index.js";
-import type { AuthDaemonSocketIdentity } from "../../auth/backend.js";
 import { isRecord } from "../../utils/record.js";
+
+/** How a local daemon connection proved it belongs to this user. */
+export interface AuthDaemonSocketIdentity extends JsonObject {
+  readonly transport: "daemon";
+  readonly verifiedBy: "cookie" | "peerUid" | "privateSocketOwner";
+  /**
+   * Never contains the daemon cookie secret. "verified" means the connection
+   * presented the private cookie during initialize.
+   */
+  readonly cookie?: "verified";
+  /**
+   * Populated only when the daemon received actual peer credentials from the
+   * platform, such as Linux SO_PEERCRED.
+   */
+  readonly peerUid?: number | null;
+  /**
+   * Populated when same-user access is inferred from the private owner-only
+   * daemon socket path rather than from per-connection peer credentials.
+   */
+  readonly privateSocketOwnerUid?: number | null;
+}
 
 const AGENC_DAEMON_COOKIE_BYTES = 32;
 export const AGENC_DAEMON_COOKIE_HEX_LENGTH =

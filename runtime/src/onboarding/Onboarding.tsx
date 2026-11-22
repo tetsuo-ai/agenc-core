@@ -1,4 +1,3 @@
-import type { AuthBackend } from "../auth/backend.js";
 import React, {
   useCallback,
   useContext,
@@ -18,16 +17,12 @@ import {
 } from "../config/schema.js";
 import type { HomeContext } from "../config/home.js";
 import { buildProviderModelCatalog } from "../config/provider-model-authority.js";
-import { hasSavedProviderKey } from "../auth/provider-keys.js";
+import { hasSavedProviderKey, saveProviderKey } from "../auth/provider-keys.js";
 import {
   isSignInProvider,
   signedInAccount,
   type SignInProvider,
 } from "../auth/provider-sign-in-accounts.js";
-
-import {
-  type RemoteAuthSessionReadContext,
-} from "../auth/session-state.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
@@ -47,7 +42,6 @@ import {
   type ProviderCredentialProvenance,
 } from "../llm/registry/provider-ingress.js";
 import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
-import { LocalAuthBackend } from "../auth/backends/local.js";
 import { readLocalByokCredential } from "../auth/native-credentials.js";
 import { resolveProviderRuntimeAuthority } from "../llm/provider-options.js";
 import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
@@ -195,12 +189,11 @@ export interface FirstRunOnboardingState {
   readonly highlightedChoice: number | null;
 }
 
-export interface FirstRunByokAuthBackend {
-  saveByokKey(params: {
-    readonly provider: string;
-    readonly apiKey: string;
-  }): unknown | Promise<unknown>;
-}
+/** Saves a pasted provider key; first-run setup tests inject one. */
+export type FirstRunProviderKeySaver = (params: {
+  readonly provider: string;
+  readonly apiKey: string;
+}) => unknown | Promise<unknown>;
 
 export type ProviderSignInResult =
   | { readonly ok: true; readonly accountLabel: string }
@@ -215,12 +208,11 @@ export interface OnboardingAuthPrompt {
 
 export interface FirstRunOnboardingContext {
   readonly agencHome?: string;
-  readonly authBackend?: AuthBackend | FirstRunByokAuthBackend;
+  /** Defaults to the provider key store of `agencHome`. */
+  readonly saveProviderKey?: FirstRunProviderKeySaver;
   readonly config: AgenCConfig;
   readonly cwd?: string;
   readonly env?: OnboardingEnv;
-  /** Captured home/environment pair used for synchronous remote-auth reads. */
-  readonly remoteAuthSessionContext?: RemoteAuthSessionReadContext;
   readonly permissionMode?: string;
   readonly sandboxMode?: string;
   readonly terminalName?: string;
@@ -371,7 +363,7 @@ function providerDefaultModel(
   provider: BuiltInProviderSlug,
   context: Pick<
     FirstRunOnboardingContext,
-    "config" | "env" | "remoteAuthSessionContext"
+    "config" | "env"
   >,
 ): string {
   if (provider === "gemini") {
@@ -391,7 +383,7 @@ function initialProvider(
 export function createInitialFirstRunOnboardingState(
   context: Pick<
     FirstRunOnboardingContext,
-    "agencHome" | "config" | "env" | "remoteAuthSessionContext"
+    "agencHome" | "config" | "env"
   >,
 ): FirstRunOnboardingState {
   const provider = initialProvider(context);
@@ -478,7 +470,7 @@ function providerSetupStatus(
   provider: BuiltInProviderSlug,
   context: Pick<
     FirstRunOnboardingContext,
-    "agencHome" | "config" | "env" | "remoteAuthSessionContext"
+    "agencHome" | "config" | "env"
   >,
   home: HomeContext | undefined,
 ): { readonly status: string; readonly connected: boolean } {
@@ -490,8 +482,6 @@ function providerSetupStatus(
       return missingProviderCredentialEnvironmentLabel(provider, env) === undefined
         ? { status: "AWS credentials set", connected: true }
         : { status: "needs AWS credentials", connected: false };
-    case "retired":
-      return { status: "unavailable", connected: false };
     default:
       break;
   }
@@ -511,7 +501,7 @@ function providerSetupStatus(
 function readOnboardingProviderRows(
   context: Pick<
     FirstRunOnboardingContext,
-    "agencHome" | "config" | "env" | "remoteAuthSessionContext"
+    "agencHome" | "config" | "env"
   >,
 ): readonly OnboardingProviderRow[] {
   // Without a home there is no credential store to read: statuses then come
@@ -611,9 +601,8 @@ type ModelAccessOptionId = "key" | "sign-in" | "later";
 function modelAccessOptionIds(
   provider: BuiltInProviderSlug,
 ): readonly ModelAccessOptionId[] {
-  const access = providerOnboardingInfo(provider).access;
   return [
-    ...(access === "retired" ? [] : ["key" as const]),
+    "key" as const,
     ...(isSignInProvider(provider) ? ["sign-in" as const] : []),
     "later",
   ];
@@ -1231,9 +1220,8 @@ async function saveOnboardingByokKey(
   provider: BuiltInProviderSlug,
   apiKey: string,
 ): Promise<void> {
-  if (context.authBackend !== undefined && "saveByokKey" in context.authBackend &&
-      typeof context.authBackend.saveByokKey === "function") {
-    await context.authBackend.saveByokKey({ provider, apiKey });
+  if (context.saveProviderKey !== undefined) {
+    await context.saveProviderKey({ provider, apiKey });
     return;
   }
   if (context.agencHome === undefined) {
@@ -1243,10 +1231,7 @@ async function saveOnboardingByokKey(
     context.env ?? process.env,
     context.agencHome,
   );
-  await new LocalAuthBackend({
-    agencHome: ingress.home.path,
-    env: ingress.environment,
-  }).saveByokKey({ provider, apiKey });
+  saveProviderKey(ingress.home, provider, apiKey);
 }
 
 async function savePastedApiKey(
@@ -1515,16 +1500,6 @@ export async function checkOnboardingProviderConnection(
     ? authority.credential.provenance
     : undefined;
   const onboarding = providerOnboardingInfo(provider);
-
-  if (onboarding.access === "retired") {
-    return {
-      provider,
-      model,
-      status: "credentials-required",
-      ok: false,
-      detail: "AgenC accounts no longer provide models. Choose a provider with your own credentials.",
-    };
-  }
 
   if (onboarding.access === "local") {
     if (context.checkLocalProviders === false) {

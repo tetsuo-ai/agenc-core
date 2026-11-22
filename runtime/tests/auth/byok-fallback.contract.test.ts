@@ -2,28 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { AuthBackend } from "./backend.js";
 import { bootstrapLocalRuntimeSession } from "../bin/bootstrap.js";
-
-function localBackendThatCannotVend(calls: string[]): AuthBackend {
-  return {
-    login: () => ({ authenticated: true, provider: "local" }),
-    logout: () => ({ authenticated: false }),
-    whoami: () => ({ authenticated: true, provider: "local" }),
-    vendKey: (provider, sessionId) => {
-      calls.push(`vendKey:${provider}:${sessionId}`);
-      throw new Error("local auth backend cannot vend managed keys");
-    },
-    inferAgencModel: () => {
-      calls.push("inferAgencModel");
-      throw new Error("not expected");
-    },
-    getSubscriptionTier: ({ sessionId } = {}) => {
-      calls.push(`getSubscriptionTier:${sessionId ?? ""}`);
-      return "free";
-    },
-  };
-}
 
 describe("BYOK fallback", () => {
   it("rejects the retired api_key_env indirection", async () => {
@@ -51,15 +30,13 @@ describe("BYOK fallback", () => {
     }
   });
 
-  it("reports a clear BYOK fallback error when neither managed nor BYOK keys are available", async () => {
+  it("reports a clear BYOK error when no provider key is available", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-byok-fallback-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-byok-fallback-ws-"));
-    const calls: string[] = [];
 
     try {
       await expect(
         bootstrapLocalRuntimeSession({
-          authBackend: localBackendThatCannotVend(calls),
           conversationId: "conv-no-key",
           env: {
             AGENC_HOME: agencHome,
@@ -72,7 +49,6 @@ describe("BYOK fallback", () => {
       ).rejects.toThrow(
         /grok provider requires credentials.*XAI_API_KEY or GROK_API_KEY/,
       );
-      expect(calls).toEqual(["getSubscriptionTier:conv-no-key"]);
     } finally {
       await rm(agencHome, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
@@ -82,12 +58,10 @@ describe("BYOK fallback", () => {
   it("requires the user OpenRouter key when legacy account model config is present", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-byok-fallback-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-byok-fallback-ws-"));
-    const calls: string[] = [];
 
     try {
       await expect(
         bootstrapLocalRuntimeSession({
-          authBackend: localBackendThatCannotVend(calls),
           conversationId: "conv-no-key-openrouter",
           env: {
             AGENC_HOME: agencHome,
@@ -101,7 +75,6 @@ describe("BYOK fallback", () => {
       ).rejects.toThrow(
         /openrouter provider requires credentials.*OPENROUTER_API_KEY/,
       );
-      expect(calls).toEqual(["getSubscriptionTier:conv-no-key-openrouter"]);
     } finally {
       await rm(agencHome, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });

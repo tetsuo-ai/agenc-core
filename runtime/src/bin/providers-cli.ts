@@ -2,12 +2,9 @@
  * Provider availability CLI for `agenc providers`.
  *
  * LP-24 keeps discovery in `runtime/src/llm/discovery/`; this file owns only
- * argument parsing, backend construction, and terminal output.
+ * argument parsing, configuration loading, and terminal output.
  */
 
-import { createAuthBackend } from "../auth/selection.js";
-import type { AuthBackend } from "../auth/backend.js";
-import type { RemoteAuthBackendOptions } from "../auth/backends/remote.js";
 import { loadCanonicalConfig } from "../config/repository.js";
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 import {
@@ -36,14 +33,13 @@ export interface AgenCProvidersCliOptions
   extends CollectProviderAvailabilityOptions {
   readonly agencHome?: string;
   readonly io?: AgenCProvidersCliIo;
-  readonly remote?: RemoteAuthBackendOptions;
 }
 
 export function formatAgenCProvidersCliHelpText(): string {
   return [
     "Usage: agenc providers [--json] [--no-local-check]",
     "",
-    "Shows provider readiness: credential status, local server health, and AgenC subscription tier.",
+    "Shows provider readiness: credential status and local server health.",
     "",
     "Options:",
     "  --json             Print machine-readable JSON",
@@ -106,12 +102,14 @@ export async function runAgenCProvidersCli(
           agencHome: ingress.home.path,
           env: ingress.environment,
         });
-        const authBackend =
-          scopedOptions.authBackend ??
-          await resolveAgenCProvidersCliBackend(scopedOptions, io);
+        const config = scopedOptions.config ?? (await loadCanonicalConfig({
+          home: ingress.home,
+          env: ingress.environment,
+          onWarn: (message) => io.stderr.write(`${message}\n`),
+        })).config;
         const report = await collectProviderAvailability({
           ...scopedOptions,
-          authBackend,
+          config,
           checkLocal: command.checkLocal,
         });
         if (command.json) {
@@ -127,25 +125,4 @@ export async function runAgenCProvidersCli(
         return 1;
       }
   }
-}
-
-async function resolveAgenCProvidersCliBackend(
-  options: AgenCProvidersCliOptions,
-  io: AgenCProvidersCliIo,
-): Promise<AuthBackend | undefined> {
-  if (options.authBackend !== undefined) return options.authBackend;
-  const ingress = captureSecureStorageIngress(
-    options.env ?? process.env,
-    options.agencHome,
-  );
-  const loadedConfig = await loadCanonicalConfig({
-    home: ingress.home,
-    env: ingress.environment,
-    onWarn: (message) => io.stderr.write(`${message}\n`),
-  });
-  return createAuthBackend(loadedConfig.config, {
-    agencHome: ingress.home.path,
-    env: ingress.environment,
-    ...(options.remote !== undefined ? { remote: options.remote } : {}),
-  });
 }

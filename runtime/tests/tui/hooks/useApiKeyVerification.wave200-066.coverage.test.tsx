@@ -13,7 +13,6 @@ const authHarness = vi.hoisted(() => {
     key: undefined as string | undefined,
     source: undefined as string | undefined,
     subscriber: false,
-    remoteAuthContexts: [] as unknown[],
   }
 
   return {
@@ -29,7 +28,6 @@ const authHarness = vi.hoisted(() => {
       state.key = undefined
       state.source = undefined
       state.subscriber = false
-      state.remoteAuthContexts = []
       this.getAnthropicApiKeyWithSource.mockClear()
       this.verifyApiKey.mockClear()
     },
@@ -39,17 +37,6 @@ const authHarness = vi.hoisted(() => {
 
 vi.mock('../../onboarding/useApiKeyVerification', () => ({
   verifyApiKey: authHarness.verifyApiKey,
-}))
-
-// A live hosted (remote) auth session short-circuits the hook to 'valid'.
-// Pin it to absent so these tests stay hermetic against the developer's
-// real ~/.agenc/auth.json and keep exercising the anthropic key path.
-vi.mock('../../auth/session-state', async importOriginal => ({
-  ...(await importOriginal()),
-  hasRemoteAuthSessionSync: (context: unknown) => {
-    authHarness.state.remoteAuthContexts.push(context)
-    return false
-  },
 }))
 
 vi.mock('../../utils/auth.js', () => ({
@@ -154,12 +141,6 @@ describe('useApiKeyVerification api key helper coverage', () => {
       expect(authHarness.getAnthropicApiKeyWithSource).toHaveBeenCalledWith(
         TEST_REMOTE_AUTH_SESSION_CONTEXT,
       )
-      expect(authHarness.state.remoteAuthContexts.length).toBeGreaterThan(0)
-      expect(
-        authHarness.state.remoteAuthContexts.every(
-          context => context === TEST_REMOTE_AUTH_SESSION_CONTEXT,
-        ),
-      ).toBe(true)
 
       await latest?.reverify()
 

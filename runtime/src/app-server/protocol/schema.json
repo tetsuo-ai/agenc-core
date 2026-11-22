@@ -3,23 +3,12 @@
   "$id": "urn:agenc:app-server:protocol",
   "title": "AgenC Daemon JSON-RPC Protocol",
   "description": "Initial AgenC daemon JSON-RPC method surface.",
-  "x-agenc-protocol-version": "1.36.0",
+  "x-agenc-protocol-version": "1.37.0",
   "x-agenc-package": {
     "name": "@tetsuo-ai/protocol",
     "export": "./daemon-json-rpc.schema.json"
   },
   "x-agenc-methods": [
-    "remote.capabilities",
-    "remote.status",
-    "remote.start",
-    "remote.stop",
-    "remote.pair.begin",
-    "remote.pair.refresh",
-    "remote.pair.cancel",
-    "remote.devices",
-    "remote.pending",
-    "remote.approve",
-    "remote.revoke",
     "telegram.capabilities",
     "telegram.status",
     "telegram.configure",
@@ -112,10 +101,7 @@
     "health.stats",
     "daemon.reload",
     "daemon.shutdown",
-    "daemon.shutdownIfIdle",
-    "auth.login",
-    "auth.whoami",
-    "auth.logout"
+    "daemon.shutdownIfIdle"
   ],
   "x-agenc-notifications": [
     "print.admission",
@@ -619,127 +605,6 @@
     "WhisperInternalRequest": {
       "description": "Opt-in local authenticated client extension; not part of the public request union or remote browser grant surface.",
       "oneOf": [{ "$ref": "#/definitions/WhisperStatusRequest" }, { "$ref": "#/definitions/WhisperInstallRequest" }, { "$ref": "#/definitions/WhisperTranscribeRequest" }]
-    },
-    "RemoteCapabilitiesRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/definitions/RequestId" },
-        "method": { "const": "remote.capabilities" },
-        "params": { "$ref": "#/definitions/JsonObject" }
-      },
-      "required": ["jsonrpc", "id", "method"]
-    },
-    "RemoteStatusRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/definitions/RequestId" },
-        "method": { "const": "remote.status" },
-        "params": { "$ref": "#/definitions/JsonObject" }
-      },
-      "required": ["jsonrpc", "id", "method"]
-    },
-    "RemoteStartRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/definitions/RequestId" },
-        "method": { "const": "remote.start" },
-        "params": { "$ref": "#/definitions/JsonObject" }
-      },
-      "required": ["jsonrpc", "id", "method"]
-    },
-    "RemoteStopRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/definitions/RequestId" },
-        "method": { "const": "remote.stop" },
-        "params": { "$ref": "#/definitions/JsonObject" }
-      },
-      "required": ["jsonrpc", "id", "method"]
-    },
-    "RemotePairBeginRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/definitions/RequestId" },
-        "method": { "const": "remote.pair.begin" },
-        "params": { "$ref": "#/definitions/JsonObject" }
-      },
-      "required": ["jsonrpc", "id", "method"]
-    },
-    "RemotePairRefreshRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/definitions/RequestId" },
-        "method": { "const": "remote.pair.refresh" },
-        "params": { "$ref": "#/definitions/JsonObject" }
-      },
-      "required": ["jsonrpc", "id", "method"]
-    },
-    "RemotePairCancelRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/definitions/RequestId" },
-        "method": { "const": "remote.pair.cancel" },
-        "params": { "$ref": "#/definitions/JsonObject" }
-      },
-      "required": ["jsonrpc", "id", "method"]
-    },
-    "RemoteDevicesRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/definitions/RequestId" },
-        "method": { "const": "remote.devices" },
-        "params": { "$ref": "#/definitions/JsonObject" }
-      },
-      "required": ["jsonrpc", "id", "method"]
-    },
-    "RemotePendingRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/definitions/RequestId" },
-        "method": { "const": "remote.pending" },
-        "params": { "$ref": "#/definitions/JsonObject" }
-      },
-      "required": ["jsonrpc", "id", "method"]
-    },
-    "RemoteApproveRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/definitions/RequestId" },
-        "method": { "const": "remote.approve" },
-        "params": { "$ref": "#/definitions/JsonObject" }
-      },
-      "required": ["jsonrpc", "id", "method"]
-    },
-    "RemoteRevokeRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/definitions/RequestId" },
-        "method": { "const": "remote.revoke" },
-        "params": { "$ref": "#/definitions/JsonObject" }
-      },
-      "required": ["jsonrpc", "id", "method"]
     },
     "TelegramCapabilitiesRequest": {
       "type": "object",
@@ -4936,56 +4801,8 @@
         "instanceId"
       ]
     },
-    "AuthLoginParams": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {}
-    },
-    "AuthWhoamiParams": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {}
-    },
-    "AuthLogoutParams": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {}
-    },
     "AgenCDaemonRequest": {
       "oneOf": [
-        {
-          "$ref": "#/definitions/RemoteCapabilitiesRequest"
-        },
-        {
-          "$ref": "#/definitions/RemoteStatusRequest"
-        },
-        {
-          "$ref": "#/definitions/RemoteStartRequest"
-        },
-        {
-          "$ref": "#/definitions/RemoteStopRequest"
-        },
-        {
-          "$ref": "#/definitions/RemotePairBeginRequest"
-        },
-        {
-          "$ref": "#/definitions/RemotePairRefreshRequest"
-        },
-        {
-          "$ref": "#/definitions/RemotePairCancelRequest"
-        },
-        {
-          "$ref": "#/definitions/RemoteDevicesRequest"
-        },
-        {
-          "$ref": "#/definitions/RemotePendingRequest"
-        },
-        {
-          "$ref": "#/definitions/RemoteApproveRequest"
-        },
-        {
-          "$ref": "#/definitions/RemoteRevokeRequest"
-        },
         {
           "$ref": "#/definitions/TelegramCapabilitiesRequest"
         },
@@ -5252,15 +5069,6 @@
         },
         {
           "$ref": "#/definitions/DaemonShutdownIfIdleRequest"
-        },
-        {
-          "$ref": "#/definitions/AuthLoginRequest"
-        },
-        {
-          "$ref": "#/definitions/AuthWhoamiRequest"
-        },
-        {
-          "$ref": "#/definitions/AuthLogoutRequest"
         },
         {
           "$ref": "#/definitions/PrintInvokeRequest"
@@ -7171,75 +6979,6 @@
         "id",
         "method",
         "params"
-      ]
-    },
-    "AuthLoginRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "jsonrpc": {
-          "const": "2.0"
-        },
-        "id": {
-          "$ref": "#/definitions/RequestId"
-        },
-        "method": {
-          "const": "auth.login"
-        },
-        "params": {
-          "$ref": "#/definitions/AuthLoginParams"
-        }
-      },
-      "required": [
-        "jsonrpc",
-        "id",
-        "method"
-      ]
-    },
-    "AuthWhoamiRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "jsonrpc": {
-          "const": "2.0"
-        },
-        "id": {
-          "$ref": "#/definitions/RequestId"
-        },
-        "method": {
-          "const": "auth.whoami"
-        },
-        "params": {
-          "$ref": "#/definitions/AuthWhoamiParams"
-        }
-      },
-      "required": [
-        "jsonrpc",
-        "id",
-        "method"
-      ]
-    },
-    "AuthLogoutRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "jsonrpc": {
-          "const": "2.0"
-        },
-        "id": {
-          "$ref": "#/definitions/RequestId"
-        },
-        "method": {
-          "const": "auth.logout"
-        },
-        "params": {
-          "$ref": "#/definitions/AuthLogoutParams"
-        }
-      },
-      "required": [
-        "jsonrpc",
-        "id",
-        "method"
       ]
     },
     "AgenCDaemonSuccessResponse": {

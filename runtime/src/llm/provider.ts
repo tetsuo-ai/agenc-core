@@ -531,12 +531,10 @@ function cloneProviderFactoryOptions(
           extra: Object.fromEntries(
             Object.entries(options.extra).map(([key, value]) => [
               key,
-              key === "authBackend"
-                ? value
-                : key === "gemini"
-                  ? parseGeminiRuntimeOptions(value)
-                  : key === "grokAcp"
-                    ? readGrokAcpRuntimeExtra(value)
+              key === "gemini"
+                ? parseGeminiRuntimeOptions(value)
+                : key === "grokAcp"
+                  ? readGrokAcpRuntimeExtra(value)
                   : cloneExtraValue(value),
             ]),
           ),
@@ -998,18 +996,10 @@ export function createProvider(
     );
   }
   const extra = readRuntimeExtra(opts.extra);
-  const retiredAccountEndpoint = (() => {
-    try {
-      const host = new URL(opts.baseURL ?? "").hostname.toLowerCase();
-      return ["id.agenc.ag", "llm.agenc.tech", "us.agenc.tech"].includes(host);
-    } catch { return false; }
-  })();
-  if (retiredAccountEndpoint || extra.managedGateway === true || extra.managedCredential === true) {
+  if (extra.managedGateway === true || extra.managedCredential === true) {
     throw new Error("AgenC accounts no longer provide models.");
   }
   switch (name) {
-    case "agenc":
-      throw new Error("AgenC accounts no longer provide models. Choose a provider with your own credentials or a local server.");
     case "grok": {
       const grokRequestedModel = opts.model?.trim() || undefined;
       if (isGrokComposerModel(grokRequestedModel)) {

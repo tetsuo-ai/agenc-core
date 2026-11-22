@@ -33,15 +33,6 @@ const harness = vi.hoisted(() => ({
   model: 'gpt-5.4',
   removeNotification: vi.fn(),
   remoteMode: false,
-  remoteAuthSession: false,
-  remoteAuthContexts: [] as unknown[],
-  remoteManagedKeys: false,
-  remoteSubscriptionTier: undefined as
-    | undefined
-    | 'enterprise'
-    | 'free'
-    | 'pro'
-    | 'team',
   subscriptionType: 'pro' as 'enterprise' | 'pro' | 'team',
   tokenUsage: 1234,
   tokenWarningEnvironments: [] as unknown[],
@@ -64,21 +55,6 @@ vi.mock('../../../services/compact/autoCompact.js', () => ({
       model,
       tokenUsage,
     }
-  },
-}))
-
-vi.mock('../../../auth/session-state.js', () => ({
-  hasEntitledRemoteAuthSessionSync: (context: unknown) => {
-    harness.remoteAuthContexts.push(context)
-    return harness.remoteManagedKeys
-  },
-  hasRemoteAuthSessionSync: (context: unknown) => {
-    harness.remoteAuthContexts.push(context)
-    return harness.remoteAuthSession
-  },
-  remoteAuthSessionSubscriptionTierSync: (context: unknown) => {
-    harness.remoteAuthContexts.push(context)
-    return harness.remoteSubscriptionTier
   },
 }))
 
@@ -281,10 +257,6 @@ function resetHarness() {
   harness.model = 'gpt-5.4'
   harness.removeNotification.mockClear()
   harness.remoteMode = false
-  harness.remoteAuthSession = false
-  harness.remoteAuthContexts = []
-  harness.remoteManagedKeys = false
-  harness.remoteSubscriptionTier = undefined
   harness.subscriptionType = 'pro'
   harness.tokenUsage = 1234
   harness.tokenWarningEnvironments = []
@@ -391,7 +363,6 @@ describe('Notifications', () => {
     const rendered = await renderNotifications()
 
     try {
-      expect(harness.remoteAuthContexts).toEqual([])
       expect(harness.compactWarningEnvironments).toEqual([
         TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
       ])
@@ -546,41 +517,6 @@ describe('Notifications', () => {
     })
 
     try {
-      expect(rendered.output()).not.toContain('Not logged in · Run /login')
-    } finally {
-      await rendered.dispose()
-    }
-  })
-
-  test('does not offer account upgrades for model access', async () => {
-    harness.remoteAuthSession = true
-    harness.remoteSubscriptionTier = 'free'
-    const rendered = await renderNotifications({
-      apiKeyStatus: 'missing',
-    })
-
-    try {
-      expect(rendered.output()).not.toContain(
-        'AgenC free plan · upgrade at https://id.agenc.ag/pricing or add a BYOK key',
-      )
-      expect(rendered.output()).not.toContain('Not logged in · Run /login')
-    } finally {
-      await rendered.dispose()
-    }
-  })
-
-  test('does not offer managed keys for a paid account', async () => {
-    harness.remoteAuthSession = true
-    harness.remoteManagedKeys = true
-    harness.remoteSubscriptionTier = 'pro'
-    const rendered = await renderNotifications({
-      apiKeyStatus: 'missing',
-    })
-
-    try {
-      expect(rendered.output()).not.toContain(
-        'AgenC pro plan · managed model keys available',
-      )
       expect(rendered.output()).not.toContain('Not logged in · Run /login')
     } finally {
       await rendered.dispose()

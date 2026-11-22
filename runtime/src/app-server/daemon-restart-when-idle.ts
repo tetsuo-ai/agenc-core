@@ -13,8 +13,8 @@
  * the daemon reports ready; every agent in `agent.list` is idle (a turn sets
  * `running`); no loaded session has an attached client (TUI, `agenc -p`,
  * Desktop, SDK); no opened session has a sub-agent, an active goal or a
- * running background process; no routine run is active; no remote device is
- * connected; `health.stats` counts no tool call in flight; no other AgenC
+ * running background process; no routine run is active; `health.stats`
+ * counts no tool call in flight; no other AgenC
  * process runs from an older runtime of this home (an old TUI that is not
  * attached right now would otherwise stop the new daemon on its next session
  * start); and no agent was active in the last {@link AGENC_DAEMON_RESTART_QUIET_MS}.
@@ -303,7 +303,6 @@ export function busyReasonFromSessionDetail(
 
 export interface AgenCDaemonProbeServices {
   readonly activeRoutineRuns: number;
-  readonly connectedRemoteDevices: number;
   readonly inFlightToolCalls: number;
 }
 
@@ -312,11 +311,6 @@ export function busyReasonFromServices(
 ): AgenCDaemonIdleVerdict {
   if (services.activeRoutineRuns > 0) {
     return busy(`${plural(services.activeRoutineRuns, "routine", "routines")} running`);
-  }
-  if (services.connectedRemoteDevices > 0) {
-    return busy(
-      `${plural(services.connectedRemoteDevices, "remote device", "remote devices")} connected`,
-    );
   }
   if (services.inFlightToolCalls > 0) {
     return busy(`${plural(services.inFlightToolCalls, "tool call", "tool calls")} in flight`);
@@ -422,7 +416,7 @@ export function findOtherAgenCRuntimeClients(scan: AgenCRuntimeClientScan): numb
 }
 
 const LABELLED_SUBCOMMANDS: ReadonlySet<string> = new Set([
-  "update", "daemon", "run", "mcp", "gateway", "remote",
+  "update", "daemon", "run", "mcp", "gateway",
 ]);
 
 /**
@@ -904,25 +898,19 @@ async function probeAgenCDaemonIdleOrThrow(
     sessionCursor = stringOf(next.results[0]?.nextCursor);
   }
 
-  // 3. Routines, remote devices and tool calls in flight.
+  // 3. Routines and tool calls in flight.
   const serviceRequests: ProbeRequest[] = [{ method: "health.stats" }];
   if (methods["routine.list"] === true) serviceRequests.push({ method: "routine.list" });
-  if (methods["remote.status"] === true) serviceRequests.push({ method: "remote.status" });
   const services = await request(host, expected.instanceId, version, serviceRequests);
   const stats = objectOf(services.results[0]?.state);
   const routines = methods["routine.list"] === true
     ? arrayOf(services.results[1]?.routines)
     : [];
-  const remote = methods["remote.status"] === true
-    ? services.results[services.results.length - 1]
-    : undefined;
   verdict = busyReasonFromServices({
     activeRoutineRuns: routines.filter((routine) => {
       const status = stringOf(objectOf(objectOf(routine)?.lastRun)?.status);
       return status !== undefined && ACTIVE_ROUTINE_RUN_STATUSES.has(status);
     }).length,
-    connectedRemoteDevices:
-      typeof remote?.connectedDevices === "number" ? remote.connectedDevices : 0,
     inFlightToolCalls:
       typeof stats?.inFlightToolCalls === "number" ? stats.inFlightToolCalls : 0,
   });

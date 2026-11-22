@@ -186,12 +186,6 @@ function resolveExplicitPair(
   catalog: Readonly<Record<string, readonly string[]>>,
   config: AgenCConfig,
 ): ProviderModelPair {
-  if (model === "agenc") {
-    if (provider !== "agenc") {
-      throw selectionConflict(provider, model, "agenc");
-    }
-    return Object.freeze({ provider: "agenc", model: "agenc" });
-  }
   const providerCatalog = providerCatalogPair(provider, model, catalog);
   if (providerCatalog !== undefined) return providerCatalog;
   // Some exact runtime routes are intentionally absent from the public model
@@ -404,38 +398,34 @@ export function resolveProviderModelLayer(
     }
   } else if (hasModel) {
     const modelInput = requireSelectionValue(layer.model, "model");
-    if (modelInput === "agenc") {
-      selection = Object.freeze({ provider: "agenc", model: "agenc" });
+    const catalogQualified = catalogQualifiedModel(modelInput, catalog);
+    if (catalogQualified !== undefined) {
+      selection = catalogQualified;
     } else {
-      const catalogQualified = catalogQualifiedModel(modelInput, catalog);
-      if (catalogQualified !== undefined) {
-        selection = catalogQualified;
-      } else {
-        try {
-          selection = resolveModelDisambiguated(modelInput, catalog);
-        } catch (error) {
-          if (!(error instanceof UnknownModelError)) throw error;
-          const qualification = explicitQualification(modelInput);
-          if (qualification === undefined) {
-            const inheritedProvider =
-              base.model_provider?.trim() ??
-              combined.model_provider?.trim();
-            if (!inheritedProvider) return layer;
-            const provider = resolveProviderSlugOrThrow(inheritedProvider);
-            selection = resolveExplicitPair(
-              provider,
-              modelInput,
-              catalog,
-              combined,
-            );
-          } else {
-            selection = resolveExplicitPair(
-              qualification.provider,
-              modelInput,
-              catalog,
-              combined,
-            );
-          }
+      try {
+        selection = resolveModelDisambiguated(modelInput, catalog);
+      } catch (error) {
+        if (!(error instanceof UnknownModelError)) throw error;
+        const qualification = explicitQualification(modelInput);
+        if (qualification === undefined) {
+          const inheritedProvider =
+            base.model_provider?.trim() ??
+            combined.model_provider?.trim();
+          if (!inheritedProvider) return layer;
+          const provider = resolveProviderSlugOrThrow(inheritedProvider);
+          selection = resolveExplicitPair(
+            provider,
+            modelInput,
+            catalog,
+            combined,
+          );
+        } else {
+          selection = resolveExplicitPair(
+            qualification.provider,
+            modelInput,
+            catalog,
+            combined,
+          );
         }
       }
     }

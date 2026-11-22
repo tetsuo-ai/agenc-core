@@ -64,7 +64,6 @@ import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { AgenCProjectTrustService } from "./project-trust.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import type { AgentStatus } from "../agents/status.js";
-import type { AuthBackend } from "../auth/backend.js";
 import type {
   AdmissionAcquireInput,
   ExecutionAdmissionClient,
@@ -288,29 +287,6 @@ function makeStubConversationThreadManager(opts: {
   };
 }
 
-function makeAuthBackend(
-  kind: NonNullable<AuthBackend["kind"]>,
-  apiKey: string,
-): AuthBackend {
-  return {
-    kind,
-    login: vi.fn(() => ({ authenticated: true, provider: kind })),
-    logout: vi.fn(() => ({ authenticated: false })),
-    whoami: vi.fn(() => ({ authenticated: true, provider: kind })),
-    vendKey: vi.fn((provider, sessionId) => ({
-      kind: "api-key",
-      provider: String(provider),
-      sessionId,
-      apiKey,
-    })),
-    inferAgencModel: vi.fn(() => ({
-      provider: "agenc",
-      model: "agenc:grok",
-    })),
-    getSubscriptionTier: vi.fn(() => "pro"),
-  };
-}
-
 function runtimeSettingsRolloutItem(
   runId: string,
   settings: RunRuntimeSettingsSnapshot,
@@ -437,7 +413,6 @@ function makeTopLevelRunner(opts: {
   readonly threadShutdown?: ReturnType<typeof vi.fn>;
   readonly threadAppendMessage?: ReturnType<typeof vi.fn>;
   readonly hydrateStateWith?: ReturnType<typeof vi.fn>;
-  readonly authBackend?: AuthBackend;
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
@@ -1126,9 +1101,6 @@ function makeTopLevelRunner(opts: {
   })) as unknown as ReturnType<typeof vi.fn> & AgenCBootstrapFunction;
   const runner = new AgenCDelegateBackgroundAgentRunner({
     ...opts.additionalRunnerOptions,
-    ...(opts.authBackend !== undefined
-      ? { authBackend: opts.authBackend }
-      : {}),
     bootstrap,
     ensureAgentControl: vi.fn(() => ({
       control,
@@ -7092,21 +7064,6 @@ describe("AgenC delegate background-agent runner", () => {
     expect(recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload).toMatchObject({ reasoningEffort });
   });
 
-  it("persists an exact hidden managed model in initial runtime settings", async () => {
-    const agentId = "managed-deepseek-initial-settings";
-    const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
-    h.sessionState.sessionConfiguration.provider.slug = "agenc";
-    h.sessionState.sessionConfiguration.collaborationMode.model = "deepseek/deepseek-v4.1-flash";
-    h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort = "high";
-    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
-    expect((await h.runner.getAgentSnapshot(agentId))?.runtimeSettings).toMatchObject({
-      provider: "agenc",
-      model: "deepseek/deepseek-v4.1-flash",
-      reasoningEffort: "high",
-    });
-    expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toHaveLength(1);
-  });
-
   it("updates response detail durably between turns, clears it, and combines it atomically with effort", async () => {
     const agentId = "response-detail-update";
     const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
@@ -9891,11 +9848,9 @@ describe("AgenC delegate background-agent runner", () => {
     ).rejects.toThrow(/internal-only/);
   });
 
-  it("passes account identity into delegate bootstrap without model vending", async () => {
-    const authBackend = makeAuthBackend("local", "managed-key");
+  it("starts a delegate bootstrap without any AgenC account", async () => {
     const { runner, bootstrap } = makeTopLevelRunner({
       conversationId: "parent-session",
-      authBackend,
       argv: ["node", "agenc"],
     });
 
@@ -9910,62 +9865,7 @@ describe("AgenC delegate background-agent runner", () => {
       argv: ["node", "agenc"],
       executionAdmissionAutonomous: true,
     });
-    expect(bootstrapOptions?.authBackend).not.toBe(authBackend);
-    await expect(
-      bootstrapOptions?.authBackend?.vendKey("grok", "daemon-session"),
-    ).rejects.toThrow("AgenC accounts no longer provide models");
-    expect(await bootstrapOptions?.authBackend?.whoami()).toMatchObject({ authenticated: true, provider: "local" });
-    expect(authBackend.whoami).toHaveBeenCalled();
-    expect(authBackend.vendKey).not.toHaveBeenCalled();
-  });
-
-  it("updateRuntimeConfig replaces account identity while model vending stays retired", async () => {
-    const initialAuthBackend = makeAuthBackend("local", "managed-key-before");
-    const reloadedAuthBackend = makeAuthBackend("remote", "managed-key-after");
-    const { runner, bootstrap } = makeTopLevelRunner({
-      conversationId: "parent-session",
-      authBackend: initialAuthBackend,
-      argv: ["node", "agenc"],
-    });
-
-    await runner.startAgent({
-      objective: "before auth reload",
-      unattendedAllow: [],
-      unattendedDeny: [],
-    });
-    const firstRuntimeAuthBackend =
-      vi.mocked(bootstrap).mock.calls[0]?.[0].authBackend;
-    if (firstRuntimeAuthBackend === undefined) {
-      throw new Error("expected first daemon runtime auth backend");
-    }
-    expect(firstRuntimeAuthBackend.kind).toBe("local");
-    await expect(
-      firstRuntimeAuthBackend.vendKey("grok", "daemon-session"),
-    ).rejects.toThrow("AgenC accounts no longer provide models");
-
-    expect(await firstRuntimeAuthBackend.whoami()).toMatchObject({ provider: "local" });
-    runner.updateRuntimeConfig({ authBackend: reloadedAuthBackend });
-    expect(await firstRuntimeAuthBackend.whoami()).toMatchObject({ provider: "remote" });
-    expect(initialAuthBackend.vendKey).not.toHaveBeenCalled();
-    expect(reloadedAuthBackend.vendKey).not.toHaveBeenCalled();
-
-    await expect(
-      firstRuntimeAuthBackend.vendKey("grok", "daemon-session"),
-    ).rejects.toThrow("AgenC accounts no longer provide models");
-
-    await runner.stopAgent("parent-session");
-
-    await runner.startAgent({
-      objective: "after auth reload",
-      unattendedAllow: [],
-      unattendedDeny: [],
-    });
-    const secondRuntimeAuthBackend =
-      vi.mocked(bootstrap).mock.calls[1]?.[0].authBackend;
-    expect(secondRuntimeAuthBackend?.kind).toBe("remote");
-    await expect(
-      secondRuntimeAuthBackend?.vendKey("grok", "daemon-session"),
-    ).rejects.toThrow("AgenC accounts no longer provide models");
+    expect(bootstrapOptions).not.toHaveProperty("authBackend");
   });
 
   it("[managed-thread] returns conversationId as agentId with no delegate fork", async () => {

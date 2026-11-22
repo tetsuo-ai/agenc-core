@@ -4450,7 +4450,6 @@ export async function* runAgent(
       await assertChildExecutionPlan(parent, params.plan);
       const prepared = await parent.providerService.prepareChild(params.providerSelection, undefined,
         { signal: merged.signal }, true,
-        params.plan.route.provider === "agenc" ? params.plan.destination : undefined,
         params.plan.destination);
       provider = prepared.binding.instance;
       ownedPreparedProvider = provider;
@@ -4460,9 +4459,7 @@ export async function* runAgent(
       }
       const crossPolicyRevoked = (config: AgenCConfig): boolean =>
         config.agents?.cross_provider_enabled !== true ||
-        !(config.agents.allowed_providers ?? []).includes(params.providerSelection!.provider) ||
-        (params.plan?.route.provider === "agenc" &&
-         !(config.agents.allowed_providers ?? []).includes(params.plan.destination.provider));
+        !(config.agents.allowed_providers ?? []).includes(params.providerSelection!.provider);
       const stopForPolicy = (): void => {
         crossPolicyWasRevoked = true;
         live.abortController.abort("cross-provider subagent policy was disabled or provider removed");

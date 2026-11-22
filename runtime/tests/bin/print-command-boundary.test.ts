@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { parseAgenCDaemonCliArgs } from "../../src/app-server/daemon-control.js";
-import { parseAgenCRemoteCliArgs } from "../../src/bin/remote-cli.js";
 import { parseAgenCDaemonProxyCliArgs } from "../../src/bin/daemon-proxy-cli.js";
 import { parseAgenCAgentCliArgs } from "../../src/app-server/agent-cli.js";
-import { parseAgenCAuthCliArgs } from "../../src/bin/auth-cli.js";
+import { retiredCommandNotice } from "../../src/bin/retired-commands.js";
 import { parseOpenAiAuthCliArgs } from "../../src/bin/openai-auth-cli.js";
 import { parseGrokAuthCliArgs } from "../../src/bin/grok-auth-cli.js";
 import { parseOpenAiModelsCliArgs } from "../../src/bin/openai-models-cli.js";
@@ -29,10 +28,9 @@ import { parseAgenCTrajectoriesCliArgs } from "../../src/bin/trajectories-cli-ar
 // A leading print flag must remain prompt routing, even if a subcommand follows.
 const commandParsers = [
   parseAgenCDaemonCliArgs,
-  parseAgenCRemoteCliArgs,
+  function retiredCommands(argv: readonly string[]) { return retiredCommandNotice(argv[0]); },
   parseAgenCDaemonProxyCliArgs,
   parseAgenCAgentCliArgs,
-  parseAgenCAuthCliArgs,
   parseOpenAiAuthCliArgs,
   parseGrokAuthCliArgs,
   parseOpenAiModelsCliArgs,

@@ -544,19 +544,13 @@ describe("spawn_agent isolation", () => {
     expect(mockDelegate).not.toHaveBeenCalled();
   });
 
-  it("rejects retired account child routes without inference or delegation", async () => {
+  it("refuses the retired AgenC account provider as a child route without delegation", async () => {
     const { session } = await crossProviderFixture(["agenc", "deepseek"], true, "grok", {});
-    const infer = vi.fn();
-    Object.assign(session, { providerService: {
-      current: () => ({ provider: "grok", model: "grok-4.6" }),
-      resolveManagedChildDestination: infer,
-    } });
     const result = await createSpawnAgentTool(makeOptions(session)).execute({
       message: "review the docs", task_name: "reviewer", provider: "agenc", model: "agenc",
     });
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("AgenC accounts no longer provide models");
-    expect(infer).not.toHaveBeenCalled();
+    expect(result.content).toContain("Unknown provider `agenc`");
     expect(mockDelegate).not.toHaveBeenCalled();
   });
 

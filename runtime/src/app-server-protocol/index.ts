@@ -6,13 +6,15 @@
  * WP-01 introduced this shared contract; WP-02 extends it with the browser
  * WebSocket connection defaults and initialize handshake used by the sibling
  * portal repository while the daemon protocol is still defined by agenc-core.
- * WP-03 adds auth read/mutation methods that must reuse the daemon
- * AuthBackend state instead of creating a portal-specific token store.
+ * WP-03 added auth read/mutation methods; WP-07 removes them with the
+ * retired AgenC account sign-in.
  * WP-04 adds the session/agent workspace controls for attaching, reading
  * agent transcripts, and sending messages through existing daemon methods.
  * WP-05 adds dashboard controls for listing, starting, and stopping
  * background agents through the same daemon JSON-RPC contract.
  * WP-06 adds a compact read-only mobile status projection for phone check-ins.
+ * WP-07 (0.5.0) removes `auth.*`, the `portal.auth.*` capabilities and the
+ * auth state from the dashboard and mobile snapshots.
  */
 
 import {
@@ -34,9 +36,8 @@ import {
   type RequestId,
   type SessionAttachParams,
 } from "../app-server/protocol/index.js";
-import type { AuthBackendKind, AuthIdentity } from "../auth/backend.js";
 
-export const AGENC_PORTAL_PROTOCOL_VERSION = "0.4.0" as const;
+export const AGENC_PORTAL_PROTOCOL_VERSION = "0.5.0" as const;
 export const AGENC_PORTAL_CLIENT_ID = "agenc-portal" as const;
 export const AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT =
   "ws://127.0.0.1:7766/" as const;
@@ -48,9 +49,6 @@ export const AGENC_PORTAL_METHODS = [
   "initialize",
   "health.ready",
   "health.stats",
-  "auth.whoami",
-  "auth.login",
-  "auth.logout",
   "session.list",
   "session.attach",
   "agent.create",
@@ -67,9 +65,6 @@ export const AGENC_PORTAL_CLIENT_CAPABILITIES = [
   "portal.dashboard.read",
   "portal.mobile.status.read",
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
-  "portal.auth.read",
-  "portal.auth.login",
-  "portal.auth.logout",
   "portal.session.attach",
   "portal.agent.list",
   "portal.agent.start",
@@ -86,9 +81,6 @@ export const AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS = {
   "portal.dashboard.read": true,
   "portal.mobile.status.read": true,
   [AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY]: true,
-  "portal.auth.read": true,
-  "portal.auth.login": true,
-  "portal.auth.logout": true,
   "portal.session.attach": true,
   "portal.agent.list": true,
   "portal.agent.start": true,
@@ -97,15 +89,6 @@ export const AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS = {
   "portal.transcript.read": true,
   "portal.message.send": true,
 } as const satisfies Record<AgenCPortalClientCapability, true>;
-
-export const AGENC_PORTAL_AUTH_METHODS = [
-  "auth.whoami",
-  "auth.login",
-  "auth.logout",
-] as const satisfies readonly AgenCPortalMethod[];
-
-export type AgenCPortalAuthMethod =
-  (typeof AGENC_PORTAL_AUTH_METHODS)[number];
 
 export type AgenCPortalAgentCreateRequest = AgenCDaemonRequestWithParams<
   "agent.create",
@@ -332,14 +315,6 @@ export interface AgenCPortalConnectionState {
   readonly updatedAt: string | null;
 }
 
-export interface AgenCPortalAuthState {
-  readonly authenticated: boolean;
-  readonly provider: AuthBackendKind | null;
-  readonly identity: AuthIdentity | null;
-  readonly error: string | null;
-  readonly updatedAt: string | null;
-}
-
 export interface AgenCPortalSessionSummary {
   readonly sessionId: string;
   readonly agentId: string | null;
@@ -393,7 +368,6 @@ export interface AgenCPortalDashboardSnapshot {
   readonly protocolVersion: typeof AGENC_PORTAL_PROTOCOL_VERSION;
   readonly connection: AgenCPortalConnectionTarget | null;
   readonly connectionState: AgenCPortalConnectionState;
-  readonly auth: AgenCPortalAuthState;
   readonly sessions: readonly AgenCPortalSessionSummary[];
   readonly agents: readonly AgenCPortalAgentSummary[];
   readonly backgroundAgents: AgenCPortalBackgroundAgentDashboardState;
@@ -437,10 +411,6 @@ export interface AgenCPortalMobileConnectionState {
   readonly initialized: boolean;
 }
 
-export interface AgenCPortalMobileAuthState {
-  readonly authenticated: boolean;
-}
-
 export interface AgenCPortalMobileStatusTruncation {
   readonly agents: boolean;
   readonly sessions: boolean;
@@ -450,7 +420,6 @@ export interface AgenCPortalMobileStatusSnapshot {
   readonly protocolVersion: typeof AGENC_PORTAL_PROTOCOL_VERSION;
   readonly generatedAt: string;
   readonly connection: AgenCPortalMobileConnectionState;
-  readonly auth: AgenCPortalMobileAuthState;
   readonly counts: AgenCPortalMobileStatusCounts;
   readonly agents: readonly AgenCPortalMobileAgentCheckIn[];
   readonly sessions: readonly AgenCPortalMobileSessionCheckIn[];
@@ -620,9 +589,6 @@ export function createAgenCPortalMobileStatusSnapshot(
       status: snapshot.connectionState.status,
       initialized: snapshot.connectionState.initialized,
     },
-    auth: {
-      authenticated: snapshot.auth.authenticated,
-    },
     counts: {
       totalAgents: sourceAgents.length,
       totalSessions: snapshot.sessions.length,
@@ -644,10 +610,4 @@ export function isAgenCPortalMethod(
   value: string,
 ): value is AgenCPortalMethod {
   return (AGENC_PORTAL_METHODS as readonly string[]).includes(value);
-}
-
-export function isAgenCPortalAuthMethod(
-  value: string,
-): value is AgenCPortalAuthMethod {
-  return (AGENC_PORTAL_AUTH_METHODS as readonly string[]).includes(value);
 }

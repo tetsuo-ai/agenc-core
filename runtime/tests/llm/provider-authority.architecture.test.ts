@@ -635,8 +635,9 @@ describe("provider authority architecture", () => {
     expect(source).not.toMatch(
       /authBackend\s+as\s+\{\s*readByokKey\??\s*:/u,
     );
+    // Saved keys come from the session's own home, never from an injected object.
     expect(source).toMatch(
-      /new LocalAuthBackend\(\{\s*agencHome,\s*env\s*\}\)/u,
+      /readProviderKey\(configStore\.homeContext, provider\)/u,
     );
   });
 

@@ -22,7 +22,6 @@ describe("session home authority architecture", () => {
     const ingress = new Set([
       "bin/agenc-main.ts",
       "bin/mcp-cli.ts",
-      "bin/remote-cli.ts",
       "utils/agencInChrome/mcpServer.ts",
       "utils/envUtils.ts",
     ]);
@@ -331,9 +330,8 @@ describe("session home authority architecture", () => {
     expect(`${filesystem}\n${trust}`).not.toContain("process.env.AGENC_WORKSPACE")
   });
 
-  test("keeps slash auth on captured config, provider, and home authority", () => {
+  test("keeps slash provider sign-in on captured config, provider, and home authority", () => {
     const authSources = [
-      source("commands/auth.tsx"),
       source("commands/openai-auth.tsx"),
       source("commands/xai-auth.tsx"),
     ];
@@ -343,6 +341,5 @@ describe("session home authority architecture", () => {
       expect(auth).toContain("requireCommandConfigStore(ctx)")
       expect(auth).toContain("providerEnvironmentFromCommandContext(ctx)")
     }
-    expect(authSources[0]).toContain("configStore.homeContext.path")
   });
 });

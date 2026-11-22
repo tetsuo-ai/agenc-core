@@ -203,9 +203,8 @@ describe("helpCommand", () => {
     const text = formatHelp(registry);
 
     expect(text).toContain("/help - Show help and available commands");
-    expect(text).toContain("/login - Sign in with your AgenC account");
-    expect(text).toContain("/logout - Sign out of your AgenC account");
-    expect(text).toContain("/whoami, /account - Show the signed-in AgenC account");
+    expect(text).not.toContain("/login");
+    expect(text).not.toContain("AgenC account");
     expect(text).toContain("/plan - Enter plan mode");
     expect(text).toContain("/model - Choose a model");
     expect(text).toContain("/provider, /providers - Connect providers and pick a model");

@@ -7,7 +7,7 @@ ordered credential and endpoint environment ingress names, and first-run
 access metadata. Exported default maps are mechanically derived views of
 those rows.
 
-CLI: `agenc providers` · `agenc login` · `agenc config` · `/provider` and
+CLI: `agenc providers` · `agenc openai-login` · `agenc grok-login` · `agenc config` · `/provider` and
 `/model` in the TUI.
 
 ## Defaults
@@ -350,8 +350,8 @@ they run only through the Grok Build CLI ACP path. See
 | `github` | GitHub Copilot | `gpt-5.3-codex` | `https://api.githubcopilot.com` | `GITHUB_TOKEN`, `GH_TOKEN` | `GITHUB_BASE_URL` | `api-key` |
 | `amazon-bedrock` | Amazon Bedrock | `amazon.nova-pro-v1:0` | `https://bedrock-runtime.us-east-1.amazonaws.com` | access: `AWS_BEDROCK_ACCESS_KEY_ID`, `AWS_ACCESS_KEY_ID`; secret: `AWS_BEDROCK_SECRET_ACCESS_KEY`, `AWS_SECRET_ACCESS_KEY`; optional session: `AWS_BEDROCK_SESSION_TOKEN`, `AWS_SESSION_TOKEN` | `AWS_BEDROCK_BASE_URL` | `environment` |
 
-`openrouter` uses your own OpenRouter key, including for free models. AgenC
-accounts do not supply provider credentials or model access.
+`openrouter` uses your own OpenRouter key, including for free models. There is
+no AgenC account; nothing else supplies provider credentials or model access.
 
 For current Claude models, limits and thinking behavior, see
 [Anthropic models](./anthropic-models.md).
@@ -396,10 +396,10 @@ stores credential values.
 
 - **Local BYOK** — explicit provider environment keys are transient inputs;
   keys saved through AgenC live only in the home-scoped native credential
-  secure storage. `auth.json` contains non-secret identity/timestamp metadata only.
-- **AgenC account**: `auth.backend = "remote"` controls account sign-in only.
-  Account identity, remote access, and desktop sync do not grant model access.
-  The account bearer remains in native secure storage.
+  secure storage.
+- **AgenC account**: retired. The daemon removes an older sign-in's
+  `auth.json` and secure storage token at startup; see
+  [the retired sign-in](../agenc-account-model-access.md).
 - **OpenAI / ChatGPT OAuth** — `agenc openai-login` stores one home-scoped
   native `openAiOauth` record. While `openai` is selected, that stored sign-in
   wins over `OPENAI_API_KEY`; it never affects `openai-compatible` or another

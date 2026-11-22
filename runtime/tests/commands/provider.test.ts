@@ -18,8 +18,7 @@ import type {
 import type { EnvSnapshot } from "../config/env.js";
 import type { ConfigStore } from "../config/store.js";
 import { resolveHomeContext, type HomeContext } from "../config/home.js";
-import { RemoteAuthBackend } from "../auth/backends/remote.js";
-import { LocalAuthBackend } from "../auth/backends/local.js";
+import { saveProviderKey } from "../auth/provider-keys.js";
 import { saveXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
 import { modelCommand } from "./model.js";
 
@@ -159,50 +158,6 @@ function bedrockProviderMenuRow(environment: EnvSnapshot) {
     throw new Error("Amazon Bedrock provider row is missing");
   }
   return row;
-}
-
-async function withAuthSession<T>(
-  tier: "free" | "pro",
-  fn: (authority: CommandAuthority) => T | Promise<T>,
-): Promise<T> {
-  const agencHome = mkdtempSync(join(tmpdir(), `agenc-provider-${tier}-`));
-  const environment: EnvSnapshot = Object.freeze({ AGENC_HOME: agencHome });
-  const homeContext = resolveHomeContext(environment, {
-    platformHome: tmpdir(),
-  });
-  const backend = new RemoteAuthBackend({
-    agencHome,
-    env: environment,
-    loginFlow: () => ({
-      token: "test-token",
-      expiresAt: "2099-01-01T00:00:00.000Z",
-      subscriptionTier: tier,
-    }),
-    now: () => new Date("2026-08-24T00:00:00.000Z"),
-  });
-  let signedIn = false;
-  try {
-    await backend.login();
-    signedIn = true;
-    return await fn({
-      environment,
-      configStore: commandConfigStore(homeContext, {
-        auth: { managedKeys: { enabled: true } },
-      }),
-    });
-  } finally {
-    try {
-      if (signedIn) await backend.logout();
-    } finally {
-      rmSync(agencHome, { recursive: true, force: true });
-    }
-  }
-}
-
-async function withProAuthSession<T>(
-  fn: (authority: CommandAuthority) => T | Promise<T>,
-): Promise<T> {
-  return withAuthSession("pro", fn);
 }
 
 describe("providerCommand", () => {
@@ -785,9 +740,7 @@ describe("providerCommand", () => {
       const session = stubSession({
         provider: "ollama",
         model: "llama3.3",
-        configStore: commandConfigStore(home, {
-          auth: { managedKeys: { enabled: true } },
-        }),
+        configStore: commandConfigStore(home),
         environment: Object.freeze({}),
       });
 
@@ -893,10 +846,7 @@ describe("providerCommand", () => {
     });
     const home = resolveHomeContext(environment, { platformHome: tmpdir() });
     try {
-      await new LocalAuthBackend({ agencHome, env: environment }).saveByokKey({
-        provider: "gemini",
-        apiKey: "saved-gemini-key",
-      });
+      saveProviderKey(home, "gemini", "saved-gemini-key");
       const snapshot = readProviderMenuSnapshot(
         mkctx(
           stubSession({
@@ -956,14 +906,16 @@ describe("providerCommand", () => {
     },
   );
 
-  it("keeps menu and direct selection on BYOK config during a managed session", async () => {
-    await withProAuthSession(async ({ configStore, environment }) => {
+  it("keeps menu and direct selection on BYOK config", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-provider-byok-"));
+    const environment: EnvSnapshot = Object.freeze({ AGENC_HOME: agencHome });
+    const homeContext = resolveHomeContext(environment, { platformHome: tmpdir() });
+    try {
       const byokEnvironment = Object.freeze({
         ...environment,
         OPENROUTER_API_KEY: "openrouter-test-key",
       });
-      const byokStore = commandConfigStore(configStore.homeContext, {
-        auth: { managedKeys: { enabled: true } },
+      const byokStore = commandConfigStore(homeContext, {
         model_provider: "openrouter",
         model: "private-openrouter-model",
       });
@@ -991,13 +943,13 @@ describe("providerCommand", () => {
         provider: "openrouter",
         model: "private-openrouter-model",
       });
-    });
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
   });
 
-  it("does not mark providers without live managed routes as subscription-managed", () => {
-    const configStore = commandConfigStore(TEST_HOME, {
-      auth: { managedKeys: { enabled: true } },
-    });
+  it("asks for OpenAI's own key when none is set", () => {
+    const configStore = commandConfigStore(TEST_HOME);
     const snapshot = readProviderMenuSnapshot(
       mkctx(
         stubSession({
@@ -1015,7 +967,6 @@ describe("providerCommand", () => {
     });
     expect(openai?.auth).toContain("OPENAI_API_KEY");
     expect(openai?.credentialSource).toContain("OPENAI_API_KEY");
-    expect(openai?.credentialSource).not.toContain("subscription-managed key");
   });
 
   it("labels daemon-admitted credential checks as unverified", () => {
@@ -1037,10 +988,8 @@ describe("providerCommand", () => {
     });
   });
 
-  it("marks local providers as local-only under managed subscription mode", () => {
-    const configStore = commandConfigStore(TEST_HOME, {
-      auth: { managedKeys: { enabled: true } },
-    });
+  it("marks local providers as local-only", () => {
+    const configStore = commandConfigStore(TEST_HOME);
     const snapshot = readProviderMenuSnapshot(
       mkctx(
         stubSession({
@@ -1062,10 +1011,8 @@ describe("providerCommand", () => {
     expect(lmstudio?.credentialSource).toBe("no provider key required");
   });
 
-  it("does not block direct switches to local providers under managed subscription mode", async () => {
-    const configStore = commandConfigStore(TEST_HOME, {
-      auth: { managedKeys: { enabled: true } },
-    });
+  it("switches directly to a local provider", async () => {
+    const configStore = commandConfigStore(TEST_HOME);
     const session = stubSession({
       provider: "grok",
       model: "grok-4.3",
@@ -1076,7 +1023,6 @@ describe("providerCommand", () => {
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text).toContain('Provider switched to "lmstudio"');
-      expect(res.text).not.toContain("subscription-managed access");
     }
     const pending = (
       session as unknown as {
@@ -1100,9 +1046,7 @@ describe("providerCommand", () => {
   ])(
     "blocks a direct Bedrock provider switch with $name",
     async ({ environment, missing }) => {
-      const configStore = commandConfigStore(TEST_HOME, {
-        auth: { managedKeys: { enabled: true } },
-      });
+      const configStore = commandConfigStore(TEST_HOME);
       const session = stubSession({
         provider: "grok",
         model: "grok-4.3",
@@ -1143,9 +1087,7 @@ describe("providerCommand", () => {
   ])(
     "allows a direct Bedrock provider switch with complete $name",
     async ({ environment }) => {
-      const configStore = commandConfigStore(TEST_HOME, {
-        auth: { managedKeys: { enabled: true } },
-      });
+      const configStore = commandConfigStore(TEST_HOME);
       const session = stubSession({
         provider: "grok",
         model: "grok-4.3",

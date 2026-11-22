@@ -1019,7 +1019,6 @@ async function restartLiveAgent(opts: {
         throw new Error("child provider/model pair changed before restart");
       }
       const prepared = await opts.parent.providerService.prepareChild(validated, undefined, {}, true,
-        plan?.route.provider === "agenc" ? plan.destination : undefined,
         plan?.destination);
       try {
         if (plan !== undefined) assertPreparedChildMatchesPlan(plan, prepared);

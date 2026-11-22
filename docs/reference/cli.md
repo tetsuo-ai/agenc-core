@@ -347,8 +347,8 @@ active turn.
 agenc help [command]
 ```
 
-Topics include (among others): `agent`, `init`, `login` / `logout` / `whoami`,
-`daemon`, `remote`, `mcp`, `doctor`, `onboard`, `security`, `update`, `gateway`,
+Topics include (among others): `agent`, `init`, `openai-login`, `grok-login`,
+`daemon`, `mcp`, `doctor`, `onboard`, `security`, `update`, `gateway`,
 `budget`, `run`, `permissions`, `plugin` / `plugins`, `providers`, `config`, `state`,
 `trajectories`. Unknown topics error with a pointer to `agenc help`.
 
@@ -658,60 +658,13 @@ owners still fail with `RUN_ID_AMBIGUOUS`; changing cwd does not select an owner
 
 ---
 
-## `remote`
+## Retired: `login`, `logout`, `whoami`, `account-access`, `remote`
 
-The owner must edit `[remote_control] enabled = true` in
-`$AGENC_HOME/config.toml` outside the agent, then restart the daemon. The default
-is false; managed policy wins. Flags, project config and environment variables
-cannot enable this capability. Disabled starts refuse before connector imports,
-account checks or network access. Local `status` and `off` remain available;
-`/remote` is hidden from TUI help and completion. After owner enablement,
-`--full-control` (or `AGENC_REMOTE_FULL_CONTROL=1`) supplies the existing per-run
-consent, followed by the account check.
-
-```text
-agenc remote on --full-control
-agenc remote status
-agenc remote off
-```
-
-Pair this machine with the AgenC phone app via the signed relay.
-
-| Subcommand | Meaning |
-| --- | --- |
-| `on` | Pair (first run shows a code) then keep the host reachable |
-| `status` | Whether this host is linked to a phone |
-| `off` | Forget this host's pairing locally |
-
-| Environment | Default |
-| --- | --- |
-| `AGENC_BACKEND_URL` | `https://id.agenc.ag` |
-| `AGENC_DAEMON_URL` | `ws://127.0.0.1:7766` |
-
-Requires a signed-in remote auth session for pairing. Guide:
-[`../remote-control.md`](../remote-control.md).
-
----
-
-## Auth: `login` | `logout` | `whoami`
-
-```text
-agenc login
-agenc logout
-agenc whoami
-```
-
-| Command | Meaning |
-| --- | --- |
-| `login` | Sign in using the configured AgenC auth backend |
-| `logout` | Clear the current AgenC auth session |
-| `whoami` | Show the current AgenC auth identity |
-
-```bash
-AGENC_AUTH_BACKEND=remote agenc login
-```
-
-No extra arguments on these commands.
+The AgenC account sign-in is retired, and phone remote control with it. These
+words stay reserved so they never become a prompt for the model: each one
+prints a short notice and exits with status 1. Sign in with a provider instead
+(`openai-login`, `grok-login`) or add a provider key with `agenc onboard`. See
+[the retired sign-in](../agenc-account-model-access.md).
 
 ---
 

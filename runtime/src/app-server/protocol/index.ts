@@ -76,10 +76,18 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * event, which names the closed request by its event id. Both are sent only to
  * clients that negotiated 1.36, which use them to close elicitation prompts
  * that are no longer pending.
+ * 1.37 REMOVES the AgenC account sign-in and phone/browser remote pairing:
+ * `auth.login`, `auth.whoami`, `auth.logout` and every `remote.*` method
+ * (`remote.capabilities`, `remote.status`, `remote.start`, `remote.stop`,
+ * `remote.pair.begin`, `remote.pair.refresh`, `remote.pair.cancel`,
+ * `remote.devices`, `remote.pending`, `remote.approve`, `remote.revoke`).
+ * Like 1.15, an older client still negotiates; those calls now answer
+ * `METHOD_NOT_FOUND`. An `initialize` with `remoteControlBridge: true` is
+ * refused with `REMOTE_CONTROL_DISABLED`.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.36.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.37.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -141,17 +149,6 @@ export interface JsonObject {
 export type RequestId = string | number;
 
 export const AGENC_DAEMON_METHODS = [
-  "remote.capabilities",
-  "remote.status",
-  "remote.start",
-  "remote.stop",
-  "remote.pair.begin",
-  "remote.pair.refresh",
-  "remote.pair.cancel",
-  "remote.devices",
-  "remote.pending",
-  "remote.approve",
-  "remote.revoke",
   "telegram.capabilities",
   "telegram.status",
   "telegram.configure",
@@ -246,9 +243,6 @@ export const AGENC_DAEMON_METHODS = [
   "daemon.reload",
   "daemon.shutdown",
   "daemon.shutdownIfIdle",
-  "auth.login",
-  "auth.whoami",
-  "auth.logout",
 ] as const;
 
 export type AgenCDaemonMethod = (typeof AGENC_DAEMON_METHODS)[number];
@@ -334,6 +328,8 @@ export const AGENC_DAEMON_CLIENT_ENV_KEYS = [
   "AGENC_READ_DEDUP",
   "AGENC_STREAM_IDLE_TIMEOUT_MS",
   "AGENC_STREAM_QUIET_WARNING_MS",
+  // Retired AgenC account switches. Older clients still send them in their
+  // complete snapshot; nothing reads them.
   "AGENC_AUTH_BACKEND",
   "AGENC_AUTH_MANAGED_KEYS_ENABLED",
   "AGENC_ONBOARDING",
@@ -505,6 +501,7 @@ export const AGENC_DAEMON_CLIENT_ENV_KEYS = [
   "AWS_SESSION_TOKEN",
   "XAI_BASE_URL",
   "GROK_BASE_URL",
+  // Retired with the AgenC account provider; older clients still send it.
   "AGENC_BASE_URL",
   "OPENAI_BASE_URL",
   "OPENAI_API_BASE",
@@ -653,17 +650,6 @@ function defineNotificationSpecs<
 }
 
 export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
-  "remote.capabilities": { method: "remote.capabilities", direction: "client-to-server", params: "optional", result: "object", description: "Authenticated local browser remote management (contract v1)." },
-  "remote.status": { method: "remote.status", direction: "client-to-server", params: "optional", result: "object", description: "Authenticated local browser remote management (contract v1)." },
-  "remote.start": { method: "remote.start", direction: "client-to-server", params: "optional", result: "object", description: "Authenticated local browser remote management (contract v1)." },
-  "remote.stop": { method: "remote.stop", direction: "client-to-server", params: "optional", result: "object", description: "Authenticated local browser remote management (contract v1)." },
-  "remote.pair.begin": { method: "remote.pair.begin", direction: "client-to-server", params: "optional", result: "object", description: "Authenticated local browser remote management (contract v1)." },
-  "remote.pair.refresh": { method: "remote.pair.refresh", direction: "client-to-server", params: "optional", result: "object", description: "Authenticated local browser remote management (contract v1)." },
-  "remote.pair.cancel": { method: "remote.pair.cancel", direction: "client-to-server", params: "optional", result: "object", description: "Authenticated local browser remote management (contract v1)." },
-  "remote.devices": { method: "remote.devices", direction: "client-to-server", params: "optional", result: "object", description: "Authenticated local browser remote management (contract v1)." },
-  "remote.pending": { method: "remote.pending", direction: "client-to-server", params: "optional", result: "object", description: "Authenticated local browser remote management (contract v1)." },
-  "remote.approve": { method: "remote.approve", direction: "client-to-server", params: "optional", result: "object", description: "Authenticated local browser remote management (contract v1)." },
-  "remote.revoke": { method: "remote.revoke", direction: "client-to-server", params: "optional", result: "object", description: "Authenticated local browser remote management (contract v1)." },
   "telegram.capabilities": { method: "telegram.capabilities", direction: "client-to-server", params: "optional", result: "object", description: "Authenticated local private-owner Telegram management (contract v1)." },
   "telegram.status": { method: "telegram.status", direction: "client-to-server", params: "optional", result: "object", description: "Authenticated local private-owner Telegram management (contract v1)." },
   "telegram.configure": { method: "telegram.configure", direction: "client-to-server", params: "optional", result: "object", description: "Authenticated local private-owner Telegram management (contract v1)." },
@@ -1149,27 +1135,6 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description:
       "Shut one authenticated daemon instance down only when no work is running; new requests wait while it checks.",
-  },
-  "auth.login": {
-    method: "auth.login",
-    direction: "client-to-server",
-    params: "optional",
-    result: "object",
-    description: "Start the AgenC-owned daemon login flow.",
-  },
-  "auth.whoami": {
-    method: "auth.whoami",
-    direction: "client-to-server",
-    params: "optional",
-    result: "object",
-    description: "Read the daemon's current AgenC authentication identity.",
-  },
-  "auth.logout": {
-    method: "auth.logout",
-    direction: "client-to-server",
-    params: "optional",
-    result: "object",
-    description: "Clear the daemon's current AgenC authentication identity.",
   },
 });
 
@@ -1695,7 +1660,10 @@ export interface InitializeParams extends JsonObject {
    */
   readonly protocol?: DaemonProtocolInfo;
   readonly clientName?: string;
-  /** Local connector registration, admitted only by owner remote_control policy. */
+  /**
+   * Retired phone remote connector registration. An initialize that sets it
+   * to true is refused with `REMOTE_CONTROL_DISABLED`.
+   */
   readonly remoteControlBridge?: boolean;
   readonly authCookie?: string;
   readonly capabilities?: JsonObject;
@@ -2966,7 +2934,6 @@ export type AgenCDaemonRequest =
 
   | AgenCDaemonRequestWithParams<"telegram.capabilities" | "telegram.status" | "telegram.configure" | "telegram.start" | "telegram.stop" | "telegram.revoke", JsonObject>
   | AgenCDaemonRequestWithParams<"telegram.agents.list" | "telegram.agents.create" | "telegram.agents.update" | "telegram.agents.start" | "telegram.agents.stop" | "telegram.agents.remove" | "telegram.agents.pair.begin" | "telegram.agents.pair.confirm" | "telegram.agents.pair.cancel", JsonObject>
-  | AgenCDaemonRequestWithParams<"remote.capabilities" | "remote.status" | "remote.start" | "remote.stop" | "remote.pair.begin" | "remote.pair.refresh" | "remote.pair.cancel" | "remote.devices" | "remote.pending" | "remote.approve" | "remote.revoke", JsonObject>
   | AgenCDaemonRequestWithoutParams<"routine.capabilities">
   | AgenCDaemonRequestWithoutParams<"routine.list">
   | AgenCDaemonRequestWithParams<"routine.get", RoutineIdParams>
@@ -3076,10 +3043,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithoutParams<"health.stats">
   | AgenCDaemonRequestWithoutParams<"daemon.reload">
   | AgenCDaemonRequestWithParams<"daemon.shutdown", DaemonShutdownParams>
-  | AgenCDaemonRequestWithParams<"daemon.shutdownIfIdle", DaemonShutdownIfIdleParams>
-  | AgenCDaemonRequestWithoutParams<"auth.login">
-  | AgenCDaemonRequestWithoutParams<"auth.whoami">
-  | AgenCDaemonRequestWithoutParams<"auth.logout">;
+  | AgenCDaemonRequestWithParams<"daemon.shutdownIfIdle", DaemonShutdownIfIdleParams>;
 
 export type AgentStatus = "idle" | "running" | "stopping" | "stopped" | "error";
 export type AgentRunStatus =
@@ -4603,40 +4567,6 @@ export interface DaemonShutdownIfIdleResult extends JsonObject {
   readonly reason?: string;
 }
 
-export interface AuthIdentity extends JsonObject {
-  readonly accountId?: string;
-  readonly email?: string;
-  readonly handle?: string;
-  readonly displayName?: string;
-  readonly plan?: string;
-  readonly daemon?: AuthDaemonSocketIdentity;
-}
-
-export interface AuthDaemonSocketIdentity extends JsonObject {
-  readonly transport: "daemon";
-  readonly verifiedBy: "cookie" | "peerUid" | "privateSocketOwner";
-  readonly cookie?: "verified";
-  readonly peerUid?: number | null;
-  readonly privateSocketOwnerUid?: number | null;
-}
-
-export interface AuthWhoamiResult extends JsonObject {
-  readonly authenticated: boolean;
-  readonly provider?: string;
-  readonly identity?: AuthIdentity;
-  readonly subscriptionTier?: "free" | "pro" | "team" | "enterprise";
-}
-
-export interface AuthLoginResult extends JsonObject {
-  readonly authenticated: true;
-  readonly provider?: string;
-  readonly identity?: AuthIdentity;
-}
-
-export interface AuthLogoutResult extends JsonObject {
-  readonly authenticated: false;
-}
-
 export interface AgenCDaemonResultByMethod {
   readonly "print.invoke": PrintInvokeResult;
   readonly "print.admit": { readonly ok: true };
@@ -4658,17 +4588,6 @@ export interface AgenCDaemonResultByMethod {
   readonly "run.resume": RunResumeResult;
   readonly "run.start": RunStartResult;
   readonly "routine.capabilities": RoutineCapabilities;
-  readonly "remote.capabilities": JsonObject;
-  readonly "remote.status": JsonObject;
-  readonly "remote.start": JsonObject;
-  readonly "remote.stop": JsonObject;
-  readonly "remote.pair.begin": JsonObject;
-  readonly "remote.pair.refresh": JsonObject;
-  readonly "remote.pair.cancel": JsonObject;
-  readonly "remote.devices": JsonObject;
-  readonly "remote.pending": JsonObject;
-  readonly "remote.approve": JsonObject;
-  readonly "remote.revoke": JsonObject;
   readonly "telegram.capabilities": JsonObject;
   readonly "telegram.status": JsonObject;
   readonly "telegram.configure": JsonObject;
@@ -4742,9 +4661,6 @@ export interface AgenCDaemonResultByMethod {
   readonly "daemon.reload": DaemonReloadResult;
   readonly "daemon.shutdown": DaemonShutdownResult;
   readonly "daemon.shutdownIfIdle": DaemonShutdownIfIdleResult;
-  readonly "auth.login": AuthLoginResult;
-  readonly "auth.whoami": AuthWhoamiResult;
-  readonly "auth.logout": AuthLogoutResult;
 }
 
 export interface AgenCDaemonInternalResultByMethod {

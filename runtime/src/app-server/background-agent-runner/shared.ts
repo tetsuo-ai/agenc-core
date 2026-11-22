@@ -13,7 +13,6 @@ import { ensureAgentControl } from "../../bin/delegate-tool.js";
 import type { AgentControl } from "../../agents/control.js";
 import type { ManagedThread } from "../../agents/thread-manager.js";
 import { runAgent } from "../../agents/run-agent.js";
-import type { AuthBackend } from "../../auth/backend.js";
 import type { LLMMessage } from "../../llm/types.js";
 import type { ToolRecoveryCategory } from "../../tools/types.js";
 import { stableStringify } from "../../utils/stableStringify.js";
@@ -913,7 +912,6 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly durableResumeTimeoutMs?: number;
   readonly bootstrap?: AgenCBootstrapFunction;
   readonly ensureAgentControl?: AgenCEnsureAgentControlFunction;
-  readonly authBackend?: AuthBackend;
   readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
   readonly csvAgentJobsRepositories?: CsvAgentJobsRepositoryProvider;
   readonly env?: NodeJS.ProcessEnv;
@@ -930,9 +928,7 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
 export type AgenCDelegateBackgroundAgentRunnerRuntimeConfig = Pick<
   AgenCDelegateBackgroundAgentRunnerOptions,
   "realtimeCallClient" | "realtimeConnectTransport"
-> & {
-  readonly authBackend: AuthBackend | undefined;
-};
+>;
 
 function stringRecordField(
   record: Record<string, unknown> | undefined,

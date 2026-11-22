@@ -30,12 +30,9 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 
 import { resolveHomeContext } from "../config/home.js";
+import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 
 import { createLazyWhisperService } from "../audio/lazy-whisper.js";
-
-import type { createLazyRemoteService } from "../remote/lazy-service.js";
-
-import { remoteAuthSessionTokenSync } from "../auth/session-state.js";
 
 import { createLazyOwnerTelegramService } from "../gateway/lazy-owner-telegram.js";
 
@@ -155,9 +152,7 @@ import { finishAllSessionWriteBehind } from "../session/write-behind.js";
 
 import type { AgenCSignalProcess } from "../lifecycle/signal-handlers.js";
 
-import { createAuthBackend } from "../auth/selection.js";
-
-import type { AuthBackend } from "../auth/backend.js";
+import { removeRetiredAgenCSignIn, type RetiredSignInCleanup } from "../auth/retired-sign-in.js";
 
 import type { ToolRecoveryCategory } from "../tools/types.js";
 
@@ -279,7 +274,7 @@ import {
 
 import { startHeapWatchdog } from "../services/heapWatchdog/heapWatchdog.js";
 import { scheduleDaemonCompileCacheFlush } from "../bin/compile-cache.js";
-import { pairPath, revokeLegacyRemote } from "../bin/remote-state.js";
+import { retiredPhonePairingPath, revokeRetiredPhonePairing } from "./retired-phone-pairing.js";
 import {
   acquireAgenCDaemonLifecycleLock,
   type AgenCDaemonCliHost,
@@ -597,28 +592,31 @@ async function runAgenCDaemonForegroundLocked(
     startupStartedAt,
     "singleton admission complete",
   );
-  const authStartup = await tryResolveAgenCDaemonAuthStartup(host, io);
-  if (authStartup === null) {
+  const configStartup = await tryResolveAgenCDaemonConfigStartup(host, io);
+  if (configStartup === null) {
     return 1;
   }
   writeAgenCDaemonStartupDebug(
     host,
     io,
     startupStartedAt,
-    "canonical configuration and auth ready",
+    "canonical configuration ready",
+  );
+  reportRetiredAgenCSignInCleanup(
+    removeRetiredAgenCSignIn(
+      captureSecureStorageIngress(host.env, configStartup.daemonHome).home,
+    ),
+    io,
   );
   if (host.startupGuardReceiver?.wasRequested() === true) return 1;
   // OOM self-diagnosis: the daemon is the longest-lived agenc process, so a
   // near-limit heap snapshot here is the difference between a diagnosable
   // field OOM and a bare V8 abort.
   startHeapWatchdog({
-    agencHome: authStartup.daemonHome,
+    agencHome: configStartup.daemonHome,
     warn: (message) => io.stderr.write(`${message}\n`),
   });
-  let activeConfig = authStartup.config;
-  const reloadableAuthBackend = new AgenCDaemonReloadableAuthBackend(
-    authStartup.authBackend,
-  );
+  let activeConfig = configStartup.config;
   const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
   let webSocketListenOptions: AgenCDaemonWebSocketListenOptions;
   try {
@@ -676,10 +674,10 @@ async function runAgenCDaemonForegroundLocked(
   if (host.startupGuardReceiver?.wasRequested() === true) return 1;
   try {
     startupRecovery = options.startupRestoreMode === "background"
-      ? recoverAgenCDaemonStartupState(authStartup.daemonHome, process.cwd(), activeConfig,
+      ? recoverAgenCDaemonStartupState(configStartup.daemonHome, process.cwd(), activeConfig,
           message => io.stderr.write(`agenc: ${message}\n`),
           distVersion !== null ? `${distVersion.runtimeVersion}+${distVersion.commit}+${distVersion.buildTime}` : undefined)
-      : discoverAgenCDaemonStartupState(authStartup.daemonHome, process.cwd(), savedSessionListings);
+      : discoverAgenCDaemonStartupState(configStartup.daemonHome, process.cwd(), savedSessionListings);
     reportAgenCDaemonStartupRecovery(io, startupRecovery);
     writeAgenCDaemonStartupDebug(
       host,
@@ -703,7 +701,7 @@ async function runAgenCDaemonForegroundLocked(
     const primaryCwd = resolveDaemonDefaultCwd(host.env);
     const threadStore = new MultiProjectFileThreadStore({
       primaryCwd,
-      agencHome: authStartup.daemonHome,
+      agencHome: configStartup.daemonHome,
       deferPrimary: options.startupRestoreMode !== "background",
     });
     cleanup.register("daemon-thread-store", async () => {
@@ -722,9 +720,6 @@ async function runAgenCDaemonForegroundLocked(
     // when that client's pending delivery backlog trips the per-client cap.
     let destroyEvictedClientConnection:
       ((clientId: string, deliveryKey?: string) => void) | undefined;
-    // Forward declaration as above: lets a reload that turns remote control
-    // off drop phone bridge connections that are already attached.
-    let closeRemoteControlBridgeConnections: (() => void) | undefined;
     const clientMultiplexer = new AgenCDaemonClientMultiplexer({
       sessionManager,
       onClientEvicted: (clientId, deliveryKey) => {
@@ -742,7 +737,7 @@ async function runAgenCDaemonForegroundLocked(
     };
     const unregisterCommandExecCleanup = cleanup.register("daemon-command-exec", closeCommandExec);
     const csvAgentJobsRepositories = new CsvAgentJobsRepositoryAuthority({
-      agencHome: authStartup.daemonHome,
+      agencHome: configStartup.daemonHome,
     });
     cleanup.register("daemon-csv-agent-jobs", () =>
       csvAgentJobsRepositories.close(),
@@ -750,7 +745,7 @@ async function runAgenCDaemonForegroundLocked(
     let executionAdmissionKernel: ExecutionAdmissionKernel;
     try {
       executionAdmissionKernel = new ExecutionAdmissionKernel({
-        agencHome: authStartup.daemonHome,
+        agencHome: configStartup.daemonHome,
         limits: resolveAdmissionConcurrencyLimits(host.env, {
           sessionLimit: activeConfig.agent_max_threads,
         }),
@@ -885,13 +880,6 @@ async function runAgenCDaemonForegroundLocked(
     const startupRestoreFailureCompleted = new Promise<unknown>((resolve) => {
       resolveStartupRestoreFailure = resolve;
     });
-    // A reload turned remote control off and a phone pairing it could not
-    // revoke is left. The daemon stops rather than keep serving a pairing
-    // the owner's configuration no longer allows.
-    let resolveRemoteRevocationFailure!: (error: Error) => void;
-    const remoteRevocationFailureCompleted = new Promise<Error>((resolve) => {
-      resolveRemoteRevocationFailure = resolve;
-    });
     let runner = options.runner;
     const approvalBroker: LiveApprovalBroker = new LiveApprovalBroker({
       canAnswerCrossProviderConsent: crossProviderConsentAvailability({
@@ -919,7 +907,6 @@ async function runAgenCDaemonForegroundLocked(
         ...createAgenCDaemonDelegateRunnerRuntimeConfig(
           host,
           activeConfig,
-          reloadableAuthBackend,
         ),
       });
       runner = configuredRunner;
@@ -927,7 +914,7 @@ async function runAgenCDaemonForegroundLocked(
     let snapshotPolicies: AgenCDaemonSnapshotPolicyRegistry;
     try {
       snapshotPolicies = new AgenCDaemonSnapshotPolicyRegistry({
-        agencHome: authStartup.daemonHome,
+        agencHome: configStartup.daemonHome,
         defaultCwd: primaryCwd,
         snapshotRetention: activeConfig.agent?.retention,
         deferInitialPolicy: options.startupRestoreMode !== "background",
@@ -974,7 +961,7 @@ async function runAgenCDaemonForegroundLocked(
           ? startupRecovery : recoveredProjects.get(run.projectDir);
         if (report === undefined) {
           report = recoverAgenCDaemonStartupState(
-            authStartup.daemonHome, primaryCwd, activeConfig,
+            configStartup.daemonHome, primaryCwd, activeConfig,
             message => io.stderr.write(`agenc: ${message}\n`),
             distVersion !== null ? `${distVersion.runtimeVersion}+${distVersion.commit}+${distVersion.buildTime}` : undefined,
             { paths: [{ projectDir: run.projectDir, stateDbPath: join(run.projectDir, STATE_DATABASE_FILENAME), logsDbPath: join(run.projectDir, LOGS_DATABASE_FILENAME) }],
@@ -989,7 +976,7 @@ async function runAgenCDaemonForegroundLocked(
           // Retain descriptor authority only for the requested session. Keeping
           // sources for unopened sessions would exhaust the startup fd budget.
           report = recoverAgenCDaemonStartupState(
-            authStartup.daemonHome, primaryCwd, activeConfig,
+            configStartup.daemonHome, primaryCwd, activeConfig,
             message => io.stderr.write(`agenc: ${message}\n`),
             distVersion !== null ? `${distVersion.runtimeVersion}+${distVersion.commit}+${distVersion.buildTime}` : undefined,
             { paths: [{ projectDir: run.projectDir, stateDbPath: join(run.projectDir, STATE_DATABASE_FILENAME), logsDbPath: join(run.projectDir, LOGS_DATABASE_FILENAME) }], runIds: [run.id] },
@@ -1084,11 +1071,10 @@ async function runAgenCDaemonForegroundLocked(
       });
     }
     let routines: RoutineService | undefined;
-    let remote: ReturnType<typeof createLazyRemoteService> | undefined;
     let ownerTelegram: ReturnType<typeof createLazyOwnerTelegramService> | undefined;
     const agentManager: AgenCDaemonAgentManager = new AgenCDaemonAgentManager({
       approvalBroker,
-      agencHome: authStartup.daemonHome,
+      agencHome: configStartup.daemonHome,
       runner,
       sessionManager,
       waitForStartupRestore: (ids, signal): Promise<void> | undefined =>
@@ -1105,14 +1091,13 @@ async function runAgenCDaemonForegroundLocked(
       threadStore,
       // DAE-02: prefer client/workspace env over frozen OS cwd when params omit cwd.
       defaultCwd: () => resolveDaemonDefaultCwd(host.env),
-      // A new agent created without a mode (an API client, a phone or
-      // Telegram session, a routine run) starts in the operator's default.
+      // A new agent created without a mode (an API client, a Telegram
+      // session, a routine run) starts in the operator's default.
       defaultLightMode: () => resolveDefaultLightMode(activeConfig.light_mode),
       snapshotFlush: (snapshot) =>
         writeAgenCDaemonSnapshot(snapshotPath, snapshot),
       broadcastSessionEvent: async (sessionId, event) => {
         routines?.observeSessionEvent(sessionId, event);
-        remote?.observeSessionEvent(sessionId, event);
         ownerTelegram?.observeSessionEvent(sessionId, event);
         try {
           snapshotPolicies.recordSessionEvent(sessionId, event);
@@ -1129,9 +1114,9 @@ async function runAgenCDaemonForegroundLocked(
           // observers above keep the event as recorded.
           await clientMultiplexer.broadcastSessionEvent(sessionId, clientFacingSessionEvent(event)),
           async () =>
-            (await clientMultiplexer.hasClientWithCapability(
+            await clientMultiplexer.hasClientWithCapability(
               AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
-            )) || (remote?.status().connectedDevices ?? 0) > 0,
+            ),
         );
       },
       recordMessageExchange: (exchange) => {
@@ -1192,7 +1177,7 @@ async function runAgenCDaemonForegroundLocked(
           `agenc: daemon snapshot policy failed: ${formatCleanupError(error)}\n`,
         ),
       permissionAuditLogger: createPermissionAuditFileLogger({
-        agencHome: authStartup.daemonHome,
+        agencHome: configStartup.daemonHome,
       }),
       onPermissionAuditError: (error) =>
         io.stderr.write(
@@ -1200,7 +1185,7 @@ async function runAgenCDaemonForegroundLocked(
         ),
       cancelRunTreeDurable: (params) =>
         cancelRunTreeAcrossStateDatabases(
-          authStartup.daemonHome,
+          configStartup.daemonHome,
           primaryCwd,
           params,
         ),
@@ -1260,17 +1245,16 @@ async function runAgenCDaemonForegroundLocked(
     // restores now finish after the daemon starts serving (see below).
     const workflowWiring = createDaemonWorkflowController({
       approvalBroker,
-      agencHome: authStartup.daemonHome,
+      agencHome: configStartup.daemonHome,
       primaryCwd,
       kernel: executionAdmissionKernel,
       warn: (message) => io.stderr.write(`agenc: ${message}\n`),
       env: host.env,
       config: () => activeConfig,
       argv: [host.execPath, host.entrypointPath],
-      authBackend: reloadableAuthBackend,
       stateDatabasePaths: () =>
         discoverExistingAgenCDaemonStateDatabasePaths(
-          authStartup.daemonHome,
+          configStartup.daemonHome,
           primaryCwd,
         ),
     });
@@ -1304,7 +1288,7 @@ async function runAgenCDaemonForegroundLocked(
         : { countSessions: () => sessionManager.countSessions({ includePersisted: false }) },
       stateCounter: new StateSqliteHealthStatsReader(
         discoverAgenCDaemonStateDatabasePaths(
-          authStartup.daemonHome,
+          configStartup.daemonHome,
           process.cwd(),
         ),
       ),
@@ -1322,7 +1306,7 @@ async function runAgenCDaemonForegroundLocked(
     const mcpServerStartOptions: McpServerStartOptions = Object.freeze({
       environment: Object.freeze({
         ...host.env,
-        AGENC_HOME: authStartup.daemonHome,
+        AGENC_HOME: configStartup.daemonHome,
       }),
     });
     let reloadChain = Promise.resolve<DaemonReloadResult | null>(null);
@@ -1333,7 +1317,7 @@ async function runAgenCDaemonForegroundLocked(
           if (shuttingDown) {
             throw new Error("daemon is shutting down");
           }
-          const next = await resolveAgenCDaemonAuthStartup(host, io);
+          const next = await resolveAgenCDaemonConfigStartup(host, io);
           if (shuttingDown) {
             throw new Error("daemon is shutting down");
           }
@@ -1350,7 +1334,6 @@ async function runAgenCDaemonForegroundLocked(
               mcpServerStartOptions,
             );
           let adopted = false;
-          let revocationFailure: Error | undefined;
           try {
             await options.beforeDaemonReloadAdoption?.();
             // Preparation may bind a replacement MCP listener. Shutdown fences
@@ -1360,12 +1343,10 @@ async function runAgenCDaemonForegroundLocked(
               throw new Error("daemon is shutting down");
             }
             refreshEndpointMetadata();
-            reloadableAuthBackend.replace(next.authBackend);
             configuredRunner?.updateRuntimeConfig(
               createAgenCDaemonDelegateRunnerRuntimeConfig(
                 host,
                 next.config,
-                reloadableAuthBackend,
               ),
             );
             snapshotPolicies.updateSnapshotRetention(
@@ -1376,26 +1357,7 @@ async function runAgenCDaemonForegroundLocked(
                 sessionLimit: next.config.agent_max_threads,
               }),
             );
-            if (next.config.remote_control?.enabled !== true) {
-              remote?.stop();
-              closeRemoteControlBridgeConnections?.();
-            }
             activeConfig = next.config;
-            // In the same step as adopting the setting, before any later
-            // await can hand a request to a pairing it no longer allows.
-            revocationFailure = revokeLegacyRemotePairing();
-            if (revocationFailure !== undefined) {
-              // Fail closed right here, before adopt() or anything after it
-              // can throw and skip the stop: set the shutdown state, resolve
-              // the failure, then throw so the reload fails and the prepared
-              // MCP handle is rejected in the finally. A reload whose MCP
-              // change also fails can no longer leave the daemon serving a
-              // pairing the configuration no longer allows.
-              io.stderr.write(`agenc: ${revocationFailure.message}; stopping the daemon\n`);
-              shuttingDown = true;
-              resolveRemoteRevocationFailure(revocationFailure);
-              throw revocationFailure;
-            }
             activeMcpServer = preparedMcpChange.adopt();
             adopted = true;
           } finally {
@@ -1451,14 +1413,14 @@ async function runAgenCDaemonForegroundLocked(
     const routinePreparation = new RoutineSessionPreparation(clientMultiplexer);
     try {
       routines = new RoutineService({
-        home: authStartup.daemonHome,
+        home: configStartup.daemonHome,
         executor: createDaemonRoutineExecutor({
           agentManager,
           prepareSession: (input, signal) => routinePreparation.prepare(input, signal),
           environment: host.env,
           defaultProvider: () => resolveBuiltInProviderSlug(activeConfig.model_provider),
           runtimeOptions: resolveAgentRuntimeOptions(
-            { ...host.env, AGENC_HOME: authStartup.daemonHome },
+            { ...host.env, AGENC_HOME: configStartup.daemonHome },
             { dangerouslyBypassApprovalsAndSandbox: false, allowUntrustedHooks: false, remoteMode: false, stdinDataMode: false },
           ),
         }),
@@ -1473,29 +1435,23 @@ async function runAgenCDaemonForegroundLocked(
       routines = undefined;
       io.stderr.write("agenc: local routines are unavailable; routine storage was preserved\n");
     }
-    const remoteContext = { home: resolveHomeContext({ ...host.env, AGENC_HOME: authStartup.daemonHome }), environment: Object.freeze({ ...host.env }) };
-    // Phone connectors started before remote_control.enabled existed send
-    // only the daemon cookie, never the bridge flag the dispatcher gates on.
-    // They stop when the stop marker changes or pair.json is gone, so revoke
-    // the pairing whenever the owner has not turned remote control on.
-    // Each revocation step is tried; a step that failed is reported. When
-    // the pairing is still there afterwards the revocation did not hold: the
-    // daemon does not start, and a reload stops it (fail closed).
-    const revokeLegacyRemotePairing = (): Error | undefined => {
-      if (activeConfig.remote_control?.enabled === true) return undefined;
-      const revocation = revokeLegacyRemote(remoteContext);
-      for (const error of revocation.errors) {
-        io.stderr.write(`agenc: phone remote revocation step failed: ${formatCleanupError(error)}\n`);
-      }
-      if (revocation.revoked) return undefined;
-      return new Error(
-        "remote control is off but the phone remote pairing could not be revoked; " +
-          `remove ${pairPath(remoteContext)} or fix the permissions of its folder`,
+    const daemonHomeContext = resolveHomeContext({ ...host.env, AGENC_HOME: configStartup.daemonHome });
+    // Phone remote control is retired. A connector an older Core started may
+    // still run; the oldest ones send only the daemon cookie, never the
+    // bridge flag the dispatcher refuses. They stop when the stop marker
+    // changes or pair.json is gone, so the pairing is revoked at every start.
+    // Each step is tried and a failed one is reported. When the pairing is
+    // still there afterwards the revocation did not hold, and the daemon does
+    // not start (fail closed).
+    const pairingRevocation = revokeRetiredPhonePairing(daemonHomeContext.path);
+    for (const error of pairingRevocation.errors) {
+      io.stderr.write(`agenc: phone remote revocation step failed: ${formatCleanupError(error)}\n`);
+    }
+    if (!pairingRevocation.revoked) {
+      io.stderr.write(
+        "agenc: the retired phone remote pairing could not be revoked; " +
+          `remove ${retiredPhonePairingPath(daemonHomeContext.path)} or fix the permissions of its folder; the daemon did not start\n`,
       );
-    };
-    const startupRevocationFailure = revokeLegacyRemotePairing();
-    if (startupRevocationFailure !== undefined) {
-      io.stderr.write(`agenc: ${startupRevocationFailure.message}; the daemon did not start\n`);
       return 1;
     }
     const assertRemoteControlSession = async (sessionId: string): Promise<void> => {
@@ -1510,7 +1466,7 @@ async function runAgenCDaemonForegroundLocked(
           cwd: workspacePath, objective: title, deferInitialTurn: true, permissionMode: "default",
           ...(selection ? { provider: selection.provider, model: selection.model, envOverrides: selection.envOverrides } : {}),
           runtimeOptions: resolveAgentRuntimeOptions(
-            { ...host.env, AGENC_HOME: authStartup.daemonHome },
+            { ...host.env, AGENC_HOME: configStartup.daemonHome },
             { dangerouslyBypassApprovalsAndSandbox: false, allowUntrustedHooks: false, remoteMode: true, stdinDataMode: false },
           ),
         });
@@ -1520,24 +1476,10 @@ async function runAgenCDaemonForegroundLocked(
         }
         return { sessionId: agent.sessionId, agentId: agent.agentId };
       };
-    if (activeConfig.remote_control?.enabled === true) {
-      const [{ createLazyRemoteService }, { createRemoteBackend }] = await Promise.all([
-        import("../remote/lazy-service.js"), import("../remote/backend.js"),
-      ]);
-      remote = createLazyRemoteService({
-        home: authStartup.daemonHome,
-        backend: createRemoteBackend({ backendUrl: host.env.AGENC_BACKEND_URL || "https://id.agenc.ag", token: () => remoteAuthSessionTokenSync(remoteContext) }),
-        lookupSession: (sessionId) => sessionManager.getSession(sessionId),
-        createConnection: (remoteAccess, remoteCid) => dispatcher.createConnection({ remoteAccess, remoteCid }),
-        createSession: createRemoteSession,
-        assertControlSession: assertRemoteControlSession,
-      });
-      cleanup.register("daemon-browser-remote", () => remote?.close());
-    }
     try {
       ownerTelegram = createLazyOwnerTelegramService({
-        home: authStartup.daemonHome,
-        storage: createOwnerTelegramStorage(remoteContext.home),
+        home: configStartup.daemonHome,
+        storage: createOwnerTelegramStorage(daemonHomeContext),
         onSessionFailure: (diagnostic) => writeErrorLog(`agenc: Telegram session.create failed: ${diagnostic}\n`),
         lookupSession: (sessionId) => sessionManager.getSession(sessionId),
         createConnection: (remoteAccess) => dispatcher.createConnection({ remoteAccess }),
@@ -1551,15 +1493,13 @@ async function runAgenCDaemonForegroundLocked(
     }
     cleanup.register("daemon-owner-telegram", () => ownerTelegram?.close());
     const dispatcher: AgenCDaemonJsonRpcDispatcher = new AgenCDaemonJsonRpcDispatcher({
-      printHome: authStartup.daemonHome,
+      printHome: configStartup.daemonHome,
       pluginSettings: new PluginSettingsService({
-        home: authStartup.daemonHome,
-        pluginStorageRoot: resolvePluginStorageRootAtIngress({ ...host.env, AGENC_HOME: authStartup.daemonHome }),
+        home: configStartup.daemonHome,
+        pluginStorageRoot: resolvePluginStorageRootAtIngress({ ...host.env, AGENC_HOME: configStartup.daemonHome }),
         workspaceRoot: primaryCwd,
-        env: { ...host.env, AGENC_HOME: authStartup.daemonHome },
+        env: { ...host.env, AGENC_HOME: configStartup.daemonHome },
       }),
-      remote,
-      remoteControlEnabled: () => activeConfig.remote_control?.enabled === true,
       ownerTelegram,
       agentManager,
       routines,
@@ -1569,7 +1509,6 @@ async function runAgenCDaemonForegroundLocked(
       startupRestores,
       fuzzyAllowedRoots: [primaryCwd],
       commandExec,
-      authBackend: reloadableAuthBackend,
       daemonControl: {
         reloadConfig,
         shutdown: (instanceId) => {
@@ -1594,7 +1533,6 @@ async function runAgenCDaemonForegroundLocked(
               return typeof stats.state?.inFlightToolCalls === "number" ? stats.state.inFlightToolCalls : 0;
             },
             activeRoutineRuns: () => (routines === undefined ? 0 : routines.list().routines.filter(routineRunIsActive).length),
-            connectedRemoteDevices: () => remote?.status().connectedDevices ?? 0,
             sessionDetail: async (sessionId) => {
               const snapshot = await agentManager.snapshotSession({ sessionId });
               const goal = await agentManager.updateSessionGoal({ sessionId, action: "get" });
@@ -1620,14 +1558,12 @@ async function runAgenCDaemonForegroundLocked(
                 return status === "starting" || status === "running" || status === "waiting_permission";
               }).length;
           if (activeRuns > 0) return `${activeRuns} routine run${activeRuns === 1 ? "" : "s"} active`;
-          const devices = remote?.status().connectedDevices ?? 0;
-          if (devices > 0) return `${devices} remote device${devices === 1 ? "" : "s"} connected`;
           return undefined;
         },
       },
       health,
       realtime,
-      whisper: createLazyWhisperService({ home: authStartup.daemonHome, env: host.env }),
+      whisper: createLazyWhisperService({ home: configStartup.daemonHome, env: host.env }),
       runInspection: createLazyRunInspection({
         runtimeFailure: (runId) => workflowWiring.controller.currentRuntimeFailure(runId),
         effectivePermissionMode: (runId) => workflowWiring.controller.currentPermissionMode(runId),
@@ -1635,10 +1571,10 @@ async function runAgenCDaemonForegroundLocked(
         pendingApprovals: (runId) => approvalBroker.list(runId),
         stateDatabasePaths: () =>
           discoverAgenCDaemonStateDatabasePaths(
-            authStartup.daemonHome,
+            configStartup.daemonHome,
             primaryCwd,
           ),
-        agencHome: authStartup.daemonHome,
+        agencHome: configStartup.daemonHome,
       }),
       workflow: {
         supportsContinuation: true,
@@ -1651,7 +1587,7 @@ async function runAgenCDaemonForegroundLocked(
       // Sessions this daemon starts read trust from its home, with the
       // operator's root markers; a reload replaces activeConfig.
       projectTrust: new AgenCProjectTrustService({
-        agencHome: authStartup.daemonHome,
+        agencHome: configStartup.daemonHome,
         projectRootMarkers: () => activeConfig.project_root_markers,
       }),
       daemonIdentity,
@@ -1710,13 +1646,6 @@ async function runAgenCDaemonForegroundLocked(
           closeConnection(connectionKey);
         }
         return;
-      }
-    };
-    closeRemoteControlBridgeConnections = (): void => {
-      for (const [connectionKey, connection] of connections) {
-        if (!connection.remoteControlBridge) continue;
-        socketConnections.get(connectionKey)?.terminate();
-        closeConnection(connectionKey);
       }
     };
     const systemNativePeerCredentialAddonPath =
@@ -2085,10 +2014,6 @@ async function runAgenCDaemonForegroundLocked(
           kind: "startup_restore_failure" as const,
           error,
         })),
-        remoteRevocationFailureCompleted.then((error) => ({
-          kind: "remote_revocation_failure" as const,
-          error,
-        })),
         rpcShutdownCompleted.then(() => ({
           kind: "rpc_shutdown" as const,
         })),
@@ -2105,8 +2030,7 @@ async function runAgenCDaemonForegroundLocked(
         exitCode = termination.event.exitCode;
       } else if (
         termination.kind === "peer_credential_failure" ||
-        termination.kind === "startup_restore_failure" ||
-        termination.kind === "remote_revocation_failure"
+        termination.kind === "startup_restore_failure"
       ) {
         cleanupContext = { reason: "daemon_shutdown" };
         exitCode = 1;
@@ -4336,74 +4260,22 @@ function summarizeToolRecoveryActions(
   return summary;
 }
 
-interface AgenCDaemonAuthStartup {
+interface AgenCDaemonConfigStartup {
   readonly daemonHome: string;
   readonly config: AgenCConfig;
-  readonly authBackend: AuthBackend;
-}
-
-class AgenCDaemonReloadableAuthBackend implements AuthBackend {
-  #current: AuthBackend;
-
-  constructor(initial: AuthBackend) {
-    this.#current = initial;
-  }
-
-  get kind(): AuthBackend["kind"] {
-    return this.#current.kind;
-  }
-
-  replace(next: AuthBackend): void {
-    this.#current = next;
-  }
-
-  login(params?: Parameters<AuthBackend["login"]>[0]) {
-    return this.#current.login(params);
-  }
-
-  logout(params?: Parameters<AuthBackend["logout"]>[0]) {
-    return this.#current.logout(params);
-  }
-
-  whoami(params?: Parameters<AuthBackend["whoami"]>[0]) {
-    return this.#current.whoami(params);
-  }
-
-  async vendKey(): Promise<never> {
-    throw new Error("AgenC accounts no longer provide models.");
-  }
-
-  async inferAgencModel(): Promise<never> {
-    throw new Error("AgenC accounts no longer provide models.");
-  }
-
-  async getLlmUsage(): Promise<never> {
-    throw new Error("AgenC accounts no longer provide models.");
-  }
-
-  getSubscriptionTier(
-    params?: Parameters<AuthBackend["getSubscriptionTier"]>[0],
-  ) {
-    return this.#current.getSubscriptionTier(params);
-  }
 }
 
 function createAgenCDaemonDelegateRunnerRuntimeConfig(
   host: AgenCDaemonCliHost,
   config: AgenCConfig,
-  authBackend: AuthBackend,
 ): AgenCDelegateBackgroundAgentRunnerRuntimeConfig {
   const realtimeBaseUrl = resolveAgenCDaemonRealtimeBaseUrl(host.env, config);
-  const realtimeHeaders = createAgenCDaemonRealtimeHeaderResolver(
-    authBackend,
-    host.env,
-  );
+  const realtimeHeaders = createAgenCDaemonRealtimeHeaderResolver(host.env);
   const realtime = createLazyRealtimeTransports({
     baseUrl: realtimeBaseUrl,
     defaultHeaders: realtimeHeaders,
   });
   return {
-    authBackend,
     realtimeCallClient: realtime.callClient,
     realtimeConnectTransport: realtime.connect,
   };
@@ -4421,7 +4293,6 @@ export function resolveAgenCDaemonRealtimeBaseUrl(
 }
 
 export function createAgenCDaemonRealtimeHeaderResolver(
-  _authBackend: AuthBackend,
   env: NodeJS.ProcessEnv,
 ): AgenCRealtimeHeadersProvider {
   const apiKey = readNonEmptyString(env.OPENAI_API_KEY);
@@ -4434,24 +4305,24 @@ export function createAgenCDaemonRealtimeHeaderResolver(
   };
 }
 
-async function tryResolveAgenCDaemonAuthStartup(
+async function tryResolveAgenCDaemonConfigStartup(
   host: AgenCDaemonCliHost,
   io: AgenCDaemonCliIo,
-): Promise<AgenCDaemonAuthStartup | null> {
+): Promise<AgenCDaemonConfigStartup | null> {
   try {
-    return await resolveAgenCDaemonAuthStartup(host, io);
+    return await resolveAgenCDaemonConfigStartup(host, io);
   } catch (error) {
     io.stderr.write(
-      `agenc: daemon auth backend initialization failed: ${formatCleanupError(error)}\n`,
+      `agenc: daemon configuration failed to load: ${formatCleanupError(error)}\n`,
     );
     return null;
   }
 }
 
-async function resolveAgenCDaemonAuthStartup(
+async function resolveAgenCDaemonConfigStartup(
   host: AgenCDaemonCliHost,
   io: AgenCDaemonCliIo,
-): Promise<AgenCDaemonAuthStartup> {
+): Promise<AgenCDaemonConfigStartup> {
   const startupStartedAt = Date.now();
   const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
   writeAgenCDaemonStartupDebug(
@@ -4471,21 +4342,23 @@ async function resolveAgenCDaemonAuthStartup(
     startupStartedAt,
     "canonical configuration load complete",
   );
-  const authBackend = createAuthBackend(loadedConfig.config, {
-    agencHome: daemonHome,
-    env: host.env,
-  });
-  writeAgenCDaemonStartupDebug(
-    host,
-    io,
-    startupStartedAt,
-    "auth backend constructed",
-  );
   return {
     daemonHome,
     config: loadedConfig.config,
-    authBackend,
   };
+}
+
+/** One line when the retired sign-in could not be removed; never a value. */
+function reportRetiredAgenCSignInCleanup(
+  cleanup: RetiredSignInCleanup,
+  io: AgenCDaemonCliIo,
+): void {
+  if (cleanup.removed) return;
+  io.stderr.write(
+    "agenc: the retired AgenC sign-in could not be removed from this computer; it is tried again at the next start" +
+      (cleanup.errors.length > 0 ? ` (${cleanup.errors.map(formatCleanupError).join("; ")})` : "") +
+      "\n",
+  );
 }
 
 async function writeAgenCDaemonSnapshot(

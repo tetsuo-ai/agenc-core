@@ -121,12 +121,6 @@ export async function verifyApiKey(
     return { status: "error", error: `Unknown provider: ${params.provider}` };
   }
   const provider = providerInfo.id;
-  if (providerInfo.onboarding.access === "retired") {
-    return {
-      status: "error",
-      error: "AgenC accounts no longer provide models.",
-    };
-  }
   if (providerInfo.onboarding.access === "environment") {
     return {
       status: "error",

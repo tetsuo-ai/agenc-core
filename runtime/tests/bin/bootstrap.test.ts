@@ -17,16 +17,22 @@ import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import { StateSqliteReader } from "../state/sqlite-driver.js";
 
 import { bootstrapLocalRuntimeSession } from "./bootstrap.js";
+import * as startupSelection from "../bin/startup-selection.js";
 import { readStartupCliFlags } from "../bin/startup-selection.js";
 import { defaultConfig } from "../config/schema.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
-import type { AuthBackend } from "../auth/backend.js";
-import { LocalAuthBackend } from "../auth/backends/local.js";
+import * as providerKeys from "../auth/provider-keys.js";
+import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 import type { Tool } from "../tools/types.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { Session } from "../session/session.js";
 import { buildAgenCToolUseContext } from "../session/agenc-tool-use-context.js";
+
+/** Save a provider key where bootstrap reads it back for this home. */
+function saveKey(home: string, provider: string, apiKey: string): void {
+  providerKeys.saveProviderKey(captureSecureStorageIngress(process.env, home).home, provider, apiKey);
+}
 import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
 import {
   _resetAgentRolesForTesting,
@@ -2150,10 +2156,10 @@ describe("bootstrapLocalRuntimeSession", () => {
     );
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
     const readByokSpy = vi
-      .spyOn(LocalAuthBackend.prototype, "readByokKey")
-      .mockRejectedValue(
-        new Error("options.apiKey must prevent secure-storage reads"),
-      );
+      .spyOn(providerKeys, "readProviderKey")
+      .mockImplementation(() => {
+        throw new Error("options.apiKey must prevent secure-storage reads");
+      });
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
@@ -2395,21 +2401,13 @@ describe("bootstrapLocalRuntimeSession", () => {
       GOOGLE_CLOUD_PROJECT: "captured-project",
       HOME: home,
     };
-    const authBackend: AuthBackend = {
-      login: () => ({ authenticated: true, provider: "local" }),
-      logout: () => ({ authenticated: false }),
-      whoami: () => ({ authenticated: true, provider: "local" }),
-      vendKey: () => {
-        throw new Error("vendKey should not run");
-      },
-      inferAgencModel: () => {
-        throw new Error("inferAgencModel should not run");
-      },
-      getSubscriptionTier: () => {
-        env.GEMINI_ACCESS_TOKEN = "mutated-after-snapshot";
-        return "free";
-      },
-    };
+    // Mutate the caller's environment in the middle of bootstrap, after the
+    // provider environment was captured.
+    const discover = startupSelection.resolveDiscoveredStartupDefault;
+    vi.spyOn(startupSelection, "resolveDiscoveredStartupDefault").mockImplementation(async (...args) => {
+      env.GEMINI_ACCESS_TOKEN = "mutated-after-snapshot";
+      return discover(...args);
+    });
     const providerMod = await import("../llm/provider.js");
     const createProviderSpy = vi
       .spyOn(providerMod, "createProvider")
@@ -2433,7 +2431,6 @@ describe("bootstrapLocalRuntimeSession", () => {
     let shutdown: (() => Promise<void>) | null = null;
     try {
       const boot = await bootstrapLocalRuntimeSession({
-        authBackend,
         env,
         fetchImpl: offlineFetchFixture(),
         argv: ["node", "agenc", "--provider", "gemini"],
@@ -2493,10 +2490,10 @@ describe("bootstrapLocalRuntimeSession", () => {
     );
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
     const readByokSpy = vi
-      .spyOn(LocalAuthBackend.prototype, "readByokKey")
-      .mockRejectedValue(
-        new Error("local no-auth providers must not probe BYOK secure storage"),
-      );
+      .spyOn(providerKeys, "readProviderKey")
+      .mockImplementation(() => {
+        throw new Error("local no-auth providers must not probe BYOK secure storage");
+      });
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
@@ -2536,8 +2533,8 @@ describe("bootstrapLocalRuntimeSession", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(fetchImpl);
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
     const readByokSpy = vi
-      .spyOn(LocalAuthBackend.prototype, "readByokKey")
-      .mockImplementation(async (provider) =>
+      .spyOn(providerKeys, "readProviderKey")
+      .mockImplementation((_home, provider) =>
         provider === "gemini" ? "saved-gemini-key" : undefined,
       );
 
@@ -2572,7 +2569,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         model: "gemini-2.5-pro",
       });
       expect(readByokSpy).toHaveBeenCalledOnce();
-      expect(readByokSpy).toHaveBeenCalledWith("gemini");
+      expect(readByokSpy).toHaveBeenCalledWith(expect.anything(), "gemini");
       expect(boot.session.providerBinding.factoryOptions).toMatchObject({
         extra: {
           gemini: {
@@ -2630,10 +2627,10 @@ describe("bootstrapLocalRuntimeSession", () => {
     );
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
     const readByokSpy = vi
-      .spyOn(LocalAuthBackend.prototype, "readByokKey")
-      .mockRejectedValue(
-        new Error("explicit provider credentials must prevent secure-storage reads"),
-      );
+      .spyOn(providerKeys, "readProviderKey")
+      .mockImplementation(() => {
+        throw new Error("explicit provider credentials must prevent secure-storage reads");
+      });
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
@@ -2666,14 +2663,10 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("uses locally saved BYOK keys before managed key vending", async () => {
+  it("uses locally saved BYOK keys", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-    const authBackend = new LocalAuthBackend({ agencHome: home });
-    await authBackend.saveByokKey({
-      provider: "grok",
-      apiKey: "saved-xai-key",
-    });
+    saveKey(home, "grok", "saved-xai-key");
 
     const providerMod = await import("../llm/provider.js");
     const createProviderSpy = vi
@@ -2694,16 +2687,11 @@ describe("bootstrapLocalRuntimeSession", () => {
           }) as never,
       );
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
-    const vendSpy = vi.spyOn(authBackend, "vendKey");
-    const readByokSpy = vi.spyOn(
-      LocalAuthBackend.prototype,
-      "readByokKey",
-    );
+    const readByokSpy = vi.spyOn(providerKeys, "readProviderKey");
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
       const boot = await bootstrapLocalRuntimeSession({
-        authBackend,
         conversationId: "conv-local-byok",
         env: {
           ...process.env,
@@ -2725,9 +2713,8 @@ describe("bootstrapLocalRuntimeSession", () => {
           model: "grok-4.6",
         }),
       );
-      expect(vendSpy).not.toHaveBeenCalled();
       expect(readByokSpy).toHaveBeenCalledTimes(1);
-      expect(readByokSpy).toHaveBeenCalledWith("grok");
+      expect(readByokSpy).toHaveBeenCalledWith(expect.anything(), "grok");
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
@@ -2737,26 +2724,9 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("does not read stored BYOK or vend managed keys when an environment API key is provided", async () => {
+  it("does not read stored BYOK when an environment API key is provided", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-    const calls: string[] = [];
-    const authBackend: AuthBackend = {
-      login: () => ({ authenticated: true, provider: "local" }),
-      logout: () => ({ authenticated: false }),
-      whoami: () => ({ authenticated: true, provider: "local" }),
-      vendKey: (provider, sessionId) => {
-        calls.push(`vendKey:${provider}:${sessionId}`);
-        throw new Error("vendKey should not run");
-      },
-      inferAgencModel: () => {
-        throw new Error("inferAgencModel should not run");
-      },
-      getSubscriptionTier: ({ sessionId } = {}) => {
-        calls.push(`getSubscriptionTier:${sessionId ?? ""}`);
-        return "pro";
-      },
-    };
 
     const providerMod = await import("../llm/provider.js");
     const createProviderSpy = vi
@@ -2778,13 +2748,14 @@ describe("bootstrapLocalRuntimeSession", () => {
       );
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
     const readByokSpy = vi
-      .spyOn(LocalAuthBackend.prototype, "readByokKey")
-      .mockRejectedValue(new Error("stored BYOK must not be read"));
+      .spyOn(providerKeys, "readProviderKey")
+      .mockImplementation(() => {
+        throw new Error("stored BYOK must not be read");
+      });
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
       const boot = await bootstrapLocalRuntimeSession({
-        authBackend,
         conversationId: "conv-explicit-byok",
         env: {
           ...process.env,
@@ -2804,7 +2775,6 @@ describe("bootstrapLocalRuntimeSession", () => {
           apiKey: "explicit-xai-key",
         }),
       );
-      expect(calls).toEqual(["getSubscriptionTier:conv-explicit-byok"]);
       expect(readByokSpy).not.toHaveBeenCalled();
     } finally {
       await shutdown?.().catch(() => {
@@ -2818,10 +2788,7 @@ describe("bootstrapLocalRuntimeSession", () => {
   it("uses locally saved BYOK keys without an injected auth backend", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-    await new LocalAuthBackend({ agencHome: home }).saveByokKey({
-      provider: "grok",
-      apiKey: "saved-default-xai-key",
-    });
+    saveKey(home, "grok", "saved-default-xai-key");
 
     const providerMod = await import("../llm/provider.js");
     const createProviderSpy = vi
@@ -2878,10 +2845,7 @@ describe("bootstrapLocalRuntimeSession", () => {
   it("preserves saved Gemini BYOK provenance in the canonical plan", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-    await new LocalAuthBackend({ agencHome: home }).saveByokKey({
-      provider: "gemini",
-      apiKey: "saved-gemini-key",
-    });
+    saveKey(home, "gemini", "saved-gemini-key");
     const providerMod = await import("../llm/provider.js");
     const createProviderSpy = vi
       .spyOn(providerMod, "createProvider")
@@ -2946,30 +2910,10 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("ignores duck-typed BYOK readers and uses canonical local secure storage", async () => {
+  it("reads saved BYOK from canonical local secure storage", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-    await new LocalAuthBackend({ agencHome: home }).saveByokKey({
-      provider: "grok",
-      apiKey: "canonical-saved-xai-key",
-    });
-    const rogueReadByokKey = vi.fn(() => "rogue-injected-key");
-    const authBackend = {
-      login: () => ({ authenticated: true, provider: "local" as const }),
-      logout: () => ({ authenticated: false as const }),
-      whoami: () => ({ authenticated: true, provider: "local" as const }),
-      vendKey: () => {
-        throw new Error("vendKey should not run");
-      },
-      inferAgencModel: () => {
-        throw new Error("inferAgencModel should not run");
-      },
-      getSubscriptionTier: () => "pro" as const,
-      readByokKey: rogueReadByokKey,
-    } as AuthBackend & {
-      readByokKey(provider: string): string | undefined;
-    };
-
+    saveKey(home, "grok", "canonical-saved-xai-key");
     const providerMod = await import("../llm/provider.js");
     const createProviderSpy = vi
       .spyOn(providerMod, "createProvider")
@@ -2989,15 +2933,11 @@ describe("bootstrapLocalRuntimeSession", () => {
           }) as never,
       );
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
-    const canonicalReadSpy = vi.spyOn(
-      LocalAuthBackend.prototype,
-      "readByokKey",
-    );
+    const canonicalReadSpy = vi.spyOn(providerKeys, "readProviderKey");
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
       const boot = await bootstrapLocalRuntimeSession({
-        authBackend,
         conversationId: "conv-canonical-local-byok",
         env: {
           AGENC_HOME: home,
@@ -3015,8 +2955,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         expect.objectContaining({ apiKey: "canonical-saved-xai-key" }),
       );
       expect(canonicalReadSpy).toHaveBeenCalledTimes(1);
-      expect(canonicalReadSpy).toHaveBeenCalledWith("grok");
-      expect(rogueReadByokKey).not.toHaveBeenCalled();
+      expect(canonicalReadSpy).toHaveBeenCalledWith(expect.anything(), "grok");
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */

@@ -20,7 +20,6 @@ import {
   resolveModelDisambiguated,
   AmbiguousModelError,
   InvalidAgentConfigError,
-  InvalidAuthConfigError,
   InvalidMcpConfigError,
   InvalidMcpServerModeConfigError,
   InvalidPluginsConfigError,
@@ -35,7 +34,6 @@ import {
   isValidPermissionMode,
   validateAgentConfig,
   validateAgenCConfigBlocks,
-  validateAuthConfig,
   validateMcpServerModeConfig,
   validatePermissionsConfig,
   validatePluginsConfig,
@@ -97,8 +95,9 @@ describe("schema: defaultConfig", () => {
     expect(cfg.agent_max_depth).toBe(1);
     expect(cfg.stream_watchdog_timeout_ms).toBe(1_200_000);
     expect(cfg.stream_quiet_warning_ms).toBe(600_000);
-    expect(cfg.auth?.backend).toBe("remote");
-    expect(cfg.auth).toEqual({ backend: "remote" });
+    // Retired with the AgenC account sign-in.
+    expect(cfg).not.toHaveProperty("auth");
+    expect(cfg).not.toHaveProperty("remote_control");
     expect(cfg.plugins?.enabled).toBe(false);
     expect(cfg.plugins?.allowlist).toEqual([]);
     expect(cfg.mcp?.server).toEqual({
@@ -306,16 +305,9 @@ describe("schema: normalizeRawConfig", () => {
     expect(KNOWN_CONFIG_KEYS.includes("configVersion")).toBe(true);
   });
 
-  test("preserves auth config on the typed path", () => {
-    const out = normalizeRawConfig({
-      auth: { backend: "remote", managedKeys: { enabled: true } },
-    });
-    expect(out.auth).toEqual({
-      backend: "remote",
-      managedKeys: { enabled: true },
-    });
-    expect(out._unknown).toBeUndefined();
-    expect(KNOWN_CONFIG_KEYS.includes("auth")).toBe(true);
+  test("no longer knows the retired auth and remote_control tables", () => {
+    expect(KNOWN_CONFIG_KEYS.includes("auth" as never)).toBe(false);
+    expect(KNOWN_CONFIG_KEYS.includes("remote_control" as never)).toBe(false);
   });
 
   test("preserves plugin config on the typed path", () => {
@@ -846,27 +838,6 @@ describe("schema: statusLine / outputStyle block (T12)", () => {
 });
 
 describe("schema: closed config block validators (CF-13)", () => {
-  test("validateAuthConfig ignores retired managed settings", () => {
-    const out = validateAuthConfig({
-      backend: "remote",
-      managedKeys: { enabled: true },
-    });
-    expect(out).toEqual({ backend: "remote" });
-    expect(Object.isFrozen(out)).toBe(true);
-    expect(out?.managedKeys).toBeUndefined();
-  });
-
-  test("validateAuthConfig rejects unknown auth fields with field metadata", () => {
-    let caught: unknown;
-    try {
-      validateAuthConfig({ backend: "local", typo: true });
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(InvalidAuthConfigError);
-    expect((caught as InvalidAuthConfigError).field).toBe("typo");
-  });
-
   test("validateProviderConfig accepts provider fallbacks and capabilities", () => {
     const out = validateProviderConfig({
       grok: {
@@ -1193,14 +1164,12 @@ describe("schema: closed config block validators (CF-13)", () => {
   test("validateAgenCConfigBlocks checks typed blocks including mcp.server", () => {
     const out = validateAgenCConfigBlocks(
       normalizeRawConfig({
-        auth: { backend: "local" },
         agent: { retention: { completed_days: 7 } },
         providers: { grok: { default_model: "grok-4.5" } },
         plugins: { plugins: { local: { enabled: true } } },
         mcp: { server: { enabled: true, transport: "sse", port: 4444 } },
       }),
     );
-    expect(out.auth?.backend).toBe("local");
     expect(out.agent?.retention?.completed_days).toBe(7);
     expect(out.providers?.grok?.default_model).toBe("grok-4.5");
     expect(out.plugins?.plugins?.local).toEqual({ enabled: true });
@@ -1763,43 +1732,17 @@ describe("env: resolvers", () => {
     },
   );
 
-  test("applyEnvOverrides ignores the retired managed model environment flag", () => {
-    const base = mergeConfigs(defaultConfig(), {
-      auth: { managedKeys: { enabled: true } },
-    });
-    const out = applyEnvOverrides(base, {
-      AGENC_AUTH_MANAGED_KEYS_ENABLED: "false",
-    });
-    expect(out.auth?.backend).toBe("remote");
-    expect(out.auth?.managedKeys?.enabled).toBe(true);
-  });
-
-  test("applyEnvOverrides — AGENC_AUTH_BACKEND selects remote auth", () => {
-    const base = defaultConfig();
-    const warnings: string[] = [];
-    const out = applyEnvOverrides(base, {
-      AGENC_AUTH_BACKEND: " remote ",
-      AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
-    }, (warning) => warnings.push(warning));
-
-    expect(out.auth?.backend).toBe("remote");
-    expect(out.auth?.managedKeys).toBeUndefined();
-    expect(warnings).toEqual([]);
-  });
-
-  test("applyEnvOverrides — invalid AGENC_AUTH_BACKEND warns and preserves config", () => {
-    const base = mergeConfigs(defaultConfig(), {
-      auth: { backend: "local", managedKeys: { enabled: false } },
-    });
-    const warnings: string[] = [];
-    const out = applyEnvOverrides(base, {
-      AGENC_AUTH_BACKEND: "google",
-    }, (warning) => warnings.push(warning));
-
-    expect(out.auth?.backend).toBe("local");
-    expect(warnings).toEqual([
-      '[agenc:config] invalid AGENC_AUTH_BACKEND="google"; expected "local" or "remote"',
-    ]);
+  test("applyEnvOverrides ignores the retired AgenC account switches", () => {
+    for (const value of [" remote ", "local", "google"]) {
+      const warnings: string[] = [];
+      const out = applyEnvOverrides(defaultConfig(), {
+        AGENC_AUTH_BACKEND: value,
+        AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
+      }, (warning) => warnings.push(warning));
+      expect(out).toEqual(defaultConfig());
+      expect(out).not.toHaveProperty("auth");
+      expect(warnings).toEqual([]);
+    }
   });
 
   test("applyEnvOverrides is a no-op when no overrides set", () => {
@@ -2013,7 +1956,7 @@ describe("env: resolvers", () => {
     );
     expect(out.max_output_tokens).toBeUndefined();
     expect(out.capped_default_max_output_tokens).toBeUndefined();
-    expect(out.auth?.managedKeys).toBeUndefined();
+    expect(out).not.toHaveProperty("auth");
     expect(warnings).toEqual([
       '[agenc:config] invalid AGENC_MAX_OUTPUT_TOKENS="bogus"; expected a positive integer',
       '[agenc:config] invalid AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS="maybe"; expected boolean-like value',
@@ -2075,9 +2018,6 @@ describe("env: resolvers", () => {
     expect(resolveProviderBaseURL("github", {
       GITHUB_BASE_URL: "https://github-proxy.example",
     })).toBe("https://github-proxy.example");
-    expect(resolveProviderBaseURL("agenc", {
-      AGENC_BASE_URL: "https://managed.example/v1",
-    })).toBe("https://managed.example/v1");
     expect(
       resolveProviderBaseURL("amazon-bedrock", {
         AWS_BEDROCK_BASE_URL:

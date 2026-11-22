@@ -2,37 +2,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { AuthBackend } from "./backend.js";
 import { bootstrapLocalRuntimeSession } from "../bin/bootstrap.js";
 import { Session } from "../session/session.js";
 
 describe("BYOK precedence", () => {
-  it("uses env-var BYOK keys without vending managed keys", async () => {
+  it("uses env-var BYOK keys", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-byok-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-byok-ws-"));
-    const calls: string[] = [];
-    const authBackend: AuthBackend = {
-      login: () => ({ authenticated: true, provider: "local" }),
-      logout: () => ({ authenticated: false }),
-      whoami: () => ({ authenticated: true, provider: "local" }),
-      vendKey: (provider, sessionId) => {
-        calls.push(`vendKey:${provider}:${sessionId}`);
-        return {
-          kind: "api-key",
-          provider,
-          sessionId,
-          apiKey: "managed-key",
-        };
-      },
-      inferAgencModel: () => {
-        calls.push("inferAgencModel");
-        throw new Error("not expected");
-      },
-      getSubscriptionTier: ({ sessionId } = {}) => {
-        calls.push(`getSubscriptionTier:${sessionId ?? ""}`);
-        return "free";
-      },
-    };
 
     const providerMod = await import("../llm/provider.js");
     const createProviderSpy = vi
@@ -57,7 +33,6 @@ describe("BYOK precedence", () => {
     let shutdown: (() => Promise<void>) | null = null;
     try {
       const boot = await bootstrapLocalRuntimeSession({
-        authBackend,
         conversationId: "conv-byok",
         env: {
           AGENC_HOME: agencHome,
@@ -75,7 +50,6 @@ describe("BYOK precedence", () => {
           model: "grok-4.6",
         }),
       );
-      expect(calls).toEqual(["getSubscriptionTier:conv-byok"]);
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */

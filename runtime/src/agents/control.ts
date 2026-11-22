@@ -1753,7 +1753,6 @@ export class AgentControl {
           metadata.executionPlan.destination,
         );
         const prepared = await planParentSession.providerService.prepareChild(selection, undefined, {}, true,
-          metadata.executionPlan.route.provider === "agenc" ? metadata.executionPlan.destination : undefined,
           metadata.executionPlan.destination);
         try {
           if (metadata.executionPlan !== undefined)

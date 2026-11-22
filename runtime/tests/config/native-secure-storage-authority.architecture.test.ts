@@ -75,14 +75,9 @@ describe("native secure storage authority", () => {
     expect(source).not.toContain("invalidateOAuthCacheIfDiskChanged");
   });
 
-  test("auth backends and remote subprocess auth have no plaintext secret authority", () => {
-    const local = readFileSync(
-      join(ROOT, "auth", "backends", "local.ts"),
-      "utf8",
-    );
-    const remote = readFileSync(
-      join(ROOT, "auth", "backends", "remote.ts"),
-      "utf8",
+  test("saved provider keys and subprocess auth have no plaintext secret authority", () => {
+    const keyStores = ["provider-keys.ts", "native-credentials.ts"].map((name) =>
+      readFileSync(join(ROOT, "auth", name), "utf8")
     );
     const descriptor = readFileSync(
       join(ROOT, "utils", "authFileDescriptor.ts"),
@@ -93,9 +88,10 @@ describe("native secure storage authority", () => {
       "utf8",
     );
 
-    expect(local).not.toContain("byok-keys.json");
-    expect(local).not.toContain("byokKeys?.[");
-    expect(remote).not.toMatch(/readRemoteAuthState\([^)]*\)[\s\S]{0,80}\.token/u);
+    for (const source of keyStores) {
+      expect(source).not.toContain("byok-keys.json");
+      expect(source).not.toContain("writeFileSync");
+    }
     for (const source of [descriptor, ingress]) {
       expect(source).not.toContain(".oauth_token");
       expect(source).not.toContain(".api_key");

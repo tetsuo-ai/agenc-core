@@ -146,7 +146,6 @@ import {
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
 import {
-  assertHostedAgencModelAuthority,
   requireProviderRuntimeCredential,
   resolveProviderRuntimeAuthority,
   snapshotProviderEnvironment,
@@ -156,8 +155,7 @@ import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
 import { isGrokComposerModel } from "../llm/providers/grok/acp-adapter.js";
 import { runWithStartupProviderSelection } from "../utils/model/providers.js";
 import type { AgenCConfig } from "../config/schema.js";
-import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
-import { LocalAuthBackend } from "../auth/backends/local.js";
+import { readProviderKey } from "../auth/provider-keys.js";
 
 import { bindSessionAgentControl } from "./delegate-tool.js";
 import {
@@ -208,7 +206,7 @@ function buildCodeSessionBaseUrl(baseUrl: string, sessionId: string): string {
   return `${trimTrailingSlash(baseUrl)}/v1/code/sessions/${infraSessionId}`;
 }
 
-interface ResolvedAuthModelSelection {
+interface ResolvedModelSelection {
   readonly provider: ProviderName;
   readonly model: string;
   readonly profileProvider: ProviderName;
@@ -226,22 +224,10 @@ function firstNonEmptyString(
   return undefined;
 }
 
-async function resolveAuthSubscriptionTier(
-  authBackend: AuthBackend | undefined,
-  sessionId: string,
-): Promise<AuthSubscriptionTier> {
-  if (authBackend === undefined) return "free";
-  return authBackend.getSubscriptionTier({ sessionId });
-}
-
-async function resolveAuthModelSelection(params: {
-  readonly authBackend: AuthBackend | undefined;
+function resolveModelSelection(params: {
   readonly provider: ProviderName;
   readonly model: string;
-  readonly sessionId: string;
-  readonly subscriptionTier: AuthSubscriptionTier;
-}): Promise<ResolvedAuthModelSelection> {
-  await assertHostedAgencModelAuthority(params);
+}): ResolvedModelSelection {
   return {
     provider: params.provider,
     model: params.model,
@@ -589,7 +575,6 @@ export interface BootstrapLocalRuntimeSessionOptions {
   readonly deferAuxiliarySetupUntilRequest?: boolean;
   readonly signal?: AbortSignal;
   readonly apiKey?: string;
-  readonly authBackend?: AuthBackend;
   readonly fetchImpl?: typeof fetch;
   readonly env?: NodeJS.ProcessEnv;
   /** Immutable operator policy supplied by a daemon/client boundary. */
@@ -688,7 +673,6 @@ export interface LocalRuntimeBootstrap {
   readonly rolloutStore: RolloutStore;
   readonly sidecarManager: SidecarManager;
   readonly ctx: TurnContext;
-  readonly authSubscriptionTier: AuthSubscriptionTier;
   readonly memoryDir: string;
   readonly memoryMdPath: string;
   readonly shutdown: (reason?: "session_shutdown" | "daemon_shutdown") => Promise<void>;
@@ -1266,11 +1250,8 @@ async function bootstrapLocalRuntimeSessionScoped(
   );
   const toolApprovals = new RuntimeApprovalStore<unknown>();
   const networkApproval = new RuntimeNetworkApprovalService();
-  const authSubscriptionTier = await resolveAuthSubscriptionTier(
-    options.authBackend,
-    conversationId,
-  );
-  const localByokAuthBackend = new LocalAuthBackend({ agencHome, env });
+  const readSavedApiKey = async (provider: ProviderName): Promise<string | undefined> =>
+    readProviderKey(configStore.homeContext, provider);
   startup = await resolveDiscoveredStartupDefault(startup, configStore.modelSelectionSource(), {
     catalogHome: configStore.homeContext.path,
     // A default bound global fetch is not an injected test transport. Keep
@@ -1280,12 +1261,9 @@ async function bootstrapLocalRuntimeSessionScoped(
     env: providerEnvironment,
     readSavedApiKey: provider => readLocalByokCredential(configStore.homeContext, provider)?.apiKey,
   });
-  const modelSelection = await resolveAuthModelSelection({
-    authBackend: options.authBackend,
+  const modelSelection = resolveModelSelection({
     provider: startup.provider,
     model: startup.model,
-    sessionId: conversationId,
-    subscriptionTier: authSubscriptionTier,
   });
   const resolvedProvider = modelSelection.provider;
   const deferredSetup = options.deferAuxiliarySetupUntilRequest === true &&
@@ -1539,13 +1517,8 @@ async function bootstrapLocalRuntimeSessionScoped(
     initialPreparation.requested,
     providerEnvironment,
     {
-      readSavedApiKey: (provider) =>
-        localByokAuthBackend.readByokKey(provider),
-      ...(options.authBackend !== undefined
-        ? { authBackend: options.authBackend }
-        : {}),
+      readSavedApiKey,
       sessionId: conversationId,
-      subscriptionTier: authSubscriptionTier,
       ...initialPreparation.runtime,
     },
   );
@@ -1774,10 +1747,6 @@ async function bootstrapLocalRuntimeSessionScoped(
       flushStartupLogIndex,
       provider,
       providerName: resolvedProvider,
-      ...(options.authBackend !== undefined
-        ? { authBackend: options.authBackend }
-        : {}),
-      authSubscriptionTier,
       registry,
       mcpManager: mcpService,
       unifiedExecManager,
@@ -1791,8 +1760,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       env,
       conversationId,
       model,
-      readSavedApiKey: (provider) =>
-        localByokAuthBackend.readByokKey(provider),
+      readSavedApiKey,
       resolveProviderPreparationRequest,
       sessionConfiguration,
       runtimeOptions,
@@ -2523,7 +2491,6 @@ async function bootstrapLocalRuntimeSessionScoped(
       rolloutStore: rolloutStoreForReturn,
       get sidecarManager() { return sidecarManager!; },
       ctx: ctxForReturn,
-      authSubscriptionTier,
       memoryDir,
       memoryMdPath,
       shutdown,

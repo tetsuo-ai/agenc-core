@@ -75,11 +75,8 @@ describe("LLM registry", () => {
       },
     });
 
-    expect(resolveBuiltInProviderInfo("agenc")).toMatchObject({
-      id: "agenc",
-      name: "AgenC",
-      onboarding: { access: "retired" },
-    });
+    // The AgenC account provider is retired with the account sign-in.
+    expect(resolveBuiltInProviderInfo("agenc")).toBeUndefined();
     expect(resolveBuiltInProviderInfo("anthropic")).toMatchObject({
       baseURL: "https://api.anthropic.com/v1",
     });

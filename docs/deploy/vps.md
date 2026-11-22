@@ -5,7 +5,7 @@ container) runs the daemon fine: providers do the heavy lifting; the daemon is
 orchestration. Two supported shapes.
 
 Related: [install](../install.md) · [gateway](../gateway.md) ·
-[onboarding](../onboarding.md) · [remote control](../remote-control.md).
+[onboarding](../onboarding.md).
 
 ## Shape 1 — bare VPS with the one-line installer (recommended)
 
@@ -43,10 +43,6 @@ explicit override. Keep that posture and reach it via:
 
 `agenc security audit` flags a non-loopback override as critical. A red audit
 on a VPS is an exposed agent.
-
-Phone remote control of a desktop session uses the signed relay
-([remote-control.md](../remote-control.md)) and still requires remote login;
-it does **not** require opening the daemon to the public internet.
 
 ### Channel gateway on a VPS
 
@@ -126,7 +122,7 @@ systemctl --user edit agenc-daemon
 
 The unit file itself stays credential-free. Configure your own OpenRouter key
 through the environment or native secure storage, including for free models.
-AgenC account sign-in does not supply model credentials. See
+There is no AgenC account sign-in. See
 [OpenRouter setup](../managed-openrouter.md).
 
 Channel secrets for the gateway: the native secure storage (or Docker env

@@ -10,14 +10,6 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const policyLimitsMocks = vi.hoisted(() => ({
-  configurePolicyLimitsService: vi.fn(),
-}));
-
-vi.mock("../services/policyLimits/index.js", () => ({
-  configurePolicyLimitsService: policyLimitsMocks.configurePolicyLimitsService,
-}));
-
 import {
   ConfiguredHooksRuntime,
   type HookInstallTarget,
@@ -85,18 +77,6 @@ const TRUSTED_HOOK_EXECUTION_AUTHORITY = createHookExecutionAuthority({
   runtimeOptions: TEST_RUNTIME_OPTIONS,
   isWorkspaceTrusted: () => true,
 });
-
-afterEach(() => {
-  policyLimitsMocks.configurePolicyLimitsService.mockReset();
-});
-
-function mockPolicyLimits(): void {
-  policyLimitsMocks.configurePolicyLimitsService.mockReturnValue({
-    initializePolicyLimitsLoadingPromise: vi.fn(),
-    loadPolicyLimits: vi.fn(async () => {}),
-    stopBackgroundPolling: vi.fn(),
-  } as never);
-}
 
 function sessionStartEchoCommand(): string {
   return [
@@ -642,7 +622,6 @@ describe("SessionStart bootstrap hooks", () => {
     readonly hooks: NonNullable<ReturnType<typeof defaultConfig>["hooks"]>;
     readonly resume?: boolean;
   }) {
-    mockPolicyLimits();
     const home = mkdtempSync(join(tmpdir(), "agenc-sessionstart-home-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-sessionstart-ws-"));
     mkdirSync(join(workspace, ".git"));
@@ -856,7 +835,6 @@ describe("buildBootstrapSessionServices guardian approval reviewer", () => {
     // dead provider socket: the approval hangs until the user cancels. An
     // expiry here is the reviewer's typed `timed_out` decision (fails closed,
     // retryable, not a breaker denial), never a "denied / high risk" verdict.
-    mockPolicyLimits();
     const home = mkdtempSync(join(tmpdir(), "agenc-guardian-deadline-home-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-guardian-deadline-ws-"));
     try {
@@ -919,17 +897,9 @@ describe("buildBootstrapSessionServices guardian approval reviewer", () => {
   });
 });
 
-describe("buildBootstrapSessionServices policy limits wiring", () => {
-  test("initializes policy limits and stops polling on shutdown", async () => {
-    const stopBackgroundPolling = vi.fn();
-    const policyLimits = {
-      initializePolicyLimitsLoadingPromise: vi.fn(),
-      loadPolicyLimits: vi.fn(async () => {}),
-      stopBackgroundPolling,
-    };
-    policyLimitsMocks.configurePolicyLimitsService.mockReturnValue(
-      policyLimits as never,
-    );
+describe("buildBootstrapSessionServices without the retired policy service", () => {
+  test("builds and shuts down with no policy limits service", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
     const home = mkdtempSync(join(tmpdir(), "agenc-policy-bootstrap-home-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-policy-bootstrap-ws-"));
     try {
@@ -975,33 +945,17 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
         commandExecutionAuthority: TEST_COMMAND_EXECUTION_AUTHORITY,
       });
 
-      expect(
-        policyLimitsMocks.configurePolicyLimitsService,
-      ).toHaveBeenCalledWith(
-        expect.objectContaining({
-          agencHome: home,
-          providerName: "anthropic",
-          apiKey: "direct-policy-key",
-          sessionId: "session-policy-bootstrap",
-        }),
-      );
-      expect(
-        policyLimits.initializePolicyLimitsLoadingPromise,
-      ).toHaveBeenCalled();
-      expect(policyLimits.loadPolicyLimits).toHaveBeenCalled();
-      expect(handle.services.policyLimits).toBe(policyLimits);
-
+      expect(handle.services).not.toHaveProperty("policyLimits");
       await handle.shutdown();
-
-      expect(stopBackgroundPolling).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
+      fetchSpy.mockRestore();
       rmSync(home, { recursive: true, force: true });
       rmSync(workspace, { recursive: true, force: true });
     }
   });
 
   test("rejects a concurrent mode mutation before applying a reloaded permission generation", async () => {
-    mockPolicyLimits();
     const home = mkdtempSync(join(tmpdir(), "agenc-permission-reload-home-"));
     const workspace = mkdtempSync(
       join(tmpdir(), "agenc-permission-reload-workspace-"),
@@ -1163,7 +1117,6 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
   });
 
   test("does not re-enter permission publication for a registry-coordinated config reload", async () => {
-    mockPolicyLimits();
     const home = mkdtempSync(join(tmpdir(), "agenc-coordinated-reload-home-"));
     const workspace = mkdtempSync(
       join(tmpdir(), "agenc-coordinated-reload-workspace-"),
@@ -1282,15 +1235,6 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
 
   test("exposes a live LSP refresh service", async () => {
     _resetLspManagerForTesting();
-    const stopBackgroundPolling = vi.fn();
-    const policyLimits = {
-      initializePolicyLimitsLoadingPromise: vi.fn(),
-      loadPolicyLimits: vi.fn(async () => {}),
-      stopBackgroundPolling,
-    };
-    policyLimitsMocks.configurePolicyLimitsService.mockReturnValue(
-      policyLimits as never,
-    );
     const home = mkdtempSync(join(tmpdir(), "agenc-lsp-refresh-home-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-lsp-refresh-ws-"));
     const marker = join(workspace, "lsp-escaped");
@@ -1400,11 +1344,6 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
 
 describe("buildBootstrapSessionServices tool authority", () => {
   test("sets the root session's provider environment and credential home explicitly", async () => {
-    policyLimitsMocks.configurePolicyLimitsService.mockReturnValue({
-      initializePolicyLimitsLoadingPromise: vi.fn(),
-      loadPolicyLimits: vi.fn(async () => {}),
-      stopBackgroundPolling: vi.fn(),
-    } as never);
     const home = mkdtempSync(join(tmpdir(), "agenc-tool-authority-home-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-tool-authority-ws-"));
     const homeContext = resolveHomeContext({ AGENC_HOME: home }, { platformHome: home });

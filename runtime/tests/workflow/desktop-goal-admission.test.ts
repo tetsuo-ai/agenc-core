@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import fixture from "./fixtures/desktop-goal-providers.js";
 import { mergeDaemonClientEnvironment } from "../../src/app-server/client-env-snapshot.js";
 import { requireProviderRuntimeCredential, resolveProviderRuntimeAuthority } from "../../src/llm/provider-options.js";
+import { createProvider } from "../../src/llm/provider.js";
 import { resolveReasoningEffort } from "../../src/llm/reasoning-effort.js";
 import { runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
 import { createAllowAdmissionHarness } from "../budget/admission-test-harness.js";
@@ -30,8 +31,11 @@ describe("Desktop Goal provider, model and effort release admission gate", () =>
           ? { AWS_ACCESS_KEY_ID: "test-access", AWS_SECRET_ACCESS_KEY: "test-secret", AWS_REGION: "us-east-1" } : {};
         const env = mergeDaemonClientEnvironment({}, overrides)!;
         if (providerName === "agenc") {
-          await expect(resolveProviderRuntimeAuthority(providerName, { model }, env))
-            .rejects.toThrow("AgenC accounts no longer provide models");
+          // The AgenC account provider is retired with the account sign-in:
+          // no credential satisfies it and the provider factory does not know it.
+          const retired = await resolveProviderRuntimeAuthority(providerName, { model }, env);
+          expect(() => requireProviderRuntimeCredential(providerName, retired)).toThrow();
+          expect(() => createProvider(providerName, { model })).toThrow("unknown provider: agenc");
           return;
         }
         const authority = await resolveProviderRuntimeAuthority(providerName, { model }, env);

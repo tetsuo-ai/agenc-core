@@ -27,9 +27,8 @@ history; the linked pages below are current product truth.
 | Doc | Summary |
 | --- | --- |
 | [gateway.md](gateway.md) | Channel gateway: Telegram, Discord, Slack, WebChat, stdio; pairing; heartbeat/hooks |
-| [remote-control.md](remote-control.md) | Pair host with AgenC phone app (`agenc remote`) |
 | [managed-openrouter.md](managed-openrouter.md) | OpenRouter user-key setup and retired account model access |
-| [agenc-account-model-access.md](agenc-account-model-access.md) | Account sign-in remains separate from model-provider access |
+| [agenc-account-model-access.md](agenc-account-model-access.md) | The retired AgenC account sign-in, and what Core removes from an existing home |
 | [grok-oauth.md](grok-oauth.md) | Sign in with X for Grok subscription access without an API key (`agenc grok-login` + TUI) |
 | [deploy/vps.md](deploy/vps.md) | Run the daemon on a VPS (installer or Docker) |
 | [migrate-from-openclaw.md](migrate-from-openclaw.md) | Surface map from OpenClaw |

@@ -51,7 +51,7 @@ vi.mock("../../src/utils/xaiOauthCredentials.js", () => ({
   xaiOauthTokensToBlob: mocks.xaiOauthTokensToBlob,
 }));
 
-vi.mock("../../src/commands/auth.js", () => ({
+vi.mock("../../src/commands/open-url.js", () => ({
   openUrlInBrowser: mocks.openUrlInBrowser,
 }));
 

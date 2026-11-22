@@ -92,11 +92,11 @@ export function createChromeContext(
     clientTypeId: 'agenc-code',
     onAuthenticationError: () => {
       logger.warn(
-        'Authentication error occurred. Please ensure you are logged into the AgenC browser extension with the same AgenC account as AgenC.',
+        'Authentication error occurred. Make sure the AgenC browser extension is installed and paired with this computer.',
       )
     },
     onToolCallDisconnected: () => {
-      return `Browser extension is not connected. Please ensure the AgenC browser extension is installed and running (${EXTENSION_DOWNLOAD_URL}), and that you are logged into AgenC with the same account as AgenC. If this is your first time connecting to Chrome, you may need to restart Chrome for the installation to take effect. If you continue to experience issues, please report a bug: ${BUG_REPORT_URL}`
+      return `Browser extension is not connected. Please ensure the AgenC browser extension is installed and running (${EXTENSION_DOWNLOAD_URL}). If this is your first time connecting to Chrome, you may need to restart Chrome for the installation to take effect. If you continue to experience issues, please report a bug: ${BUG_REPORT_URL}`
     },
     onExtensionPaired: (deviceId: string, name: string) => {
       updateNativeSecureStorage(home, current => {

@@ -465,8 +465,8 @@ describe("configCommand — reload", () => {
         join(tmp, "config.toml"),
         `config_version = 2
 
-[auth]
-backend = "invalid"
+[mcp.server]
+transport = "invalid"
         `,
       );
       const store = new ConfigStore({ home: tmp, env: {} });
@@ -474,7 +474,7 @@ backend = "invalid"
         stubCtx({ configStore: store, argsRaw: "reload", home: tmp }),
       );
       if (r.kind !== "error") throw new Error(`expected error, got ${r.kind}`);
-      expect(r.message).toContain("Invalid auth.backend");
+      expect(r.message).toContain("mcp.server.transport");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

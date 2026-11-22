@@ -78,7 +78,6 @@ import {
   readProviderIdentity,
 } from "../llm/provider.js";
 import { createGeminiEndpointPlan } from "../llm/providers/gemini/endpoint-plan.js";
-import type { AuthBackend } from "../auth/backend.js";
 import { clearSession } from "../commands/clear.js";
 import {
   createCsvAgentInvocationEnvelope,
@@ -322,13 +321,7 @@ function buildSession(
       ...(overrides.readSavedApiKey !== undefined
         ? { readSavedApiKey: overrides.readSavedApiKey }
         : {}),
-      ...(services.authBackend !== undefined
-        ? { authBackend: services.authBackend }
-        : {}),
       sessionId: "conv-test",
-      ...(services.authSubscriptionTier !== undefined
-        ? { subscriptionTier: services.authSubscriptionTier }
-        : {}),
       resolvePreparationRequest: (selection) => {
         const currentConfig = configStore.current();
         const runtimeRequest = resolveProviderRuntimeRequest({
@@ -1590,21 +1583,6 @@ describe("Session.consumePendingProviderSwitch", () => {
         OPENAI_API_KEY: undefined,
       },
       async () => {
-        const vendKey = vi.fn(() => {
-          throw new Error("managed key vending should not run for BYOK");
-        });
-        const authBackend: AuthBackend = {
-          kind: "remote",
-          login: () => ({ authenticated: true, provider: "remote" }),
-          logout: () => ({ authenticated: false }),
-          whoami: () => ({ authenticated: true, provider: "remote" }),
-          vendKey,
-          inferAgencModel: () => ({
-            provider: "openai",
-            model: "gpt-5",
-          }),
-          getSubscriptionTier: () => "free",
-        };
         const session = buildSession({
           services: {
             provider: createProvider("grok", {
@@ -1614,8 +1592,6 @@ describe("Session.consumePendingProviderSwitch", () => {
             providerEnvironment: {
               OPENAI_API_KEY: "openai-target",
             },
-            authBackend,
-            authSubscriptionTier: "free",
             configStore: {
               current: () => ({
                 providers: {
@@ -1659,7 +1635,6 @@ describe("Session.consumePendingProviderSwitch", () => {
             },
           },
         });
-        expect(vendKey).not.toHaveBeenCalled();
       },
     );
   });
@@ -1734,40 +1709,21 @@ describe("Session.consumePendingProviderSwitch", () => {
     ).toBeUndefined();
   });
 
-  it("does not vend managed keys for local LM Studio switches", async () => {
+  it("switches to local LM Studio without a key", async () => {
     await withEnv(
       {
         LMSTUDIO_API_KEY: undefined,
         OPENAI_API_KEY: undefined,
       },
       async () => {
-        const vendKey = vi.fn(() => {
-          throw new Error("vendKey should not run for local providers");
-        });
-        const authBackend: AuthBackend = {
-          kind: "remote",
-          login: () => ({ authenticated: true, provider: "remote" }),
-          logout: () => ({ authenticated: false }),
-          whoami: () => ({ authenticated: true, provider: "remote" }),
-          vendKey,
-          inferAgencModel: () => ({
-            provider: "grok",
-            model: "grok-4.3",
-          }),
-          getSubscriptionTier: () => "team",
-        };
         const session = buildSession({
           services: {
             provider: createProvider("grok", {
               apiKey: "test-key",
               model: "grok-4.3",
             }),
-            authBackend,
-            authSubscriptionTier: "team",
             configStore: {
-              current: () => ({
-                auth: { managedKeys: { enabled: true } },
-              }),
+              current: () => ({}),
             },
           },
         });
@@ -1783,7 +1739,6 @@ describe("Session.consumePendingProviderSwitch", () => {
           provider: "lmstudio",
           model: "gpt-4o-mini",
         });
-        expect(vendKey).not.toHaveBeenCalled();
         expect(
           readProviderFactoryOptions(session.services.provider),
         ).toMatchObject({
@@ -1796,30 +1751,12 @@ describe("Session.consumePendingProviderSwitch", () => {
     );
   });
 
-  it("rejects free remote managed-key switches before vending", async () => {
+  it("rejects an OpenRouter switch without credentials", async () => {
     await withEnv(
       {
         OPENROUTER_API_KEY: undefined,
       },
       async () => {
-        const vendKey = vi.fn(() => ({
-          kind: "api-key" as const,
-          provider: "openrouter",
-          sessionId: "conv-test",
-          apiKey: "managed-openrouter-key",
-        }));
-        const authBackend: AuthBackend = {
-          kind: "remote",
-          login: () => ({ authenticated: true, provider: "remote" }),
-          logout: () => ({ authenticated: false }),
-          whoami: () => ({ authenticated: true, provider: "remote" }),
-          vendKey,
-          inferAgencModel: () => ({
-            provider: "openrouter",
-            model: "openai/gpt-5-nano",
-          }),
-          getSubscriptionTier: () => "free",
-        };
         const startingProvider = createProvider("openai", {
           apiKey: "test-key",
           model: "gpt-5",
@@ -1827,12 +1764,8 @@ describe("Session.consumePendingProviderSwitch", () => {
         const session = buildSession({
           services: {
             provider: startingProvider,
-            authBackend,
-            authSubscriptionTier: "free",
             configStore: {
-              current: () => ({
-                auth: { managedKeys: { enabled: true } },
-              }),
+              current: () => ({}),
             },
           },
         });
@@ -1845,32 +1778,13 @@ describe("Session.consumePendingProviderSwitch", () => {
 
         expect(applied.applied).toBe(false);
         expect(applied.reason).toMatch(/openrouter provider requires credentials/);
-        expect(vendKey).not.toHaveBeenCalled();
         expect(session.services.provider).toBe(startingProvider);
         expect(session.pendingProviderSwitch).toBeNull();
       },
     );
   });
 
-  it("rejects free remote hosted AgenC model routing during provider switches", async () => {
-    const vendKey = vi.fn(() => ({
-      kind: "api-key" as const,
-      provider: "grok",
-      sessionId: "conv-test",
-      apiKey: "managed-grok-key",
-    }));
-    const authBackend: AuthBackend = {
-      kind: "remote",
-      login: () => ({ authenticated: true, provider: "remote" }),
-      logout: () => ({ authenticated: false }),
-      whoami: () => ({ authenticated: true, provider: "remote" }),
-      vendKey,
-      inferAgencModel: () => ({
-        provider: "grok",
-        model: "grok-4.3",
-      }),
-      getSubscriptionTier: () => "free",
-    };
+  it("rejects a switch to the retired AgenC account provider", async () => {
     const startingProvider = createProvider("grok", {
       apiKey: "test-key",
       model: "grok-4",
@@ -1878,8 +1792,6 @@ describe("Session.consumePendingProviderSwitch", () => {
     const session = buildSession({
       services: {
         provider: startingProvider,
-        authBackend,
-        authSubscriptionTier: "free",
       },
     });
     session.setPendingProviderSwitch({
@@ -1890,8 +1802,7 @@ describe("Session.consumePendingProviderSwitch", () => {
     const applied = await consumePendingProviderSwitch(session);
 
     expect(applied.applied).toBe(false);
-    expect(applied.reason).toMatch(/AgenC accounts no longer provide models/);
-    expect(vendKey).not.toHaveBeenCalled();
+    expect(applied.reason).toMatch(/unknown provider 'agenc'/);
     expect(session.services.provider).toBe(startingProvider);
   });
 

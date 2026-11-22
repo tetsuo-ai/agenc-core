@@ -536,6 +536,9 @@ async function runConfigSet(
 ): Promise<number> {
   const segments = parseEditablePath(key);
   assertEditableConfigPath(segments);
+  if (RETIRED_SIGN_IN_CONFIG_TABLES.has(segments[0]!)) {
+    throw new Error(`${segments[0]} was retired with the AgenC account sign-in and has no effect`);
+  }
   const value = parseConfigSetValue(rawValue);
   assertConfigPatchAuthority("user", { [segments[0]!]: value });
   const path = getConfigFilePath(agencHome);
@@ -603,10 +606,13 @@ function parseEditablePath(key: string): readonly string[] {
   return segments.map((segment) => segment.trim());
 }
 
+/** Retired with the AgenC account sign-in: they can be unset, not set. */
+const RETIRED_SIGN_IN_CONFIG_TABLES: ReadonlySet<string> = new Set([
+  "auth",
+  "remote_control",
+]);
+
 function assertEditableConfigPath(segments: readonly string[]): void {
-  if (segments[0] === "remote_control") {
-    throw new Error("Remote control configuration is owner-only; edit [remote_control] directly in home config.toml outside the agent.");
-  }
   if (
     segments[0] === CANONICAL_CONFIG_VERSION_KEY ||
     segments[0] === "configVersion"

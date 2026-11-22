@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { OpenAIProvider } from "../../src/llm/providers/openai/adapter.js";
-import type { AuthBackend } from "../../src/auth/backend.js";
 import { createProvider } from "../../src/llm/provider.js";
 import type { LLMMessage } from "../../src/llm/types.js";
 import { LLMManagedAdmissionError, LLMManagedUsagePendingError } from "../../src/llm/errors.js";
@@ -180,13 +179,10 @@ describe("historical managed receipt compatibility and retired factory routes", 
     expect(new Set(identities).size).toBe(5);
   });
 
-  test("rejects lazy managed credential vending before consulting the account or transport", () => {
+  test("rejects a stale managed credential flag before consulting the transport", () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => response());
-    const vendKey = vi.fn();
-    const backend = { vendKey } as unknown as AuthBackend;
-    expect(() => createProvider("openrouter", { model, extra: { authBackend: backend, managedCredential: true,
+    expect(() => createProvider("openrouter", { model, extra: { managedCredential: true,
       sessionId: "synthetic-session", maxTokens: 100, fetchImpl } })).toThrow("AgenC accounts no longer provide models");
-    expect(vendKey).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -198,10 +194,6 @@ describe("historical managed receipt compatibility and retired factory routes", 
       await provider.chat(messages, options);
       expect(requestId(fetchImpl.mock.lastCall![1])).toBeNull();
     }
-    const callsBeforeRetiredRoute = fetchImpl.mock.calls.length;
-    expect(() => createProvider("openrouter", { apiKey: "synthetic-byok", baseURL, model,
-      extra: { fetchImpl } })).toThrow("AgenC accounts no longer provide models");
-    expect(fetchImpl).toHaveBeenCalledTimes(callsBeforeRetiredRoute);
     const explicit = createProvider("openrouter", { apiKey: "synthetic-byok", model,
       extra: { fetchImpl, defaultHeaders: { "Idempotency-Key": "synthetic-custom-direct-header" } } });
     await explicit.chat(messages, options);

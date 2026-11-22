@@ -19,9 +19,8 @@ import { sessionMcpAttachmentIssue } from "../mcp-client/local-control.js";
 import { isAbsolute } from "node:path";
 import type { WhisperService } from "../audio/whisper.js";
 import { WhisperError } from "../audio/whisper-error.js";
-import { RemoteError, REMOTE_METHODS, type RemoteMethod } from "../remote/types.js";
+import { RemoteError } from "../remote/types.js";
 import type { RemoteAccessBoundary } from "../remote/access.js";
-import type { RemoteService } from "../remote/service.js";
 import type { OwnerTelegramService } from "../gateway/owner-telegram.js";
 import { OWNER_TELEGRAM_METHODS, type OwnerTelegramMethod } from "../gateway/owner-telegram-types.js";
 import { RoutineError, type RoutineService } from "../routines/service.js";
@@ -75,10 +74,6 @@ import {
 } from "./command-exec.js";
 import type { AgenCHealthStateCounter } from "./health.js";
 import { createLazyDaemonHealth, type AgenCDaemonHealthHandlers } from "./lazy-health.js";
-import {
-  createAgenCDaemonAuthHandlers,
-  type AgenCDaemonAuthHandlers,
-} from "./auth.js";
 import type { AgenCRealtimeRpcHandlers } from "./realtime.js";
 import { createLazyRealtimeRpcService } from "./lazy-realtime.js";
 import {
@@ -92,7 +87,7 @@ import {
   AgenCCsvJobReviewError,
   type AgenCCsvJobReviewService,
 } from "./csv-job-review.js";
-import type { AuthBackend, AuthDaemonSocketIdentity } from "../auth/backend.js";
+import type { AuthDaemonSocketIdentity } from "./transport/auth.js";
 import {
   AgentRuntimeOptionsError,
   validateAgentRuntimeOptions,
@@ -349,7 +344,6 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly fuzzyFileSearch: AgenCFuzzyFileSearch;
   readonly commandExec: AgenCCommandExec;
   readonly allowUnadmittedCommandExecStart: boolean;
-  readonly authHandlers: AgenCDaemonAuthHandlers | undefined;
   readonly daemonControl: AgenCDaemonDispatcherOptions["daemonControl"];
   readonly daemonIdentity: AgenCDaemonDispatcherOptions["daemonIdentity"];
   readonly health: AgenCDaemonHealthHandlers;
@@ -358,7 +352,6 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly workflow: AgenCDaemonDispatcherOptions["workflow"];
   readonly routines: RoutineService | undefined;
   readonly routinePreparation?: RoutineSessionPreparation;
-  readonly remote: Pick<RemoteService, "handle" | "stop"> | undefined;
   readonly ownerTelegram: Pick<OwnerTelegramService, "handle"> | undefined;
   readonly csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly projectTrust: AgenCDaemonProjectTrustService | undefined;
@@ -371,7 +364,6 @@ function buildServerCapabilities(
   const agentManager = inputs.agentManager;
   const sessionManager = inputs.sessionManager;
   const methodCapabilities = {
-    ...Object.fromEntries(REMOTE_METHODS.map((method) => [method, inputs.remote !== undefined && inputs.initializeAuthenticator !== undefined])) as Record<RemoteMethod, boolean>,
     ...Object.fromEntries(OWNER_TELEGRAM_METHODS.map((method) => [method, inputs.ownerTelegram !== undefined && inputs.initializeAuthenticator !== undefined])) as Record<OwnerTelegramMethod, boolean>,
     initialize: true,
     "request.cancel": true,
@@ -445,7 +437,7 @@ function buildServerCapabilities(
     "elicitation.respond": hasMethod(agentManager, "respondToElicitation"),
     "elicitation.pending": hasMethod(agentManager, "pendingElicitations"),
     "permission.list": hasMethod(agentManager, "listPermissions"),
-    // Same gate as remote.*: trust widens what sessions may do in a project.
+    // Same gate as telegram.*: trust widens what sessions may do in a project.
     "project.trustStatus":
       inputs.projectTrust !== undefined &&
       inputs.initializeAuthenticator !== undefined,
@@ -474,9 +466,6 @@ function buildServerCapabilities(
       hasMethod(inputs.daemonControl, "busyReason") &&
       inputs.initializeAuthenticator !== undefined &&
       inputs.daemonIdentity !== undefined,
-    "auth.login": inputs.authHandlers !== undefined,
-    "auth.whoami": inputs.authHandlers !== undefined,
-    "auth.logout": inputs.authHandlers !== undefined,
     "session.partialCompactFromMessage": hasMethod(
       agentManager,
       "partialCompactFromMessage",
@@ -658,7 +647,6 @@ export interface AgenCDaemonDispatcherOptions {
   readonly commandExec?: AgenCCommandExec;
   /** Isolated contract-test seam; production must never provide this token. */
   readonly unadmittedCommandExecStartOverride?: typeof TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START;
-  readonly authBackend?: AuthBackend;
   readonly daemonControl?: {
     reloadConfig(): DaemonReloadResult | Promise<DaemonReloadResult>;
     shutdown?(
@@ -671,7 +659,7 @@ export interface AgenCDaemonDispatcherOptions {
      * while the dispatcher holds every new request.
      */
     busyReason?(params: DaemonShutdownIfIdleParams): Promise<string | undefined>;
-    /** A last synchronous look (routine runs, remote devices) just before the commit. */
+    /** A last synchronous look (routine runs) just before the commit. */
     busyReasonNow?(): string | undefined;
   };
   readonly health?: AgenCDaemonHealthHandlers;
@@ -682,14 +670,12 @@ export interface AgenCDaemonDispatcherOptions {
   readonly workflow?: AgenCDaemonWorkflowStartService;
   readonly routines?: RoutineService;
   readonly routinePreparation?: RoutineSessionPreparation;
-  readonly remote?: Pick<RemoteService, "handle" | "stop">;
-  readonly remoteControlEnabled?: () => boolean;
   readonly ownerTelegram?: Pick<OwnerTelegramService, "handle">;
   /** Workspace-scoped CSV unknown-outcome review service. */
   readonly csvJobReview?: AgenCCsvJobReviewService;
   /**
    * Project trust resolved the way sessions resolve it. Answered only on
-   * authenticated local connections, like `remote.*`.
+   * authenticated local connections, like `telegram.*`.
    */
   readonly projectTrust?: AgenCDaemonProjectTrustService;
   readonly pluginSettings?: PluginSettingsService;
@@ -810,7 +796,6 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #ownsFuzzyFileSearch: boolean;
   readonly #commandExec: AgenCCommandExec;
   readonly #allowUnadmittedCommandExecStart: boolean;
-  readonly #authHandlers: AgenCDaemonAuthHandlers | undefined;
   readonly #daemonControl: AgenCDaemonDispatcherOptions["daemonControl"] | undefined;
   /** Set while `daemon.shutdownIfIdle` checks; new requests wait on it. */
   #requestHold: Promise<void> | undefined;
@@ -826,8 +811,6 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #workflow: AgenCDaemonWorkflowStartService | undefined;
   readonly #routines: RoutineService | undefined;
   readonly #routinePreparation: RoutineSessionPreparation | undefined;
-  readonly #remote: Pick<RemoteService, "handle" | "stop"> | undefined;
-  readonly #remoteControlEnabled: () => boolean;
   readonly #ownerTelegram: Pick<OwnerTelegramService, "handle"> | undefined;
   readonly #routineSubscriptions = new Map<AgenCDaemonJsonRpcConnection, () => void>();
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
@@ -875,23 +858,16 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#workflow = options.workflow;
     this.#routines = options.routines;
     this.#routinePreparation = options.routinePreparation;
-    this.#remote = options.remote;
-    this.#remoteControlEnabled = options.remoteControlEnabled ?? (() => false);
     this.#ownerTelegram = options.ownerTelegram;
     this.#csvJobReview = options.csvJobReview;
     this.#projectTrust = options.projectTrust;
     this.#pluginSettings = options.pluginSettings;
     this.#startupRestores = options.startupRestores;
-    this.#authHandlers =
-      options.authBackend !== undefined
-        ? createAgenCDaemonAuthHandlers(options.authBackend)
-        : undefined;
     this.#daemonControl = options.daemonControl;
     this.#printHome = options.printHome;
     this.#serverCapabilities = buildServerCapabilities({
       printHome: options.printHome,
       agentManager: this.#agentManager,
-      authHandlers: this.#authHandlers,
       allowUnadmittedCommandExecStart: this.#allowUnadmittedCommandExecStart,
       commandExec: this.#commandExec,
       daemonControl: this.#daemonControl,
@@ -906,7 +882,6 @@ export class AgenCDaemonJsonRpcDispatcher {
       workflow: this.#workflow,
       routines: this.#routines,
       routinePreparation: this.#routinePreparation,
-      remote: this.#remote,
       ownerTelegram: this.#ownerTelegram,
       csvJobReview: this.#csvJobReview,
       projectTrust: this.#projectTrust,
@@ -1009,21 +984,17 @@ export class AgenCDaemonJsonRpcDispatcher {
     const method = message.method;
     try {
       const params = objectParams(message.params);
-      if (connection.remoteControlBridge && !this.#remoteControlEnabled()) {
-        return errorResponse(id, -32000, "Phone remote control is disabled by owner configuration", { code: "REMOTE_CONTROL_DISABLED" });
-      }
       if (method === "initialize") {
-        if (params.remoteControlBridge === true && !this.#remoteControlEnabled()) {
-          return errorResponse(id, -32000, "Phone remote control is disabled by owner configuration", { code: "REMOTE_CONTROL_DISABLED" });
+        // Phone remote control is retired. A connector an older Core left
+        // running still asks to bridge a phone in; it never initializes.
+        if (params.remoteControlBridge === true) {
+          return errorResponse(id, -32000, "Phone remote control is no longer available", { code: "REMOTE_CONTROL_DISABLED" });
         }
         if (!connection.beginInitialization()) {
           return errorResponse(id, -32000, "Already initialized", {
             code: "CONNECTION_ALREADY_INITIALIZED",
           });
         }
-        // A bridge is one from its first initialize step: a reload that turns
-        // remote control off closes it during the awaits below as well.
-        connection.remoteControlBridge = params.remoteControlBridge === true;
         try {
           const availableCapabilities = connection.localUnix ? this.#serverCapabilities : {
             ...this.#serverCapabilities,
@@ -1081,12 +1052,6 @@ export class AgenCDaemonJsonRpcDispatcher {
             connection,
             negotiated.state.clientCapabilities,
           );
-          if (connection.remoteControlBridge && !this.#remoteControlEnabled()) {
-            // Remote control was turned off while this bridge initialized:
-            // drop what it registered instead of leaving it attached.
-            await this.closeConnection(connection).catch(() => {});
-            return errorResponse(id, -32000, "Phone remote control is disabled by owner configuration", { code: "REMOTE_CONTROL_DISABLED" });
-          }
           connection.markInitialized(negotiated.state);
           return successResponse(id, {
             type: "initialized",
@@ -1109,14 +1074,6 @@ export class AgenCDaemonJsonRpcDispatcher {
         });
       }
 
-      if ((REMOTE_METHODS as readonly string[]).includes(method)) {
-        if (!this.#remote || !this.#initializeAuthenticator || connection.remoteAccess) return methodNotImplementedResponse(id, method);
-        if (!this.#remoteControlEnabled() && !["remote.status", "remote.stop", "remote.capabilities", "remote.revoke", "remote.pair.cancel"].includes(method)) {
-          return errorResponse(id, -32000, "Remote control is disabled by owner configuration", { code: "REMOTE_CONTROL_DISABLED" });
-        }
-        await this.#waitForStartupRestores(method, params, INERT_ABORT_SIGNAL);
-        return successResponse(id, await this.#remote.handle(method as RemoteMethod, params));
-      }
       if ((OWNER_TELEGRAM_METHODS as readonly string[]).includes(method)) {
         if (!this.#ownerTelegram || !this.#initializeAuthenticator || connection.remoteAccess) return methodNotImplementedResponse(id, method);
         await this.#waitForStartupRestores(method, params, INERT_ABORT_SIGNAL);
@@ -2086,10 +2043,6 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "project.trustStatus":
       case "project.trust":
         return this.#dispatchProjectTrust(id, method, connection, params);
-      case "auth.login":
-      case "auth.whoami":
-      case "auth.logout":
-        return this.#dispatchAuthMethod(id, method, connection);
       default:
         return methodNotImplementedResponse(id, method);
     }
@@ -2240,28 +2193,6 @@ export class AgenCDaemonJsonRpcDispatcher {
     return method === "project.trust"
       ? successResponse(id, await this.#projectTrust.trust(validated))
       : successResponse(id, this.#projectTrust.status(validated));
-  }
-
-  async #dispatchAuthMethod(
-    id: RequestId,
-    method: "auth.login" | "auth.whoami" | "auth.logout",
-    connection: AgenCDaemonJsonRpcConnection,
-  ): Promise<AgenCDaemonResponse> {
-    if (this.#authHandlers === undefined) {
-      return errorResponse(
-        id,
-        -32000,
-        "daemon auth backend is not configured",
-        { code: "AUTH_BACKEND_NOT_CONFIGURED" },
-      );
-    }
-    if (method === "auth.logout") this.#remote?.stop();
-    return successResponse(
-      id,
-      await this.#authHandlers[method]({
-        daemonConnection: connection.daemonSocketIdentity,
-      }),
-    );
   }
 
   async #attachAgent(
@@ -2889,8 +2820,6 @@ export class AgenCDaemonJsonRpcConnection {
   get cancellationScope(): string {
     return this.#cancellationScope;
   }
-
-  remoteControlBridge = false;
 
   markInitialized(state: AgenCDaemonConnectionInitializeState): void {
     this.assertOpen();
