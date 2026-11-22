@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 const nativeNames = [
-  "desktop_state", "desktop_window_state", "desktop_settings_open", "desktop_settings_update", "desktop_window",
+  "desktop_chart_format", "desktop_state", "desktop_window_state", "desktop_settings_open", "desktop_settings_update", "desktop_window",
   "desktop_session_open", "desktop_session_update", "desktop_project_select", "browser_tabs", "browser_snapshot",
   "browser_read_text", "browser_screenshot", "browser_wait_for", "browser_downloads", "browser_console",
   "browser_open_tab", "browser_select_tab", "browser_close_tab", "browser_navigate", "browser_click", "browser_type",
@@ -113,10 +113,16 @@ describe("authenticated Desktop Routine model discovery", () => {
     await withLocalMcpAccess(true, async () => {
       expect(manager.getAuthenticatedDesktopToolNames()).toEqual(nativeNames.map(qualified));
       const instructions = manager.getServerInstructions(f.config.name)!;
-      expect(instructions).toContain(qualified("desktop_routine_cancel"));
+      // Every tool is named once, without the shared prefix, so the exact name can be selected.
+      expect(instructions).toContain(`select:${qualified("<name>")}`);
+      const listed = /Tools: ([^.]+)\./.exec(instructions)?.[1]?.split(", ");
+      expect(listed).toEqual(nativeNames);
       expect(instructions).toContain("separate conversation scheduler, not a substitute for Desktop Routines");
-      expect(instructions).toContain("read-only/plan mode");
       expect(instructions).not.toContain("desktop_routine_destroy");
+      // The Routine rules load with the Routine tools; this block rides on every request.
+      expect(instructions).not.toContain("Scheduled runs have nobody to approve anything");
+      // 3.4 KB before the names lost their shared prefix and the Routine rules moved (2026-11-21).
+      expect(Buffer.byteLength(instructions.replace("Host-specific instructions.", ""))).toBeLessThan(1_600);
     });
     await manager.stop();
     await withLocalMcpAccess(true, async () => expect(manager.getAuthenticatedDesktopToolNames()).toEqual([]));
