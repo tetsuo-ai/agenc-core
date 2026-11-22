@@ -318,6 +318,56 @@ describe("agenc plugin CLI", () => {
     expect(fetches).toBe(2);
   });
 
+  it("lists installed plugins from disk alone with --no-refresh", async () => {
+    // AgenC Desktop lists plugins at startup and in its composer. The plain
+    // listing is also the update check: it refreshes a marketplace older
+    // than an hour and fetches installed plugins' pinned manifests, which
+    // belongs to its Plugins page only.
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const t0 = Date.parse("2026-09-23T00:00:00Z");
+    const opts = { ...options(agencHome, workspaceRoot, createIo()), now: () => new Date(t0) };
+    const requests: string[] = [];
+    const fetcher: NonNullable<AgenCPluginCliOptions["fetcher"]> = async (url) => {
+      requests.push(url);
+      return url === OFFICIAL_MARKETPLACE_URL
+        ? jsonResponse({ metadata: { name: OFFICIAL_MARKETPLACE_NAME }, plugins: [] })
+        : jsonResponse({ error: "missing" }, false, 404);
+    };
+    await addMarketplaceOp({ ...opts, source: OFFICIAL_MARKETPLACE_URL,
+      name: OFFICIAL_MARKETPLACE_NAME, fetcher });
+    const pluginRoot = await writePlugin(root, "alpha");
+    const installed = await installPluginOp({ ...opts, source: pluginRoot });
+    await writeFile(join(installed.destination, ".agenc-plugin", "agenc-install.json"), JSON.stringify({
+      source: "https://github.com/team/plugins.git", marketplace: "team",
+      resolutionKind: "local", signatureRequired: false,
+    }));
+    const market = join(root, "market");
+    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+      metadata: { name: "team" }, plugins: [{ name: "alpha",
+        source: { source: "git", url: "https://github.com/team/plugins.git", sha: "a".repeat(40) },
+        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
+    }));
+    await addMarketplaceOp({ ...opts, source: market, name: "team" });
+    requests.length = 0;
+    const index = await readFile(marketplaceIndexPath(opts), "utf8");
+    const later = { ...opts, fetcher, now: () => new Date(t0 + OFFICIAL_MARKETPLACE_REFRESH_MS + 1) };
+    const io = createIo();
+    expect(await runAgenCPluginCli({ kind: "list", json: true, noRefresh: true }, { ...later, io })).toBe(0);
+    expect(requests).toEqual([]);
+    // Not even a refresh claim is written.
+    expect(await readFile(marketplaceIndexPath(opts), "utf8")).toBe(index);
+    await expect(stat(join(opts.pluginStorageRoot, "marketplaces", ".logo-cache"))).rejects.toThrow();
+    const listed = JSON.parse(io.stdoutText()) as { plugins: { name: string }[] };
+    expect(listed.plugins.map((plugin) => plugin.name)).toEqual(["alpha"]);
+    expect(listed.plugins[0]).not.toHaveProperty("updateAvailable");
+    // The plain listing still refreshes the stale marketplace and checks the pin.
+    expect(await runAgenCPluginCli({ kind: "list", json: true }, { ...later, io: createIo() })).toBe(0);
+    expect(requests).toContain(OFFICIAL_MARKETPLACE_URL);
+    expect(requests).toContain(
+      `https://raw.githubusercontent.com/team/plugins/${"a".repeat(40)}/.agenc-plugin/plugin.json`);
+  });
+
   it("throttles a failing installed pin across three polls and skips unrelated pins", async () => {
     const { agencHome, workspaceRoot, root } = await tempRuntime();
     const opts = options(agencHome, workspaceRoot, createIo());
@@ -426,6 +476,20 @@ describe("agenc plugin CLI", () => {
     expect(parseAgenCPluginCliArgs(["plugin", "list", "--json"])).toEqual({
       kind: "list",
       json: true,
+    });
+    expect(parseAgenCPluginCliArgs(["plugin", "list", "--json", "--no-refresh"])).toEqual({
+      kind: "list",
+      json: true,
+      noRefresh: true,
+    });
+    expect(parseAgenCPluginCliArgs(["plugin", "list", "--no-refresh"])).toEqual({
+      kind: "list",
+      json: false,
+      noRefresh: true,
+    });
+    expect(parseAgenCPluginCliArgs(["plugin", "list", "--refresh"])).toEqual({
+      kind: "error",
+      message: "plugin list does not accept argument '--refresh'",
     });
     expect(parseAgenCPluginCliArgs(["plugin", "install"])).toEqual({
       kind: "error",

@@ -646,7 +646,7 @@ can still read the credential using its previous format rules.
 ### CLI: `agenc plugin`
 
 ```text
-agenc plugin list [--json]
+agenc plugin list [--json] [--no-refresh]
 agenc plugin validate <path> [--marketplace] [--json]
 agenc plugin install <source> [--scope user|project|local] [--name ...] [--force]
 agenc plugin uninstall <name> [--scope …] [--keep-data]
@@ -658,6 +658,13 @@ agenc plugin marketplace list|add|remove|upgrade …
 agenc plugin marketplace catalog [--product <id>] [--json]
 agenc plugin marketplace install <plugin@marketplace> [--product <id>] [--scope user|project] [--force] [--json]
 ```
+
+`plugin list` is also the update check: it refreshes a configured marketplace
+older than an hour and fetches the pinned manifests of installed marketplace
+plugins. `--no-refresh` lists what is installed from disk only, with no
+marketplace refresh, no update fields and no network, for a client that lists
+plugins before anyone asked about updates (AgenC Desktop at startup and in its
+composer).
 
 Dispatch accepts `agenc plugin` only. `agenc plugins` is a **help topic**,
 not an execution alias. TUI: `/plugins` (aliases `/plugin`, `/marketplace`).

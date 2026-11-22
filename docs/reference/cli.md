@@ -879,7 +879,7 @@ agenc plugin <command> [options]
 
 | Command | Meaning |
 | --- | --- |
-| `list [--json]` | List discovered, installed, and path-configured plugins, including disabled rows. For discovered or installed plugins, allowlist the printed ID. For path-configured plugins, allowlist the parenthesized manifest name; see [skills-plugins.md](skills-plugins.md#config-enable) |
+| `list [--json] [--no-refresh]` | List discovered, installed, and path-configured plugins, including disabled rows. For discovered or installed plugins, allowlist the printed ID. For path-configured plugins, allowlist the parenthesized manifest name; see [skills-plugins.md](skills-plugins.md#config-enable). The listing also checks for updates, which refreshes a marketplace older than an hour; `--no-refresh` reads from disk only |
 | `validate <path> [--marketplace] [--json]` | Validate plugin or marketplace manifest |
 | `install <source> [--scope <user\|project\|local>]` | Install from an explicit local path (`./`, `../`, or absolute), npm, git, tarball, or mcpb. Bare names resolve remotely even when a same-named workspace directory exists |
 | `uninstall <name> [--scope …]` | Remove an installed plugin |

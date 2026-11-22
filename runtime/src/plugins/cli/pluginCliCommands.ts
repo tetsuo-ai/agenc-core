@@ -39,7 +39,12 @@ import {
 } from "../resolution.js";
 
 export type AgenCPluginCliCommand =
-  | { readonly kind: "list"; readonly json: boolean }
+  | {
+      readonly kind: "list";
+      readonly json: boolean;
+      /** Installed plugins only: no marketplace refresh, no update check. */
+      readonly noRefresh?: boolean;
+    }
   | { readonly kind: "validate"; readonly path: string; readonly marketplace: boolean; readonly json: boolean }
   | { readonly kind: "install"; readonly source: string; readonly scope: PluginScope; readonly name?: string; readonly force: boolean }
   | { readonly kind: "uninstall"; readonly pluginId: string; readonly scope: PluginScope; readonly keepData: boolean }
@@ -123,7 +128,7 @@ export function formatAgenCPluginCliHelpText(): string {
     "Usage: agenc plugin <command> [options]",
     "",
     "Commands:",
-    "  list [--json]                                  List installed plugins",
+    "  list [--json] [--no-refresh]                   List installed plugins",
     "  validate <path> [--marketplace] [--json]       Validate a plugin or marketplace manifest",
     "  install <source> [--scope <user|project|local>]  Install from ./path, npm, git, tarball, or mcpb",
     "  uninstall <id> [--scope <user|project|local>]  Remove an installed plugin",
@@ -139,6 +144,9 @@ export function formatAgenCPluginCliHelpText(): string {
     "  marketplace catalog [--product <id>] [--json]  List installable plugins per marketplace",
     "  marketplace install <plugin@marketplace>       Install a catalog plugin",
     "                     [--product <id>] [--scope user|project] [--force] [--json]",
+    "",
+    "List options:",
+    "  --no-refresh      Read installed plugins only: no marketplace refresh or update check",
     "",
     "Install options:",
     "  --name <name>     Set the installed plugin ID or marketplace name",
@@ -235,16 +243,22 @@ export async function runAgenCPluginCli(
       case "list": {
         const result = await listInstalledPlugins(options);
         let freshResult = result;
-        try {
-          await refreshStaleMarketplaces(options);
-          freshResult = pluginListWithCatalog(result,
-            await buildMarketplaceCatalog(options, undefined, true, true,
-              (marketplaceName, row) => result.plugins.some((plugin) => {
-                return row.name === plugin.name &&
-                  marketplaceRowMatchesInstalledPlugin(plugin, marketplaceName, row);
-              })));
-        } catch {
-          // Local installed inventory remains usable if a marketplace is broken.
+        // The update check refreshes a marketplace older than its window and
+        // fetches the pinned manifests of installed plugins. A client that
+        // lists plugins before anyone asked for updates (AgenC Desktop at
+        // startup and in its composer) reads with --no-refresh: from disk only.
+        if (command.noRefresh !== true) {
+          try {
+            await refreshStaleMarketplaces(options);
+            freshResult = pluginListWithCatalog(result,
+              await buildMarketplaceCatalog(options, undefined, true, true,
+                (marketplaceName, row) => result.plugins.some((plugin) => {
+                  return row.name === plugin.name &&
+                    marketplaceRowMatchesInstalledPlugin(plugin, marketplaceName, row);
+                })));
+          } catch {
+            // Local installed inventory remains usable if a marketplace is broken.
+          }
         }
         io.stdout.write(command.json
           ? `${JSON.stringify(freshResult, null, 2)}\n`
@@ -467,6 +481,7 @@ export async function runAgenCPluginCli(
 
 function parseList(args: readonly string[]): AgenCPluginCliCommand {
   let json = false;
+  let noRefresh = false;
   for (const arg of args) {
     if (arg === "--help" || arg === "-h") {
       return { kind: "help", text: formatAgenCPluginCliHelpText() };
@@ -475,9 +490,13 @@ function parseList(args: readonly string[]): AgenCPluginCliCommand {
       json = true;
       continue;
     }
+    if (arg === "--no-refresh") {
+      noRefresh = true;
+      continue;
+    }
     return { kind: "error", message: `plugin list does not accept argument '${arg}'` };
   }
-  return { kind: "list", json };
+  return { kind: "list", json, ...(noRefresh ? { noRefresh: true } : {}) };
 }
 
 function parseValidate(args: readonly string[]): AgenCPluginCliCommand {
