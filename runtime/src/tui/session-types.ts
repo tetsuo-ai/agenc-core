@@ -86,7 +86,6 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     readonly executionAdmission?: SessionServices["executionAdmission"];
     readonly configStore?: ConfigStore;
     readonly authManager?: SessionServices["authManager"];
-    readonly authBackend?: SessionServices["authBackend"];
     readonly mcpManager?: SessionServices["mcpManager"];
     readonly skillsManager?: SessionServices["skillsManager"];
     readonly skillsWatcher?: SessionServices["skillsWatcher"];

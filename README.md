@@ -41,7 +41,7 @@ Then run `agenc onboard`. Windows and npm installs are on
 **AgenC Core** is the implementation repository for the `agenc` CLI. A local
 daemon owns agent/session lifecycle, permissions, provider calls, and command
 execution. The interactive TUI, headless `--print` / `--no-tui` CLI, background
-agents, channel gateway, and remote phone bridge are all clients of that daemon.
+agents, and channel gateway are all clients of that daemon.
 
 | Package | Path | Role |
 | --- | --- | --- |
@@ -88,12 +88,6 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   provider API keys, and local providers without
   requiring slash commands; follow-on acts: `identity`, `channel`, `autonomy`,
   `recap` (personas, channels, budget/heartbeat/webhooks).
-- **Remote control** — pair iOS or Android with `agenc remote on|off|status`;
-  co-drive chats, receive background completion/attention events, and settle
-  permissions from the phone. Android can route an explicit, physically
-  approved `@ledger` SOL transfer to a Ledger Flex. See
-  [`docs/remote-control.md`](docs/remote-control.md) and the
-  [Ledger security contract](docs/security/mobile-ledger-transfer.md).
 - **Ledger Wallet CLI** — Ledger hardware-wallet requests route through a
   bundled skill and a read-only CLI status tool. If the official
   `wallet-cli` is missing, AgenC asks before downloading anything; an approved
@@ -161,7 +155,7 @@ Ledger verification, and the independently versioned SDK.
   artifacts already include that broker.
 - **A provider** before real model calls. Default: **xAI** via `XAI_API_KEY`
   (also accepts `GROK_API_KEY`); default model `grok-4.6` (`AGENC_MODEL`
-  overrides). Inspect with `agenc providers`, `agenc login`, `agenc config`.
+  overrides). Inspect with `agenc providers` and `agenc config`.
 
 ## Quick start
 
@@ -229,8 +223,7 @@ agenc gateway status [--json]
 agenc gateway pairing list [--json] | pairing revoke <channel> <peerId>
 agenc gateway install-service
 agenc budget status [--json]
-agenc remote on|off|status
-agenc login | logout | whoami
+agenc openai-login | grok-login
 agenc providers [--json] [--no-local-check]
 agenc config <show|get|set|unset|validate|edit|path>
 agenc plugin|plugins <command>
@@ -289,13 +282,14 @@ agenc budget status
 agenc onboard autonomy
 ```
 
-### Auth and remote
+### Provider sign-in
 
-Remote account login uses `https://id.agenc.ag`:
+AgenC runs on your own provider: an API key, your sign-in with OpenAI
+(ChatGPT) or X / xAI (Grok), or a local server. There is no AgenC account.
 
 ```bash
-AGENC_AUTH_BACKEND=remote agenc login
-agenc remote on
+agenc openai-login
+agenc grok-login
 ```
 
 OpenRouter setup: [`docs/managed-openrouter.md`](docs/managed-openrouter.md).
@@ -315,7 +309,6 @@ shared NFS/SMB/multi-host container volumes are rejected for runtime locks.
 | `XAI_API_KEY` / `GROK_API_KEY` | Default provider credentials |
 | `MODEL_API_KEY` | Meta Model API credentials (`AGENC_PROVIDER=meta`) |
 | `AGENC_MODEL` | Override default model (`grok-4.6`) |
-| `AGENC_AUTH_BACKEND` | `local` or `remote` |
 | `AGENC_DAEMON_AUTOSTART=0` | Disable launcher daemon autostart |
 | `AGENC_DAEMON_READY_TIMEOUT_MS` | Launcher daemon-ready timeout |
 | `AGENC_TRAJECTORY_EXPORT_DIR` / `_PATH` | Opt-in local trajectory JSONL |
@@ -335,7 +328,7 @@ after the primary session log is durable.
 | `packaging/` | systemd / launchd / Windows service templates, installer site, Docker, Homebrew |
 
 Process model: **launcher** → **daemon** → **clients** (TUI, print, agents,
-gateway, remote connector, SDK consumers). Full map:
+gateway, SDK consumers). Full map:
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Development

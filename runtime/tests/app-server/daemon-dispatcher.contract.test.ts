@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AuthBackend } from "../auth/backend.js";
 import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { sessionTranscriptV2FromRollout } from "./background-agent-runner.js";
@@ -66,21 +65,6 @@ async function initialize(connection: {
       protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
     },
   });
-}
-
-function makeAuthBackend(): AuthBackend {
-  return {
-    login: () => ({ authenticated: true, provider: "local" }),
-    whoami: () => ({ authenticated: true, provider: "local" }),
-    logout: () => ({ authenticated: false }),
-    vendKey: () => {
-      throw new Error("not expected");
-    },
-    inferAgencModel: () => {
-      throw new Error("not expected");
-    },
-    getSubscriptionTier: () => "free",
-  };
 }
 
 function daemonMethodCapabilities(

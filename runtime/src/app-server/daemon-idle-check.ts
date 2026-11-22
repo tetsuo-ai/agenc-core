@@ -93,8 +93,6 @@ export interface DaemonIdleSources {
   readonly inFlightToolCalls: () => Promise<number>;
   /** Routines whose last run is still in progress (synchronous). */
   readonly activeRoutineRuns: () => number;
-  /** Connected remote devices (synchronous). */
-  readonly connectedRemoteDevices: () => number;
   /** A loaded session's sub-agents, goal and background processes. */
   readonly sessionDetail: (sessionId: string) => Promise<{
     readonly nativeWorkers: JsonLike;
@@ -146,8 +144,6 @@ export async function daemonBusyReason(
   if (toolCalls > 0) return `${plural(toolCalls, "tool call", "tool calls")} in flight`;
   const routines = sources.activeRoutineRuns();
   if (routines > 0) return `${plural(routines, "routine run", "routine runs")} active`;
-  const devices = sources.connectedRemoteDevices();
-  if (devices > 0) return `${plural(devices, "remote device", "remote devices")} connected`;
   for (const sessionId of loaded) {
     let detail: Awaited<ReturnType<DaemonIdleSources["sessionDetail"]>>;
     try {

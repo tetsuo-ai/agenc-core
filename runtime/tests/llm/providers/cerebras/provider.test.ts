@@ -224,19 +224,6 @@ describe("CerebrasProvider", () => {
     expect(() => createProvider("cerebras", {})).toThrow(/cerebras.*apiKey/i);
   });
 
-  test("does not vend Cerebras credentials through managed auth", () => {
-    const vendKey = vi.fn();
-    expect(() =>
-      createProvider("cerebras", {
-        extra: {
-          authBackend: { vendKey },
-          sessionId: "session-cerebras",
-        },
-      }),
-    ).toThrow(/cerebras.*apiKey/i);
-    expect(vendKey).not.toHaveBeenCalled();
-  });
-
   test("resolves only the canonical Cerebras credential and endpoint env", () => {
     const resolved = resolveProviderCredentialAuthority(
       "cerebras",

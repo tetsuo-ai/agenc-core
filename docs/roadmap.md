@@ -69,10 +69,6 @@ shipped / open summary.
 - Budget enforcement on **heartbeat / cron / hooks** autonomous paths
 - Hooks enablement + minted tokens as part of onboard autonomy
 
-### Remote
-
-- Remote-control surfaces (see [`remote-control.md`](remote-control.md))
-
 ---
 
 ## Open backlog

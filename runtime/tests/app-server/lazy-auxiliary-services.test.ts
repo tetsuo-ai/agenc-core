@@ -2,9 +2,6 @@ import { describe, expect, test, vi } from "vitest";
 import { createLazyDaemonHealth } from "../../src/app-server/lazy-health.js";
 import { createLazyWhisperService } from "../../src/audio/lazy-whisper.js";
 import { createLazyRunInspection } from "../../src/app-server/lazy-run-inspection.js";
-import { createLazyRemoteService } from "../../src/remote/lazy-service.js";
-import type { RemoteApprovalProjection } from "../../src/remote/approvals.js";
-import type { RemoteServiceOptions } from "../../src/remote/service.js";
 import { createLazyOwnerTelegramService } from "../../src/gateway/lazy-owner-telegram.js";
 import type { OwnerTelegramService, OwnerTelegramOptions } from "../../src/gateway/owner-telegram.js";
 import { createLazyRealtimeRpcService, createLazyRealtimeTransports } from "../../src/app-server/lazy-realtime.js";
@@ -65,29 +62,6 @@ describe("lazy auxiliary services", () => {
     expect(stateDatabasePaths).not.toHaveBeenCalled();
   });
 
-  test("remote observes earlier permission events and shares one implementation", async () => {
-    const close = vi.fn();
-    const load = vi.fn(async (_options: RemoteServiceOptions, approvals: RemoteApprovalProjection) => ({
-      handle: vi.fn(async () => ({ pending: approvals.list("session-1") })),
-      status: vi.fn(), stop: vi.fn(), close,
-    }));
-    const service = createLazyRemoteService({} as RemoteServiceOptions, load);
-    service.observeSessionEvent("session-1", {
-      method: "event.permission_request",
-      params: { requestId: "request-1", toolName: "Bash", input: { token: "private" } },
-    });
-    expect(service.status().connectedDevices).toBe(0);
-    expect(load).not.toHaveBeenCalled();
-    const results = await Promise.all([service.handle("remote.status", {}), service.handle("remote.status", {})]);
-    expect(load).toHaveBeenCalledTimes(1);
-    expect(results[0]).toEqual(results[1]);
-    expect(results[0]).toMatchObject({ pending: [{ requestId: "request-1", input: { token: "[redacted]" } }] });
-    await service.close();
-    await service.close();
-    expect(close).toHaveBeenCalledTimes(1);
-    await expect(service.handle("remote.start", {})).rejects.toMatchObject({ code: "REMOTE_OPERATION_CANCELLED" });
-  });
-
   test("Telegram preserves eager metadata validation without loading a stopped runtime", async () => {
     const reads: string[] = [];
     const storage = {
@@ -102,26 +76,6 @@ describe("lazy auxiliary services", () => {
     expect(load).not.toHaveBeenCalled();
     const failure = new Error("malformed metadata");
     expect(() => createLazyOwnerTelegramService({ storage: { load: () => { throw failure; } } } as unknown as OwnerTelegramOptions, load)).toThrow(failure);
-  });
-
-  test("auth logout stops a remote request waiting for its implementation", async () => {
-    type Runtime = Pick<import("../../src/remote/service.js").RemoteService, "handle" | "status" | "stop" | "close">;
-    let finish!: (value: Runtime) => void;
-    const pending = new Promise<Runtime>(resolve => { finish = resolve; });
-    const service = createLazyRemoteService({} as RemoteServiceOptions, () => pending);
-    const request = service.handle("remote.start", {});
-    const rejected = expect(request).rejects.toMatchObject({ code: "REMOTE_OPERATION_CANCELLED" });
-    expect(service.stop()).toMatchObject({ enabled: false, state: "stopped" });
-    const handle = vi.fn<Runtime["handle"]>().mockResolvedValue({});
-    const close = vi.fn();
-    finish({ handle, status: vi.fn(), stop: vi.fn(), close });
-    await rejected;
-    expect(handle).not.toHaveBeenCalled();
-    // A later authenticated start is still usable after stop, as before.
-    await service.handle("remote.start", {});
-    expect(handle).toHaveBeenCalledTimes(1);
-    await service.close();
-    expect(close).toHaveBeenCalledTimes(1);
   });
 
   test("Telegram shutdown during loading owns cleanup and never starts the pending RPC", async () => {

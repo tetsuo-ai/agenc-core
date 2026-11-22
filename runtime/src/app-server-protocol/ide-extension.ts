@@ -19,7 +19,6 @@ export const AGENC_IDE_EXTENSION_LSP_CAPABILITY = "lsp" as const;
 export const AGENC_IDE_REQUIRED_METHODS = [
   "initialize",
   "health.ping",
-  "auth.whoami",
 ] as const satisfies readonly AgenCDaemonMethod[];
 
 export const AGENC_IDE_REQUIRED_NOTIFICATIONS = [

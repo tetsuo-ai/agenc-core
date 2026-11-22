@@ -119,7 +119,6 @@ export function resolveZeroDataRetentionStatus(params: {
   const provider = resolveBuiltInProviderSlug(params.provider);
   if (provider === undefined) return undefined;
   const config = params.config ?? {};
-  if (provider === "agenc") return undefined;
   const facts = PROVIDER_RETENTION[provider];
   const endpoint = resolveEndpoint(provider, config, params.env ?? {});
   switch (facts.retention) {

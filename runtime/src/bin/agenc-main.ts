@@ -43,13 +43,12 @@ import type { PreparedTurnRuntimeInputs, RunSingleTurnOpts } from "./local-turn-
 import { clearSystemPromptSections } from "../prompts/sections.js";
 import { resolveInitialResumeSession, resolveLatestSessionId, resolveResumeSessionId, reproveResumeSessionAfterDaemonReady, reproveResumeSessionAllowingAppend, type ResolvedResumeSession } from "./resume-session.js";
 import { formatAgenCDaemonCliHelpText, parseAgenCDaemonCliArgs, runAgenCDaemonCli } from "../app-server/daemon-control.js";
-import { captureRemoteCliRuntimeContext, formatAgenCRemoteCliHelpText, parseAgenCRemoteCliArgs, runAgenCRemoteCli } from "./remote-cli.js";
+import { retiredCommandNotice } from "./retired-commands.js";
 import { parseAgenCDaemonProxyCliArgs, runAgenCDaemonProxyCli } from "./daemon-proxy-cli.js";
 import { createConnectedAgenCJsonLineDaemonTuiClient, defaultEnsureDaemonReady, formatAgenCAgentCliHelpText, parseAgenCAgentCliArgs, resolveAgenCAgentAttachCwd, resolveAgenCAgentAttachRoleWorkspace, runAgenCAgentCli } from "../app-server/agent-cli.js";
 import { applyDaemonTuiRuntimeSettingsAuthority, createAgenCDaemonOnlyTuiContext, findAgenCDaemonAgentBySessionId, listAgenCDaemonAgents, resumeAgenCDaemonPromptAgent, startAgenCDaemonPromptAgent, stopAgenCDaemonPromptAgent, type AgenCDaemonOnlyTuiSession } from "../app-server-client/index.js";
 import { emitLocalTuiEvent, emitLocalTuiPhaseEvent, emitLocalTuiSlashResult } from "./tui-local-events.js";
 import type { AgentCreateParams, AgentSummary, AgenCDaemonKnownMethod, AgenCDaemonKnownResultByMethod, JsonObject, MessageContentBlock } from "../app-server/protocol/index.js";
-import { formatAgenCAuthCliHelpText, parseAgenCAuthCliArgs, runAgenCAuthCli } from "./auth-cli.js";
 import { formatOpenAiAuthCliHelpText, parseOpenAiAuthCliArgs, runOpenAiAuthCli } from "./openai-auth-cli.js";
 import { formatGrokAuthCliHelpText, parseGrokAuthCliArgs, runGrokAuthCli } from "./grok-auth-cli.js";
 import { formatOpenAiModelsCliHelpText, parseOpenAiModelsCliArgs, runOpenAiModelsCli } from "./openai-models-cli.js";
@@ -174,8 +173,6 @@ export function formatCliHelpText(): string {
     "       agenc budget <status|reset> [args]",
     "       agenc run <start|status|result|replay|evidence|cancel> [<run-id>] [options]",
     "       agenc init [--force]",
-    "       agenc <login|logout|whoami>",
-    "       agenc account-access --json",
     "       agenc <openai-login|openai-logout|openai-auth-status> [--json]",
     "       agenc <grok-login|grok-logout|grok-auth-status> [--json]",
     "       agenc openai-models [--json]",
@@ -190,7 +187,6 @@ export function formatCliHelpText(): string {
     "       agenc daemon start [--foreground]",
     "       agenc daemon <stop|status|reload|restart>",
     "       agenc doctor [--json | --apparmor-profile]",
-    "       agenc remote <on|status|off>",
     "       agenc agent start <objective>",
     "       agenc agent list",
     "       agenc agent attach <id>",
@@ -206,7 +202,6 @@ export function formatCliHelpText(): string {
     "  budget                                  Inspect/operate cost-bounded autonomy",
     "  run                                     Start, inspect, replay, export, or cancel a durable run",
     "  init                                    Create .agenc/config.toml and AGENC.md",
-    "  login | logout | whoami                  Manage the configured auth session",
     "  openai-login | openai-logout              Manage OpenAI ChatGPT sign-in",
     "  openai-auth-status                        Inspect OpenAI ChatGPT sign-in",
     "  grok-login | grok-logout                  Manage X / xAI subscription sign-in",
@@ -221,7 +216,6 @@ export function formatCliHelpText(): string {
     "  trajectories                            Curate exported trajectories into training JSONL",
     "  daemon                                  Manage the local AgenC daemon",
     "  doctor                                  Diagnose installation and runtime readiness",
-    "  remote                                  Manage phone remote-control pairing",
     "  agent                                   Start, attach, inspect, or stop background agents",
     "  mcp                                     Manage MCP servers or serve read-only AgenC tools over MCP",
     "  help [command]                          Show top-level or command help",
@@ -287,11 +281,13 @@ export function formatCliHelpTopicText(topic: string): string | null {
     case "init":
       return formatAgenCInitCliHelpText();
     case "auth":
+      return retiredCommandNotice("login");
     case "login":
     case "logout":
     case "whoami":
     case "account-access":
-      return formatAgenCAuthCliHelpText();
+    case "remote":
+      return retiredCommandNotice(normalizeCliHelpTopic(topic));
     case "openai-login":
     case "openai-logout":
     case "openai-auth-status":
@@ -312,8 +308,6 @@ export function formatCliHelpTopicText(topic: string): string | null {
       return formatKimiModelsCliHelpText();
     case "daemon":
       return formatAgenCDaemonCliHelpText();
-    case "remote":
-      return formatAgenCRemoteCliHelpText();
     case "mcp":
       return formatAgenCMcpCliHelpText();
     case "doctor":
@@ -4478,12 +4472,10 @@ export async function main(): Promise<number> {
     // library callers (and tests running the daemon in-process) leave it.
     return runAgenCDaemonCli(daemonCommand, { enterDaemonHome: true });
   }
-  const remoteCommand = parseAgenCRemoteCliArgs(argv);
-  if (remoteCommand !== null) {
-    return runAgenCRemoteCli(
-      remoteCommand,
-      captureRemoteCliRuntimeContext(process.env),
-    );
+  const retiredNotice = retiredCommandNotice(argv[0]);
+  if (retiredNotice !== null) {
+    process.stderr.write(`${retiredNotice}\n`);
+    return 1;
   }
   const agentCommand = parseAgenCAgentCliArgs(argv);
   if (agentCommand !== null) {
@@ -4572,18 +4564,6 @@ export async function main(): Promise<number> {
           : { MOONSHOT_API_KEY: moonshotApiKey },
       ),
     });
-  }
-  const authCommand = parseAgenCAuthCliArgs(argv);
-  if (authCommand !== null) {
-    const code = await runAgenCAuthCli(authCommand);
-    if (
-      code !== 0 ||
-      authCommand.kind !== "login" ||
-      !shouldLaunchTuiAfterLogin()
-    ) {
-      return code;
-    }
-    return runDefaultAgenCCliRoute(process.argv.slice(0, 2));
   }
   const mcpConfig = shouldLoadMcpCliConfig(argv)
     ? await loadMcpCliConfig()
@@ -4706,15 +4686,6 @@ export async function main(): Promise<number> {
     return 0;
   }
   return runDefaultAgenCCliRoute(process.argv);
-}
-
-
-function shouldLaunchTuiAfterLogin(): boolean {
-  return (
-    process.env.AGENC_LOGIN_NO_TUI !== "1" &&
-    Boolean(process.stdin.isTTY) &&
-    Boolean(process.stdout.isTTY)
-  );
 }
 
 

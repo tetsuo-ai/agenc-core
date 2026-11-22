@@ -17,10 +17,6 @@ export const HELP_WORKFLOW_GROUPS: readonly HelpWorkflowGroup[] = [
     commands: ["status", "resume", "compact", "clear", "exit"],
   },
   {
-    title: "Account",
-    commands: ["login", "logout", "whoami", "account"],
-  },
-  {
     title: "Model / Provider",
     commands: ["model", "provider", "budget"],
   },

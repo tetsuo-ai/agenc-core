@@ -1,8 +1,7 @@
 /**
  * Provider API keys saved on this computer (native secure storage), keyed the
- * same way the provider runtime reads them back (`readLocalByokCredential`).
- * The `/providers` screen saves and removes keys here; first-run setup saves
- * through `LocalAuthBackend.saveByokKey`, which writes the same record.
+ * same way the provider runtime reads them back (`readProviderKey`). The
+ * `/providers` screen and first-run setup save and remove keys here.
  *
  * @module
  */
@@ -50,7 +49,12 @@ export function removeProviderKey(home: HomeContext, provider: string): boolean 
   return clearLocalByokCredential(home, keyOwner(provider));
 }
 
-export function hasSavedProviderKey(home: HomeContext, provider: string): boolean {
+/** The saved key for a provider, or undefined when none is saved. */
+export function readProviderKey(home: HomeContext, provider: string): string | undefined {
   const apiKey = readLocalByokCredential(home, keyOwner(provider))?.apiKey;
-  return typeof apiKey === "string" && apiKey.trim().length > 0;
+  return typeof apiKey === "string" && apiKey.trim().length > 0 ? apiKey : undefined;
+}
+
+export function hasSavedProviderKey(home: HomeContext, provider: string): boolean {
+  return readProviderKey(home, provider) !== undefined;
 }

@@ -21,11 +21,7 @@ Order matches `buildDefaultRegistry`.
 | `/hello` | | Print a greeting card with the current model and workspace |
 | `/status` | | Show current session and runtime status |
 | `/goal` | | Set an end condition the agent works toward until verified checks and an independent reviewer agree it is met; `/goal` alone shows status. See [goal.md](goal.md) |
-| `/login` | | Sign in with your AgenC account |
-| `/logout` | | Sign out of your AgenC account |
-| `/whoami` | `account` | Show the signed-in AgenC account |
-| `/subscription` | `billing` | Show your AgenC plan and billing URL |
-| `/usage` | | Show AgenC plan usage and the balance or usage of each connected provider; `/usage <provider>` (for example `/usage ollama`) shows one provider in detail. See [`/usage`](#usage) |
+| `/usage` | | Show the balance or usage of each connected provider; `/usage <provider>` (for example `/usage ollama`) shows one provider in detail. See [`/usage`](#usage) |
 | `/grok-login` | `xai-login` | Sign in with X for Grok subscription access (optional `device` flow). Headless: `agenc grok-login` |
 | `/grok-logout` | `xai-logout` | Sign out of the xAI / Grok OAuth session |
 | `/openai-login` | `chatgpt-login` | Sign in with ChatGPT for OpenAI subscription access |
@@ -48,7 +44,6 @@ Order matches `buildDefaultRegistry`.
 | `/hooks` | | Inspect and test AgenC hook configuration |
 | `/skills` | | Manage project skills and show loaded skill roots |
 | `/mcp` | | Show and manage MCP servers |
-| `/remote` | | Link this machine to the AgenC phone app |
 | `/plugins` | `plugin`, `marketplace` | Show and manage AgenC plugins |
 | `/memory` | | Open AgenC memory editor (TUI; headless points at TUI) |
 | `/resume` | `sessions` | List resumable sessions for this project |
@@ -71,10 +66,10 @@ Order matches `buildDefaultRegistry`.
 | `/exit` | `quit` | Shut down the session cleanly and exit |
 
 Sources: `runtime/src/commands/*.ts(x)` modules imported by
-`buildDefaultRegistry` in `registry.ts` (`help`, `hello`, `status`, `auth`,
+`buildDefaultRegistry` in `registry.ts` (`help`, `hello`, `status`, `usage`,
 `xai-auth`, `openai-auth`, `cost`, `model`, `provider`, `effort`, `resolve`, `swarm`,
 `ledger`, `permissions`, `plan`, `agent-management`, `tasks`, `todos`,
-`config`, `theme`, `keybindings`, `hooks`, `skills`, `mcp`, `remote`, `plugins`, `memory/slash`,
+`config`, `theme`, `keybindings`, `hooks`, `skills`, `mcp`, `plugins`, `memory/slash`,
 `resume`, `rewind`, `init`, `output-style`, `clear`, `session-compact`,
 `compaction-operator`, `coordinator`, `diff`, `protocol`, `exit`). Related:
 [grok-oauth.md](../grok-oauth.md), [cli.md](cli.md) (compaction operator),
@@ -145,11 +140,11 @@ Change the allowlist in the policy module and update the expected names in
 `runtime/tests/commands/bridge-policy.test.ts` when approving another command.
 The adapters and command-object set derive their membership from that list.
 
-## `/login`
+## Provider sign-in
 
-`/login` signs into the AgenC account for account features. It does not provide
-models or change the selected provider. Use `/grok-login` for Grok,
-`/openai-login` for OpenAI, or `/providers` to configure your own provider key.
+There is no AgenC account sign-in: `/login`, `/logout`, `/whoami` and
+`/subscription` are retired. Use `/grok-login` for Grok, `/openai-login` for
+OpenAI, or `/providers` to configure your own provider key.
 
 ## `/usage`
 

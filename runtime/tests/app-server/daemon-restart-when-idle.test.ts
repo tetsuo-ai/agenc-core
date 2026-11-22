@@ -171,14 +171,12 @@ describe("idle decisions", () => {
       .toEqual({ idle: true });
   });
 
-  it("treats routine runs, remote devices and tool calls in flight as work", () => {
-    expect(busyReasonFromServices({ activeRoutineRuns: 1, connectedRemoteDevices: 0, inFlightToolCalls: 0 }))
+  it("treats routine runs and tool calls in flight as work", () => {
+    expect(busyReasonFromServices({ activeRoutineRuns: 1, inFlightToolCalls: 0 }))
       .toEqual({ idle: false, reason: "1 routine running" });
-    expect(busyReasonFromServices({ activeRoutineRuns: 0, connectedRemoteDevices: 2, inFlightToolCalls: 0 }))
-      .toEqual({ idle: false, reason: "2 remote devices connected" });
-    expect(busyReasonFromServices({ activeRoutineRuns: 0, connectedRemoteDevices: 0, inFlightToolCalls: 1 }))
+    expect(busyReasonFromServices({ activeRoutineRuns: 0, inFlightToolCalls: 1 }))
       .toEqual({ idle: false, reason: "1 tool call in flight" });
-    expect(busyReasonFromServices({ activeRoutineRuns: 0, connectedRemoteDevices: 0, inFlightToolCalls: 0 }))
+    expect(busyReasonFromServices({ activeRoutineRuns: 0, inFlightToolCalls: 0 }))
       .toEqual({ idle: true });
   });
 });
@@ -409,7 +407,7 @@ class FakeDaemonSocket {
     readonly answer: (method: string, params: Record<string, unknown>) => unknown,
     readonly protocolVersion = "1.34.0",
     readonly methods: Record<string, boolean> = {
-      "routine.list": true, "remote.status": true, "session.goal": true, "session.processes.list": true,
+      "routine.list": true, "session.goal": true, "session.processes.list": true,
       "daemon.shutdownIfIdle": true,
     },
     /** Drop the connection instead of answering this method. */
@@ -484,7 +482,6 @@ interface FakeDaemonState {
   ready: boolean;
   inFlightToolCalls: number;
   routines: unknown[];
-  connectedDevices: number;
   snapshot: Record<string, unknown>;
   goal: Record<string, unknown>;
   processes: unknown[];
@@ -503,7 +500,6 @@ function idleDaemonState(): FakeDaemonState {
     ready: true,
     inFlightToolCalls: 0,
     routines: [{ id: "r1", lastRun: { status: "completed" } }],
-    connectedDevices: 0,
     snapshot: { sessionId: "s-live", turnCount: 3 },
     goal: { ok: true },
     processes: [{ taskId: "t", status: "completed" }],
@@ -518,7 +514,6 @@ function answerFrom(state: FakeDaemonState) {
       case "session.list": return { sessions: state.sessions };
       case "health.stats": return { uptimeMs: 1, now: "x", sessions: { active: 1, closed: 0, total: 1 }, memory: {}, state: { inFlightToolCalls: state.inFlightToolCalls } };
       case "routine.list": return { routines: state.routines };
-      case "remote.status": return { connectedDevices: state.connectedDevices };
       case "session.snapshot": return params.sessionId === "s-live" ? state.snapshot : Object.assign(new Error("no live agent"), { code: "AGENT_NOT_FOUND" });
       case "session.goal": return state.goal;
       case "session.processes.list": return { processes: state.processes };
@@ -574,7 +569,6 @@ describe("probeAgenCDaemonIdle against a daemon socket", () => {
     ["an attached TUI", (s: FakeDaemonState) => { (s.sessions[0] as Record<string, unknown>).activeAttachmentIds = ["att"]; }, "1 client attached"],
     ["a daemon still starting", (s: FakeDaemonState) => { s.ready = false; }, "the daemon is starting or stopping"],
     ["a routine run", (s: FakeDaemonState) => { s.routines = [{ lastRun: { status: "running" } }]; }, "1 routine running"],
-    ["a remote device", (s: FakeDaemonState) => { s.connectedDevices = 1; }, "1 remote device connected"],
     ["a tool call in flight", (s: FakeDaemonState) => { s.inFlightToolCalls = 2; }, "2 tool calls in flight"],
     ["a sub-agent", (s: FakeDaemonState) => { s.snapshot = { ...s.snapshot, nativeWorkers: [{ id: "w" }] }; }, "1 sub-agent running"],
     ["an active goal", (s: FakeDaemonState) => { s.goal = { ok: true, goal: { status: "active" } }; }, "a goal is active"],
@@ -627,7 +621,7 @@ describe("probeAgenCDaemonIdle against a daemon socket", () => {
 
   it("marks a daemon that cannot decide as permanently too old, even when idle", async () => {
     daemon = new FakeDaemonSocket(identity, answerFrom(idleDaemonState()), "1.34.0", {
-      "routine.list": true, "remote.status": true, "session.goal": true, "session.processes.list": true,
+      "routine.list": true, "session.goal": true, "session.processes.list": true,
     });
     await daemon.listen(resolveAgenCDaemonSocketPath({ AGENC_HOME: home }, home));
     await expect(probeAgenCDaemonIdle({ env: { AGENC_HOME: home }, userHome: home, pid: 7000 }, identity, {

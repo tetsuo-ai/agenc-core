@@ -95,6 +95,9 @@ const CONFIG_V1_REMOVED_FIELDS = Object.freeze([
   "compact_prompt",
   "workspace",
   "advisorModel",
+  // Retired with the AgenC account sign-in.
+  "auth",
+  "remote_control",
 ] as const);
 
 const CONFIG_V1_ENTRIES = Object.freeze([

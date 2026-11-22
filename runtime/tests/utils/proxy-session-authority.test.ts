@@ -6,7 +6,6 @@ import { afterEach, describe, expect, test } from "vitest";
 import { getGlobalDispatcher, setGlobalDispatcher } from "undici";
 
 import { clearMTLSCache, getMTLSConfig } from "../../src/utils/mtls.js";
-import { RemoteAuthBackend } from "../../src/auth/backends/remote.js";
 import {
   clearProxyCache,
   getProxyAgent,
@@ -140,54 +139,5 @@ describe("session-owned proxy and TLS authority", () => {
       cert: "session-b-certificate",
       passphrase: "session-b-passphrase",
     });
-  });
-
-  test("remote auth snapshots its transport environment at daemon ingress", async () => {
-    const originalFetch = globalThis.fetch;
-    const originalHttpsProxy = process.env.HTTPS_PROXY;
-    const calls: RequestInit[] = [];
-    globalThis.fetch = (async (_input, init) => {
-      calls.push(init ?? {});
-      return new Response(
-        JSON.stringify({
-          authenticated: true,
-          identity: { accountId: "account-1", displayName: "A", plan: "pro" },
-          subscriptionTier: "pro",
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    }) as typeof fetch;
-
-    const mutableEnvironmentA: Record<string, string | undefined> = {
-      HTTPS_PROXY: "http://session-a.proxy.test:8080",
-    };
-    const backendA = new RemoteAuthBackend({
-      env: mutableEnvironmentA,
-      token: "token-a",
-      meEndpoint: "https://id.example.test/me",
-    });
-    const backendB = new RemoteAuthBackend({
-      env: {},
-      token: "token-b",
-      meEndpoint: "https://id.example.test/me",
-    });
-    mutableEnvironmentA.HTTPS_PROXY = "http://mutated.proxy.test:8080";
-    process.env.HTTPS_PROXY = "http://ambient.proxy.test:8080";
-
-    try {
-      await backendA.whoami();
-      await backendB.whoami();
-      const dispatcherA = (calls[0] as RequestInit & { dispatcher?: object })
-        .dispatcher;
-      const dispatcherB = (calls[1] as RequestInit & { dispatcher?: object })
-        .dispatcher;
-      expect(dispatcherA?.constructor.name).toBe("EnvHttpProxyAgent");
-      expect(dispatcherB?.constructor.name).toBe("Agent");
-      expect(dispatcherA).not.toBe(dispatcherB);
-    } finally {
-      globalThis.fetch = originalFetch;
-      if (originalHttpsProxy === undefined) delete process.env.HTTPS_PROXY;
-      else process.env.HTTPS_PROXY = originalHttpsProxy;
-    }
   });
 });

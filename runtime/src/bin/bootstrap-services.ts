@@ -57,7 +57,6 @@ import {
   type ToolLatencyConfig,
 } from "../tools/tool-latency-store.js";
 import { initMagicDocs } from "../services/MagicDocs/magicDocs.js";
-import { configurePolicyLimitsService } from "../services/policyLimits/index.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { RolloutStore } from "../session/rollout-store.js";
 import { FileThreadStore, ThreadNotFoundError } from "../thread-store/store.js";
@@ -110,7 +109,6 @@ import type { ConfigStore } from "../config/store.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
-import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { isRecord } from "../utils/record.js";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import { bindExecutionAdmissionJournal } from "../session/execution-admission-journal.js";
@@ -141,8 +139,6 @@ export interface BootstrapSessionServicesOptions {
   readonly flushStartupLogIndex?: () => void;
   readonly provider: LLMProvider;
   readonly providerName: string;
-  readonly authBackend?: AuthBackend;
-  readonly authSubscriptionTier?: AuthSubscriptionTier;
   readonly registry: ToolRegistry;
   readonly mcpManager: SessionServices["mcpManager"];
   readonly unifiedExecManager: UnifiedExecProcessManagerLike;
@@ -685,26 +681,6 @@ export function buildBootstrapSessionServices(
     opts.sessionConfiguration,
   );
   const modelClient = new BootstrapModelClient(opts.provider);
-  const providerOptions = readProviderFactoryOptions(opts.provider);
-  const policyApiKey = providerOptions.apiKey;
-  const policyLimits = configurePolicyLimitsService({
-    agencHome: opts.agencHome,
-    providerName: opts.providerName,
-    ...(providerOptions.baseURL !== undefined
-      ? { baseURL: providerOptions.baseURL }
-      : {}),
-    ...(policyApiKey !== undefined ? { apiKey: policyApiKey } : {}),
-    ...(opts.authBackend !== undefined
-      ? { authBackend: opts.authBackend }
-      : {}),
-    ...(opts.authSubscriptionTier !== undefined
-      ? { authSubscriptionTier: opts.authSubscriptionTier }
-      : {}),
-    sessionId: opts.conversationId,
-    env: opts.env,
-  });
-  policyLimits.initializePolicyLimitsLoadingPromise();
-  void policyLimits.loadPolicyLimits();
   const codeModeService =
     opts.codeModeService ?? createCodeModeService({ env: opts.env });
   const rolloutRecorder = new BootstrapRolloutRecorderFacade();
@@ -859,13 +835,7 @@ export function buildBootstrapSessionServices(
     ...(opts.readSavedApiKey !== undefined
       ? { readSavedApiKey: opts.readSavedApiKey }
       : {}),
-    ...(opts.authBackend !== undefined
-      ? { authBackend: opts.authBackend }
-      : {}),
     sessionId: opts.conversationId,
-    ...(opts.authSubscriptionTier !== undefined
-      ? { subscriptionTier: opts.authSubscriptionTier }
-      : {}),
     ...(opts.resolveProviderPreparationRequest !== undefined
       ? {
           resolvePreparationRequest:
@@ -906,12 +876,6 @@ export function buildBootstrapSessionServices(
       provider: opts.provider,
       providerName: opts.providerName,
     }),
-    ...(opts.authBackend !== undefined
-      ? { authBackend: opts.authBackend }
-      : {}),
-    ...(opts.authSubscriptionTier !== undefined
-      ? { authSubscriptionTier: opts.authSubscriptionTier }
-      : {}),
     toolLatencyStore: new ToolLatencyStore(resolveToolLatencyConfig(opts.env)),
     modelsManager: opts.modelsManager,
     toolApprovals: {
@@ -991,7 +955,6 @@ export function buildBootstrapSessionServices(
     }),
     permissionModeRegistry: opts.permissionModeRegistry,
     configStore: opts.configStore,
-    policyLimits,
   };
 
   return {
@@ -1067,7 +1030,6 @@ export function buildBootstrapSessionServices(
       rolloutTrace.flush();
       rolloutTrace.close();
       services.shellSnapshotTx.complete();
-      policyLimits.stopBackgroundPolling();
       fileThreadStore.close();
     },
   };

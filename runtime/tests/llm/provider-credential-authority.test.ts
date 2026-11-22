@@ -127,7 +127,7 @@ describe("provider credential authority", () => {
     });
     const pending = service.prepareChild({ provider: "grok", model: "grok-4.6" },
       { model: "grok-4.6", credentialHome: home, extra: { fetchImpl: wire } },
-      { signal: stop.signal }, true, undefined,
+      { signal: stop.signal }, true,
       { endpoint: "https://api.x.ai/v1", authProfile: "sign_in", billingSource: "sign_in" });
     await vi.waitFor(() => expect(wire).toHaveBeenCalledOnce());
     stop.abort("child stopped");
@@ -247,7 +247,7 @@ describe("provider credential authority", () => {
     const prepared = await service.prepareChild(
       { provider: "openai", model: "gpt-6-luna" },
       { model: "gpt-6-luna", credentialHome: home, extra: { fetchImpl: wire } },
-      {}, true, undefined,
+      {}, true,
       { endpoint: "https://chatgpt.com/backend-api/codex",
         authProfile: "sign_in", billingSource: "sign_in" },
     );
@@ -296,7 +296,7 @@ describe("provider credential authority", () => {
     expect(approved).toMatchObject({ endpoint: "https://api.openai.com/v1",
       authProfile: "api_key", billingSource: "byok" });
     configuredApiKey = undefined;
-    await expect(service.prepareChild(selection, undefined, {}, true, undefined, approved))
+    await expect(service.prepareChild(selection, undefined, {}, true, approved))
       .rejects.toThrow(/authority differs|new consent/u);
     expect(wire).not.toHaveBeenCalled();
   });
@@ -677,7 +677,7 @@ describe("provider credential authority", () => {
     });
     const prepared = await service.prepareChild(
       { provider: "grok", model: "grok-4.6" },
-      { model: "grok-4.6", credentialHome: home }, {}, true, undefined,
+      { model: "grok-4.6", credentialHome: home }, {}, true,
       { endpoint: "https://api.x.ai/v1", authProfile: "api_key", billingSource: "byok" },
     );
     expect(prepared.authProfile).toBe("api_key");
@@ -707,7 +707,7 @@ describe("provider credential authority", () => {
     const prepared = await service.prepareChild(
       { provider: "grok", model: "grok-4.6" },
       { model: "grok-4.6", credentialHome: home, extra: { fetchImpl: wire } },
-      {}, true, undefined,
+      {}, true,
       { endpoint: "https://api.x.ai/v1", authProfile: "sign_in", billingSource: "sign_in" },
     );
     xaiCredentials.clearXaiOauthCredentials(home);

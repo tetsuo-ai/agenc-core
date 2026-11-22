@@ -119,8 +119,7 @@ function mergeDerivedProviderModels(
 export type BuiltInProviderOnboardingAccess =
   | "api-key"
   | "environment"
-  | "local"
-  | "retired";
+  | "local";
 
 export interface BuiltInProviderOnboardingInfo {
   /** Stable provider-picker rank. Lower values appear first. */
@@ -497,14 +496,6 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     baseURLEnvVars: ["AWS_BEDROCK_BASE_URL"],
     onboarding: onboardingInfo(150, "environment"),
   }),
-  agenc: providerDefinition({
-    name: "AgenC",
-    defaultModel: "agenc",
-    baseURL: "https://id.agenc.ag/v1",
-    credentials: noCredentials(),
-    baseURLEnvVars: ["AGENC_BASE_URL"],
-    onboarding: onboardingInfo(160, "retired"),
-  }),
 } as const);
 
 export type BuiltInProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFINITIONS;
@@ -649,7 +640,6 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "amazon.nova-lite-v1:0",
     "amazon.nova-micro-v1:0",
   ] }),
-  agenc: Object.freeze([]),
 });
 
 /**
@@ -695,7 +685,7 @@ export interface BuiltInProviderInfo {
 }
 
 const BUILT_IN_PROVIDER_IDS = Object.freeze(
-  Object.keys(BUILT_IN_PROVIDER_DEFINITIONS).filter(id => id !== "agenc") as BuiltInProviderSlug[],
+  Object.keys(BUILT_IN_PROVIDER_DEFINITIONS) as BuiltInProviderSlug[],
 );
 
 export function builtInProviderIds(): readonly BuiltInProviderSlug[] {

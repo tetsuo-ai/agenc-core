@@ -1,18 +1,33 @@
-# Account sign-in and model access
+# AgenC account sign-in (retired)
 
-AgenC accounts no longer provide models, provider credentials, sponsored model
-credits, or model proxies. Sign-in remains available for account identity,
-marketplace features, remote access, and desktop synchronization.
+The AgenC account sign-in is retired. Core has no AgenC account: no
+`agenc login`, `agenc logout`, `agenc whoami` or `agenc account-access`, no
+`/login`, `/logout`, `/whoami` or `/subscription`, and no `auth.*` daemon
+methods. Phone remote control (`agenc remote`, `/remote`) went with it, since
+pairing needed that sign-in.
 
-Use your own model-provider key, sign in directly with that provider where
-supported, or connect a local server. OpenRouter free models require your own
-OpenRouter key and retain their existing model IDs and defaults.
-
-`agenc account-access --json` remains a compatibility response. It reports
-account authentication, `managedModelsEnabled: false`, and an empty `models`
-array. It does not request model catalogs, usage, enrollment, or credentials.
-Login does not change the selected provider or model.
-
-Old `[auth.managed_keys]` and `[auth.managedKeys]` configuration sections are
-accepted and ignored with one notice per configuration load. See
+AgenC runs on your own model provider: an API key, your sign-in with OpenAI
+(ChatGPT) or X / xAI (Grok), or a local server. OpenRouter free models need
+your own OpenRouter key and keep their model IDs and defaults. See
 [provider setup](reference/providers.md) and [OpenRouter setup](managed-openrouter.md).
+
+## What happens to an existing sign-in
+
+At its first start after the update, the daemon removes what the sign-in
+stored on this computer: `auth.json` in `AGENC_HOME` and the session token in
+native secure storage. A phone pairing (`remote/pair.json`) is removed too.
+Nothing is printed unless a step fails; a failed step is tried again at the
+next start. Saved provider keys and provider sign-ins are kept.
+
+## Old configuration
+
+Configuration from before still loads:
+
+- `[auth]` (including the older `[auth.managed_keys]`) and `[remote_control]`
+  are ignored. `agenc config unset auth` and `agenc config unset remote_control`
+  remove them; `agenc config set` refuses them.
+- `model_provider = "agenc"`, `model = "agenc"` and `[providers.agenc]` are
+  dropped, so the next configuration layer or the default provider applies.
+  Loading then shows one notice.
+- `AGENC_AUTH_BACKEND`, `AGENC_REMOTE_AUTH_*` and `AGENC_BACKEND_URL` are no
+  longer read.

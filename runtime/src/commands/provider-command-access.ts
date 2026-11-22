@@ -204,9 +204,7 @@ export function createProviderCommandAccessOverlay(
     );
     let route: ProviderCommandRoute = "unavailable";
     let rejection: ProviderCommandRejection | undefined;
-    if (selection.provider === "agenc") {
-      rejection = { code: "configuration", message: "AgenC accounts no longer provide models. Choose a provider with your own credentials or a local server." };
-    } else if (directCredential.status !== "missing" || selection.provider === current.provider) {
+    if (directCredential.status !== "missing" || selection.provider === current.provider) {
       route = endpoint.local ? "local" : "direct";
     } else if (directCredential.reason === "absent") {
       route = "deferred";

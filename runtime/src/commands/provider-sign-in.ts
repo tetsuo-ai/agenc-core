@@ -35,7 +35,7 @@ import {
   signedInAccount,
   type SignInProvider,
 } from "../auth/provider-sign-in-accounts.js";
-import { openUrlInBrowser } from "./auth.js";
+import { openUrlInBrowser } from "./open-url.js";
 
 export { isSignInProvider, signedInAccount, type SignInProvider };
 

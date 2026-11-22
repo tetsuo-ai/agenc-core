@@ -1061,7 +1061,6 @@ function createSession(
     readonly roleWorkspaceCwd?: string;
     readonly agentDefinitions?: AgenCBridgeSession["agentDefinitions"];
     readonly enqueueIdleInputBatch?: AgenCBridgeSession["enqueueIdleInputBatch"];
-    readonly authBackend?: AgenCBridgeSession["services"]["authBackend"];
     readonly configStore?: import("../../config/store.js").ConfigStore;
     readonly executeShellCommand?: AgenCBridgeSession["executeShellCommand"];
     readonly localExecutionCapable?: boolean;
@@ -1117,9 +1116,6 @@ function createSession(
           };
         },
       },
-      ...(opts.authBackend !== undefined
-        ? { authBackend: opts.authBackend }
-        : {}),
       ...(opts.localExecutionCapable === true
         ? { executionAdmission: {} as never }
         : {}),
@@ -5786,14 +5782,12 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const session = {
       ...createSession({
         configStore: createAppConfigStore(defaultConfig(), agencHome),
-        authBackend: { saveByokKey: vi.fn(async () => {}) } as never,
       }),
       submit: vi.fn(async () => {}),
       setPendingProviderSwitch: vi.fn(),
     };
-    // Isolate AGENC_HOME: a real ~/.agenc/auth.json (hosted managed session)
-    // would reorder the onboarding provider menu and swap the API-key step
-    // for the hosted-access path, breaking the scripted anonymous flow.
+    // Isolate AGENC_HOME so the real home's saved keys and config never
+    // reach the scripted first-run flow.
     const previousAgencHome = process.env.AGENC_HOME;
     process.env.AGENC_HOME = agencHome;
     // Finishing setup never sends a message on the user's behalf.
@@ -5955,21 +5949,13 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
   test("routes a checked BYOK key through the real first-run TUI submission path", async () => {
     const { AgenCTuiApp } = await import("./App.js");
-    const savedKeys = new Map<string, string>();
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
     const session = {
       ...createSession({
-        authBackend: {
-          saveByokKey: async ({ provider, apiKey }: { provider: string; apiKey: string }) => {
-            savedKeys.set(provider, apiKey);
-          },
-        } as never,
         configStore: createAppConfigStore(defaultConfig(), agencHome),
       }),
       setPendingProviderSwitch: vi.fn(),
     };
-    // Isolate AGENC_HOME: a real ~/.agenc/auth.json (hosted managed session)
-    // would replace the BYOK API-key step with the hosted-access path.
     const previousAgencHome = process.env.AGENC_HOME;
     process.env.AGENC_HOME = agencHome;
     const fetchSpy = vi
@@ -6014,7 +6000,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           // The full terminal history must also remain secret-free: checking
           // only the latest frame would miss a transient disclosure.
           expect(output()).not.toContain("xai-app-key-for-tests");
-          expect(savedKeys.get("grok")).toBe("xai-app-key-for-tests");
+          expect(await savedProviderKey(agencHome, "grok")).toBe("xai-app-key-for-tests");
         },
       );
     } finally {
@@ -6028,21 +6014,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
-  test.each(["local", "remote"])("persists first-run BYOK provider selection with a %s auth backend", async (backendKind) => {
-    const { LocalAuthBackend } = await import("../../auth/backends/local.js");
+  test("persists the first-run BYOK provider selection and its key", async () => {
     const { AgenCTuiApp } = await import("./App.js");
-    const savedKeys = new Map<string, string>();
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-persist-"));
-    const fallbackSave = vi.spyOn(LocalAuthBackend.prototype, "saveByokKey").mockImplementation(async ({ provider, apiKey }) => {
-      savedKeys.set(provider, apiKey);
-    });
     const session = {
       ...createSession({
-        authBackend: (backendKind === "remote" ? { kind: "remote" } : {
-          saveByokKey: async ({ provider, apiKey }: { provider: string; apiKey: string }) => {
-            savedKeys.set(provider, apiKey);
-          },
-        }) as never,
         configStore: createAppConfigStore(defaultConfig(), agencHome),
       }),
       setPendingProviderSwitch: vi.fn(),
@@ -6086,7 +6062,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             provider: "deepseek",
             model: "deepseek-flash",
           });
-          expect(savedKeys.get("deepseek")).toBe(
+          expect(await savedProviderKey(agencHome, "deepseek")).toBe(
             "sk-deepseek-onboarding-test",
           );
           const configToml = readFileSync(
@@ -6099,7 +6075,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         },
       );
     } finally {
-      fallbackSave.mockRestore();
       fetchSpy.mockRestore();
       providerProbe.promptSubmits.length = 0;
       if (previousAgencHome === undefined) {
@@ -6111,6 +6086,16 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 });
+
+/** The key first-run setup saved for this home, read the way the provider runtime reads it. */
+async function savedProviderKey(agencHome: string, provider: string): Promise<string | undefined> {
+  const { readProviderKey } = await import("../../auth/provider-keys.js");
+  const { captureSecureStorageIngress } = await import("../../utils/secureStorage/home.js");
+  return readProviderKey(
+    captureSecureStorageIngress(TEST_REMOTE_AUTH_SESSION_CONTEXT.environment, agencHome).home,
+    provider,
+  );
+}
 
 function createRendererSession(): Parameters<
   typeof installElicitationResolvers

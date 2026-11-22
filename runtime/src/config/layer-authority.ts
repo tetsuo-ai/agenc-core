@@ -30,7 +30,6 @@ export const MANAGED_ONLY_CONFIG_KEYS = Object.freeze([
  * plugin defaults may not.
  */
 export const OPERATOR_ONLY_CONFIG_KEYS = Object.freeze([
-  "remote_control",
   "agents",
   "gateway",
   "modelOverrides",
