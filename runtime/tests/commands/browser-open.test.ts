@@ -59,6 +59,33 @@ describe("OAuth browser opener", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  test("opens a sign-in link on Windows with rundll32 and the whole URL as one argument", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    try {
+      const url = "https://example.test/authorize?client_id=a&redirect_uri=b&state=c";
+      const opened = openUrlInBrowser(url);
+      expect(mocks.spawn).toHaveBeenCalledWith(
+        "rundll32",
+        ["url,OpenURL", url],
+        expect.objectContaining({ detached: true, stdio: "ignore" }),
+      );
+      child.emit("spawn");
+      child.emit("exit", 0, null);
+      await expect(opened).resolves.toBeUndefined();
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  test("hands only http(s) links to a launcher", async () => {
+    await expect(openUrlInBrowser("file:///tmp/authorize.html")).rejects.toThrow(
+      /must use http:\/\/ or https:\/\//,
+    );
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   test("rejects a missing launcher", async () => {
     const opened = openUrlInBrowser("https://example.test/authorize");
     const rejected = expect(opened).rejects.toThrow(/Open the displayed sign-in URL manually/);

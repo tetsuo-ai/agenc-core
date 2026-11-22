@@ -6,6 +6,8 @@
 
 import { spawn } from "node:child_process";
 
+import { browserOpenCommand, safeBrowserUrl } from "../utils/browser.js";
+
 export interface HeadlessCliIo {
   readonly stdout: Pick<NodeJS.WriteStream, "write">;
   readonly stderr: Pick<NodeJS.WriteStream, "write">;
@@ -13,14 +15,14 @@ export interface HeadlessCliIo {
 
 /** Open a URL without holding the CLI's lifetime hostage to the browser. */
 export function openUrlDetached(url: string): void {
-  const command =
-    process.platform === "darwin"
-      ? "open"
-      : process.platform === "win32"
-        ? "cmd"
-        : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  let opener: ReturnType<typeof browserOpenCommand>;
+  try {
+    opener = browserOpenCommand(safeBrowserUrl(url));
+  } catch {
+    // Only http(s) links go to an opener. The URL is printed either way.
+    return;
+  }
+  const child = spawn(opener.command, [...opener.args], { detached: true, stdio: "ignore" });
   child.on("error", () => {
     // The URL is printed either way; a missing opener is not fatal.
   });

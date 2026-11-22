@@ -9,6 +9,7 @@ import { RemoteAuthBackend } from "./remote.js";
 
 const REMOTE_AUTH_LOGIN_POLL_URL_ENV = "AGENC_REMOTE_AUTH_LOGIN_POLL_URL";
 const REMOTE_AUTH_LOGIN_START_URL_ENV = "AGENC_REMOTE_AUTH_LOGIN_START_URL";
+const REMOTE_AUTH_LOGOUT_URL_ENV = "AGENC_REMOTE_AUTH_LOGOUT_URL";
 const REMOTE_AUTH_ME_URL_ENV = "AGENC_REMOTE_AUTH_ME_URL";
 const REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS = 5_000;
 const REMOTE_AUTH_MODEL_URL_ENV = "AGENC_REMOTE_AUTH_MODEL_URL";
@@ -486,7 +487,10 @@ describe("RemoteAuthBackend", () => {
       agencHome,
       loginFlow: () => ({ token: "token-a" }),
     });
-    const logoutBackend = new RemoteAuthBackend({ agencHome });
+    const logoutBackend = new RemoteAuthBackend({
+      agencHome,
+      fetchImpl: vi.fn(async () => Response.json({ authenticated: false })),
+    });
 
     try {
       await lookupBackend.login();
@@ -1143,16 +1147,22 @@ describe("RemoteAuthBackend", () => {
     }
   });
 
-  it("clears persisted remote auth state on logout", async () => {
+  it("ends the server session, then clears persisted remote auth state on logout", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
     const accountSnapshotResolver = vi.fn(() => ({
       authenticated: true as const,
       identity: { accountId: "acct-1" },
       subscriptionTier: "free" as const,
     }));
+    let storedDuringRequest: string | undefined;
+    const fetchImpl = vi.fn(async () => {
+      storedDuringRequest = readNativeFor(agencHome).remoteAuth?.bearerToken;
+      return Response.json({ authenticated: false });
+    });
     const backend = new RemoteAuthBackend({
       accountSnapshotResolver,
       agencHome,
+      fetchImpl,
       loginFlow: () => ({
         token: "remote-token",
         identity: { accountId: "acct-1" },
@@ -1166,12 +1176,135 @@ describe("RemoteAuthBackend", () => {
         provider: "remote",
       });
       await expect(backend.logout()).resolves.toEqual({ authenticated: false });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(fetchImpl).toHaveBeenCalledWith(
+        "https://id.agenc.ag/v1/auth/logout",
+        {
+          method: "POST",
+          signal: expect.any(AbortSignal),
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer remote-token",
+          },
+          body: "{}",
+          redirect: "error",
+        },
+      );
+      expect(storedDuringRequest).toBe("remote-token");
       expect(readNativeFor(agencHome).remoteAuth).toBeUndefined();
       await expect(backend.whoami()).resolves.toEqual({
         authenticated: false,
         provider: "remote",
       });
       expect(accountSnapshotResolver).toHaveBeenCalledOnce();
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("ends the server session at the configured logout endpoint", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const fetchImpl = vi.fn(async () => Response.json({ authenticated: false }));
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      env: {
+        [REMOTE_AUTH_LOGOUT_URL_ENV]: "https://api.agenc.tech/test/auth/logout",
+      },
+      fetchImpl,
+      loginFlow: () => ({ token: "remote-token" }),
+    });
+
+    try {
+      await backend.login();
+      await expect(backend.logout()).resolves.toEqual({ authenticated: false });
+      expect(fetchImpl).toHaveBeenCalledWith(
+        "https://api.agenc.tech/test/auth/logout",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({ authorization: "Bearer remote-token" }),
+        }),
+      );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("still signs out locally when ending the server session fails", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError("fetch failed", {
+        cause: new Error("getaddrinfo ENOTFOUND id.agenc.ag"),
+      });
+    });
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      fetchImpl,
+      loginFlow: () => ({ token: "remote-token" }),
+    });
+
+    try {
+      await backend.login();
+      await expect(backend.logout()).resolves.toEqual({ authenticated: false });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(readNativeFor(agencHome).remoteAuth).toBeUndefined();
+      await expect(
+        readFile(join(agencHome, "auth.json"), "utf8"),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("still signs out locally when the server does not answer in time", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const logoutDeadline = new AbortController();
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation((ms) => ms === 5_000 ? logoutDeadline.signal : realTimeout(ms));
+    // The server never answers: only the logout deadline ends the request.
+    const fetchImpl = vi.fn(
+      (_input: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(init.signal?.reason),
+            { once: true },
+          );
+        }),
+    );
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      fetchImpl,
+      loginFlow: () => ({ token: "remote-token" }),
+    });
+
+    try {
+      await backend.login();
+      const signedOut = backend.logout();
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+      expect(timeout).toHaveBeenCalledWith(5_000);
+      logoutDeadline.abort(new DOMException("The operation timed out.", "TimeoutError"));
+
+      await expect(signedOut).resolves.toEqual({ authenticated: false });
+      expect(readNativeFor(agencHome).remoteAuth).toBeUndefined();
+      await expect(
+        readFile(join(agencHome, "auth.json"), "utf8"),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      timeout.mockRestore();
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("does not contact the server when nobody is signed in", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const fetchImpl = vi.fn(async () => Response.json({ authenticated: false }));
+    const backend = new RemoteAuthBackend({ agencHome, fetchImpl });
+
+    try {
+      await expect(backend.logout()).resolves.toEqual({ authenticated: false });
+      expect(fetchImpl).not.toHaveBeenCalled();
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }

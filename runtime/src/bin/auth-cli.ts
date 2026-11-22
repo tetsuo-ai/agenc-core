@@ -13,6 +13,7 @@ import type { AuthBackend, AuthIdentity } from "../auth/backend.js";
 import type { RemoteAuthBackendOptions } from "../auth/backends/remote.js";
 import { loadCanonicalConfig } from "../config/repository.js";
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
+import { browserOpenCommand, safeBrowserUrl } from "../utils/browser.js";
 import { readAccountModelAccess } from "../auth/account-access.js";
 
 export type AgenCAuthCliCommand =
@@ -226,7 +227,7 @@ async function waitForEnter(
 }
 
 async function openUrlInBrowser(url: string): Promise<void> {
-  const { command, args } = browserOpenCommand(url);
+  const { command, args } = browserOpenCommand(safeBrowserUrl(url));
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, {
       detached: true,
@@ -238,19 +239,6 @@ async function openUrlInBrowser(url: string): Promise<void> {
       resolve();
     });
   });
-}
-
-function browserOpenCommand(url: string): {
-  readonly command: string;
-  readonly args: readonly string[];
-} {
-  if (process.platform === "darwin") {
-    return { command: "open", args: [url] };
-  }
-  if (process.platform === "win32") {
-    return { command: "cmd", args: ["/c", "start", "", url] };
-  }
-  return { command: "xdg-open", args: [url] };
 }
 
 function formatAgenCAuthIdentity(

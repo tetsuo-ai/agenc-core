@@ -56,6 +56,8 @@ async function loginRemoteFixture(
   const backend = new RemoteAuthBackend({
     agencHome: fixture.context.home.path,
     env: fixture.context.environment,
+    // Answers the cleanup logout's server sign-out, so it stays local.
+    fetchImpl: async () => Response.json({ authenticated: false }),
     loginFlow: () => ({ token: "core-login-token" }),
     now: () => new Date("2026-07-11T00:00:00.000Z"),
   });
