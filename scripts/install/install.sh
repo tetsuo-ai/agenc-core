@@ -219,6 +219,19 @@ node_contract() {
   ' "$OS" "$ARCH" "$2" >/dev/null 2>&1
 }
 
+# The pinned bootstrap downloads run on the trusted OS curl before fetch_to
+# exists, under the same deadline contract as fetch_to and the install.ps1
+# bootstrap. curl gives up when less than 1 byte per second arrives for 60s,
+# or when connecting and the TLS handshake take 60s. The total cap is the
+# pinned byte count at a 128 KiB/s minimum sustained rate plus 30s of grace,
+# never below 120s. A fixed 120s total failed every bootstrap on links under
+# about 4 Mbit/s while bytes were still arriving.
+bootstrap_max_seconds() {
+  BOOTSTRAP_MAX_SECONDS=$(( ($1 + 131071) / 131072 + 30 ))
+  [ "$BOOTSTRAP_MAX_SECONDS" -ge 120 ] || BOOTSTRAP_MAX_SECONDS=120
+  printf '%s' "$BOOTSTRAP_MAX_SECONDS"
+}
+
 bootstrap_modern_node() {
   case "${OS}-${ARCH}" in
     linux-x64)
@@ -286,7 +299,8 @@ bootstrap_modern_node() {
         fail "the trusted operating-system curl executable is required to bootstrap Node.js"
       NODE_COMPAT_URL="https://github.com/tetsuo-ai/agenc-releases/releases/download/${NODE_COMPAT_RELEASE_TAG}/${NODE_COMPAT_FILE}"
       /usr/bin/curl --proto '=https' --tlsv1.2 --location --fail --silent --show-error \
-        --max-time 120 --max-filesize "$NODE_COMPAT_BYTES" \
+        --connect-timeout 60 --speed-limit 1 --speed-time 60 \
+        --max-time "$(bootstrap_max_seconds "$NODE_COMPAT_BYTES")" --max-filesize "$NODE_COMPAT_BYTES" \
         --output "$NODE_COMPAT_ARCHIVE" "$NODE_COMPAT_URL" ||
         fail "could not download pinned Node.js compatibility payload"
     fi
@@ -363,7 +377,8 @@ EOF
       fail "the trusted operating-system curl executable is required to bootstrap Node.js"
     NODE_DIST_URL="https://nodejs.org/dist/v${SUPPORTED_NODE_VERSION}/${NODE_DIST_FILE}"
     /usr/bin/curl --proto '=https' --tlsv1.2 --location --fail --silent --show-error \
-      --max-time 120 --max-filesize "$NODE_DIST_BYTES" \
+      --connect-timeout 60 --speed-limit 1 --speed-time 60 \
+      --max-time "$(bootstrap_max_seconds "$NODE_DIST_BYTES")" --max-filesize "$NODE_DIST_BYTES" \
       --output "$NODE_DIST_ARCHIVE" "$NODE_DIST_URL" ||
       fail "could not download pinned Node.js ${SUPPORTED_NODE_VERSION} bootstrap"
   fi

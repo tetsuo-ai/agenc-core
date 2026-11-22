@@ -3133,6 +3133,43 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     expect(ps1).toContain("$deadline.Dispose()");
   });
 
+  test("shell bootstrap curl aborts on a stall and sizes its total cap like fetch_to", () => {
+    const sh = readFileSync(INSTALL_SH, "utf8");
+    // Regression: both curl bootstrap downloads had a fixed --max-time 120,
+    // which failed a 58 MB Node archive on any link under about 4 Mbit/s even
+    // while bytes were still arriving.
+    expect(sh).not.toMatch(/--max-time 120\b/);
+    expect(sh.split("--connect-timeout 60 --speed-limit 1 --speed-time 60 \\").length - 1).toBe(2);
+    for (const bytes of ["NODE_COMPAT_BYTES", "NODE_DIST_BYTES"]) {
+      expect(sh).toContain(
+        `--max-time "$(bootstrap_max_seconds "$${bytes}")" --max-filesize "$${bytes}"`,
+      );
+    }
+    // Run the shell helper itself: for every pinned bootstrap size it must
+    // match the fetch_to and install.ps1 formula, in seconds.
+    const helper = sh.match(/^bootstrap_max_seconds\(\) \{\n[\s\S]*?\n\}\n/m)?.[0];
+    expect(helper).toBeDefined();
+    const toolchain = JSON.parse(readFileSync(RELEASE_TOOLCHAIN, "utf8")) as any;
+    const sizes: number[] = [
+      ...["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"].map(
+        (slug) => toolchain.nodeDistributions[slug].bytes,
+      ),
+      ...["linux-x64", "linux-arm64"].map((slug) => toolchain.nodeBootstrap[slug].bytes),
+      1,
+      131_072 * 90,
+      131_072 * 90 + 1,
+    ];
+    for (const bytes of sizes) {
+      const run = spawnSync("/bin/sh", ["-c", `${helper}bootstrap_max_seconds ${bytes}`], {
+        encoding: "utf8",
+      });
+      expect(run.status, run.stderr).toBe(0);
+      expect(Number(run.stdout), String(bytes)).toBe(
+        Math.max(120, Math.ceil(bytes / 131_072) + 30),
+      );
+    }
+  });
+
   test.skipIf(process.platform !== "linux" || process.arch !== "x64")(
     "modern install bootstraps pinned Node when host Node is incompatible",
     () => {
