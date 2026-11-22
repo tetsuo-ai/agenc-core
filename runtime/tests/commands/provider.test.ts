@@ -173,6 +173,8 @@ async function withAuthSession<T>(
   const backend = new RemoteAuthBackend({
     agencHome,
     env: environment,
+    // Answers the cleanup logout's server sign-out, so it stays local.
+    fetchImpl: async () => Response.json({ authenticated: false }),
     loginFlow: () => ({
       token: "test-token",
       expiresAt: "2099-01-01T00:00:00.000Z",

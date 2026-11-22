@@ -42,6 +42,10 @@ const DEFAULT_REMOTE_AUTH_LOGIN_POLL_URL =
   "https://id.agenc.ag/v1/auth/login/poll" as const;
 const DEFAULT_REMOTE_AUTH_ME_URL =
   "https://id.agenc.ag/v1/auth/me" as const;
+const DEFAULT_REMOTE_AUTH_LOGOUT_URL =
+  "https://id.agenc.ag/v1/auth/logout" as const;
+const REMOTE_AUTH_LOGOUT_URL_ENV = "AGENC_REMOTE_AUTH_LOGOUT_URL" as const;
+const REMOTE_AUTH_LOGOUT_TIMEOUT_MS = 5_000;
 const DEFAULT_REMOTE_AUTH_SUBSCRIPTION_TIER_URL =
   "https://id.agenc.ag/v1/auth/subscription-tier" as const;
 const REMOTE_AUTH_TIER_URL_ENV = "AGENC_REMOTE_AUTH_TIER_URL" as const;
@@ -131,6 +135,7 @@ export interface RemoteAuthBackendOptions {
   readonly fetchImpl?: typeof fetch;
   readonly loginPollEndpoint?: string;
   readonly loginStartEndpoint?: string;
+  readonly logoutEndpoint?: string;
   readonly meEndpoint?: string;
   readonly now?: () => Date;
   readonly sleepMs?: (ms: number) => Promise<void>;
@@ -149,6 +154,7 @@ export class RemoteAuthBackend implements AuthBackend {
   readonly #subscriptionTierResolver: RemoteAuthSubscriptionTierResolver;
   readonly #now: () => Date;
   readonly #explicitToken: string | undefined;
+  readonly #revokeServerSession: (token: string) => Promise<void>;
 
   constructor(options: RemoteAuthBackendOptions = {}) {
     const ingress = captureSecureStorageIngress(
@@ -173,6 +179,7 @@ export class RemoteAuthBackend implements AuthBackend {
       createHttpRemoteAuthSubscriptionTierResolver(scopedOptions, this.#home);
     this.#now = scopedOptions.now ?? (() => new Date());
     this.#explicitToken = explicitRemoteAuthToken(scopedOptions);
+    this.#revokeServerSession = createHttpRemoteAuthSessionRevoker(scopedOptions);
   }
 
   authFile(): string {
@@ -221,6 +228,17 @@ export class RemoteAuthBackend implements AuthBackend {
   }
 
   async logout(_params: AuthLogoutParams = {}): Promise<AuthLogoutResult> {
+    // End the server session first, best effort, so the bearer stops working
+    // on the server too and not only on this machine. An offline or failed
+    // request never blocks the local sign-out below.
+    const session = await withRemoteAuthStateLock(
+      this.#authFilePath,
+      () => readPersistedRemoteAuthSession(this.#authFilePath, this.#home),
+    ).catch(() => null);
+    if (session !== null) {
+      await this.#revokeServerSession(session.credential.bearerToken)
+        .catch(() => undefined);
+    }
     await withRemoteAuthStateLock(this.#authFilePath, async () => {
       await clearRemoteAuthState(this.#authFilePath, this.#home);
     });
@@ -429,6 +447,29 @@ function createHttpRemoteAuthAccountSnapshotResolver(
     return parseRemoteAuthAccountSnapshotResponse(
       await readRemoteAuthJsonResponse(response, "account snapshot lookup"),
     );
+  };
+}
+
+function createHttpRemoteAuthSessionRevoker(
+  options: RemoteAuthBackendOptions,
+): (token: string) => Promise<void> {
+  const env = options.env ?? process.env;
+  const endpoint =
+    trimNonEmpty(options.logoutEndpoint) ??
+    trimNonEmpty(env[REMOTE_AUTH_LOGOUT_URL_ENV]) ??
+    DEFAULT_REMOTE_AUTH_LOGOUT_URL;
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
+  return async (token) => {
+    if (fetchImpl === undefined) return;
+    // Any answer is fine: 200 revoked it, 401 means it was already gone.
+    const response = await remoteAuthFetch(fetchImpl, endpoint, {
+      method: "POST",
+      headers: remoteAuthJsonHeaders(token),
+      body: "{}",
+      redirect: "error",
+      signal: AbortSignal.timeout(REMOTE_AUTH_LOGOUT_TIMEOUT_MS),
+    }, "logout", env, options.fetchImpl === undefined);
+    await response.body?.cancel().catch(() => undefined);
   };
 }
 

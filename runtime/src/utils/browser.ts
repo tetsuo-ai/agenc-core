@@ -80,7 +80,7 @@ export async function openLocalBrowser(url: string): Promise<void> {
   ) {
     throw new Error(`No graphical browser environment is available. ${manualOpening}`)
   }
-  const { command, args } = browserOpenCommand(url)
+  const { command, args } = browserOpenCommand(safeBrowserUrl(url))
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, {
       detached: true,
@@ -109,7 +109,24 @@ export async function openLocalBrowser(url: string): Promise<void> {
   })
 }
 
-function browserOpenCommand(url: string): {
+/**
+ * Return the normalized URL when it is http(s), else throw. URLs from a server
+ * response, such as a sign-in link, must be http(s) before they reach an
+ * opener: `open` and `xdg-open` also open local paths and other schemes.
+ */
+export function safeBrowserUrl(url: string): string {
+  validateUrl(url)
+  return new URL(url).href
+}
+
+/**
+ * Pass `safeBrowserUrl(url)`. On Windows this uses rundll32 instead of
+ * `cmd /c start`: Node does not quote an argument without spaces, and cmd.exe
+ * treats `&` as a separator, which cut sign-in links after the first query
+ * parameter. rundll32 receives the URL as one argument, as `openBrowser` above
+ * already does.
+ */
+export function browserOpenCommand(url: string): {
   readonly command: string
   readonly args: readonly string[]
 } {
@@ -117,7 +134,7 @@ function browserOpenCommand(url: string): {
     return { command: 'open', args: [url] }
   }
   if (process.platform === 'win32') {
-    return { command: 'cmd', args: ['/c', 'start', '', url] }
+    return { command: 'rundll32', args: ['url,OpenURL', url] }
   }
   return { command: 'xdg-open', args: [url] }
 }
