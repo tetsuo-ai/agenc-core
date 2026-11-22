@@ -31,7 +31,7 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 ┌─────────────────────┐                             ┌────────────┴─────────────┐
 │  Runtime CLI/TUI    │ ──────────────────────────► │  Clients                 │
 │  @tetsuo-ai/runtime │                             │  TUI · print · agents    │
-│                     │                             │  gateway · remote · SDK  │
+│                     │                             │  gateway · SDK           │
 └─────────────────────┘                             └──────────────────────────┘
 ```
 
@@ -42,12 +42,12 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
    Autostart is on by default; disable with `AGENC_DAEMON_AUTOSTART=0`.
 2. **Daemon** (`runtime/src/app-server`) — the local control plane. **One per
    `AGENC_HOME`**. Owns agent/session lifecycle, JSON-RPC dispatch, command
-   execution, provider-key vending, permission requests, realtime methods,
+   execution, permission requests, realtime methods,
    health, recovery, and background-agent attachment. Clients authenticate
    with a cookie on a Unix socket or Windows named pipe (optional WebSocket
    transport).
 3. **Clients** — interactive **TUI**, one-shot **print / `--no-tui`**,
-   **background agents**, the **channel gateway**, **remote control**, and
+   **background agents**, the **channel gateway**, and
    the embedding **SDK**. Real work flows through the daemon; the TUI is a
    view onto daemon-owned sessions. A TUI that loses its daemon
    connection mid-turn ends that turn locally when the daemon does not
@@ -70,15 +70,15 @@ Everything past the launcher lives in the single runtime workspace
 
 | Dir                                                                      | Responsibility                                                                                                                                                                                                                                 |
 | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bin/`                                                                   | Order-safe CLI wrapper (`agenc.ts`), implementation (`agenc-main.ts`), and subcommand adapters: auth, config, mcp, doctor, init, providers, state, budget, gateway, remote, security, onboard, update, trajectories, …                           |
-| `app-server/`                                                            | Daemon: transports, JSON-RPC dispatch, agent/session lifecycle, durable run inspection/replay, auth, health, background-agent runner, command exec, realtime, overload limits                                                                  |
+| `bin/`                                                                   | Order-safe CLI wrapper (`agenc.ts`), implementation (`agenc-main.ts`), and subcommand adapters: provider sign-in, config, mcp, doctor, init, providers, state, budget, gateway, security, onboard, update, trajectories, …                   |
+| `app-server/`                                                            | Daemon: transports, JSON-RPC dispatch, agent/session lifecycle, durable run inspection/replay, connection auth, health, background-agent runner, command exec, realtime, overload limits                                                       |
 | `app-server-client/`                                                     | In-process / client helpers for talking to the daemon                                                                                                                                                                                          |
 | `app-server-protocol/`                                                   | Shared protocol constants (e.g. portal default local endpoint)                                                                                                                                                                                 |
 | `session/`                                                               | Session engine: turn loop, transcript, canonical append-only rollout journal + `index.json`, persist-before-publish events, resume, cost, autonomous mode. `session.transcript.v2` rebuilds closed-turn results from that rollout: [daemon.md](reference/daemon.md#closed-turn-results). Raw session `error` records are diagnostic, not closers: [daemon.md](reference/daemon.md#mid-turn-error-events). |
 | `agents/`                                                                | Background-agent state, registry, roles, mailbox, worktree isolation, multi-agent v2 tools, CSV jobs (`agents/jobs/`), `WorkflowTool` DAG (`agents/workflow-*.ts`), delegate/fork. Spawn preflight is confirmed no-effect only before `delegate()`: [agents.md](reference/agents.md#spawn_agent-preflight). Close/assign/send argument and identity refusals use `tool:agents.v2:validation`: [agents.md](reference/agents.md#agent-validation-refusals). Fork interrupt and tool-abort stay turn-scoped: [agents.md](reference/agents.md#turn-abort-containment). |
 | `routines/`                                                              | Daemon-owned scheduled routines (`routines-v1.json`). A permission-blocked unattended run fails with a fixed mode-specific `run.error`: [agents.md](reference/agents.md#permission-blocked-explanation). |
 | `workflow/`                                                              | M5 verified-change pipeline (`agenc run start`). Session bootstrap, child names, review repair, and `refs/agenc/runs/<runId>` are documented in [design/verified-change-workflow-m5.md](design/verified-change-workflow-m5.md). Not the `WorkflowTool` DAG. |
-| `auth/`                                                                  | Local and remote auth backends, native secure storage credential namespaces, BYOK precedence, provider auth selection, session auth metadata                                                                                                                                                   |
+| `auth/`                                                                  | Saved provider keys, provider sign-in accounts, native secure storage credential namespaces, BYOK precedence, and the startup removal of the retired AgenC sign-in                                                                                                                            |
 | `llm/`                                                                   | Provider-neutral client/request shaping, provider-aware complete-request [token accounting](design/provider-aware-token-accounting.md), model catalog, retries, streaming, wire adapters, OAuth refresh. Grammar-safe, Gemini native JSON Schema, object-applicator roots that omit type, and LM Studio/openai-compatible ceiling shaping: [provider-tool-compat.md](provider-tool-compat.md#gemini-object-applicator-tool-roots). |
 | `tools/`                                                                 | Built-in model tools (Bash, File read/write/edit, `apply_patch`, Web fetch/search, LSP, MCP, Agent/subagent, Task*, …)                                                                                                                         |
 | `tool-registry.ts` / `tools.ts`                                          | Tool registration and assembly entry points                                                                                                                                                                                                    |
@@ -152,10 +152,9 @@ The daemon and runtime persist under one home. Relocate with an absolute
 | `routines/routines-v1.json`                                        | Daemon-owned local routines and bounded run history. Permission-blocked runs store a fixed `run.error`: [agents.md](reference/agents.md#permission-blocked-explanation). |
 | logs / state DBs                                                   | SQLite state + logs databases under project/home layout                                                                              |
 
-Login tokens, provider BYOK keys, remote bearers, and persisted remote
-subprocess credentials are not file state. They live only in the native OS
-secure storage, in home-scoped `localAuth`, `remoteAuth`, and
-`remoteRuntimeAuth` namespaces; OpenAI/ChatGPT OAuth uses the separate
+Provider BYOK keys and persisted remote subprocess credentials are not file
+state. They live only in the native OS secure storage, in home-scoped
+`localAuth.byokKeys` and `remoteRuntimeAuth` namespaces; OpenAI/ChatGPT OAuth uses the separate
 `openAiOauth` namespace. GitHub Models access/OAuth tokens, xAI OAuth, and
 AgenC AI subscription OAuth use the `githubModels`, `xaiOauth`, and
 `agencAiOauth` namespaces respectively. Gemini access-token and Application
@@ -166,8 +165,10 @@ locked read-modify-write so one namespace cannot overwrite another, and an
 OAuth refresh compare-and-swaps the credential version it read before making
 the network request. Read caches, refresh single-flights, and refresh lock
 paths are keyed by that same explicit home, so two homes cannot share or
-overwrite credentials in one process. `auth.json` is a
-metadata projection; `byok-keys.json` and the former `.agenc/remote` token
+overwrite credentials in one process. The AgenC account sign-in is retired: at
+startup the daemon removes a home's `auth.json` and the session token the
+sign-in kept in secure storage (`remoteAuth`, `localAuth.login`), once.
+`byok-keys.json` and the former `.agenc/remote` token
 files, plus ProviderCode `auth.json`, are one-way migration inputs only and are
 never ordinary runtime authorities. Every native adapter is bound to the
 resolved `HomeContext`; macOS caches, Linux service names, and Windows DPAPI
@@ -303,7 +304,6 @@ lock creation; Windows lock paths are NTFS-only and do not accept ReFS.
 | Hooks HTTP        | Gateway hooks server                       | `POST /hooks/agent` (loopback, bearer token)                  |
 | Cron delivery     | Gateway cron delivery loop                 | Delivery-tagged tasks from `.agenc/scheduled_tasks.json`; outbound webhooks pin the resolved IP (no DNS rebinding) |
 | Embedding SDK     | `@tetsuo-ai/agenc-sdk` `connect()`         | Typed JSON-RPC client; also `promptViaSubprocess()`           |
-| Remote control    | `agenc remote` / remote auth backend       | See [`remote-control.md`](remote-control.md)                  |
 
 ### Attachment and capability delivery
 
@@ -321,7 +321,6 @@ key. Status is an observer feed; Ledger is a single-consumer action. Interactive
 responses (`tool.approve`, `tool.deny`, `elicitation.respond`) bypass the normal
 per-connection FIFO because they may unblock its head request, but they remain
 subject to ordinary overload limits. Details:
-[`remote-control.md`](remote-control.md) and
 [`security/mobile-ledger-transfer.md`](security/mobile-ledger-transfer.md).
 
 ## Tools, permissions & sandbox

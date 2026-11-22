@@ -12,10 +12,6 @@ const MINIMAL_REGISTRY_NAMES = [
   "hello",
   "status",
   "goal",
-  "login",
-  "logout",
-  "whoami",
-  "subscription",
   "usage",
   "grok-login",
   "grok-logout",
@@ -41,7 +37,6 @@ const MINIMAL_REGISTRY_NAMES = [
   "hooks",
   "skills",
   "mcp",
-  "remote",
   "plugins",
   "memory",
   "resume",
@@ -69,10 +64,6 @@ const DAEMON_TUI_REGISTRY_NAMES = [
   "hello",
   "status",
   "goal",
-  "login",
-  "logout",
-  "whoami",
-  "subscription",
   "usage",
   "grok-login",
   "grok-logout",
@@ -98,7 +89,6 @@ const DAEMON_TUI_REGISTRY_NAMES = [
   "hooks",
   "skills",
   "mcp",
-  "remote",
   "plugins",
   "memory",
   "resume",
@@ -258,9 +248,9 @@ describe("CommandRegistry", () => {
     const registry = buildDefaultRegistry();
 
     expect(registry.has("provider")).toBe(true);
-    expect(registry.has("login")).toBe(true);
-    expect(registry.has("logout")).toBe(true);
-    expect(registry.find("account")?.name).toBe("whoami");
+    for (const name of ["login", "logout", "whoami", "account", "subscription", "remote"]) {
+      expect(registry.has(name), name).toBe(false);
+    }
     expect(registry.find("provider")?.name).toBe("provider");
     expect(registry.has("quit")).toBe(true);
     expect(registry.has("reset")).toBe(true);

@@ -4,9 +4,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 
 import { defaultConfig } from "../config/schema.js";
-import { LocalAuthBackend } from "../auth/backends/local.js";
-import { RemoteAuthBackend } from "../auth/backends/remote.js";
-import type { RemoteAuthSessionReadContext } from "../auth/session-state.js";
+import { readProviderKey, saveProviderKey } from "../auth/provider-keys.js";
 import {
   listBuiltInProviderInfo,
   providerCredentialEnvironmentLabel,
@@ -82,47 +80,9 @@ function withTempDir<T>(prefix: string, run: (path: string) => T): T {
   }
 }
 
-async function withRemoteAuthSession<T>(
-  prefix: string,
-  subscriptionTier: "free" | "pro",
-  run: (fixture: {
-    readonly agencHome: string;
-    readonly env: RemoteAuthSessionReadContext["environment"];
-    readonly remoteAuthSessionContext: RemoteAuthSessionReadContext;
-  }) => T | Promise<T>,
-): Promise<T> {
-  const agencHome = mkdtempSync(join(tmpdir(), prefix));
-  const env = Object.freeze({ AGENC_HOME: agencHome });
-  const ingress = captureSecureStorageIngress(env, agencHome);
-  const remoteAuthSessionContext = Object.freeze({
-    home: ingress.home,
-    environment: ingress.environment,
-  });
-  const backend = new RemoteAuthBackend({
-    agencHome: ingress.home.path,
-    env: ingress.environment,
-    loginFlow: () => ({
-      token: "remote-session-token",
-      subscriptionTier,
-    }),
-    now: () => new Date("2026-08-24T00:00:00.000Z"),
-  });
-  let signedIn = false;
-  try {
-    await backend.login();
-    signedIn = true;
-    return await run({
-      agencHome,
-      env: ingress.environment,
-      remoteAuthSessionContext,
-    });
-  } finally {
-    try {
-      if (signedIn) await backend.logout();
-    } finally {
-      rmSync(agencHome, { recursive: true, force: true });
-    }
-  }
+/** The key saved for a provider, read the way first-run setup saved it. */
+function savedProviderKey(agencHome: string, provider: string): string | undefined {
+  return readProviderKey(captureSecureStorageIngress({}, agencHome).home, provider);
 }
 
 describe("first-run onboarding state", () => {
@@ -678,10 +638,7 @@ describe("first-run onboarding wizard", () => {
       new Response("{}", { status: 200 }),
     );
     try {
-      await new LocalAuthBackend({ agencHome, env }).saveByokKey({
-        provider: "gemini",
-        apiKey: "saved-gemini-key",
-      });
+      saveProviderKey(captureSecureStorageIngress(env, agencHome).home, "gemini", "saved-gemini-key");
 
       await expect(
         checkOnboardingProviderConnection(
@@ -1330,9 +1287,7 @@ describe("first-run onboarding wizard", () => {
         credentialLabel: "XAI_API_KEY or GROK_API_KEY",
         credentialProvenance: { kind: "verified-input" },
       });
-      await expect(
-        new LocalAuthBackend({ agencHome }).readByokKey("grok"),
-      ).resolves.toBe("xai-approved-key");
+      expect(savedProviderKey(agencHome, "grok")).toBe("xai-approved-key");
       state = (await submitFirstRunOnboardingInput(state, "", context)).state;
       expect(state.currentStepId).toBe("ready");
       expect(state.selectedModel).toBe("grok-4.6");
@@ -1387,9 +1342,7 @@ describe("first-run onboarding wizard", () => {
       ).state;
       expect(["models", "result"]).toContain(state.modelAccessInput);
       expect(state.connection?.ok).toBe(true);
-      await expect(
-        new LocalAuthBackend({ agencHome }).readByokKey(provider),
-      ).resolves.toBe(`${provider}-approved-key`);
+      expect(savedProviderKey(agencHome, provider)).toBe(`${provider}-approved-key`);
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
     }
@@ -1420,9 +1373,7 @@ describe("first-run onboarding wizard", () => {
       expect(result.state.modelAccessInput).toBe("menu");
       expect(result.state.error).toContain("Provider rejected");
       expect(result.state.error).toContain("Paste another key");
-      await expect(
-        new LocalAuthBackend({ agencHome }).readByokKey("grok"),
-      ).resolves.toBeUndefined();
+      expect(savedProviderKey(agencHome, "grok")).toBeUndefined();
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
     }
@@ -1610,10 +1561,8 @@ describe("first-run onboarding wizard", () => {
         fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
           new Response(JSON.stringify({ data: [] }), { status: 200 }),
         ),
-        authBackend: {
-          saveByokKey: () => {
-            throw new Error("disk unavailable");
-          },
+        saveProviderKey: () => {
+          throw new Error("disk unavailable");
         },
       };
       const longKey = "z".repeat(MAX_ONBOARDING_INPUT_LENGTH + 10);
@@ -2058,18 +2007,18 @@ describe("account sign-in from the model-access step", () => {
     const state = {
       ...(await advanceToGrokModelAccess(context)),
       authPrompt: {
-        heading: "Sign in or create an AgenC account",
+        heading: "Sign in with X / xAI",
         detail: "Finish the browser sign-in.",
-        url: "https://id.agenc.ag/activate",
+        url: "https://accounts.x.ai/activate",
         userCode: "ABCD-EFGH",
       },
     };
 
     expect(detailLinesForStep(state, context)).toEqual([
-      "Sign in or create an AgenC account",
+      "Sign in with X / xAI",
       "Finish the browser sign-in.",
       "Code: ABCD-EFGH",
-      "URL: https://id.agenc.ag/activate",
+      "URL: https://accounts.x.ai/activate",
       "Finish sign-in in your browser. AgenC continues on its own.",
     ]);
   });
@@ -2318,7 +2267,7 @@ describe("model access checks in place", () => {
     const states = [
       base,
       { ...base, currentStepId: "provider" as const, detectedLocalProviders: ["ollama" as const] },
-      ...(["grok", "deepseek", "ollama", "amazon-bedrock", "gemini", "agenc"] as const).map(
+      ...(["grok", "deepseek", "ollama", "amazon-bedrock", "gemini"] as const).map(
         (selectedProvider) => ({
           ...base,
           currentStepId: "model-access" as const,

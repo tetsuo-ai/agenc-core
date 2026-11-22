@@ -22,7 +22,6 @@ import { parseLightRequest } from "../session/light-request/settings.js";
 //   AGENC_MAX_OUTPUT_TOKENS                       → global output budget
 //   AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS        → 8k default + retry mode
 //   AGENC_MAX_BUDGET_USD                           → session cost budget
-//   AGENC_AUTH_BACKEND                             → auth.backend
 //   AGENC_BROWSER_*                                → browser.*
 //   AGENC_BUDGET*                                  → budget.*
 //   AGENC_HEARTBEAT*                               → heartbeat.*
@@ -76,7 +75,6 @@ export interface EnvSnapshot {
   readonly AGENC_MAX_OUTPUT_TOKENS?: string;
   readonly AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS?: string;
   readonly AGENC_MAX_BUDGET_USD?: string;
-  readonly AGENC_AUTH_BACKEND?: string;
   readonly AGENC_BROWSER_EXECUTABLE?: string;
   readonly AGENC_BROWSER_HEADLESS?: string;
   readonly AGENC_BROWSER_ALLOW_PRIVATE_NETWORK?: string;
@@ -428,19 +426,6 @@ export function applyEnvOverrides(
   const maxBudgetUsd = readPositiveNumber(e.AGENC_MAX_BUDGET_USD);
   if (maxBudgetUsd !== undefined) {
     override.max_budget_usd = maxBudgetUsd;
-  }
-  if (e.AGENC_AUTH_BACKEND !== undefined) {
-    const backend = readNonEmpty(e.AGENC_AUTH_BACKEND)?.toLowerCase();
-    if (backend === "local" || backend === "remote") {
-      override.auth = {
-        ...(config.auth ?? {}),
-        backend,
-      };
-    } else if (e.AGENC_AUTH_BACKEND.trim().length > 0) {
-      onWarn?.(
-        `[agenc:config] invalid AGENC_AUTH_BACKEND="${e.AGENC_AUTH_BACKEND}"; expected "local" or "remote"`,
-      );
-    }
   }
 
   const browser: Mutable<NonNullable<AgenCConfig["browser"]>> = {};

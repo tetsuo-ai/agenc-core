@@ -4,8 +4,8 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { AuthBackend, AuthSubscriptionTier } from "../../auth/backend.js";
-import { LocalAuthBackend } from "../../auth/backends/local.js";
+import { saveProviderKey } from "../../auth/provider-keys.js";
+import { captureSecureStorageIngress } from "../../utils/secureStorage/home.js";
 import { resolveHomeContext } from "../../config/home.js";
 import { defaultConfig } from "../../config/schema.js";
 import {
@@ -45,38 +45,6 @@ function environmentCredentialProvenance(
   };
 }
 
-function authBackend(
-  kind: "local" | "remote",
-  tier: AuthSubscriptionTier,
-  overrides: Partial<
-    Pick<AuthBackend, "vendKey" | "inferAgencModel" | "getSubscriptionTier">
-  > = {},
-): AuthBackend {
-  return {
-    kind,
-    login: () => ({
-      authenticated: true,
-      provider: kind,
-    }),
-    logout: () => ({ authenticated: false }),
-    whoami: () => ({
-      authenticated: true,
-      provider: kind,
-    }),
-    vendKey: overrides.vendKey ?? ((provider, sessionId) => ({
-      kind: "api-key",
-      provider,
-      sessionId,
-      apiKey: "managed-key",
-    })),
-    inferAgencModel: overrides.inferAgencModel ?? (() => ({
-      provider: "grok",
-      model: "grok-4.3",
-    })),
-    getSubscriptionTier: overrides.getSubscriptionTier ?? (() => tier),
-  };
-}
-
 function byProvider<T extends { readonly provider: string }>(
   entries: readonly T[],
 ): Map<string, T> {
@@ -100,7 +68,6 @@ describe("provider discovery", () => {
     });
 
     const report = await collectProviderAvailability({
-      authBackend: authBackend("local", "free"),
       config: defaultConfig(),
       env: {
         OPENAI_API_KEY: "   ",
@@ -111,10 +78,8 @@ describe("provider discovery", () => {
     });
     const entries = byProvider(report.entries);
 
-    expect(report).toMatchObject({
-      authBackendKind: "local",
-      subscriptionTier: "free",
-    });
+    // No AgenC account: the report carries provider entries only.
+    expect(Object.keys(report)).toEqual(["entries"]);
     expect(entries.get("grok")).toMatchObject({
       usable: true,
       credentialStatus: "present",
@@ -156,7 +121,6 @@ describe("provider discovery", () => {
     });
 
     const report = await collectProviderAvailability({
-      authBackend: authBackend("local", "free"),
       config: defaultConfig(),
       env: {
         OLLAMA_BASE_URL: "http://10.0.0.5:11434/v1",
@@ -193,7 +157,6 @@ describe("provider discovery", () => {
 
   it("reports the actual env aliases that supplied provider keys", async () => {
     const report = await collectProviderAvailability({
-      authBackend: authBackend("local", "free"),
       checkLocal: false,
       config: defaultConfig(),
       env: {
@@ -264,7 +227,6 @@ describe("provider discovery", () => {
     writeFileSync(adcPath, "{}", { mode: 0o600 });
     try {
       const accessTokenReport = await collectProviderAvailability({
-        authBackend: authBackend("local", "free"),
         checkLocal: false,
         config: defaultConfig(),
         env: {
@@ -282,7 +244,6 @@ describe("provider discovery", () => {
       });
 
       const adcReport = await collectProviderAvailability({
-        authBackend: authBackend("local", "free"),
         checkLocal: false,
         config: defaultConfig(),
         env: {
@@ -300,7 +261,6 @@ describe("provider discovery", () => {
       });
 
       const missingForcedReport = await collectProviderAvailability({
-        authBackend: authBackend("local", "free"),
         checkLocal: false,
         config: defaultConfig(),
         env: {
@@ -317,7 +277,6 @@ describe("provider discovery", () => {
       });
 
       const missingTargetReport = await collectProviderAvailability({
-        authBackend: authBackend("local", "free"),
         checkLocal: false,
         config: defaultConfig(),
         env: {
@@ -339,12 +298,8 @@ describe("provider discovery", () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-provider-gemini-byok-"));
     const env = { AGENC_HOME: agencHome, GEMINI_AUTH_MODE: "api-key" };
     try {
-      await new LocalAuthBackend({ agencHome, env }).saveByokKey({
-        provider: "gemini",
-        apiKey: "saved-gemini-key",
-      });
+      saveProviderKey(captureSecureStorageIngress(env).home, "gemini", "saved-gemini-key");
       const report = await collectProviderAvailability({
-        authBackend: authBackend("local", "free"),
         checkLocal: false,
         config: defaultConfig(),
         env,
@@ -364,12 +319,8 @@ describe("provider discovery", () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-provider-saved-byok-"));
     const env = { AGENC_HOME: agencHome };
     try {
-      await new LocalAuthBackend({ agencHome, env }).saveByokKey({
-        provider: "anthropic",
-        apiKey: "saved-anthropic-key",
-      });
+      saveProviderKey(captureSecureStorageIngress(env).home, "anthropic", "saved-anthropic-key");
       const report = await collectProviderAvailability({
-        authBackend: authBackend("local", "free"),
         checkLocal: false,
         config: defaultConfig(),
         env,
@@ -388,7 +339,6 @@ describe("provider discovery", () => {
   it("reports Grok Composer as keyless through the canonical authority", async () => {
     const baseConfig = defaultConfig();
     const report = await collectProviderAvailability({
-      authBackend: authBackend("local", "free"),
       checkLocal: false,
       config: {
         ...baseConfig,
@@ -427,7 +377,6 @@ describe("provider discovery", () => {
       ).toBe(true);
 
       const report = await collectProviderAvailability({
-        authBackend: authBackend("local", "free"),
         checkLocal: false,
         config: defaultConfig(),
         env,
@@ -467,7 +416,6 @@ describe("provider discovery", () => {
       ).toBe(true);
 
       const report = await collectProviderAvailability({
-        authBackend: authBackend("local", "free"),
         checkLocal: false,
         config,
         env,
@@ -506,7 +454,6 @@ describe("provider discovery", () => {
       ).toBe(true);
 
       const report = await collectProviderAvailability({
-        authBackend: authBackend("local", "free"),
         checkLocal: false,
         config: defaultConfig(),
         env,
@@ -525,7 +472,6 @@ describe("provider discovery", () => {
       expect(grok?.detail).not.toContain("BYOK");
 
       const custom = await collectProviderAvailability({
-        authBackend: authBackend("local", "free"),
         checkLocal: false,
         config: defaultConfig(),
         env: { ...env, XAI_BASE_URL: "https://gateway.example.test/v1" },
@@ -540,7 +486,6 @@ describe("provider discovery", () => {
       });
 
       const forcedOauth = await collectProviderAvailability({
-        authBackend: authBackend("local", "free"),
         checkLocal: false,
         config: defaultConfig(),
         env: { ...env, GROK_AUTH_MODE: "oauth", XAI_BASE_URL: "https://gateway.example.test/v1" },
@@ -558,7 +503,6 @@ describe("provider discovery", () => {
 
   it("does not treat shared credentials as hosted provider credentials", async () => {
     const report = await collectProviderAvailability({
-      authBackend: authBackend("local", "free"),
       checkLocal: false,
       config: defaultConfig(),
       env: {
@@ -702,7 +646,6 @@ describe("provider discovery", () => {
     "resolves the Bedrock credential matrix: $name",
     async ({ env, usable, credentialStatus, detail, provenance }) => {
       const report = await collectProviderAvailability({
-        authBackend: authBackend("local", "free"),
         checkLocal: false,
         config: defaultConfig(),
         env,
@@ -720,7 +663,6 @@ describe("provider discovery", () => {
 
   it("formats the discovery report for the providers CLI", async () => {
     const report = await collectProviderAvailability({
-      authBackend: authBackend("local", "free"),
       checkLocal: false,
       config: defaultConfig(),
       env: { OPENAI_API_KEY: "openai-key" },
@@ -728,9 +670,9 @@ describe("provider discovery", () => {
 
     const text = formatProviderAvailabilityReport(report);
 
-    expect(text).toContain("Auth: local; subscription: free");
+    expect(text).not.toContain("subscription");
     expect(text).toMatch(
-      /Provider\s+Model\s+Usable\s+Credential\s+Local\s+Tier\s+Detail/u,
+      /Provider\s+Model\s+Usable\s+Credential\s+Local\s+Detail/u,
     );
     expect(text).not.toMatch(/Provider\s+Model\s+Usable\s+Key\s+Local/u);
     expect(text).toContain("openai");

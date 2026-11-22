@@ -95,10 +95,10 @@ client.request("csvJob.review.list", { jobId: "job", cwd: "/workspace" });
 client.request("health.ping");
 client.request("health.ping", {});
 // The daemon groups several method names into one request-union member.
-client.request("remote.status", {});
+client.request("telegram.capabilities", {});
 client.request("telegram.status", {});
 client.request("routine.list");
-const grouped: AgencDaemonRequest<"remote.status"> = { jsonrpc: "2.0", id: 2, method: "remote.status", params: {} };
+const grouped: AgencDaemonRequest<"telegram.status"> = { jsonrpc: "2.0", id: 2, method: "telegram.status", params: {} };
 const result = client.request("run.status", { runId: "run" });
 type InferenceMatches = RequireTrue<Equal<typeof result, Promise<AgencResultByMethod["run.status"]>>>;
 // @ts-expect-error Required payload cannot be omitted.

@@ -66,7 +66,7 @@ export function formatAgenCOnboardCliHelpText(): string {
     "Options:",
     "  -h, --help  Show this help text",
     "",
-    "See also: agenc doctor (environment diagnostics), agenc login (auth)",
+    "See also: agenc doctor (environment diagnostics), agenc openai-login and agenc grok-login (provider sign-in)",
   ].join("\n");
 }
 

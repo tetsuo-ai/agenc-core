@@ -113,7 +113,6 @@ import {
   droppedReasoningEffortNotice,
   reasoningEffortForModel,
 } from "./reasoning-effort-for-model.js";
-import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import type { BudgetTracker } from "../conversation/token-budget.js";
 import { shutdownEffectSettlementSupervisor } from "../budget/effect-settlement-supervisor.js";
 import type { SessionSubmitOptions } from "./autonomous-mode.js";
@@ -216,7 +215,6 @@ import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAu
 import type { UnifiedExecProcessManagerLike, UnifiedExecOwnerBinding, UnifiedExecOwnerLifetime } from "../unified-exec/types.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
 import type { ToolLatencyStore } from "../tools/tool-latency-store.js";
-import type { PolicyLimitsService } from "../services/policyLimits/index.js";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import type { AgentStatus as RuntimeAgentStatus } from "../agents/status.js";
 import type {
@@ -1415,8 +1413,6 @@ export interface SessionServices {
   readonly showRawAgentReasoning: boolean;
   readonly execPolicy: ExecPolicyManager;
   readonly authManager: AuthManager;
-  readonly authBackend?: AuthBackend;
-  readonly authSubscriptionTier?: AuthSubscriptionTier;
   readonly modelsManager: ModelsManager;
   readonly toolApprovals: ApprovalStore;
   readonly guardianRejections: Map<string, unknown>;
@@ -1555,7 +1551,6 @@ export interface SessionServices {
   /** External hook effects fail closed unless this session-owned authority permits them. */
   readonly hookExecutionAuthority?: HookExecutionAuthority;
   readonly hooksRuntime?: ConfiguredHooksRuntime;
-  readonly policyLimits?: PolicyLimitsService;
   /**
    * Adaptive per-tool drain-timeout latency store (Goal #4a). In-memory,
    * session-scoped. Optional so minimal/test SessionServices literals need not

@@ -25,18 +25,6 @@ function createDashboardSnapshot(): AgenCPortalDashboardSnapshot {
       error: "/private/daemon-error",
       updatedAt: "2026-05-06T10:00:00.000Z",
     },
-    auth: {
-      authenticated: true,
-      provider: "local",
-      identity: {
-        accountId: "acct-secret",
-        displayName: "Sensitive User",
-        email: "urn:agenc:test:sensitive-identity",
-        plan: "team",
-      },
-      error: "auth-secret",
-      updatedAt: "2026-05-06T10:01:00.000Z",
-    },
     sessions: [
       {
         sessionId: "session-wait",
@@ -167,10 +155,9 @@ describe("AgenC portal mobile status contract", () => {
     );
 
     expect(snapshot).toMatchObject({
-      protocolVersion: "0.4.0",
+      protocolVersion: "0.5.0",
       generatedAt: "2026-05-06T13:00:00.000Z",
       connection: { status: "connected", initialized: true },
-      auth: { authenticated: true },
       counts: {
         totalAgents: 7,
         totalSessions: 4,
@@ -258,7 +245,7 @@ describe("AgenC portal mobile status contract", () => {
     expect(disconnected.generatedAt).toBe("1970-01-01T00:00:00.000Z");
   });
 
-  it("does not expose desktop workspace, auth identity, or transcript fields", () => {
+  it("does not expose desktop workspace or transcript fields", () => {
     const snapshot = createAgenCPortalMobileStatusSnapshot(
       createDashboardSnapshot(),
       {
@@ -270,7 +257,6 @@ describe("AgenC portal mobile status contract", () => {
     expect(Object.keys(snapshot).sort()).toEqual(
       [
         "agents",
-        "auth",
         "connection",
         "counts",
         "generatedAt",

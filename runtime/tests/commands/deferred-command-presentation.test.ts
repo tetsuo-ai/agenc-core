@@ -9,7 +9,7 @@ import type { SlashCommandContext } from "../../src/commands/types.js";
 const evaluations = vi.hoisted(() => ({
   config: 0, diff: 0, model: 0, plan: 0, provider: 0, status: 0,
   hooks: 0, mcp: 0, outputStyle: 0, permissions: 0, resume: 0, compact: 0, skills: 0,
-  auth: 0, xaiAuth: 0, openaiAuth: 0, plugins: 0, remote: 0, agents: 0,
+  xaiAuth: 0, openaiAuth: 0, plugins: 0, agents: 0,
 }));
 
 // Count evaluation while preserving the real implementations and their graph.
@@ -64,10 +64,6 @@ vi.mock("../../src/commands/skills-menu.js", async (original) => {
   return original();
 });
 
-vi.mock("../../src/commands/auth-menu.js", async (original) => {
-  evaluations.auth++;
-  return original();
-});
 vi.mock("../../src/commands/xai-auth-menu.js", async (original) => {
   evaluations.xaiAuth++;
   return original();
@@ -78,10 +74,6 @@ vi.mock("../../src/commands/openai-auth-menu.js", async (original) => {
 });
 vi.mock("../../src/commands/plugins-menu.js", async (original) => {
   evaluations.plugins++;
-  return original();
-});
-vi.mock("../../src/commands/remote-menu.js", async (original) => {
-  evaluations.remote++;
   return original();
 });
 vi.mock("../../src/commands/agents-menu.js", async (original) => {
@@ -118,7 +110,7 @@ describe("deferred command presentation", () => {
     expect(coldEvaluations).toEqual({
       config: 0, diff: 0, model: 0, plan: 0, provider: 0, status: 0,
       hooks: 0, mcp: 0, outputStyle: 0, permissions: 0, resume: 0, compact: 0, skills: 0,
-      auth: 0, xaiAuth: 0, openaiAuth: 0, plugins: 0, remote: 0, agents: 0,
+      xaiAuth: 0, openaiAuth: 0, plugins: 0, agents: 0,
     });
   });
 

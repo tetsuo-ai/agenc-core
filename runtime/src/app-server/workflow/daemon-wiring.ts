@@ -26,7 +26,6 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import * as path from "node:path";
 
-import type { AuthBackend } from "../../auth/backend.js";
 import type { ExecutionAdmissionKernel } from "../../budget/execution-admission-kernel.js";
 import {
   appendEvidenceEvent,
@@ -359,7 +358,6 @@ export function createDaemonWorkflowController(options: {
   readonly config?: () => { readonly model?: string } | undefined;
   /** Executable and entrypoint coordinates for child-session bootstraps. */
   readonly argv: readonly string[];
-  readonly authBackend?: AuthBackend;
   /**
    * Fresh discovery of project state databases owned by this daemon home
    * (`run.start` may target any repository; resume must sweep them all).
@@ -454,9 +452,6 @@ export function createDaemonWorkflowController(options: {
       agencHome: options.agencHome,
       env: options.env,
       argv: options.argv,
-      ...(options.authBackend !== undefined
-        ? { authBackend: options.authBackend }
-        : {}),
       kernel: options.kernel,
       durability,
       resolveRunRepoPath,

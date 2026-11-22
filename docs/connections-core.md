@@ -2,52 +2,13 @@
 
 Connections is opt-in agent session control on macOS, Linux, and Windows. It is
 not an OS desktop, terminal, or filesystem sandbox. The existing standalone
-gateway and mobile pairing remain separate surfaces.
+gateway remains a separate surface.
 
 ## Browser access
 
-The daemon owns browser pairing and outbound relay sockets. Authenticated local
-clients use `remote.capabilities`, `remote.status`, `remote.start`, `remote.stop`,
-`remote.pair.begin`, `remote.pair.refresh`, `remote.pair.cancel`, `remote.devices`,
-`remote.pending`, `remote.approve`, and `remote.revoke`.
-
-`remote.pair.begin` selects an absolute `workspacePath`, explicit `sessionIds`,
-a `view` or `control` role, and optional `allowFiles` and `allowApprovals` flags.
-Core maps an opaque workspace ID to that canonical path. A browser claiming the
-code remains pending until the host approves its exact device ID. Pairing and
-device grants are in memory: restarting Core requires fresh pairing and approval.
-
-The browser receives a scoped, in-process Core connection, never the daemon
-cookie, a general IPC endpoint, or the host account bearer. Its methods are:
-
-- `session.list` and `session.transcript.v2` for approved sessions;
-- `session.create` with only an optional title, for control grants;
-- `message.send` with a stable client message ID and `ifBusy: "reject"`;
-- `session.cancelTurn`;
-- `remote.pendingApprovals`, `tool.approve` with `scope: "once"`, and `tool.deny`,
-  only when the host enabled approvals;
-- `files.list` and `files.read`, only when the host enabled file browsing.
-
-New sessions use default permission prompts and no bypass or untrusted-hook
-authority. Existing sessions in bypass, accept-edits, auto, or unknown permission
-modes cannot receive remote prompts or approvals. Core rechecks this policy for
-every remote prompt or approval. Agent tools still operate under the host's
-ordinary permission policy; selecting a workspace does not create an OS sandbox.
-Direct browser file reads are separately restricted to the canonical shared
-root, excluding Core's private home, hidden configuration, common credential
-files, symlinks, junctions, hard links, binary files, and files over 256 KiB.
-
-Requests remain bounded while long turns run, so polling, cancellation, and
-approval can proceed concurrently. Mutation request IDs cannot be replayed across
-relay reconnects. The grant retains its most recent 4,096 mutation IDs and forgets
-the oldest when full; a new explicit pairing resets the ledger. Read polling does
-not consume that limit. Responses
-exceeding the relay's 1 MiB envelope limit return `REMOTE_RESPONSE_LIMIT`; transcript
-pagination is not implemented yet. Short-lived browser tickets reconnect normally.
-
-Stopping or revoking closes sockets and timers synchronously and invalidates
-pending pairing, approval, and reconnect work. Local account logout also stops
-browser access. Backend revocation is attempted after the local boundary closes.
+Browser pairing (`remote.*`) is retired with the AgenC account sign-in, which
+it required. Protocol 1.37 removed those methods; see
+[the retired sign-in](agenc-account-model-access.md).
 
 ## Private Telegram agents (contract v2)
 

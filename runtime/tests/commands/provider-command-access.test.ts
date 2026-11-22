@@ -136,7 +136,8 @@ async function loadModules() {
   return { access, xaiCredentials, openAiCredentials };
 }
 
-async function writeRemoteAuthSession(
+/** What an older Core left in a home that signed in to the retired AgenC account. */
+async function writeRetiredAccountSession(
   home: HomeContext,
   tier: "free" | "pro",
   bearerToken: string,
@@ -558,9 +559,9 @@ describe("provider command access", () => {
   });
 });
 
-test.each(["free", "pro"] as const)("a signed-in %s account with legacy config grants no provider model routes", async tier => {
+test.each(["free", "pro"] as const)("a leftover %s AgenC account session with legacy config grants no provider model routes", async tier => {
   const home = await createHome(`retired-account-${tier}`);
-  await writeRemoteAuthSession(home, tier, "synthetic-account-bearer");
+  await writeRetiredAccountSession(home, tier, "synthetic-account-bearer");
   const { access } = await loadModules();
   const { listBuiltInProviderInfo } = await import("../../src/llm/registry/provider-info.js");
   const { readProvidersHubSnapshot } = await import("../../src/commands/providers-hub-snapshot.js");
@@ -574,7 +575,7 @@ test.each(["free", "pro"] as const)("a signed-in %s account with legacy config g
     expect(result.auth.state).not.toBe("managed");
     expect(result).not.toHaveProperty("managed");
   }
-  expect(overlay.inspect({ provider: "agenc", model: "agenc" }).route).toBe("unavailable");
+  expect(listBuiltInProviderInfo().some(info => info.id === "agenc")).toBe(false);
   const hub = readProvidersHubSnapshot(ctx);
   expect(JSON.stringify(hub)).not.toContain("AgenC account");
   expect(hub.rows.some(row => row.provider === "agenc")).toBe(false);

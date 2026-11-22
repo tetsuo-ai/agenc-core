@@ -314,7 +314,6 @@ otherwise.
 | `reasoning_cap_policy` | `off`. Experimental `streak2` on native DeepSeek: two consecutive reasoning-only caps with productive native recoveries allow one additional normal sample with thinking disabled. Configured thinking returns on the following sample. Recovery budgets, output limits and tool validation are unchanged. No established token or quality benefit; unsupported routes are unaffected. |
 | `approvals_reviewer` | `user` |
 | `agent_max_depth` | `1` |
-| `auth.backend` | `remote` |
 | `plugins.enabled` | `false` |
 | `plugins.allowlist` | `[]` (empty means no filter; only a non-empty list restricts) |
 | `mcp.server.enabled` | `false` |
@@ -784,9 +783,7 @@ discovered metadata.
 
 | Paths | Type / meaning |
 | --- | --- |
-| `auth` | Authentication policy block. |
-| `auth.backend` | `local` or `remote`. |
-| `auth.managed_keys`, `auth.managedKeys` | Retired. Accepted and ignored with one notice that AgenC accounts no longer provide models. |
+| `auth` | Retired with the AgenC account sign-in. A file that still has the table (including `auth.backend`, `auth.managed_keys` and `auth.managedKeys`) loads and the table is ignored; managed keys also show one notice that AgenC accounts no longer provide models. `agenc config unset auth` removes it. |
 | `providers`, `providers.<provider>` | Provider definitions keyed only by canonical built-in provider slug. Unknown and retired names are rejected. Provider credentials use each provider's documented canonical environment variable or native secure storage; the retired `api_key_env` indirection is rejected. |
 | `providers.<provider>.base_url` | Provider API base URL. |
 | `providers.<provider>.default_model` | Provider fallback model. |
@@ -1214,29 +1211,10 @@ A permission-blocked routine names the mode that refused it; there is no
 `config.toml` override for those strings:
 [agents.md](agents.md#permission-blocked-explanation).
 
-## Remote control owner switch
+## Retired: `remote_control`
 
-`remote_control` is a home/managed-only table. `remote_control.enabled` is a
-boolean, default `false`:
-
-```toml
-[remote_control]
-enabled = false
-```
-
-The owner can set `enabled = true` by editing `$AGENC_HOME/config.toml` outside
-the agent. Managed `config.toml` and sorted `config.d/*.toml` drop-ins override
-that choice; managed `false` cannot be overridden by user configuration.
-Project/local files, plugins, profiles, `--config`, CLI patches, and environment
-variables have no authority over this setting. `agenc config set/unset` refuses
-the table; use the owner editor and restart the daemon. Agent file tools and
-shell write checks protect the home file and managed sources, including custom
-home paths, symlink targets and managed drop-ins, in every permission mode.
-
-When false, phone starts refuse before connector imports, account checks or
-network access; `/remote` is hidden from help/completion, bridge initialization
-is denied by the daemon, and stored pairings do not reconnect. Local status and
-off still work. `AGENC_REMOTE_FULL_CONTROL` is ignored with a warning. When true,
-the existing full-control consent and sign-in checks still apply. Browser
-`remote.*` enrollment uses the same switch; Telegram Connections have separate
-owner authority. See [remote control](../remote-control.md).
+Phone remote control is retired with the AgenC account sign-in. A file that
+still has `[remote_control]` loads and the table is ignored;
+`agenc config unset remote_control` removes it. At startup the daemon removes a
+phone pairing an older Core left (`remote/pair.json`) and refuses a connector
+that asks to bridge a phone in. See [the retired sign-in](../agenc-account-model-access.md).

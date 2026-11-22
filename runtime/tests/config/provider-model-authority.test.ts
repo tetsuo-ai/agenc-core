@@ -95,7 +95,6 @@ describe("provider/model configuration authority", () => {
   test.each([
     ["gpt-5", "openai", "gpt-5"],
     ["claude-opus-4-7", "anthropic", "claude-opus-4-7"],
-    ["agenc", "agenc", "agenc"],
     ["amazon.nova-pro-v1:0", "amazon-bedrock", "amazon.nova-pro-v1:0"],
     ["github:copilot", "github", "gpt-5.3-codex"],
   ])(
@@ -209,17 +208,12 @@ describe("provider/model configuration authority", () => {
     ).toMatchObject({ model_provider: "openai", model: "shared-model" });
   });
 
-  test("an exact hidden managed route remains canonical without entering the public catalog", () => {
-    const model = "deepseek/deepseek-v4.1-flash";
-    expect(buildProviderModelCatalog().agenc).not.toContain(model);
-    expect(mergeProviderModelLayer({}, {
-      model_provider: "agenc",
-      model,
-    })).toMatchObject({ model_provider: "agenc", model });
+  test("the retired AgenC account provider is not a provider/model route", () => {
+    expect(buildProviderModelCatalog()).not.toHaveProperty("agenc");
     expect(() => mergeProviderModelLayer({}, {
-      model_provider: "grok",
-      model,
-    })).toThrow(/not explicitly selected provider 'grok'/u);
+      model_provider: "agenc",
+      model: "deepseek/deepseek-v4.1-flash",
+    })).toThrow(/unknown provider 'agenc'/u);
   });
 
   test("an explicit provider rejects a known foreign model", () => {
@@ -300,26 +294,6 @@ describe("provider/model configuration authority", () => {
       model_provider: "amazon-bedrock",
       model: override,
     });
-  });
-
-  test("the agenc shortcut cannot be reassigned by a provider default", () => {
-    const base = mergeConfigs(defaultConfig(), {
-      providers: { openai: { default_model: "agenc" } },
-    });
-
-    expect(resolveProviderModelLayer(base, { model: "agenc" })).toMatchObject({
-      model_provider: "agenc",
-      model: "agenc",
-    });
-    expect(() =>
-      resolveProviderModelLayer(base, {
-        model_provider: "openai",
-        model: "agenc",
-      })
-    ).toThrow(/belongs to provider 'agenc'/u);
-    expect(() =>
-      resolveProviderModelLayer(base, { model_provider: "openai" })
-    ).toThrow(/belongs to provider 'agenc'/u);
   });
 
   test("conflicting explicit provider and model qualifier fail", () => {

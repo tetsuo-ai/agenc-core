@@ -11,7 +11,7 @@ Signal, WhatsApp, and email **channels** are **not** shipped. (The LIVE
 [browser.md](browser.md).)
 
 Related: [quickstart](quickstart.md) · [onboarding](onboarding.md) ·
-[remote control](remote-control.md) · [VPS deploy](deploy/vps.md) ·
+[VPS deploy](deploy/vps.md) ·
 [OpenRouter setup](managed-openrouter.md).
 
 ## CLI

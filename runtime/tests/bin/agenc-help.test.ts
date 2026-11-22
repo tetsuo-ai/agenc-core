@@ -26,9 +26,9 @@ describe("agenc CLI help", () => {
     expect(help).toContain("agenc config validate");
     expect(help).toContain("agenc daemon <stop|status|reload|restart>");
     expect(help).toContain("agenc doctor [--json | --apparmor-profile]");
-    expect(help).toContain("agenc remote <on|status|off>");
+    expect(help).not.toContain("agenc remote");
+    expect(help).not.toContain("agenc login");
     expect(help).toContain("Diagnose installation and runtime readiness");
-    expect(help).toContain("Manage phone remote-control pairing");
     expect(help).toContain("agenc mcp serve --transport stdio");
     expect(help).toContain("-p, --print");
     expect(help).toContain(
@@ -56,7 +56,6 @@ describe("agenc CLI help", () => {
       "daemon",
       "help",
       "init",
-      "login",
       "mcp",
       "permissions",
       "plugin",
@@ -73,6 +72,10 @@ describe("agenc CLI help", () => {
       formatCliHelpTopicText("plugin"),
     );
     expect(formatCliHelpTopicText("unknown")).toBeNull();
+    // The retired sign-in and phone remote topics explain what happened.
+    for (const topic of ["login", "logout", "whoami", "remote"]) {
+      expect(formatCliHelpTopicText(topic), topic).toContain("retired");
+    }
   });
 
   it("detects -h and agenc help topic short-circuits", () => {

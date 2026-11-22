@@ -89,14 +89,27 @@ afterEach(() => {
 });
 
 describe("agenc config CLI", () => {
-  it("cannot enable remote control through config set or unset", async () => {
+  it("refuses to set the retired auth and remote_control tables", async () => {
     const home = makeHome();
-    for (const argv of [["config", "set", "remote_control.enabled", "true"], ["config", "unset", "remote_control"]]) {
+    for (const argv of [["config", "set", "remote_control.enabled", "true"], ["config", "set", "auth.backend", "remote"]]) {
       const result = await run(parseAgenCConfigCliArgs(argv), home);
       expect(result.code).toBe(1);
-      expect(result.io.stderrText()).toContain("owner-only");
+      expect(result.io.stderrText()).toContain("retired with the AgenC account sign-in");
       expect(existsSync(configPath(home))).toBe(false);
     }
+  });
+  it("unsets the retired auth and remote_control tables", async () => {
+    const home = makeHome();
+    mkdirSync(home, { recursive: true });
+    writeFileSync(configPath(home), 'config_version = 2\nmodel = "grok-4.6"\n\n[auth]\nbackend = "remote"\n\n[remote_control]\nenabled = true\n');
+    for (const key of ["auth", "remote_control"]) {
+      const result = await run(parseAgenCConfigCliArgs(["config", "unset", key]), home);
+      expect(result.code, result.io.stderrText()).toBe(0);
+    }
+    const written = readFileSync(configPath(home), "utf8");
+    expect(written).not.toContain("[auth]");
+    expect(written).not.toContain("remote_control");
+    expect(written).toContain("grok-4.6");
   });
   it("parses help and subcommands", () => {
     expect(parseAgenCConfigCliArgs(["prompt"])).toBeNull();

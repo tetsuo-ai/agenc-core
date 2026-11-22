@@ -7355,8 +7355,13 @@ describe("AgenC background agent lifecycle", () => {
       "session.transcript.v2": false,
       "session.create": false,
       "daemon.reload": false,
-      "auth.login": false,
     });
+    // The AgenC account methods are gone, not merely unavailable.
+    expect(
+      connection.initializeState?.serverCapabilities[
+        AGENC_DAEMON_METHOD_CAPABILITIES_KEY
+      ],
+    ).not.toHaveProperty("auth.login");
 
     await expect(
       connection.dispatch({

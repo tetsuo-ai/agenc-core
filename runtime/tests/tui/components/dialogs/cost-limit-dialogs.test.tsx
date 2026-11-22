@@ -126,7 +126,7 @@ describe('cost and limit dialogs', () => {
       shouldAutoOpenRateLimitOptionsMenu: false,
       isTeamOrEnterprise: false,
       hasBillingAccess: false,
-    })).toContain('/login')
+    })).toContain('/providers')
 
     expect(getUpsellMessage({
       shouldShowUpsell: true,

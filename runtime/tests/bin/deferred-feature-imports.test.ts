@@ -21,15 +21,13 @@ let mcpb: typeof import("../../src/utils/plugins/mcpbHandler.js");
 beforeAll(async () => {
   [mcpb] = await Promise.all([
     import("../../src/utils/plugins/mcpbHandler.js"),
-    import("../../src/bin/remote-cli.js"),
-    import("../../src/remote/service.js"),
     import("../../src/gateway/owner-telegram.js"),
   ]);
   coldEvaluations = { ...evaluations };
 }, 30_000);
 
 describe("optional startup feature imports", () => {
-  it("loads remote services and plugin configuration without QR encoders or archive schemas", () => {
+  it("loads Telegram services and plugin configuration without QR encoders or archive schemas", () => {
     expect(coldEvaluations).toEqual({ qr: 0, manifest: 0, manifestHelpers: 0 });
   });
 

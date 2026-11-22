@@ -1,11 +1,10 @@
 /**
  * Reports built-in provider readiness from the canonical provider registry,
- * session environment, BYOK state, local health probes, and auth backend.
+ * session environment, BYOK state and local health probes.
  */
 
 import { ModelMetadataResolver } from "../model-metadata.js";
 import { veniceDefaultModel } from "../registry/venice-models.js";
-import type { AuthAgencModel, AuthBackend, AuthBackendKind, AuthSubscriptionTier } from "../../auth/backend.js";
 
 import { loadCanonicalConfig } from "../../config/repository.js";
 import { readProviderConfig } from "../../config/resolve-provider.js";
@@ -41,7 +40,6 @@ const DEFAULT_LOCAL_PROVIDER_PROBE_TIMEOUT_MS = 750;
 export interface ProviderAvailabilityEntry {
   readonly provider: ProviderName;
   readonly model: string;
-  readonly models?: readonly AuthAgencModel[];
   readonly status: ProviderAvailabilityStatus;
   readonly usable: boolean;
   readonly credentialStatus: ProviderCredentialStatus;
@@ -49,8 +47,6 @@ export interface ProviderAvailabilityEntry {
   readonly localStatus: ProviderLocalStatus;
   readonly localUrl?: string;
   readonly localStatusCode?: number;
-  readonly subscriptionTier?: AuthSubscriptionTier;
-  readonly authBackendKind?: AuthBackendKind;
   readonly detail: string;
   /**
    * Canonical API-key environment variable for BYOK entry (first alias),
@@ -61,25 +57,15 @@ export interface ProviderAvailabilityEntry {
 }
 
 export interface ProviderAvailabilityReport {
-  readonly authBackendKind?: AuthBackendKind;
-  readonly subscriptionTier?: AuthSubscriptionTier;
-  readonly subscriptionError?: string;
   readonly entries: readonly ProviderAvailabilityEntry[];
 }
 
 export interface CollectProviderAvailabilityOptions {
-  readonly authBackend?: AuthBackend;
   readonly checkLocal?: boolean;
   readonly config?: AgenCConfig;
   readonly env?: NodeJS.ProcessEnv;
   readonly fetchImpl?: typeof fetch;
   readonly localProbeTimeoutMs?: number;
-}
-
-interface SubscriptionContext {
-  readonly authBackendKind?: AuthBackendKind;
-  readonly tier?: AuthSubscriptionTier;
-  readonly error?: string;
 }
 
 export async function collectProviderAvailability(
@@ -90,17 +76,14 @@ export async function collectProviderAvailability(
   const home = ingress.home;
   const config = options.config ??
     (await loadCanonicalConfig({ home, env })).config;
-  const subscription = await resolveSubscriptionContext(options.authBackend);
   const entries = await Promise.all(
-    (Object.keys(BUILT_IN_PROVIDER_DEFAULT_MODELS) as ProviderName[]).filter(provider => provider !== "agenc").map(
+    (Object.keys(BUILT_IN_PROVIDER_DEFAULT_MODELS) as ProviderName[]).map(
       (provider) =>
         resolveProviderAvailabilityEntry({
           provider,
-          authBackend: options.authBackend,
           config,
           home,
           env,
-          subscription,
           checkLocal: options.checkLocal !== false,
           fetchImpl: options.fetchImpl,
           localProbeTimeoutMs:
@@ -108,72 +91,30 @@ export async function collectProviderAvailability(
         }),
     ),
   );
-  return {
-    ...(subscription.authBackendKind !== undefined
-      ? { authBackendKind: subscription.authBackendKind }
-      : {}),
-    ...(subscription.tier !== undefined
-      ? { subscriptionTier: subscription.tier }
-      : {}),
-    ...(subscription.error !== undefined
-      ? { subscriptionError: subscription.error }
-      : {}),
-    entries,
-  };
+  return { entries };
 }
 
 export function formatProviderAvailabilityReport(
   report: ProviderAvailabilityReport,
 ): string {
-  const auth = report.authBackendKind ?? "none";
-  const tier = report.subscriptionTier ?? "unknown";
-  const lines = [
-    `Auth: ${auth}; subscription: ${tier}`,
-    "",
-    "",
-    table([
-      ["Provider", "Model", "Usable", "Credential", "Local", "Tier", "Detail"],
-      ...report.entries.map((entry) => [
-        entry.provider,
-        entry.model,
-        entry.usable ? "yes" : "no",
-        formatCredentialStatus(entry),
-        formatLocalStatus(entry),
-        entry.subscriptionTier ?? "unknown",
-        entry.detail,
-      ]),
+  return table([
+    ["Provider", "Model", "Usable", "Credential", "Local", "Detail"],
+    ...report.entries.map((entry) => [
+      entry.provider,
+      entry.model,
+      entry.usable ? "yes" : "no",
+      formatCredentialStatus(entry),
+      formatLocalStatus(entry),
+      entry.detail,
     ]),
-  ];
-  if (report.subscriptionError !== undefined) {
-    lines.push("", `Subscription check: ${report.subscriptionError}`);
-  }
-  return lines.join("\n");
-}
-
-async function resolveSubscriptionContext(
-  authBackend: AuthBackend | undefined,
-): Promise<SubscriptionContext> {
-  if (authBackend === undefined) return {};
-  try {
-    return {
-      ...(authBackend.kind !== undefined ? { authBackendKind: authBackend.kind } : {}),
-      tier: await authBackend.getSubscriptionTier({ sessionId: "cli" }),
-    };
-  } catch (error) {
-    return {
-      ...(authBackend.kind !== undefined ? { authBackendKind: authBackend.kind } : {}),
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
+  ]);
 }
 
 async function resolveProviderAvailabilityEntry(params: {
   readonly provider: ProviderName;
-  readonly authBackend?: AuthBackend;
   readonly config: AgenCConfig;
   readonly home: HomeContext;
   readonly env: NodeJS.ProcessEnv;
-  readonly subscription: SubscriptionContext;
   readonly checkLocal: boolean;
   readonly fetchImpl?: typeof fetch;
   readonly localProbeTimeoutMs: number;
@@ -208,7 +149,6 @@ async function resolveProviderAvailabilityEntry(params: {
       model,
       credentialStatus: "unavailable",
       localProbe: { localStatus: "n/a" },
-      subscription: params.subscription,
       usable: false,
       detail: error instanceof Error ? error.message : String(error),
     });
@@ -256,7 +196,6 @@ async function resolveProviderAvailabilityEntry(params: {
         credentialReady,
       ),
       localProbe,
-      subscription: params.subscription,
       usable,
       detail: usable
         ? "local server reachable"
@@ -275,7 +214,6 @@ async function resolveProviderAvailabilityEntry(params: {
       model,
       credentialStatus: "not-required",
       localProbe,
-      subscription: params.subscription,
       usable: true,
       detail: "available",
     });
@@ -292,8 +230,7 @@ async function resolveProviderAvailabilityEntry(params: {
         model,
         credentialStatus: "present",
         localProbe,
-        subscription: params.subscription,
-        usable: true,
+          usable: true,
         detail: params.provider === "gemini"
           ? `Gemini credential found via ${credential.label}`
           : credentialProvenance?.kind === "oauth"
@@ -311,7 +248,6 @@ async function resolveProviderAvailabilityEntry(params: {
       model,
       credentialStatus: "missing",
       localProbe,
-      subscription: params.subscription,
       usable: false,
       detail:
         `set ${credential.status === "missing" ? credential.missingLabel : "provider credentials"}`,
@@ -326,7 +262,6 @@ async function resolveProviderAvailabilityEntry(params: {
     model,
     credentialStatus: "not-required",
     localProbe,
-    subscription: params.subscription,
     usable: true,
     detail: "available",
   });
@@ -341,7 +276,6 @@ function buildEntry(params: {
     readonly localStatusCode?: number;
     readonly localUrl?: string;
   };
-  readonly subscription: SubscriptionContext;
   readonly usable: boolean;
   readonly detail: string;
   readonly credentialProvenance?: ProviderCredentialProvenance;
@@ -363,12 +297,6 @@ function buildEntry(params: {
       : {}),
     ...(params.localProbe.localStatusCode !== undefined
       ? { localStatusCode: params.localProbe.localStatusCode }
-      : {}),
-    ...(params.subscription.tier !== undefined
-      ? { subscriptionTier: params.subscription.tier }
-      : {}),
-    ...(params.subscription.authBackendKind !== undefined
-      ? { authBackendKind: params.subscription.authBackendKind }
       : {}),
     detail: params.detail,
   };

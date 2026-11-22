@@ -271,7 +271,6 @@ function readModelMenuSnapshotFromStorage(ctx: SlashCommandContext, now: Date): 
     model: string,
   ): boolean => {
     const access = accessFor(catalogProvider, model);
-    if (catalogProvider === "agenc") return false;
     if (access.effect === "unchanged") return true;
     if (access.effect === "blocked" || access.route === "unavailable") {
       return false;

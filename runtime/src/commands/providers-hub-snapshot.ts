@@ -124,8 +124,6 @@ function notSetStatus(access: BuiltInProviderOnboardingAccess): string {
   switch (access) {
     case "environment":
       return "needs AWS credentials";
-    case "retired":
-      return "unavailable";
     case "local":
       return "not running";
     default:

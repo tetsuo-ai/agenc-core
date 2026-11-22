@@ -11,10 +11,8 @@ const authHarness = vi.hoisted(() => {
   const state = {
     authEnabled: true,
     key: undefined as string | undefined,
-    remoteSession: false,
     source: undefined as string | undefined,
     subscriber: false,
-    remoteAuthContexts: [] as unknown[],
   }
 
   return {
@@ -26,10 +24,8 @@ const authHarness = vi.hoisted(() => {
     reset() {
       state.authEnabled = true
       state.key = undefined
-      state.remoteSession = false
       state.source = undefined
       state.subscriber = false
-      state.remoteAuthContexts = []
       this.getAnthropicApiKeyWithSource.mockClear()
       this.verifyApiKey.mockReset()
       this.verifyApiKey.mockResolvedValue({ status: 'valid' })
@@ -40,17 +36,6 @@ const authHarness = vi.hoisted(() => {
 
 vi.mock('../../../src/onboarding/useApiKeyVerification', () => ({
   verifyApiKey: authHarness.verifyApiKey,
-}))
-
-// The hook treats a live hosted (remote) auth session as already-valid and
-// never touches the anthropic key sources. Keep it harness-controlled so the
-// tests are hermetic against the developer's real ~/.agenc/auth.json.
-vi.mock('../../../src/auth/session-state', async importOriginal => ({
-  ...(await importOriginal()),
-  hasRemoteAuthSessionSync: (context: unknown) => {
-    authHarness.state.remoteAuthContexts.push(context)
-    return authHarness.state.remoteSession
-  },
 }))
 
 vi.mock('../../../src/utils/auth.js', () => ({
@@ -190,25 +175,6 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
     authHarness.reset()
   })
 
-  test('passes the session-owned auth context to every remote-session read', async () => {
-    const rendered = await renderVerificationHook()
-
-    try {
-      await waitForCondition(
-        () => authHarness.state.remoteAuthContexts.length > 0,
-        'Timed out waiting for a remote-session read',
-      )
-
-      expect(
-        authHarness.state.remoteAuthContexts.every(
-          context => context === TEST_REMOTE_AUTH_SESSION_CONTEXT,
-        ),
-      ).toBe(true)
-    } finally {
-      await rendered.cleanup()
-    }
-  })
-
   test.each([
     {
       name: 'disabled auth',
@@ -217,10 +183,6 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
     {
       name: 'subscriber auth',
       patch: { subscriber: true },
-    },
-    {
-      name: 'remote auth session',
-      patch: { remoteSession: true },
     },
   ])('treats $name as already valid', async ({ patch }) => {
     Object.assign(authHarness.state, patch)

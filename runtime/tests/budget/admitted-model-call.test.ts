@@ -11,7 +11,6 @@ import type { AdmissionAcquireInput } from "../../src/budget/admission-client.js
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
 import { createAllowAdmissionHarness } from "./admission-test-harness.js";
 import { LLMContextWindowExceededError, LLMManagedAdmissionError, LLMManagedUsagePendingError, LLMRateLimitError, markLLMPreGenerationRejection } from "../../src/llm/errors.js";
-import type { AuthBackend } from "../../src/auth/backend.js";
 import { OllamaProvider } from "../../src/llm/providers/ollama/adapter.js";
 import { GeminiProvider } from "../../src/llm/providers/gemini/index.js";
 import { createGeminiEndpointPlan } from "../../src/llm/providers/gemini/endpoint-plan.js";

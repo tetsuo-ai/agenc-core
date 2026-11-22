@@ -1,7 +1,7 @@
 # Daemon reference
 
 The local **app-server** control plane for AgenC **0.19.38**. One daemon per
-`AGENC_HOME`. Clients (TUI, print CLI, gateway, remote, SDK, background
+`AGENC_HOME`. Clients (TUI, print CLI, gateway, SDK, background
 agents) attach over a local socket and speak JSON-RPC.
 
 Architecture map: [`../ARCHITECTURE.md`](../ARCHITECTURE.md). Embedding API:
@@ -291,7 +291,7 @@ sidecars may omit it. Cleanup uses the same resolver as startup and discovery.
   stable pipe derived from `AGENC_HOME` on Windows.
 - **Auth:** cookie file `$AGENC_HOME/daemon.cookie` (ensured on start; private
   socket owner identity + peer UID checks on supported platforms).
-- **Optional WebSocket transport** (remote control, SSH tunnels, VPS operators)
+- **Optional WebSocket transport** (SSH tunnels, VPS operators)
   defaults to loopback **`ws://127.0.0.1:7766/`** (see
   `AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT`). Env knobs:
 
@@ -302,8 +302,8 @@ sidecars may omit it. Cleanup uses the same resolver as startup and discovery.
   | `AGENC_DAEMON_WEBSOCKET_PATH`              | Path (default `/`)                                                                 |
   | `AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK` | Set `1` to allow a non-loopback host; otherwise non-loopback binds are **refused** |
 
-  Prefer the local socket/named pipe for TUI/CLI; WebSocket is what remote/phone
-  and tunnel docs mean by `ws://127.0.0.1:7766`. Implementation:
+  Prefer the local socket/named pipe for TUI/CLI; WebSocket is what tunnel docs
+  mean by `ws://127.0.0.1:7766`. Implementation:
   `runtime/src/app-server/daemon-cli.ts` + `transport/`.
 
 - Config block `[daemon]` has one active setting: `autostart = true` by default.
@@ -333,7 +333,7 @@ LF is the same delimiter rather than an empty extra frame. The SDK socket and
 subprocess transports share that rule and `AGENC_SDK_MAX_FRAME_BYTES`.
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
-- Protocol version constant: **`1.16.0`**
+- Protocol version constant: **`1.37.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).
 - Clients send `initialize` with the protocol version. Negotiation compares the
   numeric major and minor versions: the server accepts the same major when the
@@ -376,6 +376,12 @@ subprocess transports share that rule and `AGENC_SDK_MAX_FRAME_BYTES`.
 - Protocol 1.16 adds `project.trustStatus` and `project.trust`. A client that
   negotiates 1.15 or older sees both advertised `false` and gets
   `METHOD_NOT_FOUND`, so it keeps whatever it did before.
+- **Protocol 1.37 removes** the AgenC account methods (`auth.login`,
+  `auth.whoami`, `auth.logout`) and the phone remote pairing methods
+  (`remote.*`) with the retired AgenC account sign-in. As with 1.15, an older
+  client still completes `initialize`; those calls answer `METHOD_NOT_FOUND`.
+  An `initialize` with `remoteControlBridge: true` is refused with
+  `REMOTE_CONTROL_DISABLED`.
 
 ### Public methods (`AGENC_DAEMON_METHODS`)
 
@@ -417,11 +423,10 @@ Never retry after admission may have arrived.
 | `session.goal`                                                                                              | Set, inspect, pause, resume, or clear the session goal. See [goal.md](goal.md) (protocol 1.14)                      |
 | `routine.capabilities` / `routine.list` / `routine.get` / `routine.create` / `routine.update` / `routine.delete` / `routine.run` / `routine.runs` / `routine.cancel`                                                                                                 | Daemon-owned local routines. See [agents.md](agents.md#routine-runs). Permission-blocked runs store a fixed `run.error`: [agents.md](agents.md#permission-blocked-explanation). |
 | `routine.session.prepare.respond`                                                                           | Answer Core's request to prepare a routine's session before its first turn, so the client can attach its tools (protocol 1.17) |
-| `remote.*` / `telegram.*`                                                                                   | See the [remote and Telegram method contracts](#remote-and-telegram-methods) below                     |
+| `telegram.*`                                                                                                | See the [Telegram method contracts](#telegram-methods) below                                           |
 | `daemon.reload`                                                                                             | Reload configuration. Open sessions take the new `[agents]` cross-provider settings. A session that could not read them again is listed in the result's `crossProviderSettings.failed`, with `timedOut: true` when it ran out of time. Other session settings apply to new sessions |
 | `daemon.shutdown`                                                                                           | Ask the daemon process to exit                                                                                     |
 | `daemon.shutdownIfIdle`                                                                                     | Exit only when no work runs; new requests wait while it checks (`agenc daemon restart --when-idle`)                |
-| `auth.login` / `auth.whoami` / `auth.logout`                                                                | Auth backend                                                                                                       |
 
 `session.snapshot.tokenUsage.costUsd` is the cost of the session's own model
 turns plus the charges of its own tool calls as the admission ledger settled
@@ -459,7 +464,7 @@ restores it and never applies the default again. A resume keeps the recorded
 mode; a session recorded without one (created before Light became the
 default) stays standard. The CLI always sends an explicit value for a new
 session, resolved from `--light`, `--standard`, its own `light_mode` and the
-default. Phone, Telegram and routine sessions use the daemon default.
+default. Telegram and routine sessions use the daemon default.
 
 #### Goal Light mode
 
@@ -617,64 +622,31 @@ task that may only call a few tools from one MCP server, sends:
 - `metadata.toolPolicy` and `metadata.toolPolicyModeCeiling` are reserved and
   rejected in `agent.create`.
 
-#### Remote and Telegram methods
+#### Telegram methods
 
-These are **local management RPCs**, not methods that a paired browser or
-Telegram chat may invoke. Complete the authenticated `initialize` handshake
-first. The dispatcher requires the corresponding service and an initialize
-authenticator, and refuses these methods on connections carrying remote-access
-authority. Check the per-method capabilities from `initialize`; registry
-membership alone does not mean a service is available.
+These are **local management RPCs**, not methods that a Telegram chat may
+invoke. Complete the authenticated `initialize` handshake first. The dispatcher
+requires the Telegram service and an initialize authenticator, and refuses
+these methods on connections carrying remote-access authority. Check the
+per-method capabilities from `initialize`; registry membership alone does not
+mean a service is available.
 
 The tables below use `—` for no method-specific parameters (send `{}`). Result
-names refer to the interfaces in `runtime/src/remote/types.ts` and
-`runtime/src/gateway/owner-telegram-types.ts`; results are returned directly in
-JSON-RPC `result`, not wrapped in a field named after the type.
+names refer to the interfaces in `runtime/src/gateway/owner-telegram-types.ts`;
+results are returned directly in JSON-RPC `result`, not wrapped in a field
+named after the type.
 
-##### Remote browser pairing
-
-Call `remote.start` before `remote.pair.begin`. Starting the local service does
-not sign in, create a pairing, or connect a device. Pair creation requires a
-signed-in AgenC account on the host and a canonical, allowed workspace. The
-explicit session IDs must belong to that workspace; control grants must also
-pass the control-session check. A view grant requires at least one session;
-a control grant may start empty. At most 64 session IDs and eight approved or
-approving devices are accepted, with only one pending pairing at a time.
-`allowFiles` and `allowApprovals` default to false; approvals are only enabled
-for a control grant.
-
-A device claiming the code is **not** approval. Poll `remote.pending` or
-`remote.status`, then approve the claimed `deviceId` locally. Pairing status
-includes the code, URL, QR data URL, expiry, grant, and (once claimed) device
-identity. Treat that pairing material as sensitive. `RemoteStatus` contains
-`enabled`, `state`, `connectedDevices`, `devices`, `pairing`, and a sanitized
-`error` code; it does not expose host secrets or relay tickets.
-
-| Method | Parameters | Result and behavior |
-| --- | --- | --- |
-| `remote.capabilities` | — | `RemoteCapabilities`: contract version 1, browser protocol, supported roles/features, and sign-in/local-approval requirements. |
-| `remote.status` | — | `RemoteStatus`: current service, pairing, and device state. |
-| `remote.start` | — | `RemoteStatus`: enable the service; idempotent when already enabled. |
-| `remote.stop` | — | `RemoteStatus`: disable service, cancel pairing, disconnect and forget all devices; backend revocation is best-effort. |
-| `remote.pair.begin` | `workspacePath`, `sessionIds: string[]`, `role: "view" \| "control"`; optional `allowFiles`, `allowApprovals` booleans | `RemoteStatus` with a new pending pairing; starts polling for a claim. |
-| `remote.pair.refresh` | — | `RemoteStatus`: cancel the pending pairing and create a new one with the same grant; fails if none is pending. |
-| `remote.pair.cancel` | — | `RemoteStatus`: cancel pending/in-flight pairing; leave approved devices alone. |
-| `remote.devices` | — | `{ devices: RemoteDevice[] }`: approved device projections, including scope and connection state. |
-| `remote.pending` | — | `{ pending: RemotePairing[] }`: the claimed pairing awaiting local approval, or an empty array (including while still unclaimed). |
-| `remote.approve` | `deviceId: string` | `RemoteStatus`: require the currently claimed device, approve with the backend, and initiate its relay connection; return does not guarantee a connected browser yet. |
-| `remote.revoke` | `deviceId: string` | `RemoteStatus`: disconnect and forget that approved device, with best-effort backend revocation; an unknown ID is a no-op. |
-
-Validation/lifecycle errors include `REMOTE_NOT_STARTED`,
-`REMOTE_GRANT_INVALID`, `REMOTE_PAIRING_EXISTS`, `REMOTE_PAIRING_MISSING`,
-`REMOTE_DEVICE_LIMIT`, and `REMOTE_DEVICE_NOT_PENDING`. See
-[remote control](../remote-control.md) for the broader remote-control flows;
-these RPC contracts come from `runtime/src/remote/service.ts` and the local
-management gates in `runtime/src/app-server/daemon-dispatcher.ts`.
+Protocol 1.37 removed the browser pairing methods (`remote.*`) and the AgenC
+account methods (`auth.login`, `auth.whoami`, `auth.logout`) with the retired
+AgenC account sign-in. They answer `METHOD_NOT_FOUND`. An `initialize` with
+`remoteControlBridge: true`, sent by a phone connector an older Core left
+running, is refused with `REMOTE_CONTROL_DISABLED`. See
+[the retired sign-in](../agenc-account-model-access.md).
 
 ##### Telegram owner gateway and managed agents
 
 Telegram uses a bot token in native credential storage and private-owner chat
-binding, not the remote browser's AgenC sign-in/pairing flow. Tokens are input
+binding. Tokens are input
 credentials, never status results. Tool approvals stay on the host; a Telegram
 message cannot approve a tool. Workspace paths are canonicalized and validated.
 
@@ -792,9 +764,9 @@ operator configuration, read again after `daemon.reload`. Both return `cwd` and
 file, and returns `trusted: true` with `alreadyTrusted`.
 
 Trust widens what every session in the project may do, so both methods use the
-gate `remote.*` and `telegram.*` use: they are advertised and answered only on
-an authenticated local connection (cookie or peer credentials). Remote browser
-and Telegram connections are refused by their `RemoteAccessBoundary` allowlist.
+gate `telegram.*` uses: they are advertised and answered only on
+an authenticated local connection (cookie or peer credentials). Telegram
+connections are refused by their `RemoteAccessBoundary` allowlist.
 
 Bypass consent stays keyed to the exact canonical cwd. A session that starts in
 bypass mode records that consent only when its project is trusted, and the
@@ -1870,8 +1842,6 @@ export a session you still need before the window expires.
   and the [session rollout retention](#session-rollout-retention) sweep.
   Journal quarantine/deferred (schema v18, live DB through v27) is operator
   CLI `agenc state recovery …`, not a daemon RPC. See [cli.md](cli.md).
-- **Auth / key vending** — auth handlers + provider-key vending for managed
-  backends (`provider-key-vending.ts`).
 - **Realtime** — thread realtime RPC + WebSocket connector.
 
 The channel **gateway does not run inside the daemon process**. It is a

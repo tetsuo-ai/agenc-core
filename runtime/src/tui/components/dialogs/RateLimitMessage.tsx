@@ -41,7 +41,7 @@ export function getUpsellMessage({
     if (isExtraUsageCommandEnabled) {
       return '/extra-usage to finish what you’re working on.'
     }
-    return '/login to switch to an API usage-billed account.'
+    return '/providers to switch to an API usage-billed account.'
   }
 
   if (shouldAutoOpenRateLimitOptionsMenu) {

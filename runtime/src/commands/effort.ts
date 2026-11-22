@@ -24,7 +24,7 @@ import {
   type AvailableEffortLevel,
 } from "../utils/effort.js";
 import { readSessionSelection } from "../session/provider-model-selection.js";
-import { remoteAuthContextFromCommandContext } from "./config-context.js";
+import { homeEnvironmentFromCommandContext } from "./config-context.js";
 import { ensureLiveModelCatalog } from "./live-model-catalog.js";
 import {
   getSettingsForSource,
@@ -229,7 +229,7 @@ export const effortCommand: SlashCommand = {
       }
       const model = sessionModel;
       const providerAuthContext = Object.freeze({
-        ...remoteAuthContextFromCommandContext(ctx),
+        ...homeEnvironmentFromCommandContext(ctx),
         provider: sessionSelection.provider,
       });
       const arg = ctx.argsRaw.trim().toLowerCase();

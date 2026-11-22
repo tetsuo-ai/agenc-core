@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../config/schema.js";
-import type { AuthBackend, AuthProviderSlug, AuthSessionId, AuthSubscriptionTier } from "../auth/backend.js";
 import {
   collectProviderAvailability,
   formatAgenCProvidersCliHelpText,
@@ -30,38 +29,6 @@ function createIo(): AgenCProvidersCliIo & {
     } as Pick<NodeJS.WriteStream, "write">,
     stdoutText: () => stdout,
     stderrText: () => stderr,
-  };
-}
-
-function authBackend(
-  kind: "local" | "remote",
-  tier: AuthSubscriptionTier,
-  overrides: Partial<
-    Pick<AuthBackend, "vendKey" | "inferAgencModel" | "getSubscriptionTier">
-  > = {},
-): AuthBackend {
-  return {
-    kind,
-    login: () => ({
-      authenticated: true,
-      provider: kind,
-    }),
-    logout: () => ({ authenticated: false }),
-    whoami: () => ({
-      authenticated: true,
-      provider: kind,
-    }),
-    vendKey: overrides.vendKey ?? ((provider, sessionId) => ({
-      kind: "api-key",
-      provider,
-      sessionId,
-      apiKey: "managed-key",
-    })),
-    inferAgencModel: overrides.inferAgencModel ?? (() => ({
-      provider: "grok",
-      model: "grok-4.3",
-    })),
-    getSubscriptionTier: overrides.getSubscriptionTier ?? (() => tier),
   };
 }
 
@@ -116,7 +83,6 @@ describe("providers CLI", () => {
     });
 
     const report = await collectProviderAvailability({
-      authBackend: authBackend("local", "free"),
       config: defaultConfig(),
       env: {
         XAI_API_KEY: "xai-key",
@@ -126,10 +92,8 @@ describe("providers CLI", () => {
     });
     const entries = byProvider(report.entries);
 
-    expect(report).toMatchObject({
-      authBackendKind: "local",
-      subscriptionTier: "free",
-    });
+    // No AgenC account: the report carries provider entries only.
+    expect(Object.keys(report)).toEqual(["entries"]);
     expect(entries.get("grok")).toMatchObject({
       usable: true,
       credentialStatus: "present",
@@ -183,7 +147,6 @@ describe("providers CLI", () => {
     });
 
     const report = await collectProviderAvailability({
-      authBackend: authBackend("local", "free"),
       config: defaultConfig(),
       env: {
         LMSTUDIO_API_KEY: "studio-key",
@@ -219,7 +182,6 @@ describe("providers CLI", () => {
       runAgenCProvidersCli(
         { kind: "providers", json: true, checkLocal: false },
         {
-          authBackend: authBackend("remote", "team"),
           config: defaultConfig(),
           env: { XAI_API_KEY: "xai-key" },
           io,
@@ -228,14 +190,14 @@ describe("providers CLI", () => {
     ).resolves.toBe(0);
 
     const parsed = JSON.parse(io.stdoutText()) as {
-      readonly subscriptionTier: string;
       readonly entries: readonly {
         readonly provider: string;
         readonly credentialStatus: string;
         readonly credentialProvenance?: unknown;
       }[];
     };
-    expect(parsed.subscriptionTier).toBe("team");
+    expect(parsed).not.toHaveProperty("subscriptionTier");
+    expect(parsed).not.toHaveProperty("authBackendKind");
     const grok = parsed.entries.find((entry) => entry.provider === "grok");
     expect(grok).toMatchObject({
       credentialStatus: "present",

@@ -38,8 +38,12 @@ export interface ApiKeyApprovalState {
   rejected?: string[]
 }
 
-/** Local-login and provider BYOK secrets owned by `auth/backends/local`. */
+/** Saved provider API keys (`auth/provider-keys`). */
 export interface LocalAuthSecureStorage {
+  /**
+   * Retired local AgenC sign-in token. Nothing reads it; the startup cleanup
+   * in `auth/retired-sign-in.ts` removes it.
+   */
   login?: {
     token: string
     createdAt: string
@@ -54,7 +58,10 @@ export interface LocalAuthSecureStorage {
   >
 }
 
-/** Remote bearer owned by `auth/backends/remote`. */
+/**
+ * Retired AgenC account bearer. Nothing reads it; the startup cleanup in
+ * `auth/retired-sign-in.ts` removes it.
+ */
 export interface RemoteAuthSecureStorage {
   bearerToken: string
   createdAt: string
