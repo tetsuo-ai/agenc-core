@@ -11,10 +11,10 @@
  * one line appended to `<AGENC_HOME>/skill-candidates/ledger.jsonl`.
  *
  * A draft is inert. The local loader (local-loader.ts) discovers skills only
- * from fixed roots (`<dir>/.agenc/skills` and `<dir>/.agents/skills` from the
- * workspace through its nearest git root, excluding `$HOME` and world-writable
- * project roots, plus `<AGENC_HOME>/skills`, `$HOME/.agents/skills`,
- * `$AGENC_MANAGED_HOME/.agenc/skills`, and plugin skill roots) and walks
+ * from fixed roots (`<dir>/.agenc/skills` from the workspace through its
+ * nearest git root, excluding `$HOME` and world-writable project roots, plus
+ * `<AGENC_HOME>/skills`, `$AGENC_MANAGED_HOME/.agenc/skills`, and plugin
+ * skill roots) and walks
  * downward from each of them. `<AGENC_HOME>/skill-candidates` is a sibling of
  * `<AGENC_HOME>/skills`, never a root and never below one, so nothing written
  * here reaches the listing, the command catalog, or the model until

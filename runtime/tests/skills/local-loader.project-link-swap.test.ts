@@ -40,7 +40,7 @@ function writeSkill(dir: string, description: string): void {
 
 function fixture() {
   const workspaceRoot = tmpRoot("link-swap-workspace");
-  const root = join(workspaceRoot, ".agents", "skills");
+  const root = join(workspaceRoot, ".agenc", "skills");
   const safeDir = join(tmpRoot("link-swap-safe"), "linked");
   const unsafeParent = tmpRoot("link-swap-unsafe");
   const unsafeDir = join(unsafeParent, "linked");

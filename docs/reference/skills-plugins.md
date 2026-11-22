@@ -41,11 +41,18 @@ Existing directories only (missing roots skipped). Project walk: cwd up to home.
 
 | Scope | Typical roots |
 | --- | --- |
-| Project | `<dir>/.agenc/skills`, `<dir>/.agents/skills` |
-| User | `$AGENC_HOME/skills`, `$HOME/.agents/skills` |
+| Project | `<dir>/.agenc/skills` |
+| User | `$AGENC_HOME/skills` |
 | Managed | `$AGENC_MANAGED_HOME/.agenc/skills` |
 | Plugin | Skill roots exposed by enabled plugins |
 | Bundled / MCP | Built-in definitions and MCP-sourced skills |
+
+Core does not read `.agents/skills`, neither `$HOME/.agents/skills` nor a
+project's `<dir>/.agents/skills`, nor one found below the workspace while
+files are being worked on. Other agent tools share that folder, and a skill
+installed there for one of them is not AgenC's. Install a skill for AgenC in
+`$AGENC_HOME/skills`, in the project's `.agenc/skills`, or through an AgenC
+plugin. This is the Core that AgenC Desktop runs (`core-desktop`).
 
 The runtime command catalog and `/skills` use this same discovery result.
 `/skills` can list roots and manage project skills; bundled skills are tagged
