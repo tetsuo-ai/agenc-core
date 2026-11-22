@@ -803,12 +803,6 @@ export type GrokCapabilityConfig = Pick<
   | "remote_mcp"
 >;
 
-export type AuthBackendConfigKind = "local" | "remote";
-
-export interface AuthConfig {
-  readonly backend?: AuthBackendConfigKind;
-}
-
 export interface LspServerConfigInput {
   readonly command: string;
   readonly args?: readonly string[];
@@ -969,7 +963,6 @@ export interface AgenCConfig {
   readonly personality?: Personality;
   readonly agent_max_threads?: number;
   readonly agent_max_depth?: number;
-  readonly auth?: AuthConfig;
   readonly profiles?: Readonly<Record<string, ProfileOverride>>;
   readonly providers?: Readonly<Record<string, ProviderConfig>>;
   readonly project_root_markers?: readonly string[];
@@ -982,8 +975,6 @@ export interface AgenCConfig {
   readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
   readonly xaa_idp?: XaaIdpConfig;
   readonly daemon?: DaemonConfig;
-  /** Owner-only phone/browser relay capability. No environment or project authority. */
-  readonly remote_control?: { readonly enabled?: boolean };
   readonly gateway?: GatewayConfig;
   readonly protocol?: ProtocolConfig;
   readonly lsp_servers?: Readonly<Record<string, LspServerConfigInput>>;
@@ -1166,7 +1157,6 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "personality",
   "agent_max_threads",
   "agent_max_depth",
-  "auth",
   "profiles",
   "providers",
   "project_root_markers",
@@ -1179,7 +1169,6 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "mcp_servers",
   "xaa_idp",
   "daemon",
-  "remote_control",
   "gateway",
   "protocol",
   "lsp_servers",
@@ -1300,9 +1289,6 @@ export function defaultConfig(): AgenCConfig {
     reasoning_cap_policy: "off" as const,
     approvals_reviewer: "user" as ApprovalsReviewer,
     agent_max_depth: 1,
-    auth: Object.freeze({
-      backend: "remote",
-    }) as AuthConfig,
     plugins: Object.freeze({
       enabled: false,
       allowlist: Object.freeze([]) as readonly string[],
@@ -1313,7 +1299,6 @@ export function defaultConfig(): AgenCConfig {
         transport: "stdio",
       }) as McpServerModeConfig,
     }) as McpConfig,
-    remote_control: Object.freeze({ enabled: false }),
     daemon: Object.freeze({
       autostart: true,
     }) as DaemonConfig,
@@ -1527,12 +1512,6 @@ class InvalidNamedConfigError extends Error {
   }
 }
 
-export class InvalidAuthConfigError extends InvalidNamedConfigError {
-  constructor(field: string, detail: string) {
-    super("auth", "InvalidAuthConfigError", field, detail);
-  }
-}
-
 export class InvalidProviderConfigError extends InvalidNamedConfigError {
   constructor(field: string, detail: string) {
     super("providers", "InvalidProviderConfigError", field, detail);
@@ -1731,33 +1710,6 @@ function optionalHttpStatusArray(
     out.push(item);
   }
   return Object.freeze(out);
-}
-
-const AUTH_KEYS: ReadonlySet<string> = new Set(["backend", "managedKeys", "managed_keys"]);
-
-export function validateAuthConfig(raw: unknown): AuthConfig | undefined {
-  if (raw === undefined) return undefined;
-  const record = requirePlainObject(
-    raw,
-    "",
-    (field, detail) => new InvalidAuthConfigError(field, detail),
-  );
-  rejectUnknownFields(
-    record,
-    AUTH_KEYS,
-    (field, detail) => new InvalidAuthConfigError(field, detail),
-  );
-  const out: { -readonly [K in keyof AuthConfig]: AuthConfig[K] } = {};
-  if (record.backend !== undefined) {
-    if (record.backend !== "local" && record.backend !== "remote") {
-      throw new InvalidAuthConfigError(
-        "backend",
-        'expected "local" or "remote"',
-      );
-    }
-    out.backend = record.backend;
-  }
-  return Object.freeze(out as AuthConfig);
 }
 
 const PROVIDER_KEYS: ReadonlySet<string> = new Set([
@@ -3908,10 +3860,6 @@ export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
   }
   validateOperatorPreferences(config);
 
-  if (config.auth !== undefined) {
-    out.auth = validateAuthConfig(config.auth);
-    changed = true;
-  }
   if (config.permissions !== undefined) {
     out.permissions = validatePermissionsConfig(config.permissions);
     changed = true;

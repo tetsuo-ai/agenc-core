@@ -1687,7 +1687,37 @@ describe("retired account model config", () => {
     write(managedPath, source);
     const notices: string[] = [];
     const loaded = await loadCanonicalDaemonConfig({ home: homePath, env: {}, managedConfigPath: managedPath, managedDropInDir: join(homePath, "empty"), onWarn: notice => notices.push(notice) });
-    expect(loaded.config.auth).toEqual({ backend: "remote" });
+    expect(loaded.config).not.toHaveProperty("auth");
+    expect(notices).toEqual(["AgenC accounts no longer provide models. Use your own provider credentials or a local server."]);
+  });
+});
+
+describe("retired AgenC account sign-in config", () => {
+  test("loads [auth] and [remote_control] silently and keeps neither", async () => {
+    const homePath = temp("retired-sign-in-config");
+    write(join(homePath, "config.toml"), 'config_version = 2\nmodel_provider = "openai"\nmodel = "gpt-6.2-astra"\n[auth]\nbackend = "local"\n[remote_control]\nenabled = true\n');
+    const notices: string[] = [];
+    const loaded = await loadCanonicalDaemonConfig({ home: homePath, env: { AGENC_AUTH_BACKEND: "remote" }, managedConfigPath: join(temp("retired-sign-in-policy"), "config.toml"), managedDropInDir: join(homePath, "empty"), onWarn: notice => notices.push(notice) });
+    expect(loaded.config).not.toHaveProperty("auth");
+    expect(loaded.config).not.toHaveProperty("remote_control");
+    expect(loaded.config.model_provider).toBe("openai");
+    expect(notices).toEqual([]);
+  });
+
+  test.each([
+    ['model_provider = "agenc"\nmodel = "agenc"\n', "model_provider and model"],
+    ['model = "agenc"\n', "model"],
+    ['[providers.agenc]\nbase_url = "https://account.example/v1"\n', "providers.agenc"],
+    ['[profiles.old]\nmodel_provider = "agenc"\nmodel = "agenc"\n', "a profile"],
+  ])("drops the retired account provider from %s (%s) with one notice", async (source) => {
+    const homePath = temp("retired-account-provider");
+    write(join(homePath, "config.toml"), `config_version = 2\n${source}`);
+    const notices: string[] = [];
+    const loaded = await loadCanonicalDaemonConfig({ home: homePath, env: {}, managedConfigPath: join(temp("retired-account-policy"), "config.toml"), managedDropInDir: join(homePath, "empty"), onWarn: notice => notices.push(notice) });
+    expect(loaded.config.model_provider).not.toBe("agenc");
+    expect(loaded.config.model).not.toBe("agenc");
+    expect(loaded.config.providers ?? {}).not.toHaveProperty("agenc");
+    expect(JSON.stringify(loaded.config.profiles ?? {})).not.toContain("agenc");
     expect(notices).toEqual(["AgenC accounts no longer provide models. Use your own provider credentials or a local server."]);
   });
 });

@@ -54,7 +54,6 @@ import {
   assertXaiOauthBaseUrl,
   isTrustedXaiOauthInferenceBaseUrl,
 } from "../services/xai/oauth.js";
-import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 
 import { LLMMissingCredentialsError } from "./errors.js";
 
@@ -115,9 +114,7 @@ export type ReadSavedProviderApiKey = (
 
 export interface ProviderRuntimeCredentialOptions {
   readonly readSavedApiKey?: ReadSavedProviderApiKey;
-  readonly authBackend?: AuthBackend;
   readonly sessionId?: string;
-  readonly subscriptionTier?: AuthSubscriptionTier;
 }
 
 export interface ResolvedProviderRuntimeAuthority extends ResolvedProviderCredentialAuthority {
@@ -874,27 +871,6 @@ export function resolveProviderCredentialAuthority(
   );
 }
 
-/** Retired provider names fail before any account or provider request. */
-export function assertHostedAgencSubscriptionAuthority(params: {
-  readonly provider: ProviderName;
-  readonly authBackend?: AuthBackend;
-  readonly subscriptionTier?: AuthSubscriptionTier;
-}): void {
-  if (params.provider === "agenc") {
-    throw new Error("AgenC accounts no longer provide models. Choose a provider with your own credentials or a local server.");
-  }
-}
-
-export async function assertHostedAgencModelAuthority(params: {
-  readonly provider: ProviderName;
-  readonly model?: string;
-  readonly sessionId?: string;
-  readonly authBackend?: AuthBackend;
-  readonly subscriptionTier?: AuthSubscriptionTier;
-}): Promise<void> {
-  assertHostedAgencSubscriptionAuthority(params);
-}
-
 /** Local credential choice shared by consent preview and live preparation. */
 export async function resolveProviderLocalCredentialAuthority(
   provider: ProviderName,
@@ -952,14 +928,6 @@ export async function resolveProviderRuntimeAuthority(
   selectedAuthority?: ResolvedProviderRuntimeAuthority,
 ): Promise<ResolvedProviderRuntimeAuthority> {
   const selected = selectedAuthority ?? await resolveProviderLocalCredentialAuthority(provider, requested, env, runtime);
-  const sessionId = nonEmpty(runtime.sessionId);
-  await assertHostedAgencModelAuthority({
-    provider,
-    model: requested.model,
-    sessionId,
-    authBackend: runtime.authBackend,
-    subscriptionTier: runtime.subscriptionTier,
-  });
 
   return Object.freeze({
     factoryOptions: selected.factoryOptions,
@@ -972,7 +940,6 @@ export function requireProviderRuntimeCredential(
   provider: ProviderName,
   authority: ResolvedProviderRuntimeAuthority,
 ): void {
-  assertHostedAgencSubscriptionAuthority({ provider });
   if (authority.credential.status !== "missing") return;
   throw new LLMMissingCredentialsError(provider,
     `${provider} provider requires credentials. Set ${authority.credential.missingLabel}.`,

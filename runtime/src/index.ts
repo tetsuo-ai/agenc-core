@@ -64,7 +64,6 @@ export {
   type RequestId,
 } from "./app-server/protocol/index.js";
 export {
-  AGENC_PORTAL_AUTH_METHODS,
   AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
   AGENC_PORTAL_CLIENT_CAPABILITIES,
   AGENC_PORTAL_CONNECTION_STATUSES,
@@ -75,12 +74,9 @@ export {
   AGENC_PORTAL_METHODS,
   AGENC_PORTAL_PROTOCOL_VERSION,
   createAgenCPortalMobileStatusSnapshot,
-  isAgenCPortalAuthMethod,
   isAgenCPortalMethod,
   type AgenCPortalAgentSummary,
   type AgenCPortalAgentStatus,
-  type AgenCPortalAuthMethod,
-  type AgenCPortalAuthState,
   type AgenCPortalBackgroundAgentDashboardState,
   type AgenCPortalClientCapability,
   type AgenCPortalConnectionStatus,
@@ -89,7 +85,6 @@ export {
   type AgenCPortalDashboardSnapshot,
   type AgenCPortalMethod,
   type AgenCPortalMobileAgentCheckIn,
-  type AgenCPortalMobileAuthState,
   type AgenCPortalMobileConnectionState,
   type AgenCPortalMobileSessionCheckIn,
   type AgenCPortalMobileStatusCounts,

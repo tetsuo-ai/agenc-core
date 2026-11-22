@@ -202,6 +202,75 @@ const V2_TOP_LEVEL_KEYS = new Set(
 );
 V2_TOP_LEVEL_KEYS.add(CANONICAL_CONFIG_VERSION_KEY);
 
+/**
+ * Tables retired with the AgenC account sign-in: `[auth]` (the sign-in
+ * backend, and the older managed model keys) and `[remote_control]` (phone
+ * remote control). A file that still has them loads; they are dropped.
+ */
+const RETIRED_SIGN_IN_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
+  "auth",
+  "remote_control",
+]);
+
+/**
+ * The retired AgenC account provider. A file that still selects it loads: its
+ * `model_provider` and `model`, the same pair in a profile, and its
+ * `[providers.agenc]` table are dropped, so another layer or the default
+ * provider applies. Loading shows the retired-models notice once.
+ */
+const RETIRED_ACCOUNT_PROVIDER = "agenc";
+
+function isRetiredAccountProviderName(value: unknown): boolean {
+  return typeof value === "string" &&
+    value.trim().toLowerCase() === RETIRED_ACCOUNT_PROVIDER;
+}
+
+function isRetiredAccountModel(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const model = value.trim().toLowerCase();
+  return model === RETIRED_ACCOUNT_PROVIDER ||
+    model.startsWith(`${RETIRED_ACCOUNT_PROVIDER}:`) ||
+    model.startsWith(`${RETIRED_ACCOUNT_PROVIDER}/`);
+}
+
+/** Drop a retired account selection from one table. Returns whether it held one. */
+function dropRetiredAccountSelection(table: Record<string, unknown>): boolean {
+  if (isRetiredAccountProviderName(table.model_provider)) {
+    delete table.model_provider;
+    delete table.model;
+    return true;
+  }
+  if (isRetiredAccountModel(table.model)) {
+    delete table.model;
+    return true;
+  }
+  return false;
+}
+
+/** Drop the retired account provider from a parsed file. Returns whether it was there. */
+function dropRetiredAccountProvider(raw: Record<string, unknown>): boolean {
+  let found = dropRetiredAccountSelection(raw);
+  if (isPlainRecord(raw.providers) && Object.hasOwn(raw.providers, RETIRED_ACCOUNT_PROVIDER)) {
+    const providers = cloneRecord(raw.providers);
+    delete providers[RETIRED_ACCOUNT_PROVIDER];
+    raw.providers = providers;
+    found = true;
+  }
+  if (isPlainRecord(raw.profiles)) {
+    const profiles = cloneRecord(raw.profiles);
+    for (const [name, profile] of Object.entries(profiles)) {
+      if (!isPlainRecord(profile)) continue;
+      const next = cloneRecord(profile);
+      if (dropRetiredAccountSelection(next)) {
+        profiles[name] = next;
+        found = true;
+      }
+    }
+    raw.profiles = profiles;
+  }
+  return found;
+}
+
 const REPOSITORY_SCOPES = new Set<ConfigScope>(["project", "local"]);
 
 /**
@@ -295,6 +364,7 @@ export function validateStrictConfigDocument(
   const unknown = Object.keys(raw).filter(
     (key) =>
       !V2_TOP_LEVEL_KEYS.has(key) &&
+      !RETIRED_SIGN_IN_TOP_LEVEL_KEYS.has(key) &&
       // Retired pre-v2 spelling of the version key. A pre-v2 CLI still
       // installed on the machine re-emits it whenever IT writes the
       // shared config, and that one stray key was bricking every
@@ -313,6 +383,8 @@ export function validateStrictConfigDocument(
 
   const canonical = cloneRecord(raw);
   delete canonical[CANONICAL_CONFIG_VERSION_KEY];
+  for (const key of RETIRED_SIGN_IN_TOP_LEVEL_KEYS) delete canonical[key];
+  dropRetiredAccountProvider(canonical);
   canonical.configVersion = CANONICAL_CONFIG_VERSION;
   try {
     const normalized = normalizeRawConfig(canonical);
@@ -367,7 +439,10 @@ export async function readStrictConfigLayer(
     ...source(scope, label, path),
     config: validateStrictConfigDocument(parsed, path),
   });
-  if (isPlainRecord(parsed.auth) && ("managedKeys" in parsed.auth || "managed_keys" in parsed.auth)) {
+  if (
+    (isPlainRecord(parsed.auth) && ("managedKeys" in parsed.auth || "managed_keys" in parsed.auth)) ||
+    dropRetiredAccountProvider(cloneRecord(parsed))
+  ) {
     RETIRED_MODEL_ACCOUNT_LAYERS.add(layer);
   }
   STABLE_LAYER_IDENTITIES.set(layer, Object.freeze({
@@ -511,12 +586,6 @@ function sanitizeTopLevelAuthority(
   ignored: IgnoredConfigValue[],
 ): AgenCConfig {
   const raw = cloneRecord(layer.config as Readonly<Record<string, unknown>>);
-  // A process-launch flag, profile or environment is not owner consent to
-  // expose the daemon. Only canonical home and managed files own this switch.
-  if (layer.scope !== "user" && layer.scope !== "managed" && layer.scope !== "default") {
-    removeKey(raw, "remote_control", layer, ignored,
-      "only home or managed config.toml may enable remote control");
-  }
   for (const key of MANAGED_ONLY_CONFIG_KEYS) {
     if (!Object.prototype.hasOwnProperty.call(raw, key) || layer.scope === "managed") {
       continue;
@@ -686,7 +755,6 @@ function sanitizeRepositoryLayer(
   }
 
   for (const key of [
-    "auth",
     "agents",
     "profiles",
     "providers",
@@ -1595,9 +1663,6 @@ async function loadLayeredConfigInternal(
     delete provenance.reasoning_effort;
   }
 
-  if (config.remote_control?.enabled !== true && env.AGENC_REMOTE_FULL_CONTROL !== undefined) {
-    options.onWarn?.("AGENC_REMOTE_FULL_CONTROL is ignored while remote_control.enabled is false; only home or managed config.toml can enable remote control.");
-  }
   config = mergeConfigs(config, {
     configVersion: CANONICAL_CONFIG_VERSION,
   });

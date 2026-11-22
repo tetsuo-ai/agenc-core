@@ -1,6 +1,5 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { hasRemoteAuthSessionSync } from '../../auth/session-state.js'
 import { verifyApiKey as verifyProviderApiKey } from '../../onboarding/useApiKeyVerification.js'
 import type { AgenCConfig } from '../../config/schema.js'
 import {
@@ -40,9 +39,6 @@ function readApiKeyWithSource(
 function getInitialVerificationStatus(
   context: ProviderAuthReadContext,
 ): VerificationStatus {
-  if (hasRemoteAuthSessionSync(context)) {
-    return 'valid'
-  }
   if (
     !isAnthropicAuthEnabledForContext(context) ||
     isAgenCAISubscriberForContext(context)
@@ -67,8 +63,7 @@ export function useApiKeyVerification(
   const verificationRequestIdRef = useRef(0)
   const anthropicVerificationEnabled =
     isAnthropicAuthEnabledForContext(context) &&
-    !isAgenCAISubscriberForContext(context) &&
-    !hasRemoteAuthSessionSync(context)
+    !isAgenCAISubscriberForContext(context)
 
   useEffect(() => {
     verificationRequestIdRef.current += 1
@@ -98,8 +93,7 @@ export function useApiKeyVerification(
 
     if (
       !isAnthropicAuthEnabledForContext(context) ||
-      isAgenCAISubscriberForContext(context) ||
-      hasRemoteAuthSessionSync(context)
+      isAgenCAISubscriberForContext(context)
     ) {
       setError(null)
       setStatus('valid')

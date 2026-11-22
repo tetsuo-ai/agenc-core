@@ -11,7 +11,7 @@ host Node **>=26.5 <27**.
 
 Related: [INDEX](INDEX.md) · [install](install.md) · [onboarding](onboarding.md) ·
 [gateway](gateway.md) · [OpenRouter setup](managed-openrouter.md) ·
-[remote control](remote-control.md) · [VPS](deploy/vps.md).
+[VPS](deploy/vps.md).
 
 ## 1. Install
 
@@ -47,8 +47,8 @@ agenc onboard --status
 agenc onboard --reset    # show the wizard again on next interactive start
 ```
 
-The wizard offers provider sign-in and API keys directly. AgenC account sign-in
-is separate and does not provide models. X / xAI sign-in uses the user's own
+The wizard offers provider sign-in and API keys directly. There is no AgenC
+account sign-in. X / xAI sign-in uses the user's own
 provider subscription. Provider keys are live-verified before the wizard asks
 permission to save them. OpenRouter free models also require your own OpenRouter
 key. Details: [providers.md](reference/providers.md) and [grok-oauth.md](grok-oauth.md).
@@ -109,19 +109,6 @@ spend, never silent stop.
 Heartbeat is **live** (`agenc gateway run --heartbeat` or `[heartbeat]` config).
 Hooks: `agenc gateway run --hooks` / `hooks.enabled` → loopback
 `POST /hooks/agent` with header-only bearer auth.
-
-## 7. Optional: phone remote control
-
-Pair an **iOS or Android** app with the host daemon:
-
-```bash
-agenc login
-agenc remote on            # code + QR; needs remote auth session
-agenc remote status
-agenc remote off
-```
-
-Daemon default: `ws://127.0.0.1:7766`. Full flow: [remote-control.md](remote-control.md).
 
 ## Migrating
 

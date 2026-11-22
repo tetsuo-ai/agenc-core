@@ -504,7 +504,6 @@ Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 | tools / permissions | `tool.approve`, `tool.deny`, `tool.cancel`, `elicitation.respond`, `permission.list`                                                                                                                                                                    |
 | exec / fs           | `fs.fuzzy_search`, `commandExec.start`, `commandExec.write`, `commandExec.resize`, `commandExec.terminate`                                                                                                                                              |
 | health / daemon     | `health.ping`, `health.ready`, `health.stats`, `daemon.reload`, `daemon.shutdown`                                                                                                                                                                       |
-| auth                | `auth.login`, `auth.whoami`, `auth.logout`                                                                                                                                                                                                              |
 
 `fs.fuzzy_search` accepts an optional `limit` from 1 through 1,000 and an
 optional `refresh` flag that waits for a verified replacement index
@@ -520,7 +519,7 @@ evidence shape (`toolCallId`, `disposition`, `evidenceRef`, and
 `evidenceSha256`), and partial mixtures are rejected. An earlier-shape request
 leaves durable effects unchanged in `remaining`.
 
-Protocol version constant: **`1.38.0`**
+Protocol version constant: **`1.39.0`**
 (`AGENC_SDK_DAEMON_PROTOCOL_VERSION`). Handshake rules and
 `PROTOCOL_VERSION_UNSUPPORTED` live in [daemon.md](reference/daemon.md).
 The SDK retries initialization at the older 1.x version a daemon reports and
@@ -570,8 +569,6 @@ Important raw protocol additions:
 | `RequestUserInputResponse.clientResult`     | Typed client result returned through `elicitation.respond`; Ledger receipts are challenge- and field-bound            |
 | `ToolApproveParams.allowAllToolsForSession` | Valid only with `scope: "session"`; promotes the daemon session to `bypassPermissions` transactionally                |
 | `SessionSetPermissionModeParams.bypassAuthority` | Optional `"operator_tool_approval"` only. Forwards explicit operator consent for a live switch to `bypassPermissions` in the session's exact cwd. Other strings are rejected before the route runs. Stored `/permissions accept-bypass` consent still satisfies the same gate. |
-| `AuthWhoamiResult.subscriptionTier`         | Tier from the latest verified remote `/v1/auth/me` snapshot; identity also carries compatibility `plan` data          |
-| `AuthLoginResult`                           | App-server login result contains non-secret state/identity only; the backend bearer is never returned over daemon RPC |
 
 Plain `scope: "session"` without `allowAllToolsForSession: true` keeps the
 narrower equivalent-rule approval cache. Interactive approval/deny/elicitation

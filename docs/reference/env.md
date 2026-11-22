@@ -76,7 +76,7 @@ Credential values are not written into the canonical config snapshot.
 | GitHub | `GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_BASE_URL` |
 | Ollama | `OLLAMA_BASE_URL` (session wire and `/api/show` metadata probe); `OLLAMA_API_KEY` for Ollama Cloud models |
 | Amazon Bedrock | access (required): `AWS_BEDROCK_ACCESS_KEY_ID`, then `AWS_ACCESS_KEY_ID`; secret (required): `AWS_BEDROCK_SECRET_ACCESS_KEY`, then `AWS_SECRET_ACCESS_KEY`; session token (optional): `AWS_BEDROCK_SESSION_TOKEN`, then `AWS_SESSION_TOKEN`; endpoint: `AWS_BEDROCK_BASE_URL`; region: `AWS_BEDROCK_REGION`, then `AWS_REGION`, then `AWS_DEFAULT_REGION` |
-| AgenC managed auth | `AGENC_API_KEY`, `AGENC_ACCOUNT_ID`, `AGENC_BASE_URL`; descriptor variants `AGENC_API_KEY_FILE_DESCRIPTOR`, `AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR`; OAuth/session vars are cataloged below. `AGENC_API_KEY` authenticates managed AgenC APIs and is not a provider BYOK key alias |
+| AgenC managed auth | `AGENC_API_KEY`, `AGENC_ACCOUNT_ID`; descriptor variants `AGENC_API_KEY_FILE_DESCRIPTOR`, `AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR`; OAuth/session vars are cataloged below. `AGENC_API_KEY` authenticates managed AgenC APIs and is not a provider BYOK key alias |
 
 Aliases in a row are evaluated from left to right after trimming empty values.
 They do not cross provider boundaries unless the row explicitly lists the
@@ -304,15 +304,16 @@ TLS trust configuration is captured with the session environment as well:
 and Python Requests helpers. These variables change certificate trust only;
 they do not select a provider or endpoint.
 
-Auth backend:
+Retired AgenC account (see [the retired sign-in](../agenc-account-model-access.md)):
 
 | Var | Effect |
 | --- | --- |
-| `AGENC_AUTH_BACKEND` | `local` or `remote` |
+| `AGENC_AUTH_BACKEND` | Retired and ignored. Older clients still send it in their environment snapshot. |
 | `AGENC_AUTH_MANAGED_KEYS_ENABLED` | Retired and ignored. AgenC accounts do not provide models. |
-| `AGENC_REMOTE_AUTH_TOKEN` | Explicit process/session remote bearer. Overrides a stored native secure storage bearer and is never persisted to `auth.json` |
+| `AGENC_BASE_URL` | Retired and ignored with the AgenC account provider. Older clients still send it. |
+| `AGENC_REMOTE_AUTH_TOKEN` | Retired and ignored. Child processes still do not receive it. |
 
-Persisted local-login tokens, saved BYOK keys, remote bearers, and remote
+Saved BYOK keys and remote
 subprocess credentials live only in the home-scoped native OS credential
 secure storage. Descriptor variables are transient ingress; after a successful read,
 child-process continuity uses the native secure storage rather than a token file.
@@ -361,7 +362,7 @@ still works. `amazon-bedrock` uses AWS SigV4 aliases and does not read
 | Symptom | Cause |
 | --- | --- |
 | Grok or openai-compatible reports missing credentials while `ANTHROPIC_API_KEY` is set | That variable is Anthropic-only. Use `XAI_API_KEY` / `GROK_API_KEY`, or `OPENAI_COMPATIBLE_API_KEY` |
-| TUI shows the login footer when Grok was intended | The active session is on a first-party provider | Run `/provider` and select `grok`, then use `/grok-login` or a Grok BYOK key if credentials are missing. `/login` is the AgenC account, not xAI |
+| TUI shows the login footer when Grok was intended | The active session is on a first-party provider | Run `/provider` and select `grok`, then use `/grok-login` or a Grok BYOK key if credentials are missing |
 | `ANTHROPIC_UNIX_SOCKET` is set but grok ignores the ssh proxy | The proxy path is Anthropic-only; provider identity is decided first |
 
 ## Daemon
@@ -380,7 +381,6 @@ still works. `amazon-bedrock` uses AWS SigV4 aliases and does not read
 | `AGENC_DAEMON_WEBSOCKET_PORT` | Port (default 7766) |
 | `AGENC_DAEMON_WEBSOCKET_PATH` | Path (default `/`) |
 | `AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK` | `1` allows a non-loopback bind |
-| `AGENC_DAEMON_URL` | Explicit remote daemon endpoint |
 
 Autostart retry cap, hard-kill connectability readiness, hydrating
 `daemon start`, and the TUI 10 s lost-turn probe:
@@ -425,7 +425,7 @@ These have their own pages. Short map:
 | `NO_COLOR` | A nonempty value disables TUI colors and text styling, including terminal-specific color-depth overrides |
 
 
-## Gateway and remote
+## Gateway
 
 Channel tokens live in env, not in TOML:
 
@@ -437,9 +437,8 @@ Channel tokens live in env, not in TOML:
 | `AGENC_WEBCHAT_TOKEN` | One-shot WebChat bearer override; generated persistent tokens live only in the native secure storage |
 | `AGENC_HOOKS_TOKEN` | One-shot gateway hooks bearer override. Persistent generated tokens live only in the native secure storage. |
 | `AGENC_MCP_SERVER_TOKEN` | Bearer token of the inbound MCP SSE server (`agenc mcp serve --transport sse` and daemon `[mcp.server]` autostart). At least 16 characters; a shorter value is ignored. Without it one generated token per AgenC home lives only in the native secure storage, and a host with neither does not start the SSE server. [mcp.md](mcp.md#sse-bearer-token-and-origins) |
-| `AGENC_REMOTE_FULL_CONTROL` | Per-run phone full-control consent, only after the owner sets `[remote_control] enabled = true` in home/managed config. Ignored with a warning while disabled; never enables the capability. |
 
-[gateway.md](../gateway.md), [remote-control.md](../remote-control.md).
+[gateway.md](../gateway.md).
 
 ## Feature switches operators actually set
 
@@ -487,7 +486,6 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_DISABLE_EXTRACT_MEMORIES` | Skip turn-end memory extraction |
 | `AGENC_SQLITE_BACKEND` | SQLite engine for the state, logs, memory and file-index databases. `node` uses Node's built-in `node:sqlite`; `native` uses the better-sqlite3 addon. Unset: `node` on Windows, where Smart App Control refuses the unsigned addon, and `native` elsewhere, falling back to `node` when the addon cannot load. Both read and write the same database files |
 | `AGENC_SKILL_CANDIDATES` | `0` stops the memory-extraction child from proposing draft skills under `$AGENC_HOME/skill-candidates/`. Drafts are never active until `agenc skills candidates accept <name>`; see [skills-plugins.md](skills-plugins.md#skill-candidates) |
-| `AGENC_POLICY_LIMITS_URL` | Override hosted policy-limits URL (default `https://id.agenc.ag/v1/policy-limits`) |
 | `AGENC_TOOL_TIMINGS_FILE` | Diagnostics only. Path of a JSONL file that receives one record per completed tool call: per-stage milliseconds (permission and policy, hooks, admission, sandbox and broker, execution, result sealing, persistence, UI fan-out) and whether the call took the read-only path. Records hold the call id and tool name, never arguments, paths, output or credentials. Unset (the default) records nothing |
 
 Every CLI runtime ingress captures `AGENC_ALLOW_UNTRUSTED_HOOKS` once as
@@ -514,7 +512,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_B*
 
-`AGENC_BACKEND_URL`, `AGENC_BASE_REF`, `AGENC_BASH_MAINTAIN_PROJECT_WORKING_DIR`, `AGENC_BASH_SANDBOX_SHOW_INDICATOR`, `AGENC_BLOCKING_LIMIT_OVERRIDE`, `AGENC_BRIEF`, `AGENC_BUBBLEWRAP`, `AGENC_BUILD_COMMIT`, `AGENC_BUILD_ID`.
+`AGENC_BASE_REF`, `AGENC_BASH_MAINTAIN_PROJECT_WORKING_DIR`, `AGENC_BASH_SANDBOX_SHOW_INDICATOR`, `AGENC_BLOCKING_LIMIT_OVERRIDE`, `AGENC_BRIEF`, `AGENC_BUBBLEWRAP`, `AGENC_BUILD_COMMIT`, `AGENC_BUILD_ID`.
 
 ### AGENC_C*
 
@@ -559,7 +557,7 @@ autostart. Ordinary startup leaves it unset.
 
 ### AGENC_L*
 
-`AGENC_LEAN_SYSTEM_PROMPT`, `AGENC_LINUX_SANDBOX_ACTIVE`, `AGENC_LOCAL_OAUTH_API_BASE`, `AGENC_LOCAL_OAUTH_APPS_BASE`, `AGENC_LOCAL_OAUTH_CONSOLE_BASE`, `AGENC_LOGIN_NO_TUI`.
+`AGENC_LEAN_SYSTEM_PROMPT`, `AGENC_LINUX_SANDBOX_ACTIVE`, `AGENC_LOCAL_OAUTH_API_BASE`, `AGENC_LOCAL_OAUTH_APPS_BASE`, `AGENC_LOCAL_OAUTH_CONSOLE_BASE`.
 
 ### AGENC_M*
 
@@ -575,7 +573,7 @@ autostart. Ordinary startup leaves it unset.
 
 ### AGENC_R*
 
-`AGENC_READ_DEDUP`, `AGENC_READ_RANGE_NOTE`, `AGENC_REMOTE`, `AGENC_REMOTE_AUTH_LOGIN_POLL_URL`, `AGENC_REMOTE_AUTH_LOGIN_START_URL`, `AGENC_REMOTE_AUTH_LOGOUT_URL`, `AGENC_REMOTE_AUTH_ME_URL`, `AGENC_REMOTE_AUTH_TIER_URL`, `AGENC_REMOTE_AUTH_TOKEN`, `AGENC_REMOTE_DEBUG`, `AGENC_REMOTE_FULL_CONTROL`, `AGENC_REMOTE_MEMORY_DIR`, `AGENC_REMOTE_SESSION_ID`, `AGENC_ROLLOUT_TRACE_ROOT`.
+`AGENC_READ_DEDUP`, `AGENC_READ_RANGE_NOTE`, `AGENC_REMOTE`, `AGENC_REMOTE_MEMORY_DIR`, `AGENC_REMOTE_SESSION_ID`, `AGENC_ROLLOUT_TRACE_ROOT`.
 
 ### AGENC_S*
 

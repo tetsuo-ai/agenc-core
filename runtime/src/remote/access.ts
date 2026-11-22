@@ -1,7 +1,7 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import type { JsonObject } from "../app-server/protocol/index.js";
-import { RemoteError, type RemoteDevice, type RemoteRole } from "./types.js";
+import { RemoteError, type RemoteRole } from "./types.js";
 import type { RemoteApprovalProjection } from "./approvals.js";
 
 export interface RemoteGrant {
@@ -169,4 +169,3 @@ export class RemoteAccessBoundary {
   }
 }
 
-export function publicDevice(device: RemoteDevice): RemoteDevice { return { ...device, sessionIds: [...device.sessionIds] }; }

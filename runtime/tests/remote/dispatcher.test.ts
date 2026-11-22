@@ -7,18 +7,16 @@ import { AgenCDaemonJsonRpcDispatcher } from "../../src/app-server/daemon-dispat
 import { AGENC_DAEMON_PROTOCOL_VERSION, type JsonObject } from "../../src/app-server/protocol/index.js";
 import { RemoteAccessBoundary } from "../../src/remote/access.js";
 import { RemoteApprovalProjection } from "../../src/remote/approvals.js";
-import type { RemoteService } from "../../src/remote/service.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const request = (method: string, params: JsonObject = {}): JsonObject => ({ jsonrpc: "2.0", id: method, method, params });
-function fixture(remoteControlEnabled = () => true) {
+function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "remote-dispatch-"))); const workspace = join(root, "workspace"); const home = join(root, "private"); mkdirSync(workspace); mkdirSync(home);
   const authenticate = vi.fn((params: JsonObject) => params.authCookie === "fixture-cookie");
-  const manage = vi.fn(async () => ({ enabled: false }));
   const agents = new AgenCDaemonAgentManager({ agencHome: home });
   const transcript = vi.spyOn(agents, "getSessionTranscriptV2").mockImplementation(async (params) => ({ schemaVersion: 2, sessionId: params.sessionId, runId: "run", historyEpoch: "epoch", asOfSequence: 0, messages: [] }));
-  const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: agents, initializeAuthenticator: authenticate, remoteControlEnabled, remote: { handle: manage } as unknown as RemoteService });
+  const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: agents, initializeAuthenticator: authenticate });
   const connection = dispatcher.createConnection();
   const grant = { workspacePath: workspace, workspaceId: "opaque-id", sessionIds: ["allowed"], role: "control" as const, allowFiles: false, allowApprovals: true };
   let active = true;
@@ -28,42 +26,16 @@ function fixture(remoteControlEnabled = () => true) {
   const browser = dispatcher.createConnection({ remoteAccess: boundary, remoteCid: "peer" });
   cleanups.push(async () => { active = false; await browser.close(); await connection.close(); await dispatcher.close(); rmSync(root, { recursive: true, force: true }); });
   const initialize = { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION }, capabilities: { "portal.mobile.status.push.v1": true, "routine.updated.v1": true }, authCookie: "fixture-cookie" };
-  return { browser, connection, initialize, authenticate, manage, transcript, boundary, projection, createSession, grant };
+  return { browser, connection, initialize, authenticate, transcript, boundary, projection, createSession, grant };
 }
 
-describe("Core browser dispatcher authority", () => {
-  it("rejects bridge registration and enrollment when owner policy is off", async () => {
-    const f = fixture(() => false);
+describe("Core remote-access dispatcher authority", () => {
+  it("refuses a retired phone connector bridge before authenticating it", async () => {
+    const f = fixture();
     await expect(f.connection.dispatch(request("initialize", { ...f.initialize, remoteControlBridge: true }))).resolves.toMatchObject({ error: { data: { code: "REMOTE_CONTROL_DISABLED" } } });
     expect(f.authenticate).not.toHaveBeenCalled();
-    await f.connection.dispatch(request("initialize", f.initialize));
-    await expect(f.connection.dispatch(request("remote.start"))).resolves.toMatchObject({ error: { data: { code: "REMOTE_CONTROL_DISABLED" } } });
-    expect(f.manage).not.toHaveBeenCalled();
-  });
-  it("admits owner-enabled bridge registration and fences it when policy is disabled", async () => {
-    let enabled = true;
-    const f = fixture(() => enabled);
-    await expect(f.connection.dispatch(request("initialize", { ...f.initialize, remoteControlBridge: true }))).resolves.toHaveProperty("result");
-    enabled = false;
-    await expect(f.connection.dispatch(request("agent.list"))).resolves.toMatchObject({ error: { data: { code: "REMOTE_CONTROL_DISABLED" } } });
-  });
-
-  it("drops a bridge that remote control was turned off for while it initialized", async () => {
-    let enabled = true;
-    const f = fixture(() => enabled);
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    f.authenticate.mockImplementation(async (params: JsonObject) => { await gate; return params.authCookie === "fixture-cookie"; });
-    const pending = f.connection.dispatch(request("initialize", { ...f.initialize, remoteControlBridge: true }));
-    await vi.waitFor(() => expect(f.authenticate).toHaveBeenCalled());
-    // Marked before the first await, so a reload's sweep can find it.
-    expect(f.connection.remoteControlBridge).toBe(true);
-    enabled = false;
-    release();
-    await expect(pending).resolves.toMatchObject({ error: { data: { code: "REMOTE_CONTROL_DISABLED" } } });
     expect(f.connection.initialized).toBe(false);
-    expect(f.connection.closed).toBe(true);
-    expect(f.connection.trackedClientIds).toEqual([]);
+    await expect(f.connection.dispatch(request("initialize", f.initialize))).resolves.toHaveProperty("result");
   });
 
   it("measures legacy transcript replies after remote envelope escaping", async () => {
@@ -79,22 +51,22 @@ describe("Core browser dispatcher authority", () => {
     expect(tooLarge).toHaveProperty("error");
     expect(tooLarge).not.toHaveProperty("result");
   });
-  it("requires authenticated initialization for local remote management", async () => {
+  it("answers the removed remote and account methods as unknown, and takes no remote access from initialize", async () => {
     const f = fixture();
-    await expect(f.connection.dispatch(request("remote.start"))).resolves.toMatchObject({ error: { data: { code: "CONNECTION_NOT_INITIALIZED" } } });
     await expect(f.connection.dispatch(request("initialize", { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION }, remoteAccess: { role: "control" } }))).resolves.toMatchObject({ error: { data: { code: "INVALID_ARGUMENT" } } });
-    expect(f.manage).not.toHaveBeenCalled();
     await f.connection.dispatch(request("initialize", f.initialize));
-    await expect(f.connection.dispatch(request("remote.start"))).resolves.toMatchObject({ result: { enabled: false } });
-    expect(f.manage).toHaveBeenCalledWith("remote.start", {});
+    for (const method of ["remote.start", "remote.status", "remote.pair.begin", "auth.login", "auth.whoami", "auth.logout"]) {
+      await expect(f.connection.dispatch(request(method))).resolves.toMatchObject({ error: { code: -32601 } });
+    }
   });
   it("never authenticates browser cookies or registers broad client capabilities", async () => {
     const f = fixture(); const result = await f.browser.dispatch(request("initialize", f.initialize));
     expect(f.authenticate).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ result: { capabilities: { "daemon.methods": { "remote.start": false, "auth.whoami": false, "session.applyConfig": false, "session.transcript.v2": true } } } });
+    expect(result).toMatchObject({ result: { capabilities: { "daemon.methods": { "session.applyConfig": false, "session.transcript.v2": true } } } });
+    const methods = (result.result as { capabilities: { "daemon.methods": Record<string, boolean> } }).capabilities["daemon.methods"];
+    expect(Object.keys(methods).filter((method) => method.startsWith("remote.") || method.startsWith("auth."))).toEqual([]);
     expect(f.browser.trackedClientIds).toEqual([]); expect(JSON.stringify(result)).not.toContain("fixture-cookie");
-    for (const method of ["remote.start", "remote.approve", "telegram.configure", "telegram.start", "telegram.agents.list", "telegram.agents.create", "telegram.agents.pair.confirm", "telegram.agents.start", "auth.whoami", "session.applyConfig", "agent.attach"]) await expect(f.browser.dispatch(request(method))).resolves.toMatchObject({ error: { data: { code: "REMOTE_METHOD_DENIED" } } });
-    expect(f.manage).not.toHaveBeenCalled();
+    for (const method of ["telegram.configure", "telegram.start", "telegram.agents.list", "telegram.agents.create", "telegram.agents.pair.confirm", "telegram.agents.start", "session.applyConfig", "agent.attach"]) await expect(f.browser.dispatch(request(method))).resolves.toMatchObject({ error: { data: { code: "REMOTE_METHOD_DENIED" } } });
   });
   it("filters history at Core, even if the browser knows another valid session ID", async () => {
     const f = fixture(); await f.browser.dispatch(request("initialize", f.initialize));

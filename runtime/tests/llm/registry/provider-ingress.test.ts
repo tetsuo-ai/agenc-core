@@ -296,7 +296,7 @@ describe("provider environment ingress", () => {
       | undefined
     >();
 
-    const none = resolveProviderCredentialEnvironment("agenc", {});
+    const none = resolveProviderCredentialEnvironment("ollama", {});
     if (none?.kind !== "none") {
       throw new Error("expected credential-free metadata");
     }

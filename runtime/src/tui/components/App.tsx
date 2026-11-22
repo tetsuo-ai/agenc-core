@@ -2837,15 +2837,12 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       terminalName:
         remoteAuthSessionContext.environment.TERM_PROGRAM ??
         remoteAuthSessionContext.environment.TERM,
-      authBackend: props.session.services.authBackend,
-      remoteAuthSessionContext,
     }),
     [
       agencHome,
       config,
       props.session.cwd,
       props.session.sessionConfiguration?.cwd,
-      props.session.services.authBackend,
       remoteAuthSessionContext,
       toolPermissionContext.mode,
     ],
@@ -3095,7 +3092,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     () =>
       buildDefaultRegistry({
         surface: "daemon-tui",
-        remoteControlEnabled: () => configStore.current().remote_control?.enabled === true,
       }),
     [],
   );
@@ -4147,14 +4143,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               display: result.kind === "error" ? "error" : undefined,
               persistent: [
                 "compact",
-                "login",
-                "logout",
                 "grok-login",
                 "grok-logout",
                 "openai-login",
                 "openai-logout",
-                "whoami",
-                "subscription",
                 "usage",
               ].includes(commandName as string),
             });

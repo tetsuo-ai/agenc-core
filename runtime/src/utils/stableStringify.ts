@@ -19,16 +19,14 @@
  * This helper recursively sorts object keys. Arrays preserve order
  * (element order IS semantically significant in message/content arrays).
  *
- * Complements `sortKeysDeep` in src/services/remoteManagedSettings and
- * src/services/policyLimits. Those two are INTENTIONALLY separate:
+ * Complements `sortKeysDeep` in src/services/remoteManagedSettings. The two
+ * are INTENTIONALLY separate:
  *   - remoteManagedSettings: matches Python `json.dumps(sort_keys=True)`
  *     byte-for-byte to validate server-computed checksums. Must NOT
  *     drop undefined (Python preserves null).
- *   - policyLimits: uses `localeCompare` (keeps compatibility behavior; locale-
- *     sensitive but stable for a given runtime).
  *   - this module (stableStringify): byte-identity for request and state
  *     caching. Drops undefined to match `JSON.stringify` semantics.
- * Do not consolidate without auditing the 3 callers — each has a
+ * Do not consolidate without auditing both callers: each has a
  * different server-compat contract.
  */
 

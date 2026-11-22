@@ -118,7 +118,7 @@ describe("daemon.shutdownIfIdle", () => {
     await search;
   });
 
-  it("reads routine runs and remote devices once more right before stopping", async () => {
+  it("reads routine runs once more right before stopping", async () => {
     const { shutdown, connect } = setup({
       busyReason: async () => undefined,
       busyReasonNow: () => "1 routine run active",
@@ -147,7 +147,6 @@ describe("the daemon's own idle rules", () => {
       listAgents: async () => ({ agents: [{ agentId: "conv-1", status: "idle" }] }),
       inFlightToolCalls: async () => 0,
       activeRoutineRuns: () => 0,
-      connectedRemoteDevices: () => 0,
       sessionDetail: async () => ({ nativeWorkers: [], processes: [] }),
       ...overrides,
     };
@@ -194,7 +193,6 @@ describe("the daemon's own idle rules", () => {
     ["a running agent", { listAgents: async () => ({ agents: [{ agentId: "conv-1", status: "running" }] }) }, "1 agent working"],
     ["a tool call", { inFlightToolCalls: async () => 2 }, "2 tool calls in flight"],
     ["a routine run", { activeRoutineRuns: () => 1 }, "1 routine run active"],
-    ["a remote device", { connectedRemoteDevices: () => 1 }, "1 remote device connected"],
     ["a running sub-agent", { sessionDetail: async () => ({ nativeWorkers: [{ status: "running" }], processes: [] }) }, "1 sub-agent running"],
     ["an active goal", { sessionDetail: async () => ({ nativeWorkers: [], goalStatus: "active", processes: [] }) }, "a goal is active"],
     ["a background process", { sessionDetail: async () => ({ nativeWorkers: [], processes: [{ status: "running" }] }) }, "1 background process running"],

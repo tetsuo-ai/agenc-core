@@ -92,13 +92,12 @@ describe("SessionProviderService", () => {
     expect(service.environment().DEEPSEEK_API_KEY).toBe("old-placeholder");
   });
 
-  test("router readiness checks only the selected local credential without vending or network", async () => {
+  test("router readiness checks only the selected local credential without network", async () => {
     const readSavedApiKey = vi.fn(async (provider: string) => provider === "deepseek" ? "child-secret" : undefined);
-    const authBackend = { kind: "local" as const, vendKey: vi.fn() } as never;
     const fetchSpy = vi.fn();
     const service = new SessionProviderService({
       initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent-secret" }),
-      environment: {}, readSavedApiKey, authBackend,
+      environment: {}, readSavedApiKey,
       resolvePreparationRequest: ({ model }) => ({ requested: { model, fetch: fetchSpy } }),
     });
     expect(await service.isChildProviderConnected({ provider: "deepseek", model: "deepseek-flash" })).toBe(true);
@@ -106,7 +105,6 @@ describe("SessionProviderService", () => {
     expect(await service.isChildProviderConnected({ provider: "agenc", model: "auto" })).toBe(false);
     expect(readSavedApiKey).toHaveBeenCalledWith("deepseek");
     expect(readSavedApiKey).toHaveBeenCalledWith("anthropic");
-    expect(authBackend.vendKey).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -120,18 +118,16 @@ describe("SessionProviderService", () => {
     expect(await service.isChildProviderConnected({ provider: "unknown", model: "model" })).toBe(false);
   });
 
-  test("preview selects saved BYOK over eligible managed billing", async () => {
+  test("preview and preparation use the saved BYOK key", async () => {
     const readSavedApiKey = vi.fn(async (provider: string) => provider === "deepseek" ? "saved-deepseek-key" : undefined);
-    const authBackend = { kind: "local" as const, vendKey: vi.fn() } as never;
     const service = new SessionProviderService({
       initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent-key" }),
-      readSavedApiKey, authBackend, sessionId: "signed-in-session", subscriptionTier: "pro",
-      resolvePreparationRequest: ({ model }) => ({ requested: { model }, runtime: { managedKeysEnabled: true } }),
+      readSavedApiKey, sessionId: "session-1",
+      resolvePreparationRequest: ({ model }) => ({ requested: { model } }),
     });
     const selection = { provider: "deepseek", model: "deepseek-v4-pro" };
     const preview = await service.previewChildDestination(selection);
     expect(preview).toMatchObject({ authProfile: "api_key", billingSource: "byok" });
-    expect(authBackend.vendKey).not.toHaveBeenCalled();
     const prepared = await service.prepareChild(selection);
     expect(prepared).toMatchObject({ authProfile: preview.authProfile, billingSource: preview.billingSource });
     expect(prepared.binding.factoryOptions.apiKey).toBe("saved-deepseek-key");

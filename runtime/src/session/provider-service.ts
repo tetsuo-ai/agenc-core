@@ -18,7 +18,6 @@ import {
   type ReadSavedProviderApiKey,
 } from "../llm/provider-options.js";
 import type { LLMProvider } from "../llm/types.js";
-import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import {
   resolveBuiltInProviderInfo,
   resolveBuiltInProviderRegionalEndpoint,
@@ -207,9 +206,7 @@ export class SessionProviderService {
   readonly #sessionApiKeys = new Map<string, string>();
   readonly #credentialHome: ProviderFactoryOptions["credentialHome"];
   readonly #readSavedApiKey: ReadSavedProviderApiKey | undefined;
-  readonly #authBackend: AuthBackend | undefined;
   readonly #sessionId: string | undefined;
-  readonly #subscriptionTier: AuthSubscriptionTier | undefined;
   readonly #resolvePreparationRequest:
     | ResolveProviderPreparationRequest
     | undefined;
@@ -228,9 +225,7 @@ export class SessionProviderService {
      */
     readonly credentialHome?: ProviderFactoryOptions["credentialHome"];
     readonly readSavedApiKey?: ReadSavedProviderApiKey;
-    readonly authBackend?: AuthBackend;
     readonly sessionId?: string;
-    readonly subscriptionTier?: AuthSubscriptionTier;
     readonly resolvePreparationRequest?: ResolveProviderPreparationRequest;
     readonly crossProviderProvenance?: boolean;
     readonly destinationLock?: ProviderSelection;
@@ -253,9 +248,7 @@ export class SessionProviderService {
       ? undefined : Object.freeze({ ...params.destinationLock });
     this.#credentialHome = params.credentialHome ?? initialBinding.factoryOptions.credentialHome;
     this.#readSavedApiKey = params.readSavedApiKey;
-    this.#authBackend = params.authBackend;
     this.#sessionId = params.sessionId;
-    this.#subscriptionTier = params.subscriptionTier;
     this.#resolvePreparationRequest = params.resolvePreparationRequest;
   }
 
@@ -317,9 +310,7 @@ export class SessionProviderService {
       environment: this.#environment,
       ...(this.#credentialHome !== undefined ? { credentialHome: this.#credentialHome } : {}),
       ...(this.#readSavedApiKey !== undefined ? { readSavedApiKey: this.#readSavedApiKey } : {}),
-      ...(this.#authBackend !== undefined ? { authBackend: this.#authBackend } : {}),
       ...(this.#sessionId !== undefined ? { sessionId: this.#sessionId } : {}),
-      ...(this.#subscriptionTier !== undefined ? { subscriptionTier: this.#subscriptionTier } : {}),
       ...(this.#resolvePreparationRequest !== undefined
         ? { resolvePreparationRequest: this.#resolvePreparationRequest } : {}),
       crossProviderProvenance: this.#crossProviderProvenance || destinationLock !== undefined || pinnedChildProviders.has(provider) ||
@@ -330,12 +321,12 @@ export class SessionProviderService {
 
   /** Local-only destination preview for the consent card. No credential is
    * refreshed, vended, or sent to a provider from this method. */
-  async previewChildDestination(selection: ProviderSelection, concreteDestination?: ProviderSelection): Promise<{
+  async previewChildDestination(selection: ProviderSelection): Promise<{
     readonly endpoint: string;
     readonly authProfile: "api_key" | "sign_in" | "managed" | "local" | "aws_sigv4";
     readonly billingSource: "byok" | "sign_in" | "managed" | "local";
   }> {
-    return this.#previewChildDestination(selection, concreteDestination, false);
+    return this.#previewChildDestination(selection, false);
   }
 
   /** Local readiness only. Never refreshes credentials or probes a remote model.
@@ -349,18 +340,15 @@ export class SessionProviderService {
     readonly connected: boolean;
     readonly billingSource?: "byok" | "sign_in" | "managed" | "local";
   }> {
-    // A managed route needs a concrete destination and separate consent. It is
-    // not an independently connected model candidate for local routing.
-    if (selection.provider === "agenc") return { connected: false };
     try {
-      const preview = await this.#previewChildDestination(selection, undefined, true);
+      const preview = await this.#previewChildDestination(selection, true);
       return { connected: true, billingSource: preview.billingSource };
     } catch {
       return { connected: false };
     }
   }
 
-  async #previewChildDestination(selection: ProviderSelection, concreteDestination: ProviderSelection | undefined,
+  async #previewChildDestination(selection: ProviderSelection,
     requireConnected: boolean): Promise<{
       readonly endpoint: string;
       readonly authProfile: "api_key" | "sign_in" | "managed" | "local" | "aws_sigv4";
@@ -368,18 +356,6 @@ export class SessionProviderService {
     }> {
     const provider = resolveBuiltInProviderSlug(selection.provider);
     if (provider === undefined) throw new Error(`unknown provider "${selection.provider}"`);
-    if (provider === "agenc") {
-      if (concreteDestination === undefined) throw new Error("Managed AgenC child needs a concrete destination");
-      const info = resolveBuiltInProviderInfo(concreteDestination.provider);
-      if (info === undefined) throw new Error("Managed AgenC child resolved an unknown destination");
-      const routeInfo = resolveBuiltInProviderInfo("agenc")!;
-      const routeBaseURL = resolveProviderBaseURLEnvironment("agenc", this.#environment)?.value;
-      if (routeBaseURL !== undefined && new URL(routeBaseURL).href.replace(/\/+$/u, "") !==
-          new URL(routeInfo.baseURL).href.replace(/\/+$/u, "")) {
-        throw new Error("Cross-provider managed AgenC child requires its default endpoint");
-      }
-      return { endpoint: info.baseURL, authProfile: "managed", billingSource: "managed" };
-    }
     const info = resolveBuiltInProviderInfo(provider)!;
     const preparation = await this.#resolvePreparationRequest?.(selection);
     if (preparation === undefined) throw new Error(`${provider} provider switch has no canonical preparation request`);
@@ -389,9 +365,7 @@ export class SessionProviderService {
       ...requested, ...(credentialHome !== undefined ? { credentialHome } : {}), model: selection.model,
     }, this.#environment, {
       ...(this.#readSavedApiKey !== undefined ? { readSavedApiKey: this.#readSavedApiKey } : {}),
-      ...(this.#authBackend !== undefined ? { authBackend: this.#authBackend } : {}),
       ...(this.#sessionId !== undefined ? { sessionId: this.#sessionId } : {}),
-      ...(this.#subscriptionTier !== undefined ? { subscriptionTier: this.#subscriptionTier } : {}),
     });
     if (requireConnected) requireProviderRuntimeCredential(provider, authority);
     const authProfile = authority.managedCredential ? "managed" as const
@@ -451,11 +425,10 @@ export class SessionProviderService {
     requested?: ProviderFactoryOptions,
     runtime: ProviderPreparationRuntime = {},
     crossProviderProvenance = false,
-    approvedConcreteDestination?: ProviderSelection,
     approvedAuthority?: ApprovedChildAuthority,
   ): Promise<PreparedProviderBinding> {
     return this.#prepare(selection, requested, runtime, true, crossProviderProvenance,
-      approvedConcreteDestination, approvedAuthority);
+      approvedAuthority);
   }
 
   async #prepare(
@@ -464,7 +437,6 @@ export class SessionProviderService {
     runtime: ProviderPreparationRuntime,
     child: boolean,
     crossProviderProvenance = false,
-    approvedConcreteDestination?: ProviderSelection,
     approvedAuthority?: ApprovedChildAuthority,
   ): Promise<PreparedProviderBinding> {
     const provider = resolveBuiltInProviderSlug(selection.provider);
@@ -489,12 +461,6 @@ export class SessionProviderService {
       : { ...preparation.requested, apiKey: sessionApiKey };
     const canonicalEndpointRequired = this.#crossProviderProvenance ||
       (child && (crossProviderProvenance || provider !== this.#binding.provider));
-    if (child && canonicalEndpointRequired && provider === "agenc" &&
-        (approvedConcreteDestination === undefined ||
-         approvedConcreteDestination.provider === "agenc" ||
-         !approvedConcreteDestination.model.trim())) {
-      throw new Error("Managed AgenC child requires an approved concrete provider and model execution plan");
-    }
     let signInModelCapabilities: SignInChildModelCapabilities | undefined;
     if (canonicalEndpointRequired) {
       const info = resolveBuiltInProviderInfo(provider)!;
@@ -566,19 +532,13 @@ export class SessionProviderService {
       ...(this.#readSavedApiKey !== undefined
         ? { readSavedApiKey: this.#readSavedApiKey }
         : {}),
-      ...(this.#authBackend !== undefined
-        ? { authBackend: this.#authBackend }
-        : {}),
       ...(this.#sessionId !== undefined ? { sessionId: this.#sessionId } : {}),
-      ...(this.#subscriptionTier !== undefined
-        ? { subscriptionTier: this.#subscriptionTier }
-        : {}),
     };
     // Resolve once from local state. Reuse this choice for live preparation so
     // credentials cannot change between the consent check and discovery.
     const localAuthority = await resolveProviderLocalCredentialAuthority(
       provider, credentialOptions, this.#environment, credentialRuntime);
-    const authProfile = provider === "agenc" || localAuthority.managedCredential
+    const authProfile = localAuthority.managedCredential
       ? "managed" as const
       : localAuthority.factoryOptions.extra?.authMode === "oauth"
         ? "sign_in" as const
@@ -592,9 +552,8 @@ export class SessionProviderService {
       : authProfile === "local" ? "local" as const : "byok" as const;
     if (approvedAuthority !== undefined) {
       if (!canonicalEndpointRequired) throw new Error("approved child authority requires a pinned endpoint");
-      const locallyResolvedEndpoint = provider === "agenc"
-        ? resolveBuiltInProviderInfo(approvedConcreteDestination!.provider)?.baseURL
-        : localAuthority.factoryOptions.baseURL ?? resolveBuiltInProviderInfo(provider)?.baseURL;
+      const locallyResolvedEndpoint =
+        localAuthority.factoryOptions.baseURL ?? resolveBuiltInProviderInfo(provider)?.baseURL;
       const normalize = (value: string | undefined): string | undefined => {
         if (value === undefined) return undefined;
         try { return new URL(value).href.replace(/\/+$/u, ""); }
@@ -663,17 +622,6 @@ export class SessionProviderService {
           ...(provider === "openai" && authProfile === "sign_in" ? {
             oauth: { ...authority.factoryOptions.extra?.oauth as Record<string, unknown>,
               maxRefreshAttempts: 1 },
-          } : {}),
-          ...(provider === "agenc" ? {
-            ...(approvedConcreteDestination !== undefined
-              ? { approvedConcreteDestination: Object.freeze({ ...approvedConcreteDestination }) } : {}),
-            agencDelegateFetchFactory: (concreteProvider: ProviderName): typeof fetch =>
-              createPinnedProviderFetch(
-                [resolveBuiltInProviderInfo(concreteProvider)!.baseURL],
-                typeof authority.factoryOptions.extra?.fetchImpl === "function"
-                  ? authority.factoryOptions.extra.fetchImpl as typeof fetch
-                  : fetch,
-              ),
           } : {}),
         } }
       : authority.factoryOptions;

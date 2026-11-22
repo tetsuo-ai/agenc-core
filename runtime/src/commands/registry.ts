@@ -45,13 +45,12 @@ import {
   compactRetainCommand,
   compactRollbackCommand,
 } from "./compaction-operator.js";
-import { remoteCommand } from "./remote.js";
 import { initCommand } from "./init.js";
 import {
   outputStyleCommand,
   outputStyleNewCommand,
 } from "./output-style.js";
-import { authCommands } from "./auth.js";
+import { usageCommand } from "./usage.js";
 import { xaiAuthCommands } from "./xai-auth.js";
 import { openaiAuthCommands } from './openai-auth.js'
 import { effortCommand } from "./effort.js";
@@ -140,8 +139,6 @@ export class CommandRegistry implements CommandRegistryInterface {
 
 export interface BuildDefaultRegistryOptions {
   readonly surface?: SlashCommandSurface;
-  /** Explicit TUI authority; React callbacks need not inherit async-local context. */
-  readonly remoteControlEnabled?: () => boolean;
 }
 
 function commandSupportsSurface(
@@ -156,7 +153,8 @@ function commandSupportsSurface(
  * Build the default user-invocable slash registry.
  *
  * Presentation order matches the runtime stabilization minimal surface:
- * /help, /hello, /status, auth commands, /cost, /model, /provider, /permissions,
+ * /help, /hello, /status, /usage, provider sign-in commands, /cost, /model,
+ * /provider, /permissions,
  * /plan, /agents, /tasks, /todos, /config, /theme, /keybindings, /hooks, /skills,
  * /mcp, /plugins, /memory, /resume, /init, /output-style, /clear, /compact,
  * /context, /diff, protocol commands, /exit.
@@ -169,7 +167,7 @@ export function buildDefaultRegistry(
     helloCommand,
     statusCommand,
     goalCommand,
-    ...authCommands,
+    usageCommand,
     ...xaiAuthCommands,
     ...openaiAuthCommands,
     costCommand,
@@ -192,10 +190,6 @@ export function buildDefaultRegistry(
     hooksCommand,
     skillsCommand,
     mcpCommand,
-    options.remoteControlEnabled === undefined ? remoteCommand : {
-      ...remoteCommand,
-      get isHidden() { return options.remoteControlEnabled!() !== true; },
-    },
     pluginsCommand,
     memorySlashCommand,
     resumeCommand,

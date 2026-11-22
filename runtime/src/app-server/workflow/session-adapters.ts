@@ -48,7 +48,6 @@ import { childProviderPolicy } from "../../agents/cross-provider.js";
 import type { AgentPath } from "../../agents/registry.js";
 import { workflowAdmissionStopReason, workflowStopMessage, type WorkflowChildStopReason } from "./stop-reasons.js";
 import type { ExecutionAdmissionKernel } from "../../budget/execution-admission-kernel.js";
-import type { AuthBackend } from "../../auth/backend.js";
 import {
   EFFECT_EVIDENCE_FORMAT_VERSION,
   EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
@@ -145,7 +144,6 @@ export interface WorkflowSessionSeamsOptions {
   readonly env: NodeJS.ProcessEnv;
   /** Executable and entrypoint coordinates; daemon launch flags are ignored. */
   readonly argv: readonly string[];
-  readonly authBackend?: AuthBackend;
   readonly kernel: ExecutionAdmissionKernel;
   /**
    * The run's durability repository (same resolution the controller uses),
@@ -714,9 +712,6 @@ export function createWorkflowSessionSeams(
         env: runEnvironment,
         runtimeOptions: resolveAgentRuntimeOptions(runEnvironment,
           resolvedPolicy?.lightMode !== undefined ? { lightMode: resolvedPolicy.lightMode } : {}),
-        ...(options.authBackend !== undefined
-          ? { authBackend: options.authBackend }
-          : {}),
         conversationId: runId,
         // A started run is a fresh conversation; a resumed run re-opens the
         // rollout it journaled before the restart.

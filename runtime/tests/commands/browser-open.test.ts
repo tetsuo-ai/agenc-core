@@ -9,7 +9,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
   spawn: mocks.spawn,
 }));
 
-import { openUrlInBrowser } from "../../src/commands/auth.js";
+import { openUrlInBrowser } from "../../src/commands/open-url.js";
 
 describe("OAuth browser opener", () => {
   let child: EventEmitter & { unref: ReturnType<typeof vi.fn> };

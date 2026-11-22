@@ -23,7 +23,7 @@ export type {
 /** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
 /** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.38.0" as const;
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.39.0" as const;
 
 /** Preserve named wire fields while allowing helpers to supply cwd. */
 export type AgencDefaultCwdParams<Params extends { readonly cwd: string }> =
@@ -52,17 +52,6 @@ export type RequestId = Wire.RequestId;
  * guard.
  */
 export const AGENC_SDK_DAEMON_METHODS = [
-  "remote.capabilities",
-  "remote.status",
-  "remote.start",
-  "remote.stop",
-  "remote.pair.begin",
-  "remote.pair.refresh",
-  "remote.pair.cancel",
-  "remote.devices",
-  "remote.pending",
-  "remote.approve",
-  "remote.revoke",
   "telegram.capabilities",
   "telegram.status",
   "telegram.configure",
@@ -159,9 +148,6 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "daemon.reload",
   "daemon.shutdown",
   "daemon.shutdownIfIdle",
-  "auth.login",
-  "auth.whoami",
-  "auth.logout",
 ] as const;
 
 export type AgencDaemonMethod = (typeof AGENC_SDK_DAEMON_METHODS)[number];
@@ -640,12 +626,6 @@ export type DaemonReloadResult = Wire.DaemonReloadResult;
 
 export type DaemonShutdownResult = Wire.DaemonShutdownResult;
 export type DaemonShutdownIfIdleResult = Wire.DaemonShutdownIfIdleResult;
-
-export type AuthWhoamiResult = Wire.AuthWhoamiResult;
-
-export type AuthLoginResult = Wire.AuthLoginResult;
-
-export type AuthLogoutResult = Wire.AuthLogoutResult;
 
 export type AgencResultByMethod = Wire.AgenCDaemonResultByMethod;
 

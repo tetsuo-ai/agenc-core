@@ -56,7 +56,6 @@ export const DEFERRED_DAEMON_IMPLEMENTATIONS = Object.freeze([
   "search/fuzzy-match.ts",
   "app-server/health.ts",
   "app-server/run-inspection.ts",
-  "remote/service.ts",
   "gateway/owner-telegram.ts",
   "audio/whisper.ts",
   "app-server/realtime.ts",

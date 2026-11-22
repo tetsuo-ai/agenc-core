@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JWT } from "google-auth-library";
-import type { AuthBackend } from "../auth/backend.js";
 import { AnthropicProvider } from "./providers/anthropic/adapter.js";
 import { BedrockProvider } from "./providers/bedrock/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
@@ -61,23 +60,6 @@ function withEnv<T>(
 }
 
 describe("createProvider", () => {
-  const authBackend: AuthBackend = {
-    login: () => ({ authenticated: true, provider: "remote" }),
-    logout: () => ({ authenticated: false }),
-    whoami: () => ({ authenticated: true, provider: "remote" }),
-    vendKey: (provider, sessionId) => ({
-      provider,
-      sessionId,
-      kind: "api-key",
-      apiKey: "key",
-    }),
-    inferAgencModel: () => ({
-      provider: "grok",
-      model: "grok-4.3",
-    }),
-    getSubscriptionTier: () => "team",
-  };
-
   test("routes 'grok' to GrokProvider", () => {
     const provider = createProvider("grok", {
       apiKey: "test-key",
@@ -380,16 +362,11 @@ describe("createProvider", () => {
     }
   });
 
-  test("'agenc' without auth context throws explanatory error", () => {
-    expect(() => createProvider("agenc", { model: "agenc" })).toThrow(
-      /no longer provide models/,
+  test("has no AgenC account provider", () => {
+    expect(KNOWN_PROVIDER_NAMES.map(String)).not.toContain("agenc");
+    expect(() => createProvider("agenc" as ProviderName, { model: "agenc" })).toThrow(
+      "unknown provider: agenc",
     );
-    expect(() =>
-      createProvider("agenc", {
-        model: "agenc",
-        extra: { authBackend },
-      }),
-    ).toThrow(/no longer provide models/);
   });
 
   test.each(KNOWN_PROVIDER_NAMES)(
@@ -447,29 +424,22 @@ describe("createProvider", () => {
         AWS_SESSION_TOKEN: undefined,
       };
       const providerOptions =
-        name === "agenc"
-          ? {
-              extra: {
-                authBackend,
-                sessionId: "session-1",
-              },
-            }
-          : name === "gemini"
-            ? resolveProviderFactoryOptions(
-                "gemini",
-                {},
-                { GEMINI_API_KEY: "registry-test-key" },
-              )
-            : name === "amazon-bedrock"
-              ? {
-                  extra: {
-                    accessKeyId: "registry-test-key",
-                    secretAccessKey: "registry-secret-key",
-                  },
-                }
-              : info?.credentials.kind === "api-key"
-                ? { apiKey: "registry-test-key" }
-                : {};
+        name === "gemini"
+          ? resolveProviderFactoryOptions(
+              "gemini",
+              {},
+              { GEMINI_API_KEY: "registry-test-key" },
+            )
+          : name === "amazon-bedrock"
+            ? {
+                extra: {
+                  accessKeyId: "registry-test-key",
+                  secretAccessKey: "registry-secret-key",
+                },
+              }
+            : info?.credentials.kind === "api-key"
+              ? { apiKey: "registry-test-key" }
+              : {};
 
       const provider = withEnv(env, () =>
         createProvider(name, providerOptions),
@@ -493,7 +463,7 @@ describe("createProvider", () => {
             },
           },
         });
-      } else if (name !== "agenc") {
+      } else {
         expect(options.baseURL).toBe(info?.baseURL);
       }
     },
@@ -514,12 +484,10 @@ describe("createProvider", () => {
     expect(isFactoryProvider(provider)).toBe(true);
   });
 
-  test("never asks AuthBackend to vend Gemini credentials", () => {
-    const vendKey = vi.fn(authBackend.vendKey);
+  test("builds Gemini from its canonical credential plan", () => {
     const provider = createProvider("gemini", {
       model: "gemini-2.5-pro",
       extra: {
-        authBackend: { ...authBackend, vendKey },
         sessionId: "session-gemini",
         gemini: {
           credentialPlan: {
@@ -532,7 +500,6 @@ describe("createProvider", () => {
       },
     });
     expect(provider).toBeInstanceOf(GeminiProvider);
-    expect(vendKey).not.toHaveBeenCalled();
   });
 
   test.each([
@@ -553,21 +520,12 @@ describe("createProvider", () => {
       expectedProvider: OpenAICompatibleProvider,
     },
   ] as const)(
-    "does not vend AuthBackend keys for local '$name' endpoints",
+    "builds local '$name' endpoints without a key",
     async ({ name, model, baseURL, expectedProvider }) => {
-      const vendKey = vi.fn(() => {
-        throw new Error("vendKey should not run for local providers");
-      });
-      const vendingAuthBackend: AuthBackend = {
-        ...authBackend,
-        vendKey,
-      };
-
       const provider = createProvider(name, {
         model,
         ...(baseURL !== undefined ? { baseURL } : {}),
         extra: {
-          authBackend: vendingAuthBackend,
           sessionId: "session-local",
         },
       });
@@ -577,7 +535,6 @@ describe("createProvider", () => {
         provider: name,
         model,
       });
-      expect(vendKey).not.toHaveBeenCalled();
     },
   );
 
@@ -589,7 +546,6 @@ describe("createProvider", () => {
       () =>
         createProvider("openai", { apiKey: "synthetic-user-key",
           extra: {
-            authBackend,
             sessionId: "session-env-model",
           },
         }),
@@ -601,7 +557,6 @@ describe("createProvider", () => {
       () =>
         prepareProviderSwitch("openai", { apiKey: "synthetic-user-key",
           extra: {
-            authBackend,
             sessionId: "session-env-model-switch",
           },
         }),
@@ -619,23 +574,11 @@ describe("createProvider", () => {
     expect(readProviderFactoryOptions(prepared.instance).model).toBe("gpt-6.2-astra");
   });
 
-  test("does not combine partial explicit Bedrock credentials with managed vending", () => {
-    const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
-      provider,
-      sessionId,
-      kind: "aws-sigv4" as const,
-      accessKeyId: "vended-aws-access",
-      secretAccessKey: "vended-aws-secret",
-    }));
-    const vendingAuthBackend: AuthBackend = {
-      ...authBackend,
-      vendKey,
-    };
+  test("rejects partial explicit Bedrock credentials", () => {
     expect(() =>
       createProvider("amazon-bedrock", {
         model: "amazon.nova-pro-v1:0",
         extra: {
-          authBackend: vendingAuthBackend,
           sessionId: "session-bedrock-partial",
           secretAccessKey: "explicit-aws-secret",
           sessionToken: "explicit-aws-session",
@@ -643,7 +586,6 @@ describe("createProvider", () => {
         },
       }),
     ).toThrow(/requires accessKeyId/u);
-    expect(vendKey).not.toHaveBeenCalled();
   });
 
   test("preserves openai-compatible context budget metadata", async () => {
@@ -1715,16 +1657,6 @@ describe("createProvider", () => {
         }
       }
     }
-
-    expect(
-      resolveProviderFactoryOptions(
-        "agenc",
-        {},
-        {
-          AGENC_API_KEY: "managed-auth-not-byok",
-        },
-      ).apiKey,
-    ).toBeUndefined();
   });
 
   test("resolves every Bedrock SigV4 field through registry alias order", () => {
@@ -2053,14 +1985,7 @@ describe("createProvider", () => {
     });
   });
 
-  test("does not vend AuthBackend keys for OAuth config", () => {
-    const vendKey = vi.fn(() => {
-      throw new Error("vendKey should not run for oauth");
-    });
-    const oauthAuthBackend: AuthBackend = {
-      ...authBackend,
-      vendKey,
-    };
+  test("builds OpenAI from OAuth config", () => {
     const provider = withEnv(
       {
         OPENAI_API_KEY: undefined,
@@ -2069,7 +1994,6 @@ describe("createProvider", () => {
         createProvider("openai", {
           model: "gpt-5.4",
           extra: {
-            authBackend: oauthAuthBackend,
             sessionId: "session-oauth",
             authMode: "oauth",
             oauth: {
@@ -2081,7 +2005,6 @@ describe("createProvider", () => {
     );
 
     expect(provider).toBeInstanceOf(OpenAIProvider);
-    expect(vendKey).not.toHaveBeenCalled();
     expect(readProviderFactoryOptions(provider).extra).toMatchObject({
       authMode: "oauth",
       oauth: {
