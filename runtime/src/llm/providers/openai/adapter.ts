@@ -183,13 +183,23 @@ function decodeOpenAISseEvent(
   providerName: string,
 ): OpenAISseEvent | undefined {
   if (!frame.data) return undefined;
-  return {
-    event: frame.event,
-    data: parseProviderJson(
+  let data: unknown;
+  try {
+    data = JSON.parse(frame.data) as unknown;
+  } catch {
+    // Malformed JSON: re-run through the shared helper so the thrown error
+    // (type, provider, and label text) is exactly the one it has always
+    // produced. Building that label eagerly on the success path cost a
+    // string allocation and a label lookup for every streamed frame.
+    data = parseProviderJson(
       providerName,
       frame.data,
       `${strictSseProviderLabel(providerName)} SSE event`,
-    ) as Record<string, unknown>,
+    );
+  }
+  return {
+    event: frame.event,
+    data: data as Record<string, unknown>,
   };
 }
 
@@ -2697,7 +2707,8 @@ export class OpenAIProvider implements LLMProvider {
       const toolCallSlotByIndex = new Map<number, number>();
       let nextToolCallSlot = 0;
 
-      for await (const event of this.readSseEvents(
+      let stopEventLoop = false;
+      for await (const eventBatch of this.readSseEventBatches(
         response,
         () => { sawDone = true; },
         (fragment) => {
@@ -2717,6 +2728,7 @@ export class OpenAIProvider implements LLMProvider {
           return true;
         },
       )) {
+       for (const event of eventBatch) {
         const chunk = event.data;
         if (chunk.error && typeof chunk.error === "object") {
           const streamError = mapOpenAIStreamError({
@@ -2733,6 +2745,7 @@ export class OpenAIProvider implements LLMProvider {
             rawFinishReasons.add("error");
             finishReason = "error";
             deepSeekWebError = streamError;
+            stopEventLoop = true;
             break;
           }
           if (!isProviderFundsFailure(this.name, streamError) &&
@@ -2964,6 +2977,8 @@ export class OpenAIProvider implements LLMProvider {
             finishReason = normalizeFinishReason(choice.finish_reason);
           }
         }
+       }
+       if (stopEventLoop) break;
       }
 
       const missingStrictTerminal =
@@ -3194,6 +3209,30 @@ export class OpenAIProvider implements LLMProvider {
     onUnterminatedEnd?: (fragment: string) => void,
     recoverReadFailure?: (error: unknown) => boolean,
   ): AsyncGenerator<OpenAISseEvent> {
+    for await (const batch of this.readSseEventBatches(
+      response,
+      onDone,
+      onUnterminatedEnd,
+      recoverReadFailure,
+    )) {
+      for (const event of batch) yield event;
+    }
+  }
+
+  /**
+   * The stream reader, yielding the events decoded from each incoming chunk
+   * as one batch. Events were already decoded eagerly per chunk (a malformed
+   * frame fails the whole chunk before any of its events are delivered), so
+   * batching delivery removes one async-generator hop per event without
+   * changing the event sequence, error timing, or the `onDone` /
+   * unterminated-remainder handling below.
+   */
+  private async *readSseEventBatches(
+    response: ProviderHttpStreamResponse,
+    onDone?: () => void,
+    onUnterminatedEnd?: (fragment: string) => void,
+    recoverReadFailure?: (error: unknown) => boolean,
+  ): AsyncGenerator<readonly OpenAISseEvent[]> {
     const decoder = new TextDecoder();
     let buffer = "";
     const iterator = response[Symbol.asyncIterator]();
@@ -3224,7 +3263,7 @@ export class OpenAIProvider implements LLMProvider {
           parsed.frames,
           this.name,
         );
-        for (const event of batch.events) yield event;
+        if (batch.events.length > 0) yield batch.events;
         if (batch.done) {
           onDone?.();
           return;
@@ -3248,7 +3287,7 @@ export class OpenAIProvider implements LLMProvider {
     buffer += decoder.decode();
     const parsed = parseSSEFrames(buffer, this.name);
     const batch = decodeOpenAISseEventBatch(parsed.frames, this.name);
-    for (const event of batch.events) yield event;
+    if (batch.events.length > 0) yield batch.events;
     if (batch.done) {
       onDone?.();
       return;
@@ -3263,7 +3302,7 @@ export class OpenAIProvider implements LLMProvider {
           onDone?.();
           return;
         case "event":
-          yield flushed.event;
+          yield [flushed.event];
           return;
         case "unparsed":
           break;

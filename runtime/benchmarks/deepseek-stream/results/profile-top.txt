@@ -1,0 +1,53 @@
+total samples: 6213, timespan 7130.759ms
+=== TOP SELF TIME ===
+ 33.83%  2102  parseProviderJson @ runtime/src/llm/wire/parse-json.ts:1
+ 10.38%  645  parseSSEFrames @ runtime/src/llm/_deps/sse.ts:1
+  6.89%  428  streamChatCompletions @ runtime/src/llm/providers/openai/adapter.ts:7
+  6.02%  374  (program) @ :0
+  5.92%  368  readSseEvents @ runtime/src/llm/providers/openai/adapter.ts:7
+  4.46%  277  RegExp: \n\n|\r\n\r\n @ :0
+  4.25%  264  (garbage collector) @ :0
+  3.19%  198  (anonymous) @ runtime/benchmarks/deepseek-stream/lib.mts:1
+  1.63%  101  (anonymous) @ runtime/src/llm/client-session.ts:1
+  1.51%  94  set toTemporalInstant @ :0
+  1.45%  90  __name @ runtime/src/llm/client-session.ts:1
+  1.08%  67  compileSourceTextModule @ node:internal/modules/esm/utils:338
+  1.03%  64  decodeUTF8 @ :0
+  0.90%  56  resolveRegisteredModelCatalogEntryUncached @ runtime/src/llm/registry/model-catalog.ts:4
+  0.84%  52  decode @ node:internal/encoding:481
+  0.66%  41  read @ :0
+  0.60%  37  decodeOpenAISseEventBatch @ runtime/src/llm/providers/openai/adapter.ts:1
+  0.53%  33  pull @ runtime/benchmarks/deepseek-stream/lib.mts:1
+  0.42%  26  normalizeToolArguments @ runtime/src/llm/types.ts:1
+  0.40%  25  splitLeadingThinkBlock @ runtime/src/llm/wire/think-tags.ts:1
+  0.40%  25  readWithAbort @ runtime/src/llm/client-session.ts:1
+  0.34%  21  (anonymous) @ node_modules/tsx/dist/register-HWZIKnmC.mjs:7
+  0.34%  21  addEventListener @ node:internal/event_target:636
+  0.34%  21  (anonymous) @ node:internal/abort_controller:393
+  0.32%  20  getSelectedProviderSelection @ runtime/src/utils/model/provider-selection.ts:1
+  0.31%  19  push @ runtime/src/llm/providers/openai/tool-argument-progress.ts:1
+  0.29%  18  FastBuffer @ node:internal/buffer:962
+  0.26%  16  parseChatCompletionsResponse @ runtime/src/llm/wire/chat-completions.ts:8
+  0.26%  16  (anonymous) @ node:internal/abort_controller:414
+  0.24%  15  (anonymous) @ node_modules/tsx/dist/register-zZ7SWseA.mjs:2
+=== TOP INCLUSIVE (max per function) ===
+100.00%  6213  (root) @ :0
+ 57.44%  3569  readSseEvents @ runtime/src/llm/providers/openai/adapter.ts:7
+ 34.65%  2153  decodeOpenAISseEventBatch @ runtime/src/llm/providers/openai/adapter.ts:1
+ 34.06%  2116  decodeOpenAISseEvent @ runtime/src/llm/providers/openai/adapter.ts:1
+ 33.83%  2102  parseProviderJson @ runtime/src/llm/wire/parse-json.ts:1
+ 18.80%  1168  streamChatCompletions @ runtime/src/llm/providers/openai/adapter.ts:7
+ 14.84%  922  parseSSEFrames @ runtime/src/llm/_deps/sse.ts:1
+  6.02%  374  (program) @ :0
+  4.68%  291  asyncRunEntryPointWithESMLoader @ node:internal/modules/run_main:90
+  4.68%  291  import @ node:internal/modules/esm/loader:634
+  4.68%  291  tracePromise @ node:diagnostics_channel:580
+  4.68%  291  (anonymous) @ node:internal/modules/esm/loader:635
+  4.68%  291  getOrCreateModuleJob @ node:internal/modules/esm/loader:603
+  4.68%  291  afterResolve @ node:internal/modules/esm/loader:613
+  4.68%  291  #getOrCreateModuleJobAfterResolve @ node:internal/modules/esm/loader:529
+  4.68%  291  (anonymous) @ node:internal/modules/run_main:176
+  4.46%  277  ModuleJob @ node:internal/modules/esm/module_job:354
+  4.46%  277  link @ node:internal/modules/esm/module_job:385
+  4.46%  277  syncLink @ node:internal/modules/esm/module_job:261
+  4.46%  277  RegExp: \n\n|\r\n\r\n @ :0

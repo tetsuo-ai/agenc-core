@@ -23,9 +23,121 @@ export interface SSEFrame {
   data?: string;
 }
 
+/**
+ * Separator pattern for the general (CR-bearing) path, hoisted to module
+ * scope so it is not re-created on every call. `parseSSEFrames` is
+ * synchronous and never re-entered while an `exec` scan is in flight, and
+ * the scan always runs to a `null` result (which resets `lastIndex` to 0)
+ * or throws only after such a result, so the shared pattern's `lastIndex`
+ * is always 0 on entry; it is still reset explicitly for safety.
+ */
+const SEPARATOR_PATTERN = /\n\n|\r\n\r\n/g;
+
 export function parseSSEFrames(
   buffer: string,
   providerName = "provider",
+): {
+  readonly frames: SSEFrame[];
+  readonly remaining: string;
+} {
+  // Fast path: with no CR anywhere in the buffer, the general algorithm's
+  // per-frame `replace(/\r/g, "")` is an identity, the only separator that
+  // can occur is `\n\n`, and lines are exactly the `\n`-delimited spans.
+  // Parse those frames in place: no separator RegExp, no whole-frame slice,
+  // no line-array split — only the field and value strings the general
+  // algorithm would produce are materialized. Any buffer containing a CR
+  // (CRLF streams, stray CRs inside values) takes the original algorithm
+  // verbatim below, so its semantics are unchanged by construction.
+  if (buffer.indexOf("\r") === -1) {
+    return parseLfOnlyFrames(buffer, providerName);
+  }
+  return parseGeneralFrames(buffer, providerName);
+}
+
+function parseLfOnlyFrames(
+  buffer: string,
+  providerName: string,
+): {
+  readonly frames: SSEFrame[];
+  readonly remaining: string;
+} {
+  const frames: SSEFrame[] = [];
+  let position = 0;
+
+  while (true) {
+    const separator = buffer.indexOf("\n\n", position);
+    if (separator === -1) {
+      const remaining = buffer.slice(position);
+      if (remaining.length > MAX_SSE_FRAME_BYTES) {
+        throw new LLMInvalidResponseError(
+          providerName,
+          `SSE stream exceeded ${MAX_SSE_FRAME_BYTES} bytes without a frame separator`,
+        );
+      }
+      return { frames, remaining };
+    }
+
+    // A frame span with no ":" can yield no field and no comment line, so
+    // the general algorithm would build an empty frame and drop it.
+    const firstColon = buffer.indexOf(":", position);
+    if (firstColon !== -1 && firstColon < separator) {
+      const frame: SSEFrame = {};
+      let isComment = false;
+      let lineStart = position;
+      while (lineStart < separator) {
+        let lineEnd = buffer.indexOf("\n", lineStart);
+        if (lineEnd === -1 || lineEnd > separator) lineEnd = separator;
+        if (buffer.charCodeAt(lineStart) === 58 /* ":" */) {
+          isComment = true;
+        } else {
+          const colon = buffer.indexOf(":", lineStart);
+          if (colon !== -1 && colon < lineEnd) {
+            const fieldLength = colon - lineStart;
+            const isData =
+              fieldLength === 4 && buffer.startsWith("data", lineStart);
+            const isEvent =
+              !isData &&
+              fieldLength === 5 &&
+              buffer.startsWith("event", lineStart);
+            const isId =
+              !isData &&
+              !isEvent &&
+              fieldLength === 2 &&
+              buffer.startsWith("id", lineStart);
+            if (isData || isEvent || isId) {
+              let valueStart = colon + 1;
+              if (
+                valueStart < lineEnd &&
+                buffer.charCodeAt(valueStart) === 32 /* " " */
+              ) {
+                valueStart += 1;
+              }
+              const value = buffer.slice(valueStart, lineEnd);
+              if (isData) {
+                frame.data = frame.data ? `${frame.data}\n${value}` : value;
+              } else if (isEvent) {
+                frame.event = value;
+              } else {
+                frame.id = value;
+              }
+            }
+          }
+        }
+        if (lineEnd === separator) break;
+        lineStart = lineEnd + 1;
+      }
+
+      if (frame.data !== undefined || isComment) {
+        frames.push(frame);
+      }
+    }
+    position = separator + 2;
+  }
+}
+
+function parseGeneralFrames(
+  buffer: string,
+  providerName: string,
 ): {
   readonly frames: SSEFrame[];
   readonly remaining: string;
@@ -35,7 +147,8 @@ export function parseSSEFrames(
   // Search both accepted separators together. Two independent indexOf calls
   // rescan the whole suffix for the absent separator on every frame, making
   // a large chunk containing only LF frames quadratic in its frame count.
-  const separators = /\n\n|\r\n\r\n/g;
+  const separators = SEPARATOR_PATTERN;
+  separators.lastIndex = 0;
 
   while (true) {
     const separatorMatch = separators.exec(buffer);
