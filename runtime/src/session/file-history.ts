@@ -106,6 +106,12 @@ export interface DiffStats {
   readonly deletions: number;
 }
 
+/** A file a `trackEdits` call put on record, with the entry it recorded. */
+export interface NewlyTrackedFile {
+  readonly filePath: string;
+  readonly backup: FileHistoryBackup;
+}
+
 export interface FileHistorySnapshot {
   /** Message UUID this snapshot is associated with. */
   readonly messageId: string;
@@ -498,7 +504,7 @@ export class FileHistory {
    * is left alone, so repeating the call is a no-op.
    */
   trackEdit(filePath: string, messageId: string): Promise<void> {
-    return this.trackEdits([filePath], messageId);
+    return this.trackEdits([filePath], messageId).then(() => undefined);
   }
 
   /**
@@ -513,16 +519,24 @@ export class FileHistory {
    * paths behind it are not attempted. A path is on record when the most
    * recent snapshot has an entry for it, from this call or an earlier one;
    * it is not when its backup failed.
+   *
+   * Resolves to the files this call newly put on record, with the entry
+   * each one recorded — the input `forget` takes when the call that
+   * asked for them turns out never to have run.
    */
   async trackEdits(
     paths: readonly string[],
     messageId: string,
     options?: { readonly stopAtFirstUnrecorded?: boolean },
-  ): Promise<void> {
-    return this.enqueue(async () => {
+  ): Promise<readonly NewlyTrackedFile[]> {
+    let newly: readonly NewlyTrackedFile[] = [];
+    await this.enqueue(async () => {
+      const recorded: NewlyTrackedFile[] = [];
       for (const filePath of paths) {
-        if (await this.trackEditNow(filePath, messageId)) {
+        const backup = await this.trackEditNow(filePath, messageId);
+        if (backup !== undefined) {
           this.needsPersist = true;
+          recorded.push({ filePath, backup });
         } else if (
           options?.stopAtFirstUnrecorded === true &&
           this.state.snapshots.at(-1)?.trackedFileBackups[filePath] === undefined
@@ -531,16 +545,18 @@ export class FileHistory {
         }
       }
       if (this.needsPersist) await this.persistAndPrune();
+      newly = recorded;
     });
+    return newly;
   }
 
-  /** Returns whether the state changed. */
-  private async trackEditNow(filePath: string, messageId: string): Promise<boolean> {
-    if (!this.enabled) return false;
+  /** Returns the recorded entry when the state changed, else undefined. */
+  private async trackEditNow(filePath: string, messageId: string): Promise<FileHistoryBackup | undefined> {
+    if (!this.enabled) return undefined;
     const mostRecent = this.state.snapshots.at(-1);
     if (mostRecent && mostRecent.trackedFileBackups[filePath]) {
       // Already tracked in the current snapshot.
-      return false;
+      return undefined;
     }
     let backup: FileHistoryBackup;
     try {
@@ -567,7 +583,7 @@ export class FileHistory {
               : String(err),
         });
       }
-      return false;
+      return undefined;
     }
     // Ensure there's at least one snapshot to attach the backup to.
     const updatedSnapshots: FileHistorySnapshot[] = [...this.state.snapshots];
@@ -592,7 +608,116 @@ export class FileHistory {
       snapshots: updatedSnapshots,
       trackedFiles: updatedTracked,
     };
-    return true;
+    return backup;
+  }
+
+  /**
+   * Undo the records a `trackEdits` call made, for a tool call that never
+   * changed any file: it was refused before its tool ran, or its tool
+   * refused it before any effect. Callers pass exactly what `trackEdits`
+   * reported. A record is removed — its entries in every snapshot, its
+   * place in the tracked set, and its backup file, which is unlinked once
+   * the index without it is on disk — unless the file is no longer as
+   * recorded: another call changed it since, and the record is then the
+   * only one of its earlier state. A record a later snapshot has already
+   * superseded (a newer entry for the file) is likewise kept.
+   */
+  async forget(records: readonly NewlyTrackedFile[]): Promise<void> {
+    if (records.length === 0) return;
+    return this.enqueue(() => this.forgetNow(records));
+  }
+
+  /**
+   * `forget` for a caller that holds the records as a promise (the
+   * sidecar, whose start-event handler cannot wait for the queue): the
+   * undo joins the queue NOW, in the order the completion arrived, and
+   * waits for the records inside the operation. They come from an
+   * operation the same queue ran earlier, so the wait is already over
+   * by the time this one runs. Joining the queue late instead — when
+   * the promise settles — would let a later snapshot, or a reader's
+   * `flush`, slip in ahead of the undo and observe the records the
+   * refused call left behind.
+   */
+  forgetDeferred(
+    records: Promise<readonly NewlyTrackedFile[]>,
+  ): Promise<void> {
+    return this.enqueue(async () => {
+      const newly = await records.catch(
+        () => [] as readonly NewlyTrackedFile[],
+      );
+      await this.forgetNow(newly);
+    });
+  }
+
+  /** The queued work of `forget`: see it for the rules. */
+  private async forgetNow(records: readonly NewlyTrackedFile[]): Promise<void> {
+    if (!this.enabled) return;
+    let changed = false;
+    for (const { filePath, backup } of records) {
+      const latest = this.state.snapshots.at(-1)?.trackedFileBackups[filePath];
+      if (latest === undefined) continue;
+      if (
+        latest.version !== backup.version ||
+        latest.backupFileName !== backup.backupFileName
+      ) {
+        // A later snapshot superseded the record: the file moved on,
+        // and the record is part of that history now.
+        continue;
+      }
+      if (!(await this.stillAsRecorded(filePath, backup))) continue;
+      let removedBackup: BackupFileName = null;
+      let stillTracked = false;
+      const nextSnapshots = this.state.snapshots.map((snapshot) => {
+        const entry = snapshot.trackedFileBackups[filePath];
+        if (entry === undefined) return snapshot;
+        if (
+          entry.version !== backup.version ||
+          entry.backupFileName !== backup.backupFileName
+        ) {
+          stillTracked = true;
+          return snapshot;
+        }
+        removedBackup = entry.backupFileName;
+        changed = true;
+        const trackedFileBackups = { ...snapshot.trackedFileBackups };
+        delete trackedFileBackups[filePath];
+        return { ...snapshot, trackedFileBackups };
+      });
+      this.state = { ...this.state, snapshots: nextSnapshots };
+      if (!stillTracked) {
+        const trackedFiles = new Set(this.state.trackedFiles);
+        if (trackedFiles.delete(filePath)) {
+          this.state = { ...this.state, trackedFiles };
+        }
+      }
+      if (removedBackup !== null) {
+        const referenced = this.state.snapshots.some((snapshot) =>
+          Object.values(snapshot.trackedFileBackups).some(
+            (entry) => entry.backupFileName === removedBackup,
+          ));
+        if (!referenced) this.awaitingDurableIndex.add(removedBackup);
+      }
+    }
+    if (changed) {
+      this.needsPersist = true;
+      await this.persistAndPrune();
+    }
+  }
+
+  /**
+   * True when the file at `filePath` is still in the state `backup`
+   * records: absent when the entry says absent, and byte-for-byte the
+   * backup's content otherwise. Anything that cannot be checked counts
+   * as changed.
+   */
+  private async stillAsRecorded(
+    filePath: string,
+    backup: FileHistoryBackup,
+  ): Promise<boolean> {
+    const stats = await safeStat(filePath);
+    if (backup.backupFileName === null) return stats === null;
+    if (stats === null || !stats.isFile()) return false;
+    return this.matchesBackup(filePath, stats.size, backup.backupFileName);
   }
 
   /**
@@ -1435,6 +1560,48 @@ function isRegularFile(filePath: string): boolean {
   }
 }
 
+/** The parts of a `tool_call_completed` payload the sidecar reads. */
+interface CompletedCallOutcome {
+  readonly isError: boolean;
+  readonly metadata?: Record<string, unknown>;
+  readonly effectDisposition?: { readonly disposition: string };
+}
+
+/**
+ * True when the completed call was refused before its tool ran: the
+ * permission step denied it (`metadata.approvalFailure`, set by the
+ * router), input validation refused it (`metadata.kind ===
+ * "input_validation"`, read the same way in execute-tools), or the
+ * repeat guard blocked it (`metadata.repeatedFailingCallBlocked`). Each
+ * is an error result, so a non-error completion is never one.
+ */
+function refusedBeforeTool(payload: CompletedCallOutcome): boolean {
+  const metadata = payload.metadata;
+  if (metadata === undefined) return false;
+  return (
+    metadata.approvalFailure !== undefined ||
+    metadata.kind === "input_validation" ||
+    metadata.repeatedFailingCallBlocked === true
+  );
+}
+
+/**
+ * True when the completed call never changed a file: it was refused
+ * before its tool ran (`refusedBeforeTool`), or its tool refused it
+ * before any effect, which the completion payload's disposition states
+ * as `confirmed_no_effect` (the filesystem tools' `preEffectErrorResult`
+ * is one source). An error result is required for the disposition half:
+ * it is how a refusal is reported, and a call that ran to success is
+ * left on record whatever its disposition says.
+ */
+function toolCallNeverTookEffect(payload: CompletedCallOutcome): boolean {
+  if (payload.isError !== true) return false;
+  return (
+    refusedBeforeTool(payload) ||
+    payload.effectDisposition?.disposition === "confirmed_no_effect"
+  );
+}
+
 export class FileHistorySidecar implements Sidecar {
   readonly name = "file-history";
   private readonly history: FileHistory;
@@ -1443,6 +1610,32 @@ export class FileHistorySidecar implements Sidecar {
   private readonly workingDirectory: (() => string | undefined) | undefined;
   private readonly captureTimeoutMs: number;
   private lastEditStartedAtMs: number | null = null;
+  /**
+   * The records each announced call's start event newly made, by call id,
+   * kept until the call completes: a call that never took effect has them
+   * undone (`FileHistory.forget`) instead of leaving its targets tracked
+   * for the rest of the session.
+   */
+  private readonly startRecords = new Map<
+    string,
+    Promise<readonly NewlyTrackedFile[]>
+  >();
+  /**
+   * Paths `captureBeforeToolCall` has named in the current turn. A record
+   * one of them names is the "before" state of a call that is about to
+   * run, so the undo for a call refused before its tool leaves it alone.
+   * Cleared at each user message: by then every captured call of the
+   * earlier turn has completed and been snapshotted.
+   */
+  private readonly captureNamedPaths = new Set<string>();
+  /**
+   * Call ids of announced edit calls that have not completed yet.
+   * `lastEditStartedAtMs` is cleared when the last of them completes
+   * without a snapshot — in particular when all of them were refused —
+   * so a later, unrelated completion does not take a snapshot in their
+   * name.
+   */
+  private readonly editCallsInFlight = new Set<string>();
   /**
    * The newest `user_message` barrier snapshot while it is still queued or
    * running, `null` once it has settled. `captureBeforeToolCall` holds a
@@ -1508,13 +1701,17 @@ export class FileHistorySidecar implements Sidecar {
       // A call to any other tool is one when it has targets.
       if (targets.paths.length > 0 || this.editToolNames.includes(toolName)) {
         this.lastEditStartedAtMs = monotonicMs();
+        this.editCallsInFlight.add(msg.payload.callId);
       }
       if (targets.paths.length > 0) {
         if (targets.regularFilesOnly) {
-          void this.trackRegularFiles(
-            targets.paths,
-            event.id,
-            isMovePair(toolName, targets),
+          this.startRecords.set(
+            msg.payload.callId,
+            this.trackRegularFiles(
+              targets.paths,
+              event.id,
+              isMovePair(toolName, targets),
+            ),
           );
         } else {
           // Queued before this handler returns. execute-tools announces the
@@ -1523,17 +1720,45 @@ export class FileHistorySidecar implements Sidecar {
           // `captureBeforeToolCall`, which then waits for the lot: a call
           // that also changes a file of a later call cannot get ahead of
           // that file's backup.
-          void this.history.trackEdits(targets.paths, event.id);
+          this.startRecords.set(
+            msg.payload.callId,
+            this.history.trackEdits(targets.paths, event.id),
+          );
         }
       }
     } else if (msg.type === "tool_call_completed") {
-      if (this.lastEditStartedAtMs !== null) {
+      const records = this.startRecords.get(msg.payload.callId);
+      if (records !== undefined) this.startRecords.delete(msg.payload.callId);
+      const wasEditCall = this.editCallsInFlight.delete(msg.payload.callId);
+      if (records !== undefined && toolCallNeverTookEffect(msg.payload)) {
+        // The call never changed a file: undo the records its start event
+        // made, and take no snapshot for it. Left in place, its targets
+        // would stay tracked for the rest of the session and every later
+        // rewind would treat whatever is written there since — by hand,
+        // or by a command file history does not see — as the session's
+        // own work, restoring over it or removing it.
+        const preToolRefusal = refusedBeforeTool(msg.payload);
+        void this.history.forgetDeferred(
+          records.then((newly) =>
+            preToolRefusal
+              ? newly.filter(
+                  (record) => !this.captureNamedPaths.has(record.filePath),
+                )
+              : newly,
+          ),
+        );
+        if (wasEditCall && this.editCallsInFlight.size === 0) {
+          this.lastEditStartedAtMs = null;
+        }
+      } else if (this.lastEditStartedAtMs !== null) {
         this.lastEditStartedAtMs = null;
+        this.editCallsInFlight.clear();
         void this.history.makeSnapshot(event.id);
       }
     } else if (msg.type === "turn_complete") {
       void this.history.makeSnapshot(`turn-${event.id}`);
     } else if (msg.type === "user_message") {
+      this.captureNamedPaths.clear();
       // Barrier snapshot: the tracked files as they are when a user message
       // arrives, keyed by the event id that `runTurn` also stamps into the
       // seed LLMMessage's `runtimeOnly.userMessageId`. Conversation rewind
@@ -1644,6 +1869,7 @@ export class FileHistorySidecar implements Sidecar {
     const paths = targets.regularFilesOnly
       ? await this.regularOrMissing(targets.paths, movePair)
       : targets.paths;
+    for (const filePath of paths) this.captureNamedPaths.add(filePath);
     // One queued operation for all of the call's targets. The id only names
     // a first snapshot, when the engine has none to attach the backups to.
     const tracked = paths.length > 0
@@ -1709,13 +1935,12 @@ export class FileHistorySidecar implements Sidecar {
     paths: readonly string[],
     messageId: string,
     movePair: boolean,
-  ): Promise<void> {
+  ): Promise<readonly NewlyTrackedFile[]> {
     const kept = await this.regularOrMissing(paths, movePair);
-    if (kept.length > 0) {
-      await this.history.trackEdits(kept, messageId, {
-        stopAtFirstUnrecorded: movePair,
-      });
-    }
+    if (kept.length === 0) return [];
+    return this.history.trackEdits(kept, messageId, {
+      stopAtFirstUnrecorded: movePair,
+    });
   }
 
   /**

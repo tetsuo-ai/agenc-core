@@ -636,6 +636,20 @@ const isEffectNoEffectProof = objectShape({
   evidenceSha256: isString,
   observedAt: isString,
 });
+const isToolEffectDispositionEvidence = objectShape({
+  disposition: oneOf(
+    "confirmed_committed",
+    "confirmed_no_effect",
+    "remains_unknown",
+  ),
+  evidenceKind: oneOf(
+    "provider_receipt",
+    "idempotency_lookup",
+    "boundary_not_crossed",
+  ),
+  evidenceRef: isString,
+  evidenceSha256: isString,
+});
 const isEffectReviewResolution = objectShape(
   {
     version: literal(1),
@@ -928,6 +942,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
     {
       toolName: isString,
       metadata: isRecord,
+      effectDisposition: isToolEffectDispositionEvidence,
       displayAttachments: arrayOf(((value: unknown): value is DisplayAttachment => isRecord(value) && typeof value.id === "string" && typeof value.digest === "string" && typeof value.kind === "string" && typeof value.title === "string" && typeof value.mimeType === "string" && typeof value.size === "number") as Validator<DisplayAttachment>),
       durationMs: isNumber,
     },

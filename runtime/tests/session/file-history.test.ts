@@ -1068,6 +1068,294 @@ describe("FileHistorySidecar event wiring", () => {
   });
 });
 
+describe("FileHistorySidecar forgets calls that never took effect (#3487)", () => {
+  let project = "";
+
+  beforeEach(() => {
+    project = mkdtempSync(join(tmpdir(), "agenc-filehist-forget-"));
+  });
+  afterEach(() => {
+    if (project) rmSync(project, { recursive: true, force: true });
+  });
+
+  type SidecarEvent = Parameters<FileHistorySidecar["onEvent"]>[0];
+
+  function startedEvent(
+    id: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): SidecarEvent {
+    return {
+      id,
+      msg: {
+        type: "tool_call_started",
+        payload: { callId: id, toolName, args: JSON.stringify(args) },
+      },
+    } as SidecarEvent;
+  }
+
+  function completedEvent(
+    id: string,
+    callId: string,
+    toolName: string,
+    outcome: {
+      isError?: boolean;
+      metadata?: Record<string, unknown>;
+      effectDisposition?: {
+        disposition: string;
+        evidenceKind: string;
+        evidenceRef: string;
+        evidenceSha256: string;
+      };
+    },
+  ): SidecarEvent {
+    return {
+      id,
+      msg: {
+        type: "tool_call_completed",
+        payload: {
+          callId,
+          toolName,
+          result: "{}",
+          isError: outcome.isError ?? true,
+          ...(outcome.metadata !== undefined
+            ? { metadata: outcome.metadata }
+            : {}),
+          ...(outcome.effectDisposition !== undefined
+            ? { effectDisposition: outcome.effectDisposition }
+            : {}),
+        },
+      },
+    } as SidecarEvent;
+  }
+
+  async function waitForTracked(
+    hist: FileHistory,
+    file: string,
+  ): Promise<void> {
+    for (let i = 0; i < 50; i += 1) {
+      if (hist.getState().trackedFiles.has(file)) return;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    }
+    throw new Error(`never tracked: ${file}`);
+  }
+
+  /** Let the completion handler queue its undo, then drain the queue. */
+  async function settle(hist: FileHistory): Promise<void> {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    await hist.flush();
+  }
+
+  async function waitForUntracked(
+    hist: FileHistory,
+    file: string,
+  ): Promise<void> {
+    for (let i = 0; i < 50; i += 1) {
+      if (!hist.getState().trackedFiles.has(file)) return;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    }
+    throw new Error(`never forgotten: ${file}`);
+  }
+
+  function backupsOnDisk(hist: FileHistory): string[] {
+    const found: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else if (/^v\d+-[0-9a-f-]{36}$/.test(entry.name)) found.push(path);
+      }
+    };
+    if (existsSync(hist.historyDir)) walk(hist.historyDir);
+    return found;
+  }
+
+  function expectNothingOnRecord(hist: FileHistory, file: string): void {
+    expect(hist.getState().trackedFiles.has(file)).toBe(false);
+    for (const snapshot of hist.getState().snapshots) {
+      expect(snapshot.trackedFileBackups[file]).toBeUndefined();
+    }
+  }
+
+  test("a call denied by the permission step leaves nothing on record", async () => {
+    const hist = new FileHistory({ projectDir: project });
+    const sidecar = new FileHistorySidecar({ fileHistory: hist });
+    const file = join(project, "a.txt");
+    writeFileSync(file, "A\n", "utf8");
+
+    sidecar.onEvent(startedEvent("call-1", "Write", { file_path: file, content: "X\n" }));
+    await waitForTracked(hist, file);
+    expect(backupsOnDisk(hist)).toHaveLength(1);
+
+    sidecar.onEvent(completedEvent("call-1-done", "call-1", "Write", {
+      metadata: { approvalFailure: { decision: "denied", source: "policy" } },
+    }));
+    await settle(hist);
+    await waitForUntracked(hist, file);
+
+    expectNothingOnRecord(hist, file);
+    expect(backupsOnDisk(hist)).toHaveLength(0);
+    // No snapshot was taken for the refused call.
+    expect(hist.hasSnapshotFor("call-1-done")).toBe(false);
+  });
+
+  test("a call refused by input validation leaves nothing on record", async () => {
+    const hist = new FileHistory({ projectDir: project });
+    const sidecar = new FileHistorySidecar({ fileHistory: hist });
+    const file = join(project, "notes.txt");
+
+    sidecar.onEvent(startedEvent("call-2", "Write", { file_path: file, content: "X\n" }));
+    await waitForTracked(hist, file);
+    // Recorded as absent: the file does not exist.
+    expect(
+      hist.getState().snapshots.at(-1)?.trackedFileBackups[file]?.backupFileName,
+    ).toBeNull();
+
+    sidecar.onEvent(completedEvent("call-2-done", "call-2", "Write", {
+      metadata: {
+        kind: "input_validation",
+        recoverable: true,
+        hiddenFromTranscript: true,
+      },
+    }));
+    await settle(hist);
+    await waitForUntracked(hist, file);
+
+    expectNothingOnRecord(hist, file);
+    expect(hist.hasSnapshotFor("call-2-done")).toBe(false);
+  });
+
+  test("a call blocked by the repeat guard leaves nothing on record", async () => {
+    const hist = new FileHistory({ projectDir: project });
+    const sidecar = new FileHistorySidecar({ fileHistory: hist });
+    const file = join(project, "data.bin");
+    writeFileSync(file, "payload", "utf8");
+
+    sidecar.onEvent(startedEvent("call-3", "Write", { file_path: file, content: "X\n" }));
+    await waitForTracked(hist, file);
+    expect(backupsOnDisk(hist)).toHaveLength(1);
+
+    sidecar.onEvent(completedEvent("call-3-done", "call-3", "Write", {
+      metadata: { repeatedFailingCallBlocked: true },
+    }));
+    await settle(hist);
+    await waitForUntracked(hist, file);
+
+    expectNothingOnRecord(hist, file);
+    expect(backupsOnDisk(hist)).toHaveLength(0);
+    expect(hist.hasSnapshotFor("call-3-done")).toBe(false);
+  });
+
+  test("a call its tool refuses with confirmed_no_effect leaves nothing on record", async () => {
+    const hist = new FileHistory({ projectDir: project });
+    const sidecar = new FileHistorySidecar({
+      fileHistory: hist,
+      workspaceRoot: project,
+    });
+    const source = join(project, "a.bin");
+    const destination = join(project, "b.bin");
+    writeFileSync(source, "aaaa", "utf8");
+    writeFileSync(destination, "bbbb", "utf8");
+
+    sidecar.onEvent(startedEvent("call-4", "system.move", {
+      source: "a.bin",
+      destination: "b.bin",
+    }));
+    await waitForTracked(hist, source);
+    await waitForTracked(hist, destination);
+    expect(backupsOnDisk(hist)).toHaveLength(2);
+
+    sidecar.onEvent(completedEvent("call-4-done", "call-4", "system.move", {
+      effectDisposition: {
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+        evidenceRef: "tool:system.filesystem:pre-effect",
+        evidenceSha256: "0".repeat(64),
+      },
+    }));
+    await settle(hist);
+    await waitForUntracked(hist, source);
+    await waitForUntracked(hist, destination);
+
+    expectNothingOnRecord(hist, source);
+    expectNothingOnRecord(hist, destination);
+    expect(backupsOnDisk(hist)).toHaveLength(0);
+    expect(hist.hasSnapshotFor("call-4-done")).toBe(false);
+  });
+
+  test("the record stays when the file changed after it was recorded", async () => {
+    const hist = new FileHistory({ projectDir: project });
+    const sidecar = new FileHistorySidecar({ fileHistory: hist });
+    const file = join(project, "a.txt");
+    writeFileSync(file, "A\n", "utf8");
+
+    sidecar.onEvent(startedEvent("call-5", "Write", { file_path: file, content: "X\n" }));
+    await waitForTracked(hist, file);
+    // Written by hand after the denied call named it: the record is now
+    // the only one of the file's earlier state.
+    writeFileSync(file, "edited by hand\n", "utf8");
+
+    sidecar.onEvent(completedEvent("call-5-done", "call-5", "Write", {
+      metadata: { approvalFailure: { decision: "denied", source: "policy" } },
+    }));
+    await settle(hist);
+
+    expect(hist.getState().trackedFiles.has(file)).toBe(true);
+    const entry = hist.getState().snapshots.at(-1)?.trackedFileBackups[file];
+    expect(entry?.backupFileName).toEqual(expect.any(String));
+    expect(readFileSync(entry!.backupFileName!, "utf8")).toBe("A\n");
+    expect(backupsOnDisk(hist)).toHaveLength(1);
+  });
+
+  test("a record captureBeforeToolCall named survives a refused call", async () => {
+    const hist = new FileHistory({ projectDir: project });
+    const sidecar = new FileHistorySidecar({
+      fileHistory: hist,
+      workspaceRoot: project,
+    });
+    const file = join(project, "kept.txt");
+    writeFileSync(file, "before\n", "utf8");
+
+    sidecar.onEvent(startedEvent("call-6", "Write", { file_path: file, content: "X\n" }));
+    await waitForTracked(hist, file);
+    // A later call of the batch is dispatched against the same file: its
+    // capture names the path, so the record is that call's "before" state.
+    await sidecar.captureBeforeToolCall("Write", { file_path: file, content: "Y\n" });
+
+    sidecar.onEvent(completedEvent("call-6-done", "call-6", "Write", {
+      metadata: { approvalFailure: { decision: "denied", source: "policy" } },
+    }));
+    await settle(hist);
+
+    expect(hist.getState().trackedFiles.has(file)).toBe(true);
+    expect(
+      hist.getState().snapshots.at(-1)?.trackedFileBackups[file]?.backupFileName,
+    ).toEqual(expect.any(String));
+    expect(backupsOnDisk(hist)).toHaveLength(1);
+  });
+
+  test("a call that ran still takes its snapshot", async () => {
+    const hist = new FileHistory({ projectDir: project });
+    const sidecar = new FileHistorySidecar({ fileHistory: hist });
+    const file = join(project, "ran.txt");
+    writeFileSync(file, "before\n", "utf8");
+
+    sidecar.onEvent(startedEvent("call-7", "Write", { file_path: file, content: "after\n" }));
+    await waitForTracked(hist, file);
+    writeFileSync(file, "after\n", "utf8");
+    sidecar.onEvent(completedEvent("call-7-done", "call-7", "Write", {
+      isError: false,
+    }));
+    await settle(hist);
+
+    expect(hist.getState().trackedFiles.has(file)).toBe(true);
+    expect(hist.hasSnapshotFor("call-7-done")).toBe(true);
+    expect(
+      hist.getState().snapshots.at(-1)?.trackedFileBackups[file]?.backupFileName,
+    ).toEqual(expect.any(String));
+  });
+});
+
 describe("resolveFileHistoryTargets (#3436)", () => {
   let root = "";
 

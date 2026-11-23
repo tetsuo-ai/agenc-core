@@ -719,6 +719,9 @@ function recordCompletedToolCallTimed(
           result: result.content,
           isError: result.isError === true,
           ...(metadata !== undefined ? { metadata } : {}),
+          ...(result.effectDisposition !== undefined
+            ? { effectDisposition: result.effectDisposition }
+            : {}),
           ...(durationMs !== undefined ? { durationMs } : {}),
         },
       },

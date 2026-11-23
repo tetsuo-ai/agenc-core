@@ -33,6 +33,7 @@ import type {
   RunRuntimeSettingsSnapshot,
   RunSuspensionReason,
   RunUsageTotals,
+  ToolEffectDispositionEvidence,
 } from "../contracts/run-contracts.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import type { TurnFailedEvent } from "../contracts/turn-terminal.js";
@@ -1257,6 +1258,14 @@ export type EventMsg =
         readonly isError: boolean;
         readonly displayAttachments?: readonly import("../mcp-client/display-attachments.js").DisplayAttachment[];
         readonly metadata?: Record<string, unknown>;
+        /**
+         * The dispatched result's effect disposition, when the effect
+         * boundary produced one. A `confirmed_no_effect` disposition on
+         * an error result is a call its tool refused before any effect;
+         * consumers such as file history read it here because the result
+         * itself does not carry it.
+         */
+        readonly effectDisposition?: ToolEffectDispositionEvidence;
         /**
          * Wall time the tool spent executing, in milliseconds. Omitted for
          * results synthesized before dispatch (denials, unknown tools) and
