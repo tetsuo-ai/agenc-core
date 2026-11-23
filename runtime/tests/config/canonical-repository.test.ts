@@ -30,6 +30,7 @@ import {
 } from "./migration.js";
 import {
   ConfigRepositoryError,
+  RETIRED_MODEL_ACCOUNT_NOTICE,
   loadCanonicalDaemonConfig,
   loadLayeredConfig,
   readStrictConfigLayer,
@@ -1688,11 +1689,30 @@ describe("retired account model config", () => {
     const notices: string[] = [];
     const loaded = await loadCanonicalDaemonConfig({ home: homePath, env: {}, managedConfigPath: managedPath, managedDropInDir: join(homePath, "empty"), onWarn: notice => notices.push(notice) });
     expect(loaded.config).not.toHaveProperty("auth");
-    expect(notices).toEqual(["AgenC accounts no longer provide models. Use your own provider credentials or a local server."]);
+    expect(notices).toEqual([`[agenc:config] ${managedPath}: ${RETIRED_MODEL_ACCOUNT_NOTICE}`]);
   });
 });
 
 describe("retired AgenC account sign-in config", () => {
+  test("daemon startup preserves an explicit local model in a fresh Desktop home", async () => {
+    const root = temp("desktop-local-model");
+    const home = join(root, "Library", "Application Support", "AgenC", "core");
+    const notices: string[] = [];
+    const options = {
+      env: { HOME: root, AGENC_HOME: home },
+      managedConfigPath: join(root, "managed", "config.toml"),
+      onWarn: (message: string) => notices.push(message),
+    };
+    await loadCanonicalDaemonConfig(options);
+    expect(notices).toEqual([]);
+
+    const path = join(home, "config.toml");
+    write(path, 'config_version = 2\nmodel_provider = "ollama"\nmodel = "agenc:latest"\n');
+    const { config } = await loadCanonicalDaemonConfig(options);
+    expect(notices).toEqual([]);
+    expect(config).toMatchObject({ model_provider: "ollama", model: "agenc:latest" });
+  });
+
   test("loads [auth] and [remote_control] silently and keeps neither", async () => {
     const homePath = temp("retired-sign-in-config");
     write(join(homePath, "config.toml"), 'config_version = 2\nmodel_provider = "openai"\nmodel = "gpt-6.2-astra"\n[auth]\nbackend = "local"\n[remote_control]\nenabled = true\n');
@@ -1718,6 +1738,6 @@ describe("retired AgenC account sign-in config", () => {
     expect(loaded.config.model).not.toBe("agenc");
     expect(loaded.config.providers ?? {}).not.toHaveProperty("agenc");
     expect(JSON.stringify(loaded.config.profiles ?? {})).not.toContain("agenc");
-    expect(notices).toEqual(["AgenC accounts no longer provide models. Use your own provider credentials or a local server."]);
+    expect(notices).toEqual([`[agenc:config] ${join(homePath, "config.toml")}: ${RETIRED_MODEL_ACCOUNT_NOTICE}`]);
   });
 });

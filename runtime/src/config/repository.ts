@@ -240,7 +240,9 @@ function dropRetiredAccountSelection(table: Record<string, unknown>): boolean {
     delete table.model;
     return true;
   }
-  if (isRetiredAccountModel(table.model)) {
+  // With an explicit provider, the model is its identifier. For example,
+  // Ollama can serve a local tag named agenc:latest.
+  if (table.model_provider === undefined && isRetiredAccountModel(table.model)) {
     delete table.model;
     return true;
   }
@@ -440,7 +442,7 @@ export async function readStrictConfigLayer(
     config: validateStrictConfigDocument(parsed, path),
   });
   if (
-    (isPlainRecord(parsed.auth) && ("managedKeys" in parsed.auth || "managed_keys" in parsed.auth)) ||
+    (isPlainRecord(parsed.auth) && (Object.hasOwn(parsed.auth, "managedKeys") || Object.hasOwn(parsed.auth, "managed_keys"))) ||
     dropRetiredAccountProvider(cloneRecord(parsed))
   ) {
     RETIRED_MODEL_ACCOUNT_LAYERS.add(layer);
@@ -1438,7 +1440,7 @@ async function loadLayeredConfigInternal(
     if (layer?.path === undefined) return;
     if (!retiredModelAccountNoticeShown && RETIRED_MODEL_ACCOUNT_LAYERS.has(layer)) {
       retiredModelAccountNoticeShown = true;
-      (options.onWarn ?? console.warn)(RETIRED_MODEL_ACCOUNT_NOTICE);
+      (options.onWarn ?? console.warn)(`[agenc:config] ${layer.path}: ${RETIRED_MODEL_ACCOUNT_NOTICE}`);
     }
     const identity = STABLE_LAYER_IDENTITIES.get(layer);
     if (identity === undefined) return;

@@ -673,6 +673,10 @@ marketplace refresh, no update fields and no network, for a client that lists
 plugins before anyone asked about updates (AgenC Desktop at startup and in its
 composer).
 
+`plugin list --json` reports plugin load failures in `errors`. When loading
+configuration produces warnings, the listing includes them in `configWarnings`.
+The text listing prints those warnings to stderr.
+
 Dispatch accepts `agenc plugin` only. `agenc plugins` is a **help topic**,
 not an execution alias. TUI: `/plugins` (aliases `/plugin`, `/marketplace`).
 Install roots use the same collision-resistant child key: user

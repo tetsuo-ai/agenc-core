@@ -6381,7 +6381,11 @@ workspace = ${JSON.stringify(process.cwd())}
     await rm(agencHome, { recursive: true, force: true });
   });
 
-  it("foreground daemon starts with a retired [auth] table in config.toml", async () => {
+  it.each([
+    ["retired auth backend", '[auth]\nbackend = "remote"', false],
+    ["previous Desktop provider", '[providers.agenc]\ndefault_model = "old-model"', true],
+    ["explicit Ollama model", 'model_provider = "ollama"\nmodel = "agenc:latest"', false],
+  ] as const)("foreground daemon starts with %s in config.toml", async (_label, config, warns) => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
     const io = createIo();
@@ -6389,7 +6393,7 @@ workspace = ${JSON.stringify(process.cwd())}
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     await writeFile(
       join(agencHome, "config.toml"),
-      'config_version = 2\n\n[auth]\nbackend = "remote"\n',
+      `config_version = 2\n${config}\n`,
     );
 
     const running = runAgenCDaemonCli(
@@ -6403,6 +6407,9 @@ workspace = ${JSON.stringify(process.cwd())}
         () => expect(io.stdoutText()).toContain("AgenC daemon running"),
         { timeout: DAEMON_MILESTONE_BUDGET_MS },
       );
+      const notices = io.stderrText().split("\n").filter(line => line.includes("AgenC accounts no longer provide models."));
+      if (warns) expect(notices).toEqual([expect.stringContaining(join(agencHome, "config.toml"))]);
+      else expect(notices).toEqual([]);
       signalProcess.emit("SIGTERM");
       await expect(running).resolves.toBe(0);
       await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();

@@ -260,6 +260,9 @@ export async function runAgenCPluginCli(
             // Local installed inventory remains usable if a marketplace is broken.
           }
         }
+        if (!command.json && freshResult.configWarnings?.length) {
+          io.stderr.write(`${freshResult.configWarnings.join("\n")}\n`);
+        }
         io.stdout.write(command.json
           ? `${JSON.stringify(freshResult, null, 2)}\n`
           : `${formatPluginList(freshResult)}\n`);

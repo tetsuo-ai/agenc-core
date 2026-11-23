@@ -318,6 +318,24 @@ describe("agenc plugin CLI", () => {
     expect(fetches).toBe(2);
   });
 
+  it("keeps configuration warnings separate from errors in a successful installed listing", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    const path = join(agencHome, "config.toml");
+    // Earlier Desktop versions saved this provider table on model selection.
+    await writeFile(path, 'config_version = 2\n[providers.agenc]\ndefault_model = "old-model"\n');
+    const io = createIo();
+    const opts = options(agencHome, workspaceRoot, io);
+    expect(await runAgenCPluginCli({ kind: "list", json: true, noRefresh: true }, opts)).toBe(0);
+    const inventory = JSON.parse(io.stdoutText());
+    expect(inventory.errors).toEqual([]);
+    expect(inventory.configWarnings).toEqual([expect.stringContaining(path)]);
+
+    const text = createIo();
+    expect(await runAgenCPluginCli({ kind: "list", json: false, noRefresh: true }, { ...opts, io: text })).toBe(0);
+    expect(text.stderrText().trim()).toBe(inventory.configWarnings[0]);
+    expect(text.stdoutText()).not.toContain("Plugin load issues");
+  });
+
   it("lists installed plugins from disk alone with --no-refresh", async () => {
     // AgenC Desktop lists plugins at startup and in its composer. The plain
     // listing is also the update check: it refreshes a marketplace older

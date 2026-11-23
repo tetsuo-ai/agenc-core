@@ -118,6 +118,7 @@ export interface InstalledPluginSummary extends AgencPluginInventoryProvenance {
 export interface PluginListResult {
   readonly plugins: readonly InstalledPluginSummary[];
   readonly errors: readonly string[];
+  readonly configWarnings?: readonly string[];
 }
 
 export interface InstallPluginInput extends PluginOperationOptions {
@@ -445,8 +446,8 @@ export async function listInstalledPlugins(
     plugins: inspected.map((entry) => entry.plugin).sort(
       (a, b) => a.id.localeCompare(b.id) || a.root.localeCompare(b.root),
     ),
+    ...(warnings.length > 0 ? { configWarnings: warnings } : {}),
     errors: [
-      ...warnings,
       ...loaded.errors.map((issue) => `${issue.source}: ${issue.message}`),
       ...inspected.flatMap((entry) => entry.errors),
     ],
