@@ -1,0 +1,54 @@
+{
+  "short": {
+    "file": "short.sse",
+    "bytes": 11838,
+    "sha256": "3579eef309d5e4befd95b1051e0cdfec2d7de9080236aeb0230bcd1d758c9db2",
+    "usage": {
+      "prompt_tokens": 32,
+      "completion_tokens": 48,
+      "total_tokens": 80,
+      "prompt_cache_hit_tokens": 16,
+      "prompt_cache_miss_tokens": 16,
+      "completion_tokens_details": {
+        "reasoning_tokens": 16
+      }
+    },
+    "reasoningDeltas": 16,
+    "contentDeltas": 26,
+    "toolInitDeltas": 1,
+    "toolArgFragments": 5,
+    "deltaFrames": 48,
+    "finishFrames": 1,
+    "usageFrames": 1,
+    "doneFrames": 1,
+    "totalFrames": 51,
+    "toolArgumentsBytes": 59,
+    "completionTokens": 48
+  },
+  "long": {
+    "file": "long.sse",
+    "bytes": 984432,
+    "sha256": "4d896ca36388029805f8b79460f1abe44c1f693b560d2b7a8e229f9058c8fc4b",
+    "usage": {
+      "prompt_tokens": 128,
+      "completion_tokens": 4096,
+      "total_tokens": 4224,
+      "prompt_cache_hit_tokens": 64,
+      "prompt_cache_miss_tokens": 64,
+      "completion_tokens_details": {
+        "reasoning_tokens": 2000
+      }
+    },
+    "reasoningDeltas": 2000,
+    "contentDeltas": 1400,
+    "toolInitDeltas": 1,
+    "toolArgFragments": 700,
+    "deltaFrames": 4101,
+    "finishFrames": 1,
+    "usageFrames": 1,
+    "doneFrames": 1,
+    "totalFrames": 4104,
+    "toolArgumentsBytes": 6251,
+    "completionTokens": 4096
+  }
+}
