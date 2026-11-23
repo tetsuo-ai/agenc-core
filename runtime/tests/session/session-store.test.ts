@@ -1137,6 +1137,58 @@ describe("session-store", () => {
     }
   });
 
+  test.skipIf(process.platform !== "linux")("I-23 SessionLock: reclaims a same-PID lock from an earlier boot with a larger monotonic stamp", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agenc-lock-reboot-"));
+    const lockPath = join(dir, "rollout.jsonl.lock");
+    const lock = new SessionLock(lockPath);
+    const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    try {
+      // The monotonic clock restarts at boot. The previous boot ran a day
+      // longer than this one, so its hrtime stamp is larger than ours even
+      // though the daemon that wrote it is gone and the new one got its PID.
+      const acquiredAt = Date.now() - 3_600_000;
+      const startNs = `${acquiredAt}-${process.hrtime.bigint() + 86_400_000_000_000n}`;
+      writeFileSync(lockPath, JSON.stringify({
+        pid: process.pid,
+        startNs,
+        acquiredAtIso: new Date(acquiredAt).toISOString(),
+        bootId: "00000000-0000-0000-0000-000000000000",
+      }));
+      lock.acquire();
+      expect(lock.isAcquired).toBe(true);
+      const record = JSON.parse(readFileSync(lockPath, "utf8"));
+      expect(record.startNs).not.toBe(startNs);
+      expect(record.bootId).toBe(bootId);
+    } finally {
+      lock.release();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform !== "linux")("I-23 SessionLock: still compares monotonic stamps for a same-boot or boot-less same-PID lock", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agenc-lock-same-boot-"));
+    const lockPath = join(dir, "rollout.jsonl.lock");
+    const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    try {
+      const acquiredAt = Date.now() - 3_600_000;
+      for (const boot of [{ bootId }, {}]) {
+        const stamp = JSON.stringify({
+          pid: process.pid,
+          startNs: `${acquiredAt}-${process.hrtime.bigint() + 86_400_000_000_000n}`,
+          acquiredAtIso: new Date(acquiredAt).toISOString(),
+          ...boot,
+        });
+        writeFileSync(lockPath, stamp);
+        const lock = new SessionLock(lockPath);
+        expect(() => lock.acquire()).toThrow(SessionLockedError);
+        lock.release();
+        expect(readFileSync(lockPath, "utf8")).toBe(stamp);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("I-23 SessionLock: refuses a real current-process owner and preserves its exact lease", () => {
     const dir = mkdtempSync(join(tmpdir(), "agenc-lock-current-owner-"));
     const lockPath = join(dir, "rollout.jsonl.lock");
