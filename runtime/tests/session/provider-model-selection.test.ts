@@ -149,6 +149,15 @@ describe("model catalog admission", () => {
       .toMatchObject({ provider: "venice", model });
   });
 
+  test.each([
+    [{ model_provider: "trustedrouter", model: "anthropic/claude-opus-4.5" }, "anthropic/claude-opus-4.5"],
+    [{ model: "trustedrouter:deepseek/deepseek-v4.1-flash" }, "deepseek/deepseek-v4.1-flash"],
+    [{ model_provider: "trustedrouter", model: "nyte/zdr" }, "nyte/zdr"],
+  ] as const)("accepts a live TrustedRouter model or alias the bundled snapshot lacks: %o", (layer, model) => {
+    expect(resolveProviderModelSelection({}, current, layer, {}))
+      .toMatchObject({ provider: "trustedrouter", model });
+  });
+
   // Ollama Cloud's list is its live /api/tags answer, and several of its IDs
   // are also native IDs elsewhere (kimi-k3 on Kimi, glm-5.3 on Z.AI). A pair
   // that names Ollama Cloud stays on Ollama Cloud.

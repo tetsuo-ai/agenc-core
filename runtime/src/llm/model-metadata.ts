@@ -5,6 +5,12 @@ import {
   parseAbliterationModels,
   type AbliterationModel,
 } from "./registry/abliteration-models.js";
+import {
+  parseTrustedRouterModels,
+  trustedRouterCatalogEntry,
+  trustedRouterModelCosts,
+  type TrustedRouterModel,
+} from "./registry/trustedrouter-models.js";
 import { recordPublishedModelCosts } from "./registry/published-model-costs.js";
 import { recordPublishedModelCatalog, recordPublishedModelDetail } from "./registry/published-model-catalog.js";
 import { geminiLiveCatalogEntry, parseGeminiLiveModels, type GeminiLiveModel } from "./registry/gemini-live-models.js";
@@ -219,6 +225,8 @@ export class ModelMetadataResolver {
   private veniceModels?: readonly VeniceModel[];
   private abliterationResponse?: MetadataJson;
   private abliterationModels?: readonly AbliterationModel[];
+  private trustedRouterResponse?: MetadataJson;
+  private trustedRouterModels?: readonly TrustedRouterModel[];
   private geminiResponse?: MetadataJson;
   private geminiModels?: readonly GeminiLiveModel[];
   private openRouterCatalog?: OpenRouterCatalog;
@@ -271,6 +279,8 @@ export class ModelMetadataResolver {
       this.veniceModels = undefined;
       this.abliterationResponse = undefined;
       this.abliterationModels = undefined;
+      this.trustedRouterResponse = undefined;
+      this.trustedRouterModels = undefined;
       this.openRouterCatalog = undefined;
       this.ollamaCloudTags = undefined;
       this.ollamaCloudListed = undefined;
@@ -287,7 +297,7 @@ export class ModelMetadataResolver {
     const provider = normalizeMetadataProviderIdentity(params.provider);
     // These lists use their own scope (readKeyedModelList); observing the
     // provider here too would rotate it on every lookup.
-    if (provider === "venice" || provider === "abliteration") return undefined;
+    if (provider === "venice" || provider === "abliteration" || provider === "trustedrouter") return undefined;
     return this.endpointCatalogs?.observe(provider, this.endpointConfiguration(params));
   }
 
@@ -300,6 +310,9 @@ export class ModelMetadataResolver {
     }
     if (provider === "abliteration" && resolveProviderApiKeyEnvironment(provider, this.env) === undefined) {
       return { ...this.env, ABLIT_KEY: this.readSavedApiKey?.("abliteration") };
+    }
+    if (provider === "trustedrouter" && !this.env.TRUSTEDROUTER_API_KEY?.trim()) {
+      return { ...this.env, TRUSTEDROUTER_API_KEY: this.readSavedApiKey?.("trustedrouter") };
     }
     if (provider === "gemini" && resolveProviderApiKeyEnvironment(provider, this.env) === undefined) {
       return { ...this.env, GEMINI_API_KEY: this.readSavedApiKey?.("gemini") };
@@ -327,6 +340,15 @@ export class ModelMetadataResolver {
         contextWindow: veniceModel.contextWindow,
         maxOutputTokens: veniceModel.maxOutputTokens,
         maxOutputTokensUpperLimit: veniceModel.maxOutputTokens,
+      }, explicit), "live_endpoint", false);
+    }
+    const trustedRouterModel = normalizeMetadataProviderIdentity(params.provider) === "trustedrouter"
+      ? this.trustedRouterModels?.find(entry => entry.model === params.model) : undefined;
+    if (trustedRouterModel) {
+      return this.finalize(params, mergeLiveEndpointMetadata({
+        contextWindow: trustedRouterModel.contextWindow,
+        maxOutputTokens: trustedRouterModel.maxOutputTokens,
+        maxOutputTokensUpperLimit: trustedRouterModel.maxOutputTokens,
       }, explicit), "live_endpoint", false);
     }
     if (hasAnyMetadata(explicit)) {
@@ -385,6 +407,17 @@ export class ModelMetadataResolver {
     const explicit = readExplicitConfigMetadata(params);
     if (normalizeMetadataProviderIdentity(params.provider) === "venice") {
       const model = (await this.discoverVeniceModels(params.config))?.find(entry => entry.model === params.model);
+      if (model) {
+        return this.finalize(params, mergeLiveEndpointMetadata({
+          contextWindow: model.contextWindow,
+          maxOutputTokens: model.maxOutputTokens,
+          maxOutputTokensUpperLimit: model.maxOutputTokens,
+        }, explicit), "live_endpoint", false);
+      }
+      return this.resolveSync(params);
+    }
+    if (normalizeMetadataProviderIdentity(params.provider) === "trustedrouter") {
+      const model = (await this.discoverTrustedRouterModels(params.config))?.find(entry => entry.model === params.model);
       if (model) {
         return this.finalize(params, mergeLiveEndpointMetadata({
           contextWindow: model.contextWindow,
@@ -517,7 +550,7 @@ export class ModelMetadataResolver {
    * Undefined without a key or transport, without a network request.
    */
   private async readKeyedModelList(
-    provider: "venice" | "abliteration" | "gemini",
+    provider: "venice" | "abliteration" | "trustedrouter" | "gemini",
     config: AgenCConfig,
     timeoutMs: number,
     usable: (json: MetadataJson | undefined) => boolean,
@@ -590,6 +623,30 @@ export class ModelMetadataResolver {
       );
     }
     return this.abliterationModels;
+  }
+
+  /**
+   * TrustedRouter's `GET /v1/models`: all public chat models, `trustedrouter/*`
+   * presets, and `nyte/*` aliases with their limits, capabilities, privacy
+   * tiers, and per-token prices. Recorded into published-model-catalog and
+   * published-model-costs so menus, admission, and cost accounting stay aligned.
+   */
+  async discoverTrustedRouterModels(config: AgenCConfig): Promise<readonly TrustedRouterModel[] | undefined> {
+    const response = await this.readKeyedModelList(
+      "trustedrouter", config, this.liveModelListTimeoutMs(), result => parseTrustedRouterModels(result).length > 0,
+    );
+    if (response === undefined) return undefined;
+    if (response !== this.trustedRouterResponse) {
+      this.trustedRouterResponse = response;
+      this.trustedRouterModels = parseTrustedRouterModels(response);
+      recordPublishedModelCosts("trustedrouter", trustedRouterModelCosts(this.trustedRouterModels));
+      recordPublishedModelCatalog(
+        "trustedrouter",
+        this.trustedRouterModels.map((model, priority) => trustedRouterCatalogEntry(model, priority)),
+        { replace: true },
+      );
+    }
+    return this.trustedRouterModels;
   }
 
   /**
@@ -1029,11 +1086,11 @@ export function hasDynamicProviderModelCatalog(
   provider: string,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
-  // Venice's and abliteration.ai's IDs come from their /models lists and
-  // Ollama Cloud's from its /api/tags list; the bundled snapshots are only the
-  // offline fallback, so an ID missing from them is not a typo.
+  // Venice's, abliteration.ai's and TrustedRouter's IDs come from their /models
+  // lists and Ollama Cloud's from its /api/tags list; the bundled snapshots are
+  // only the offline fallback, so an ID missing from them is not a typo.
   const identity = normalizeMetadataProviderIdentity(provider);
-  if (identity === "venice" || identity === "ollama-cloud" || identity === "abliteration") return true;
+  if (identity === "venice" || identity === "ollama-cloud" || identity === "abliteration" || identity === "trustedrouter") return true;
   return shouldPreferDynamicMetadata({ config, provider, model: "" }, env);
 }
 
@@ -1045,8 +1102,8 @@ function shouldPreferDynamicMetadata(
   // Z.AI's curated catalog is authoritative even when an operator overrides
   // the API base URL. `/models` remains a credential health probe, but its
   // list does not replace exact context/output limits here. abliteration.ai's
-  // own list reaches its catalog rows through discovery.
-  if (provider === "zai" || provider === "zai-coding-plan" || provider === "ollama-cloud" || provider === "abliteration") return false;
+  // and TrustedRouter's lists reach their catalog rows through discovery.
+  if (provider === "zai" || provider === "zai-coding-plan" || provider === "ollama-cloud" || provider === "abliteration" || provider === "trustedrouter") return false;
   return provider === "openrouter" || shouldQueryLiveEndpoint(params, env);
 }
 

@@ -198,7 +198,7 @@ export function resolveReasoningEffort(input: {
   } else if (slug === "ollama" && isOllamaGptOssModel(model)) {
     reasoningEffortAllowedValues = new Set(OLLAMA_GPT_OSS_REASONING_LEVELS);
     acceptsReasoningEffort = true;
-  } else if (slug === "ollama-cloud" || slug === "groq" || slug === "venice" || slug === "abliteration") {
+  } else if (slug === "ollama-cloud" || slug === "groq" || slug === "venice" || slug === "abliteration" || slug === "trustedrouter") {
     const entry = resolveRegisteredModelCatalogEntry({ provider: slug, model });
     reasoningEffortAllowedValues = new Set(entry?.supportedReasoningLevels ?? []);
     acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;

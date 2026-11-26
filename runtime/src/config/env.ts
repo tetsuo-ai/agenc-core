@@ -115,6 +115,8 @@ export interface EnvSnapshot {
   readonly ABLIT_KEY?: string;
   readonly ABLITERATION_API_KEY?: string;
   readonly ABLITERATION_BASE_URL?: string;
+  readonly TRUSTEDROUTER_API_KEY?: string;
+  readonly TRUSTEDROUTER_BASE_URL?: string;
   readonly GROQ_API_KEY?: string;
   readonly GROQ_BASE_URL?: string;
   readonly DEEPSEEK_API_KEY?: string;

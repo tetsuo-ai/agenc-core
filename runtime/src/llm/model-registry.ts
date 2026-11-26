@@ -1,4 +1,9 @@
 import { VENICE_MODELS, veniceDefaultModel, type VeniceModel } from "./registry/venice-models.js";
+import {
+  TRUSTEDROUTER_MODELS,
+  trustedRouterDefaultModel,
+  type TrustedRouterModel,
+} from "./registry/trustedrouter-models.js";
 import { anthropicSupportsFastMode } from "./providers/anthropic/fast-mode.js";
 import {
   buildProviderModelCatalog,
@@ -59,6 +64,7 @@ export interface ModelRegistryEntry {
   readonly capabilities: ProviderCapabilityRegistryEntry;
   readonly cost: ModelRegistryCostEntry;
   readonly veniceModel?: VeniceModel;
+  readonly trustedRouterModel?: TrustedRouterModel;
 }
 
 export interface ModelRegistryOptions {
@@ -78,6 +84,7 @@ function inferReasoningLevels(
   entry: ModelRegistryEntry,
 ): readonly ReasoningEffort[] {
   if (entry.veniceModel) return entry.veniceModel.supportedReasoningLevels;
+  if (entry.trustedRouterModel) return entry.trustedRouterModel.supportedReasoningLevels;
   const catalog = catalogEntryFor(entry);
   if (catalog?.supportedReasoningLevels.length) {
     return catalog.supportedReasoningLevels;
@@ -96,6 +103,7 @@ function inferDefaultReasoningLevel(
   const familyDefault = gatewayFamilyDefaultEffort(entry.provider, entry.model, supportedReasoningLevels);
   if (familyDefault !== undefined) return familyDefault;
   if (entry.veniceModel) return entry.veniceModel.defaultReasoningLevel;
+  if (entry.trustedRouterModel) return entry.trustedRouterModel.defaultReasoningLevel;
   if (entry.provider === "gemini") return undefined;
   const catalog = catalogEntryFor(entry);
   if (
@@ -244,6 +252,12 @@ export function modelRegistryEntryToModelInfo(
       ...(entry.veniceModel.privacy === undefined ? {} : { privacy: entry.veniceModel.privacy }),
       ...(entry.veniceModel.zeroDataRetention === undefined ? {} : { zeroDataRetention: entry.veniceModel.zeroDataRetention }),
     } : {}),
+    ...(entry.trustedRouterModel ? {
+      isDefault: entry.trustedRouterModel.isDefault,
+      supportsImageInput: entry.trustedRouterModel.supportsVision,
+      supportsReasoning: entry.trustedRouterModel.supportsReasoning,
+      ...(entry.trustedRouterModel.zeroDataRetention === undefined ? {} : { zeroDataRetention: entry.trustedRouterModel.zeroDataRetention }),
+    } : {}),
     usedFallbackModelMetadata: entry.metadata.usedFallbackModelMetadata,
   };
 }
@@ -251,6 +265,7 @@ export function modelRegistryEntryToModelInfo(
 export class ModelRegistry {
   private sessionCostRegistry?: Record<string, ModelCostEntry>;
   private veniceModels: readonly VeniceModel[] = VENICE_MODELS;
+  private trustedRouterModels: readonly TrustedRouterModel[] = TRUSTEDROUTER_MODELS;
   private readonly config: AgenCConfig;
   private readonly metadataResolver: ModelMetadataResolver;
   private readonly costRegistry: Readonly<Record<string, ModelCostEntry>>;
@@ -278,25 +293,49 @@ export class ModelRegistry {
     return this.veniceModels;
   }
 
+  async discoverTrustedRouterModels(): Promise<readonly TrustedRouterModel[]> {
+    this.trustedRouterModels = await this.metadataResolver.discoverTrustedRouterModels(this.config) ?? TRUSTEDROUTER_MODELS;
+    if (this.sessionCostRegistry) {
+      for (const key of Object.keys(this.sessionCostRegistry)) {
+        if (key.startsWith("trustedrouter:")) delete this.sessionCostRegistry[key];
+      }
+      for (const entry of this.trustedRouterModels) {
+        if (entry.cost) this.sessionCostRegistry[`trustedrouter:${entry.model}`] = entry.cost;
+      }
+    }
+    return this.trustedRouterModels;
+  }
+
   modelCostRegistry(): Readonly<Record<string, ModelCostEntry>> {
     return this.sessionCostRegistry ??= {
       ...this.costRegistry,
       ...Object.fromEntries(this.veniceModels.flatMap(entry => entry.cost ? [[`venice:${entry.model}`, entry.cost]] : [])),
+      ...Object.fromEntries(this.trustedRouterModels.flatMap(entry => entry.cost ? [[`trustedrouter:${entry.model}`, entry.cost]] : [])),
     };
   }
 
   async defaultModelForProvider(provider: string): Promise<string | undefined> {
-    if (provider !== "venice") return undefined;
-    return veniceDefaultModel(await this.discoverVeniceModels());
+    if (provider === "venice") return veniceDefaultModel(await this.discoverVeniceModels());
+    if (provider === "trustedrouter") return trustedRouterDefaultModel(await this.discoverTrustedRouterModels());
+    return undefined;
   }
 
   async listEntries(provider?: string): Promise<readonly ModelRegistryEntry[]> {
-    if (provider !== "venice") return this.listEntriesSync();
-    const models = await this.discoverVeniceModels();
-    return [
-      ...this.listEntriesSync().filter(entry => entry.provider !== "venice"),
-      ...await Promise.all(models.map(entry => this.resolve({ provider: "venice", model: entry.model }))),
-    ];
+    if (provider === "venice") {
+      const models = await this.discoverVeniceModels();
+      return [
+        ...this.listEntriesSync().filter(entry => entry.provider !== "venice"),
+        ...await Promise.all(models.map(entry => this.resolve({ provider: "venice", model: entry.model }))),
+      ];
+    }
+    if (provider === "trustedrouter") {
+      const models = await this.discoverTrustedRouterModels();
+      return [
+        ...this.listEntriesSync().filter(entry => entry.provider !== "trustedrouter"),
+        ...await Promise.all(models.map(entry => this.resolve({ provider: "trustedrouter", model: entry.model }))),
+      ];
+    }
+    return this.listEntriesSync();
   }
 
   metadataRevision(params: { readonly provider: string; readonly model: string }): number {
@@ -306,8 +345,12 @@ export class ModelRegistry {
   listEntriesSync(): readonly ModelRegistryEntry[] {
     return Object.freeze(
       Object.entries(this.catalog).flatMap(([provider, models]) =>
-        (provider === "venice" ? this.veniceModels.map(entry => entry.model) : models)
-          .map((model) => this.resolveSync({ provider, model })),
+        (provider === "venice"
+          ? this.veniceModels.map(entry => entry.model)
+          : provider === "trustedrouter"
+            ? this.trustedRouterModels.map(entry => entry.model)
+            : models
+        ).map((model) => this.resolveSync({ provider, model })),
       ),
     );
   }
@@ -353,6 +396,7 @@ export class ModelRegistry {
     const selection = normalizeRegistrySelection(params);
     const capabilityModel = this.capabilityModel(selection);
     if (selection.provider === "venice") await this.discoverVeniceModels();
+    if (selection.provider === "trustedrouter") await this.discoverTrustedRouterModels();
     return this.buildEntry({
       ...selection,
       capabilityModel,
@@ -388,8 +432,11 @@ export class ModelRegistry {
       ?.capability_overrides;
     const veniceModel = params.provider === "venice"
       ? this.veniceModels.find(entry => entry.model === params.model) : undefined;
+    const trustedRouterModel = params.provider === "trustedrouter"
+      ? this.trustedRouterModels.find(entry => entry.model === params.model) : undefined;
     return {
       ...(veniceModel === undefined ? {} : { veniceModel }),
+      ...(trustedRouterModel === undefined ? {} : { trustedRouterModel }),
       provider: params.provider,
       model: params.model,
       ...(params.capabilityModel !== params.model
@@ -399,20 +446,35 @@ export class ModelRegistry {
       capabilities: resolveProviderCapabilityEntry({
         provider: params.provider,
         model: params.capabilityModel,
-        overrides: { ...(veniceModel ? {
-          supportsToolUse: true,
-          supportsImageInput: veniceModel.supportsVision,
-          acceptsImageHistory: veniceModel.supportsVision,
-          supportsExtendedThinking: veniceModel.supportsReasoning,
-          acceptsReasoningEffort: veniceModel.supportedReasoningLevels.length > 0,
-          supportsStructuredOutput: veniceModel.supportsStructuredOutput,
-        } : {}), ...overrides },
+        overrides: {
+          ...(veniceModel ? {
+            supportsToolUse: true,
+            supportsImageInput: veniceModel.supportsVision,
+            acceptsImageHistory: veniceModel.supportsVision,
+            supportsExtendedThinking: veniceModel.supportsReasoning,
+            acceptsReasoningEffort: veniceModel.supportedReasoningLevels.length > 0,
+            supportsStructuredOutput: veniceModel.supportsStructuredOutput,
+          } : {}),
+          ...(trustedRouterModel ? {
+            supportsToolUse: trustedRouterModel.supportsToolUse,
+            supportsImageInput: trustedRouterModel.supportsVision,
+            acceptsImageHistory: trustedRouterModel.supportsVision,
+            supportsExtendedThinking: trustedRouterModel.supportsReasoning,
+            acceptsReasoningEffort: trustedRouterModel.supportedReasoningLevels.length > 0,
+            supportsStructuredOutput: trustedRouterModel.supportsStructuredOutput,
+          } : {}),
+          ...overrides,
+        },
       }),
-      cost: veniceModel?.cost ? { entry: veniceModel.cost, known: true, matchedKey: `venice:${params.model}` } : resolveCostEntry({
-        provider: params.provider,
-        model: params.model,
-        registry: this.costRegistry,
-      }),
+      cost: veniceModel?.cost
+        ? { entry: veniceModel.cost, known: true, matchedKey: `venice:${params.model}` }
+        : trustedRouterModel?.cost
+          ? { entry: trustedRouterModel.cost, known: true, matchedKey: `trustedrouter:${params.model}` }
+          : resolveCostEntry({
+              provider: params.provider,
+              model: params.model,
+              registry: this.costRegistry,
+            }),
     };
   }
 }

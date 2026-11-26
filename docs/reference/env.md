@@ -60,6 +60,7 @@ Credential values are not written into the canonical config snapshot.
 | OpenRouter | `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `AGENC_OPENROUTER_HTTP_REFERER`, `AGENC_OPENROUTER_TITLE` |
 | Venice AI | `VENICE_API_KEY`, `VENICE_BASE_URL` |
 | abliteration.ai | `ABLIT_KEY`, then `ABLITERATION_API_KEY`; `ABLITERATION_BASE_URL` |
+| TrustedRouter | `TRUSTEDROUTER_API_KEY`, `TRUSTEDROUTER_BASE_URL` |
 | Groq | `GROQ_API_KEY`, `GROQ_BASE_URL` |
 | DeepSeek | `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`; `AGENC_SHARED_PREFIX_TAIL` (shared cached prefix, below) |
 | Meta | `MODEL_API_KEY`, `META_BASE_URL` (Muse Code's `META_API_KEY` is not read) |
@@ -730,6 +731,13 @@ the native credential store through `/providers`. The daemon forwards both as
 session credential ingress, and tool subprocesses do not inherit them.
 `ABLITERATION_BASE_URL` overrides the built-in `https://api.abliteration.ai/v1`
 endpoint.
+
+`TRUSTEDROUTER_API_KEY` is the dedicated TrustedRouter BYOK credential. It can
+also be saved in the native credential store through `/providers`. The daemon
+forwards it as session credential ingress, and tool subprocesses do not inherit
+it. TrustedRouter never uses `OPENAI_COMPATIBLE_API_KEY` or `OPENAI_API_KEY` as
+a fallback. `TRUSTEDROUTER_BASE_URL` overrides the built-in
+`https://api.trustedrouter.com/v1` endpoint.
 
 ### Live WebSearch provider settings
 

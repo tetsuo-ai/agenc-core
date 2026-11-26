@@ -438,7 +438,7 @@ export {
 
 const DAEMON_USER_STOP_GENERATION: unique symbol = Symbol("agenc.daemon-user-stop-generation");
 /** Providers whose effort levels come with their live model lists (published-model-catalog). */
-const LIVE_EFFORT_LEVEL_PROVIDERS: ReadonlySet<string> = new Set(["venice", "ollama-cloud"]);
+const LIVE_EFFORT_LEVEL_PROVIDERS: ReadonlySet<string> = new Set(["venice", "trustedrouter", "ollama-cloud"]);
 type DaemonHumanSessionSubmitOptions = DaemonSessionSubmitOptions & {
   readonly [DAEMON_USER_STOP_GENERATION]?: number;
 };

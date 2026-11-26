@@ -5,6 +5,7 @@
 
 import { ModelMetadataResolver } from "../model-metadata.js";
 import { veniceDefaultModel } from "../registry/venice-models.js";
+import { trustedRouterDefaultModel } from "../registry/trustedrouter-models.js";
 
 import { loadCanonicalConfig } from "../../config/repository.js";
 import { readProviderConfig } from "../../config/resolve-provider.js";
@@ -159,6 +160,13 @@ async function resolveProviderAvailabilityEntry(params: {
       env: { ...params.env, VENICE_API_KEY: authority.factoryOptions.apiKey },
     }).discoverVeniceModels(params.config);
     model = veniceDefaultModel(models ?? []) ?? model;
+  }
+  if (params.provider === "trustedrouter" && authority.factoryOptions.apiKey && !providerConfig?.default_model) {
+    const models = await new ModelMetadataResolver({
+      fetchImpl: params.fetchImpl ?? fetch,
+      env: { ...params.env, TRUSTEDROUTER_API_KEY: authority.factoryOptions.apiKey },
+    }).discoverTrustedRouterModels(params.config);
+    model = trustedRouterDefaultModel(models ?? []) ?? model;
   }
   const credential = authority.credential;
   const credentialReady = credential.status === "ready";

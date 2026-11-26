@@ -53,6 +53,7 @@ import {
 /** Providers whose effort levels come with the live model list. */
 const LIVE_EFFORT_LEVEL_PROVIDERS: ReadonlySet<string> = new Set([
   "venice",
+  "trustedrouter",
   "ollama-cloud",
 ]);
 

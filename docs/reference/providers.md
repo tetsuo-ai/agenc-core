@@ -320,7 +320,7 @@ the Grok 4.6 default and capability change.
 they run only through the Grok Build CLI ACP path. See
 [grok-oauth.md](../grok-oauth.md#composer-models-acp).
 
-## Built-in providers (25)
+## Built-in providers (26)
 
 | Slug | Display name | Default model | Default base URL | Ordered credential env aliases | Ordered endpoint env aliases | Onboarding access |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -333,6 +333,7 @@ they run only through the Grok Build CLI ACP path. See
 | `openrouter` | OpenRouter | `x-ai/grok-4.5` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` | `api-key` |
 | `venice` | Venice AI | `zai-org-glm-5-2` (offline fallback) | `https://api.venice.ai/api/v1` | `VENICE_API_KEY` | `VENICE_BASE_URL` | `api-key` |
 | `abliteration` | abliteration.ai | `abliterated-model-large-v2` | `https://api.abliteration.ai/v1` | `ABLIT_KEY`, `ABLITERATION_API_KEY` | `ABLITERATION_BASE_URL` | `api-key` |
+| `trustedrouter` | TrustedRouter | `trustedrouter/auto` | `https://api.trustedrouter.com/v1` | `TRUSTEDROUTER_API_KEY` | `TRUSTEDROUTER_BASE_URL` | `api-key` |
 | `groq` | Groq | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `GROQ_BASE_URL` | `api-key` |
 | `deepseek` | DeepSeek | `deepseek-flash` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | `api-key` |
 | `meta` | Meta | `muse-wonder-1.0` | `https://api.meta.ai/v1` | `MODEL_API_KEY` | `META_BASE_URL` | `api-key` |
@@ -1400,6 +1401,7 @@ Read on 2026-10-22 from each provider's documentation:
 | abliteration.ai | Processed in memory, never stored | Policy | Green ([data handling](https://abliteration.ai/data-handling)) |
 | AgenC (managed) | Routed only to ZDR endpoints by the gateway | Built in | Green |
 | Venice AI | Private models keep nothing; anonymized models run on third-party hosts | Per model | Green for private models, red for anonymized ([privacy](https://docs.venice.ai/overview/privacy)) |
+| TrustedRouter | Gateway terminates prompt TLS inside an attested Confidential Space enclave and keeps no prompt logs; upstream retention depends on the model or preset (`trustedrouter/zdr`, `trustedrouter/e2e`) | Per model | Green for ZDR/E2E models and presets, red for standard upstream routes ([data visibility](https://trustedrouter.com/who-can-see-your-data), [routing](https://trustedrouter.com/docs/provider-routing)) |
 | Ollama, LM Studio | Stays on this computer | Local | Green on a loopback address, dim `ZDR?` elsewhere |
 | OpenAI-compatible | Depends on the server, which may be a proxy to a cloud API | Unknown | Dim `ZDR?` |
 | xAI Grok | Kept 30 days for abuse auditing | Team setting in the xAI Console | Red ([security](https://docs.x.ai/developers/faq/security)) |
@@ -1771,3 +1773,60 @@ Sources: [models](https://docs.abliteration.ai/models),
 [images](https://docs.abliteration.ai/capabilities/images),
 [errors](https://docs.abliteration.ai/api/errors), and
 [rate limits](https://docs.abliteration.ai/api/rate-limits).
+
+
+## TrustedRouter
+
+Select `trustedrouter` with `agenc --provider trustedrouter` or
+`/provider trustedrouter`. Use `TRUSTEDROUTER_API_KEY` or save a key in the
+`/providers` screen. TrustedRouter has its own BYOK credential record and never
+reads `OPENAI_COMPATIBLE_API_KEY` or `OPENAI_API_KEY`. `TRUSTEDROUTER_BASE_URL`
+overrides the default `https://api.trustedrouter.com/v1` endpoint.
+
+TrustedRouter runs its prompt-handling gateway inside hardware-attested Google
+Confidential Space TEEs with a verifiable open-source build and keeps no prompt
+or output logs. AgenC uses streaming OpenAI-compatible Chat Completions with its
+own system prompt and tools. Reasoning traces arrive in `reasoning` or
+`reasoning_content` and stay separate from the visible answer.
+
+`GET /v1/models` discovery filters out `trustedrouter.internal_only`,
+`trustedrouter.configuration_hidden`, `trustedrouter.synthetic_monitor`, and
+`supports_chat: false` rows, exposing all public chat models alongside routing
+presets (`trustedrouter/auto`, `trustedrouter/zdr`, `trustedrouter/e2e`,
+`trustedrouter/fast`, `trustedrouter/cheap`, `trustedrouter/free`) and `nyte/*`
+aliases. Context windows, completion limits, tool support, vision, reasoning
+efforts, and per-token pricing (including tiered long-context rates) come from
+discovery and replace the bundled preset snapshot.
+
+Each model's price is converted from USD per token to Core's per-thousand rates.
+Budget admission, the cost sidecar, and the status line all use the published
+TrustedRouter rate; a TrustedRouter model ID never borrows another provider's
+price for the same name. When a model has no published price, admission reserves
+the conservative ceiling and the status line shows `price unknown`.
+
+The `/providers` and `/model` screens load the live catalog with the session's
+key (`TRUSTEDROUTER_API_KEY`, a key entered in the screen, or the saved key)
+and refresh when a key is saved or replaced. Any model or alias from the live
+list can be selected in the screens, with `/model trustedrouter:<id>`, or with
+`--model trustedrouter:<id>`. An ID absent from the live list is refused before
+the first request. To pin a selection:
+
+```toml
+model_provider = "trustedrouter"
+model = "trustedrouter/zdr"
+```
+
+The default model is `trustedrouter/auto`. Privacy-constrained routing is
+available through presets (`trustedrouter/zdr`, `trustedrouter/e2e`,
+`trustedrouter/confidential`) or request-level `provider.min_privacy` (`"zdr"`
+or `"e2e"`). Core marks `zeroDataRetention` only for models whose headline route
+publishes zero data retention at privacy tier 2 or above.
+
+HTTP 401 maps to authentication failure, HTTP 402 maps to insufficient credits,
+and HTTP 429 maps to rate limiting with `Retry-After` support. Key verification
+uses `GET /v1/key`.
+
+Sources: [TrustedRouter docs](https://trustedrouter.com/docs),
+[models](https://api.trustedrouter.com/v1/models),
+[data visibility and attestation](https://trustedrouter.com/who-can-see-your-data),
+and [provider routing](https://trustedrouter.com/docs/provider-routing).

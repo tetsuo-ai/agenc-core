@@ -13,7 +13,7 @@ export function useSessionEffortCatalog(
   context.current = getContext;
   const [revision, setRevision] = useState(0);
   useEffect(() => {
-    if (provider !== "venice" && provider !== "ollama-cloud" && provider !== "openrouter") return;
+    if (provider !== "venice" && provider !== "trustedrouter" && provider !== "ollama-cloud" && provider !== "openrouter") return;
     let active = true;
     void ensureLiveModelCatalog(context.current(), provider, model).then(() => {
       if (active) setRevision(value => value + 1);

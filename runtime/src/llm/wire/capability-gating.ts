@@ -641,6 +641,21 @@ export function chatCompletionsCapabilityHintsForProvider(
       promptCacheKeyFields: ["prompt_cache_key"] as const,
       promptCacheKeyHeaders: ["x-abliteration-session-id"] as const,
     } : {}),
+    ...(slug === "trustedrouter" ? {
+      acceptsDirectImageInput: acceptsToolResultImages,
+      toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,
+      acceptsParallelToolCalls: false,
+      omitsToolControlsWithoutTools: true,
+      reasoningContentField: "reasoning" as const,
+      reasoningContentFallbackField: "reasoning_content" as const,
+      replaysReasoningContent: true,
+      replaysReasoningDetails: true,
+      promptCacheKeyFields: ["prompt_cache_key"] as const,
+      ...(gatewayFamily === "deepseek"
+        ? { sharesPromptPrefixAcrossSessions: true, promptCacheKeyScope: "prefix" as const, ...deepSeekDefaultEffort }
+        : {}),
+      ...(gatewayFamily === "kimi" ? { sharesPromptPrefixAcrossSessions: true } : {}),
+    } : {}),
     ...(slug === "groq" ? {
       acceptsDirectImageInput: acceptsToolResultImages,
       toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,

@@ -14,6 +14,7 @@ import {
   builtInProviderIds,
 } from "./registry/provider-info.js";
 import type { VeniceModel } from "./registry/venice-models.js";
+import type { TrustedRouterModel } from "./registry/trustedrouter-models.js";
 import { KIMI_CHAT_MODELS } from "./registry/kimi-models.js";
 
 afterEach(() => resetOpenRouterZdrEndpointsForTesting());
@@ -22,6 +23,7 @@ function state(provider: string, model?: string, options: {
   readonly config?: Record<string, unknown>;
   readonly env?: Record<string, string>;
   readonly veniceModels?: readonly VeniceModel[];
+  readonly trustedRouterModels?: readonly TrustedRouterModel[];
 } = {}) {
   return resolveZeroDataRetentionStatus({
     provider,
@@ -29,6 +31,7 @@ function state(provider: string, model?: string, options: {
     config: options.config ?? {},
     env: options.env ?? {},
     ...(options.veniceModels !== undefined ? { veniceModels: options.veniceModels } : {}),
+    ...(options.trustedRouterModels !== undefined ? { trustedRouterModels: options.trustedRouterModels } : {}),
   });
 }
 
@@ -83,6 +86,8 @@ describe("ZDR badge state", () => {
       // The default Venice model is private.
       venice: "zdr",
       abliteration: "zdr",
+      // The default TrustedRouter preset (trustedrouter/auto) enforces ZDR.
+      trustedrouter: "zdr",
       groq: "retained",
       deepseek: "retained",
       meta: "retained",
@@ -160,6 +165,24 @@ describe("ZDR badge state", () => {
     expect(state("venice", "private-model", { veniceModels: models })?.state).toBe("zdr");
     expect(state("venice", "anonymized-model", { veniceModels: models })?.state).toBe("retained");
     expect(state("venice", "not-listed", { veniceModels: models })?.state).toBe("unknown");
+  });
+
+  it("follows TrustedRouter's privacy per model and preset", () => {
+    const models = [
+      { model: "trustedrouter/zdr", zeroDataRetention: true },
+      { model: "trustedrouter/e2e", zeroDataRetention: true },
+      { model: "nyte/zdr", zeroDataRetention: true },
+      { model: "anthropic/claude-opus-4.5" },
+    ] as unknown as readonly TrustedRouterModel[];
+    expect(state("trustedrouter", "trustedrouter/zdr", { trustedRouterModels: models })?.state).toBe("zdr");
+    expect(state("trustedrouter", "trustedrouter/e2e", { trustedRouterModels: models })?.state).toBe("zdr");
+    expect(state("trustedrouter", "nyte/zdr", { trustedRouterModels: models })?.state).toBe("zdr");
+    expect(state("trustedrouter", "anthropic/claude-opus-4.5", { trustedRouterModels: models })?.state).toBe("retained");
+    expect(state("trustedrouter", "not-listed", { trustedRouterModels: models })?.state).toBe("unknown");
+    expect(state("trustedrouter", "trustedrouter/zdr", {
+      trustedRouterModels: models,
+      env: { TRUSTEDROUTER_BASE_URL: "https://proxy.example.com/v1" },
+    })?.state).toBe("unknown");
   });
 
   it("knows nothing about a provider AgenC does not ship", () => {

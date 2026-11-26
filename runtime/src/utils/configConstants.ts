@@ -29,6 +29,7 @@ export const PROVIDERS = [
   'openai-compatible',
   'openrouter',
   'venice',
+  'trustedrouter',
   'groq',
   'deepseek',
   'meta',

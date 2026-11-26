@@ -45,6 +45,7 @@ import { LMStudioProvider } from "./providers/lmstudio/index.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import { VeniceProvider } from "./providers/venice/index.js";
 import { AbliterationProvider } from "./providers/abliteration/index.js";
+import { TrustedRouterProvider } from "./providers/trustedrouter/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { MetaProvider } from "./providers/meta/index.js";
@@ -877,6 +878,7 @@ function buildOpenAICompatibleProvider(
     | "openrouter"
     | "venice"
     | "abliteration"
+    | "trustedrouter"
     | "groq"
     | "deepseek"
     | "meta"
@@ -1426,6 +1428,12 @@ export function createProvider(
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: AbliterationProvider,
+      });
+    case "trustedrouter":
+      return buildOpenAICompatibleProvider("trustedrouter", opts, {
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: TrustedRouterProvider,
       });
     case "groq":
       return buildOpenAICompatibleProvider("groq", opts, {

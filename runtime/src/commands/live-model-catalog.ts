@@ -18,6 +18,7 @@ import { openRouterMenuCatalog } from "./openrouter-menu-models.js";
 
 import { readCommandConfig, providerEnvironmentFromCommandContext } from "./config-context.js";
 import { loadVeniceMenuModels } from "./venice-menu-models.js";
+import { loadTrustedRouterMenuModels } from "./trustedrouter-menu-models.js";
 import { loadOllamaMenuModels } from "./ollama-menu-models.js";
 import { ModelMetadataResolver } from "../llm/model-metadata.js";
 import { openRouterZdrEndpointsKnown } from "../llm/registry/openrouter-zdr-endpoints.js";
@@ -90,13 +91,18 @@ export async function ensureLiveModelCatalog(
     await Promise.all([openRouterMenuCatalog(ctx, options).refresh(), ensureOpenRouterZdrEndpoints(ctx, options)]);
     return;
   }
-  if (provider !== "venice" && provider !== "ollama-cloud") return;
+  if (provider !== "venice" && provider !== "trustedrouter" && provider !== "ollama-cloud") return;
   const key = `${provider}\n${provider === "ollama-cloud" ? model : ""}`;
   const at = fresh.get(key);
   if (at !== undefined && Date.now() - at < REUSE_MS) return;
   try {
     if (provider === "venice") {
       const result = await loadVeniceMenuModels(ctx, options);
+      if (result.source === "live") fresh.set(key, Date.now());
+      return;
+    }
+    if (provider === "trustedrouter") {
+      const result = await loadTrustedRouterMenuModels(ctx, options);
       if (result.source === "live") fresh.set(key, Date.now());
       return;
     }

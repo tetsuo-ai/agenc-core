@@ -115,7 +115,7 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   vision, tools, and structured output; **Grok 4.5** and **Grok 4.3** remain
   selectable in the catalog; also
   openai, anthropic, ollama, lmstudio, openai-compatible, openrouter, groq, venice,
-  abliteration, deepseek, meta, gemini, mistral, nvidia-nim, minimax, github,
+  abliteration, trustedrouter, deepseek, meta, gemini, mistral, nvidia-nim, minimax, github,
   amazon-bedrock, agenc.
   See [`docs/reference/providers.md`](docs/reference/providers.md).
 - **Grok OAuth:** sign in with X during onboarding, via `/grok-login`, or `agenc grok-login` for

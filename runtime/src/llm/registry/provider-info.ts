@@ -13,6 +13,12 @@ import {
   ABLITERATION_BASE_URL_ENV_VARS,
   ABLITERATION_DEFAULT_MODEL,
 } from "./abliteration-models.js";
+import {
+  TRUSTEDROUTER_API_KEY_ENV_VARS,
+  TRUSTEDROUTER_BASE_URL,
+  TRUSTEDROUTER_BASE_URL_ENV_VARS,
+  TRUSTEDROUTER_DEFAULT_MODEL,
+} from "./trustedrouter-models.js";
 import { deriveFlatCatalog } from "./model-catalog.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 import { registerProviderFundsDisplayNames } from "../funds.js";
@@ -354,6 +360,14 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     baseURLEnvVars: ABLITERATION_BASE_URL_ENV_VARS,
     onboarding: onboardingInfo(86, "api-key"),
   }),
+  trustedrouter: providerDefinition({
+    name: "TrustedRouter",
+    defaultModel: TRUSTEDROUTER_DEFAULT_MODEL,
+    baseURL: TRUSTEDROUTER_BASE_URL,
+    credentials: apiKeyCredentials(TRUSTEDROUTER_API_KEY_ENV_VARS),
+    baseURLEnvVars: TRUSTEDROUTER_BASE_URL_ENV_VARS,
+    onboarding: onboardingInfo(87, "api-key"),
+  }),
   groq: providerDefinition({
     name: "Groq",
     defaultModel: "openai/gpt-oss-120b",
@@ -639,6 +653,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   // Shared API Llama rows retired 2026-08-16; enterprise IDs remain custom.
   venice: mergeDerivedProviderModels("venice"),
   abliteration: mergeDerivedProviderModels("abliteration"),
+  trustedrouter: mergeDerivedProviderModels("trustedrouter"),
   groq: mergeDerivedProviderModels("groq"),
   deepseek: Object.freeze(["deepseek-flash", "deepseek-v4-pro"]),
   // `/models` also advertises image generation and voice transcription.

@@ -246,7 +246,7 @@ function resolveExplicitPair(
   // Ollama runs whatever tag its user pulled, and Ollama's library uses the
   // same tags as Ollama Cloud (gpt-oss:20b, gemma4:31b). The explicit
   // provider/model pair remains the routing authority.
-  if (provider === "venice" || provider === "ollama-cloud" || provider === "ollama") {
+  if (provider === "venice" || provider === "ollama-cloud" || provider === "ollama" || provider === "trustedrouter") {
     return Object.freeze({ provider, model: projectedModel });
   }
 

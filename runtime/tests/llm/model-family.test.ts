@@ -27,6 +27,9 @@ describe("model family behind a provider/model pair", () => {
     ["venice", "openai-gpt-6-luna", "openai"],
     ["venice", "openai-gpt-61-sol", "openai"],
     ["venice", "openai-gpt-56-luna", "openai"],
+    ["trustedrouter", "deepseek/deepseek-v4.1-flash", "deepseek"],
+    ["trustedrouter", "openai/gpt-5.4", "openai"],
+    ["trustedrouter", "moonshotai/kimi-k3", "kimi"],
   ] as const)("%s %s -> %s", (provider, model, family) => {
     expect(gatewayModelFamily(provider, model)).toBe(family);
     expect(modelFamilyFor(provider, model)).toBe(family);
@@ -42,6 +45,9 @@ describe("model family behind a provider/model pair", () => {
     ["venice", "openai-gpt-oss-120b"],
     ["venice", "openai-gpt-4o-2024-11-20"],
     ["venice", "zai-org-glm-5-2"],
+    ["trustedrouter", "trustedrouter/auto"],
+    ["trustedrouter", "nyte/zdr"],
+    ["trustedrouter", "openai/gpt-oss-120b"],
     ["abliteration", "abliterated-model"],
     ["abliteration", "abliterated-model-large"],
     ["abliteration", "abliterated-model-large-v2"],

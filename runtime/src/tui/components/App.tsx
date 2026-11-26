@@ -102,6 +102,7 @@ import { GitStatusChrome } from "./GitStatusLine.js";
 import { StatusEffortContext, StatusContextUsageContext, StatusTurnBusyContext, StatusPromptCacheContext, StatusOffPeakContext, StatusZdrContext, StatusWebSearchContext } from "../context/statusEffortContext.js";
 import { resolveZeroDataRetentionStatus } from "../../llm/zero-data-retention.js";
 import { readVeniceMenuModels } from "../../commands/venice-menu-models.js";
+import { readTrustedRouterMenuModels } from "../../commands/trustedrouter-menu-models.js";
 import { readSessionSelection } from "../../session/provider-model-selection.js";
 import { terminalTitle } from "../terminal-title.js";
 import { offPeakScheduleFor } from "../../session/off-peak-pricing.js";
@@ -3463,9 +3464,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const statusZdr = useMemo(() => {
     if (effortSelection.provider === "unknown" || effortSelection.model === "unknown") return null;
     let veniceModels: ReturnType<typeof readVeniceMenuModels>;
+    let trustedRouterModels: ReturnType<typeof readTrustedRouterMenuModels>;
     if (effortSelection.provider === "venice") {
       try {
         veniceModels = readVeniceMenuModels(statusZdrContextRef.current(""));
+      } catch {
+        // The bundled list answers.
+      }
+    } else if (effortSelection.provider === "trustedrouter") {
+      try {
+        trustedRouterModels = readTrustedRouterMenuModels(statusZdrContextRef.current(""));
       } catch {
         // The bundled list answers.
       }
@@ -3476,6 +3484,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       config: statusZdrConfig,
       env: remoteAuthSessionContext.environment,
       ...(veniceModels !== undefined ? { veniceModels } : {}),
+      ...(trustedRouterModels !== undefined ? { trustedRouterModels } : {}),
     }) ?? null;
   }, [effortSelection.provider, effortSelection.model, statusZdrConfig, remoteAuthSessionContext, effortCatalogRevision]);
   const runLocalControlCommand = useCallback(async (parsed: ParsedSlashCommand): Promise<void> => {

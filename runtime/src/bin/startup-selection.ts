@@ -4,6 +4,7 @@ import { resolve as resolvePath } from "node:path";
 
 import { ModelMetadataResolver, type ModelMetadataResolverOptions } from "../llm/model-metadata.js";
 import { veniceDefaultModel } from "../llm/registry/venice-models.js";
+import { trustedRouterDefaultModel } from "../llm/registry/trustedrouter-models.js";
 import type { ProviderName } from "../llm/provider.js";
 import {
   resolveProviderModelLayer,
@@ -220,6 +221,17 @@ export async function resolveDiscoveredStartupDefault(
     const model = defaultModelForProvider("openrouter");
     if (model !== startup.model) return { ...startup, model, config: { ...startup.config, model } };
     return startup;
+  }
+  if (startup.provider === "trustedrouter" && !startup.config.providers?.trustedrouter?.default_model) {
+    if (modelSelectionSource !== "provider_default") return startup;
+    const models = await new ModelMetadataResolver(metadata).discoverTrustedRouterModels(startup.config);
+    const model = trustedRouterDefaultModel(models ?? []);
+    if (!model || model === startup.model) return startup;
+    return resolveCanonicalStartupSelection({
+      config: { ...startup.config, model },
+      env: metadata.env ?? process.env,
+      ...(startup.profileName === undefined ? {} : { profileName: startup.profileName }),
+    });
   }
   if (startup.provider !== "venice" || startup.config.providers?.venice?.default_model) return startup;
   if (modelSelectionSource !== "provider_default") return startup;
