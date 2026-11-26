@@ -29,6 +29,7 @@ import { createGeminiEndpointPlan } from "./providers/gemini/endpoint-plan.js";
 import { GrokProvider } from "./providers/grok/adapter.js";
 import { VeniceProvider } from "./providers/venice/index.js";
 import { AbliterationProvider } from "./providers/abliteration/index.js";
+import { TrustedRouterProvider } from "./providers/trustedrouter/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { GitHubProvider } from "./providers/github/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
@@ -146,6 +147,7 @@ const CHAT_COMPLETIONS_PROVIDERS: ReadonlySet<ProviderName> = new Set([
   "openrouter",
   "venice",
   "abliteration",
+  "trustedrouter",
   "groq",
   "deepseek",
   "meta",
@@ -838,6 +840,25 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
               : fetchImpl(input, init),
           }),
         payload: buildChatCompletionsPayload("abliterated-model-large-v2", parityCase),
+      }),
+  },
+  {
+    provider: "trustedrouter",
+    model: "trustedrouter/auto",
+    apiKey: "trustedrouter-test",
+    env: { TRUSTEDROUTER_API_KEY: undefined },
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new TrustedRouterProvider({
+            apiKey: "trustedrouter-test",
+            model: "trustedrouter/auto",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl: (input, init) => String(input).endsWith("/models")
+              ? Promise.resolve(new Response("{}", { status: 503 }))
+              : fetchImpl(input, init),
+          }),
+        payload: buildChatCompletionsPayload("trustedrouter/auto", parityCase),
       }),
   },
   {

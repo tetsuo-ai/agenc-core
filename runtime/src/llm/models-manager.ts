@@ -76,7 +76,7 @@ export class StaticModelsManager implements ModelsManager {
 
   async listModels(): Promise<ReadonlyArray<ModelInfo>> {
     const provider = this.fallbackProvider ?? this.configDefaultProvider;
-    if (provider !== "venice") return this.pickerModels();
+    if (provider !== "venice" && provider !== "trustedrouter") return this.pickerModels();
     const entries = await this.modelRegistry.listEntries(provider);
     return this.availableModels = entries.map(modelRegistryEntryToModelInfo)
       .filter(model => model.showInPicker !== false && model.visibility !== "hide" && model.visibility !== "none");
@@ -141,7 +141,7 @@ export class StaticModelsManager implements ModelsManager {
     readonly model: string;
   }): Promise<ModelInfo> {
     const entry = await this.modelRegistry.resolve(params);
-    if (params.provider === "venice") this.availableModels = undefined;
+    if (params.provider === "venice" || params.provider === "trustedrouter") this.availableModels = undefined;
     return modelRegistryEntryToModelInfo(entry);
   }
 }

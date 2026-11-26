@@ -50,6 +50,11 @@ import {
   VENICE_MODEL_LIST_UNAVAILABLE_NOTE,
 } from "./venice-menu-models.js";
 import {
+  loadTrustedRouterMenuModels,
+  readTrustedRouterMenuModels,
+  TRUSTEDROUTER_MODEL_LIST_UNAVAILABLE_NOTE,
+} from "./trustedrouter-menu-models.js";
+import {
   ensureOpenRouterZdrEndpoints,
   OPENROUTER_ZDR_LIST_UNAVAILABLE_NOTE,
 } from "./live-model-catalog.js";
@@ -1110,6 +1115,15 @@ function servicesFor(ctx: SlashCommandContext): ProvidersHubServices {
           ...(catalog.source === "bundled" ? { note: OPENROUTER_CATALOG_FALLBACK_NOTE }
             : !zdrKnown ? { note: OPENROUTER_ZDR_LIST_UNAVAILABLE_NOTE } : {}),
         }));
+      }
+      if (provider === "trustedrouter") {
+        if (readTrustedRouterMenuModels(ctx) !== undefined) return null;
+        return loadTrustedRouterMenuModels(ctx).then(
+          (result) => result.source === "bundled" && result.reason === "unavailable"
+            ? { note: TRUSTEDROUTER_MODEL_LIST_UNAVAILABLE_NOTE }
+            : {},
+          () => ({ note: TRUSTEDROUTER_MODEL_LIST_UNAVAILABLE_NOTE }),
+        );
       }
       return provider !== "venice" || readVeniceMenuModels(ctx) !== undefined
         ? null

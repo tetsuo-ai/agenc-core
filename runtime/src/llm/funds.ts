@@ -146,7 +146,7 @@ function isFundsFailureNode(provider: string, item: Record<string, unknown>): bo
   // Gemini API: 402 means the Prepay credit balance is depleted.
   // https://ai.google.dev/gemini-api/docs/generate-content/api-errors
   if ((provider === "deepseek" || provider === "openrouter" || provider === "agenc" ||
-    provider === "meta" || provider === "abliteration" || provider === "gemini") &&
+    provider === "meta" || provider === "abliteration" || provider === "trustedrouter" || provider === "gemini") &&
     status === 402) return true;
   if (provider === "openai" || provider === "codex" || provider === "chatgpt") {
     if (["insufficient_quota", "credit_balance_exhausted", "organization_usage_limit_exceeded",

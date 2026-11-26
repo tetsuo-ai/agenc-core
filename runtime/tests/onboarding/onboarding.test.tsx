@@ -217,6 +217,13 @@ describe("first-run onboarding wizard", () => {
     expect(row({ ABLIT_KEY: "ak_fixture", ABLITERATION_API_KEY: "ak_other" })).toMatchObject({ status: "env ABLIT_KEY", connected: true });
   });
 
+  test("lists TrustedRouter with the key name that set it up", () => {
+    const row = (env: Record<string, string>) => createInitialFirstRunOnboardingState({ config: defaultConfig(), env })
+      .providerRows.find((entry) => entry.provider === "trustedrouter");
+    expect(row({})).toEqual({ provider: "trustedrouter", name: "TrustedRouter", status: "not set", connected: false });
+    expect(row({ TRUSTEDROUTER_API_KEY: "tr_fixture" })).toMatchObject({ status: "env TRUSTEDROUTER_API_KEY", connected: true });
+  });
+
   test("uses layered config rather than stale environment selectors for its initial provider", () => {
     const config = {
       ...defaultConfig(),

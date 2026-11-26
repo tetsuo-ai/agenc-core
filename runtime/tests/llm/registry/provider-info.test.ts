@@ -23,6 +23,7 @@ describe("built-in provider info", () => {
       ["openrouter", "OpenRouter", "x-ai/grok-4.5", "https://openrouter.ai/api/v1", "api-key", ["OPENROUTER_API_KEY"], ["OPENROUTER_BASE_URL"], 70, "api-key", true],
       ["venice", "Venice AI", "zai-org-glm-5-2", "https://api.venice.ai/api/v1", "api-key", ["VENICE_API_KEY"], ["VENICE_BASE_URL"], 85, "api-key", false],
       ["abliteration", "abliteration.ai", "abliterated-model-large-v2", "https://api.abliteration.ai/v1", "api-key", ["ABLIT_KEY", "ABLITERATION_API_KEY"], ["ABLITERATION_BASE_URL"], 86, "api-key", false],
+      ["trustedrouter", "TrustedRouter", "trustedrouter/auto", "https://api.trustedrouter.com/v1", "api-key", ["TRUSTEDROUTER_API_KEY"], ["TRUSTEDROUTER_BASE_URL"], 87, "api-key", false],
       ["groq", "Groq", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1", "api-key", ["GROQ_API_KEY"], ["GROQ_BASE_URL"], 80, "api-key", false],
       ["deepseek", "DeepSeek", "deepseek-flash", "https://api.deepseek.com/v1", "api-key", ["DEEPSEEK_API_KEY"], ["DEEPSEEK_BASE_URL"], 90, "api-key", false],
       ["meta", "Meta", "muse-wonder-1.0", "https://api.meta.ai/v1", "api-key", ["MODEL_API_KEY"], ["META_BASE_URL"], 95, "api-key", false],

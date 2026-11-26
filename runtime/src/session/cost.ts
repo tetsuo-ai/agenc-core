@@ -1,5 +1,6 @@
 import { VENICE_MODELS } from "../llm/registry/venice-models.js";
 import { ABLITERATION_MODELS } from "../llm/registry/abliteration-models.js";
+import { TRUSTEDROUTER_MODELS } from "../llm/registry/trustedrouter-models.js";
 /**
  * Cost sidecar — session cost tracking + formatting.
  *
@@ -1262,6 +1263,7 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     // no cache-write premium. A key's live list replaces these
     // (published-model-costs).
     ...Object.fromEntries(ABLITERATION_MODELS.flatMap(model => model.cost ? [[`abliteration:${model.model}`, model.cost]] : [])),
+    ...Object.fromEntries(TRUSTEDROUTER_MODELS.flatMap(model => model.cost ? [[`trustedrouter:${model.model}`, model.cost]] : [])),
     // Groq published per-token prices, checked 2026-09-29.
     ...Object.fromEntries(VENICE_MODELS.flatMap(model => model.cost ? [[`venice:${model.model}`, model.cost]] : [])),
     // https://console.groq.com/docs/models
@@ -2000,10 +2002,10 @@ function costLookupKeys(
   const collapsesToLocalZero = registry[canonical]?.localZeroCost === true;
   const foreignProvider =
     normalizedProvider !== undefined && normalizedProvider !== canonical;
-  // Venice sells many vendors' models at its own published prices: a bare ID
-  // that names another provider's model (deepseek-v4-flash) must not borrow
-  // that provider's price. Without a Venice price the model is unpriced.
-  const ownPricesOnly = normalizedProvider === "venice";
+  // Venice and TrustedRouter sell many vendors' models at their own published
+  // prices: an ID that names another provider's model must not borrow that
+  // provider's price. Without a published price the model is unpriced.
+  const ownPricesOnly = normalizedProvider === "venice" || normalizedProvider === "trustedrouter";
   if (!(collapsesToLocalZero && foreignProvider) && !ownPricesOnly) {
     keys.push(model);
     if (canonical !== model) keys.push(canonical);

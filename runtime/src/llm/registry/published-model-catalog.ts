@@ -24,6 +24,7 @@ export const PUBLISHED_CATALOG_PROVIDERS: ReadonlySet<string> = new Set([
   "ollama-cloud",
   "openrouter",
   "abliteration",
+  "trustedrouter",
   "gemini",
 ]);
 

@@ -166,6 +166,17 @@ describe("providers screen snapshot", () => {
     expect(readLocalByokCredential(home, "abliteration")?.apiKey).toBe("ak_fake_stored_key");
     expect(JSON.stringify(readProvidersHubSnapshot(ctx))).not.toContain("ak_fake_stored_key");
   });
+  it("lists TrustedRouter and saves its own BYOK credential", () => {
+    const { home, environment } = tempHome();
+    const ctx = ctxFor({ home, environment });
+    expect(readProvidersHubSnapshot(ctx).rows.find(row => row.provider === "trustedrouter"))
+      .toMatchObject({ name: "TrustedRouter", connection: "not-set", envLabel: "TRUSTEDROUTER_API_KEY", model: "trustedrouter/auto" });
+    saveProviderKey(home, "trustedrouter", "fake-trustedrouter-stored-key");
+    expect(readProvidersHubSnapshot(ctx).rows.find(row => row.provider === "trustedrouter"))
+      .toMatchObject({ connection: "connected", keySaved: true });
+    expect(readLocalByokCredential(home, "trustedrouter")?.apiKey).toBe("fake-trustedrouter-stored-key");
+    expect(JSON.stringify(readProvidersHubSnapshot(ctx))).not.toContain("fake-trustedrouter-stored-key");
+  });
   it("puts the current provider first, then connected ones, with one plain status each", () => {
     const { home, environment } = tempHome();
     saveProviderKey(home, "deepseek", "sk-deepseek");

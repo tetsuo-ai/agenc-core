@@ -5,7 +5,12 @@ import { expect, test } from "vitest";
 import { loadLayeredConfig } from "../../src/config/repository.js";
 import { sessionConfigurationFromAgenCConfig } from "../../src/session/configuration.js";
 
-test.each([['venice', 'deepseek-v4-pro'], ['ollama-cloud', 'gpt-oss:120b'], ['abliteration', 'abliterated-model']])(
+test.each([
+  ['venice', 'deepseek-v4-pro'],
+  ['ollama-cloud', 'gpt-oss:120b'],
+  ['abliteration', 'abliterated-model'],
+  ['trustedrouter', 'trustedrouter/auto'],
+])(
   "%s does not turn the generic medium default into a user's effort choice", async (provider, model) => {
     const root = await mkdtemp(join(tmpdir(), "gateway-effort-"));
     try {

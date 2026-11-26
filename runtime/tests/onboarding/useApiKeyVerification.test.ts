@@ -294,6 +294,7 @@ describe("verifyApiKey", () => {
 
   test.each([
     ["venice", "https://api.venice.ai/api/v1/api_keys/rate_limits"],
+    ["trustedrouter", "https://api.trustedrouter.com/v1/key"],
   ] as const)("verifies %s keys against an endpoint that rejects a wrong key", async (provider, url) => {
     // Venice's models listing is public: it answers 200 to a bogus key
     // (checked live), so a mistyped key used to read as valid.

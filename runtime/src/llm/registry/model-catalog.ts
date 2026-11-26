@@ -20,6 +20,7 @@ import { MISTRAL_MODEL_CATALOG, resolveMistralChatModel } from "./mistral-models
 import { BEDROCK_CONVERSE_MODELS } from "./bedrock-converse-models.js";
 import { VENICE_MODELS, veniceCatalogEntry } from "./venice-models.js";
 import { ABLITERATION_MODELS, abliterationCatalogEntry } from "./abliteration-models.js";
+import { TRUSTEDROUTER_MODELS, trustedRouterCatalogEntry } from "./trustedrouter-models.js";
 import { GROQ_MODELS } from "./groq-models.js";
 import { OLLAMA_CLOUD_MODELS, ollamaCloudCatalogEntry } from "./ollama-cloud-models.js";
 import {
@@ -1057,6 +1058,7 @@ const NON_OPENROUTER_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
     },
     ...VENICE_MODELS.map((entry, priority) => veniceCatalogEntry(entry, priority)),
     ...ABLITERATION_MODELS.map((entry, priority) => abliterationCatalogEntry(entry, priority)),
+    ...TRUSTEDROUTER_MODELS.map((entry, priority) => trustedRouterCatalogEntry(entry, priority)),
     ...GROQ_MODELS.map((entry, priority): RegisteredModelCatalogEntry => ({
       provider: "groq",
       model: entry.model,
@@ -1877,11 +1879,11 @@ function resolveRegisteredModelCatalogEntryUncached(input: {
   const exact = findExactModel(model, candidates) ??
     findNamespacedSuffix(model, candidates, true);
   if (exact !== undefined) return exact;
-  // Venice, Ollama Cloud and abliteration.ai publish every model with its own
-  // capabilities and limits. A model their list has not been read for must
-  // not borrow a neighbour's by name prefix (minimax-m3.1-flash is not
+  // Venice, Ollama Cloud, abliteration.ai and TrustedRouter publish every model
+  // with its own capabilities and limits. A model their list has not been read
+  // for must not borrow a neighbour's by name prefix (minimax-m3.1-flash is not
   // minimax-m3, and a new abliterated-model-* is not abliterated-model).
-  if (provider === "venice" || provider === "ollama-cloud" || provider === "abliteration") return undefined;
+  if (provider === "venice" || provider === "ollama-cloud" || provider === "abliteration" || provider === "trustedrouter") return undefined;
   const fallback = findNamespacedSuffix(model, candidates) ??
     findLongestPrefix(model, candidates);
   // Newly documented models do not grant their highest tier to unknown variants.

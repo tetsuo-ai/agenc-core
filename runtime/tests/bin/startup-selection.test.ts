@@ -499,6 +499,12 @@ describe("startup catalog admission", () => {
       ...defaultConfig(), model_provider: "venice", model: "claude-opus-5-5",
     } })).toMatchObject({ provider: "venice", model: "claude-opus-5-5" });
   });
+
+  it("accepts a live TrustedRouter model the bundled snapshot lacks (--model trustedrouter:anthropic/claude-opus-4.5)", () => {
+    expect(resolveCanonicalStartupSelection({ env: {}, explicitModel: "trustedrouter:anthropic/claude-opus-4.5", config: {
+      ...defaultConfig(), model_provider: "trustedrouter", model: "anthropic/claude-opus-4.5",
+    } })).toMatchObject({ provider: "trustedrouter", model: "anthropic/claude-opus-4.5" });
+  });
 });
 
 

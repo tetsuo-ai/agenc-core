@@ -322,6 +322,9 @@ export function providerVerificationUrl(
   if (provider === "venice" && !/\/api_keys\/rate_limits$/i.test(trimmed)) {
     return `${trimmed}/api_keys/rate_limits`;
   }
+  if (provider === "trustedrouter" && !/\/key$/i.test(trimmed)) {
+    return `${trimmed}/key`;
+  }
   if (trimmed.endsWith("/models")) return trimmed;
   if (/\/(?:v\d+(?:beta)?|api\/v\d+)$/i.test(trimmed)) {
     return `${trimmed}/models`;

@@ -21,6 +21,7 @@ const EXPECTED_CLASSES = {
   openrouter: "request-zdr",
   venice: "per-model",
   abliteration: "no-retention",
+  trustedrouter: "per-model",
   groq: "account-level",
   deepseek: "retains",
   meta: "account-level",

@@ -26,6 +26,7 @@ export const MODEL_FAMILY_GATEWAYS: ReadonlySet<string> = new Set([
   "ollama-cloud",
   "venice",
   "abliteration",
+  "trustedrouter",
 ]);
 
 // GPT-5 and later, the o-series and Codex: the hosted reasoning models whose
@@ -54,7 +55,7 @@ export function gatewayModelFamily(
   }
   const id = modelSlug(model);
   if (id.length === 0) return undefined;
-  if (slug === "openrouter") {
+  if (slug === "openrouter" || slug === "trustedrouter") {
     const slash = id.indexOf("/");
     if (slash <= 0) return undefined;
     const author = id.slice(0, slash);
@@ -100,7 +101,7 @@ export function gatewayFamilyDefaultEffort(
   const listed = new Set(levels);
   if (!listed.has("high")) return undefined;
   const slug = normalizeProviderMetadataIdentity(provider);
-  return slug === "ollama-cloud" || slug === "venice" || !listed.has("none") ? "high" : undefined;
+  return slug === "ollama-cloud" || slug === "venice" || slug === "trustedrouter" || !listed.has("none") ? "high" : undefined;
 }
 
 /**

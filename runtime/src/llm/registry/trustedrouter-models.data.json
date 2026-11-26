@@ -1,0 +1,303 @@
+{
+  "data": [
+    {
+      "id": "trustedrouter/auto",
+      "name": "TrustedRouter Auto",
+      "context_length": 1048576,
+      "architecture": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.000000026375",
+        "completion": "0.00000007385",
+        "prompt_max": "0.000003165",
+        "completion_max": "0.000015825"
+      },
+      "top_provider": {
+        "context_length": 1048576,
+        "max_completion_tokens": null,
+        "is_moderated": false
+      },
+      "supported_parameters": [
+        "tools",
+        "tool_choice",
+        "max_tokens",
+        "structured_outputs",
+        "response_format"
+      ],
+      "trustedrouter": {
+        "aliases": [
+          "nyte/auto",
+          "trustedrouter/auto-routing",
+          "nyte/auto-routing"
+        ],
+        "attested_gateway": true,
+        "configuration_hidden": false,
+        "internal_only": false,
+        "privacy_tier": 4,
+        "privacy_tier_label": "Trusted",
+        "provider": "trustedrouter",
+        "provider_confidential_compute": true,
+        "provider_e2ee": true,
+        "provider_zero_data_retention": true,
+        "route_kind": "auto_pool",
+        "stores_content": false,
+        "supports_chat": true,
+        "synthetic_monitor": false,
+        "zero_data_retention_available": false
+      }
+    },
+    {
+      "id": "trustedrouter/zdr",
+      "name": "TrustedRouter ZDR",
+      "context_length": 1048576,
+      "architecture": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.00000003165",
+        "completion": "0.0000001266",
+        "prompt_max": "0.000005275",
+        "completion_max": "0.000026375"
+      },
+      "top_provider": {
+        "context_length": 1048576,
+        "max_completion_tokens": null,
+        "is_moderated": false
+      },
+      "supported_parameters": [
+        "tools",
+        "tool_choice",
+        "max_tokens",
+        "structured_outputs",
+        "response_format"
+      ],
+      "trustedrouter": {
+        "aliases": [
+          "nyte/zdr"
+        ],
+        "attested_gateway": true,
+        "configuration_hidden": false,
+        "internal_only": false,
+        "privacy_tier": 4,
+        "privacy_tier_label": "Trusted",
+        "provider": "trustedrouter",
+        "provider_confidential_compute": true,
+        "provider_e2ee": true,
+        "provider_zero_data_retention": true,
+        "route_kind": "zdr_pool",
+        "stores_content": false,
+        "supports_chat": true,
+        "synthetic_monitor": false,
+        "zero_data_retention_available": false
+      }
+    },
+    {
+      "id": "trustedrouter/e2e",
+      "name": "TrustedRouter E2E",
+      "context_length": 1048576,
+      "architecture": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.00000001055",
+        "completion": "0.00000007385",
+        "prompt_max": "0.000001477",
+        "completion_max": "0.000007385"
+      },
+      "top_provider": {
+        "context_length": 1048576,
+        "max_completion_tokens": null,
+        "is_moderated": false
+      },
+      "supported_parameters": [
+        "tools",
+        "max_tokens",
+        "structured_outputs",
+        "response_format"
+      ],
+      "trustedrouter": {
+        "aliases": [
+          "nyte/e2e"
+        ],
+        "attested_gateway": true,
+        "configuration_hidden": false,
+        "internal_only": false,
+        "privacy_tier": 4,
+        "privacy_tier_label": "Trusted",
+        "provider": "trustedrouter",
+        "provider_confidential_compute": true,
+        "provider_e2ee": true,
+        "provider_zero_data_retention": true,
+        "route_kind": "e2e_pool",
+        "stores_content": false,
+        "supports_chat": true,
+        "synthetic_monitor": false,
+        "zero_data_retention_available": false
+      }
+    },
+    {
+      "id": "trustedrouter/fast",
+      "name": "TrustedRouter Fast",
+      "context_length": 131072,
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.00000036925",
+        "completion": "0.00000079125"
+      },
+      "top_provider": {
+        "context_length": 131072,
+        "max_completion_tokens": null,
+        "is_moderated": false
+      },
+      "supported_parameters": [
+        "tools",
+        "tool_choice",
+        "max_tokens",
+        "reasoning",
+        "include_reasoning",
+        "structured_outputs",
+        "response_format"
+      ],
+      "trustedrouter": {
+        "aliases": [
+          "nyte/fast"
+        ],
+        "attested_gateway": true,
+        "configuration_hidden": false,
+        "internal_only": false,
+        "privacy_tier": 2,
+        "privacy_tier_label": "Zero retention",
+        "provider": "trustedrouter",
+        "provider_confidential_compute": true,
+        "provider_e2ee": true,
+        "provider_zero_data_retention": true,
+        "route_kind": "fast_pool",
+        "stores_content": false,
+        "supports_chat": true,
+        "synthetic_monitor": false,
+        "zero_data_retention_available": false
+      }
+    },
+    {
+      "id": "trustedrouter/cheap",
+      "name": "TrustedRouter Cheap",
+      "context_length": 1048576,
+      "architecture": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.00000001",
+        "completion": "0.00000001",
+        "prompt_max": "0.0000001899",
+        "completion_max": "0.0000015825"
+      },
+      "top_provider": {
+        "context_length": 1048576,
+        "max_completion_tokens": null,
+        "is_moderated": false
+      },
+      "supported_parameters": [
+        "tools",
+        "tool_choice",
+        "max_tokens",
+        "structured_outputs",
+        "response_format"
+      ],
+      "trustedrouter": {
+        "aliases": [
+          "nyte/cheap"
+        ],
+        "attested_gateway": true,
+        "configuration_hidden": false,
+        "internal_only": false,
+        "privacy_tier": 4,
+        "privacy_tier_label": "Trusted",
+        "provider": "trustedrouter",
+        "provider_confidential_compute": true,
+        "provider_e2ee": true,
+        "provider_zero_data_retention": true,
+        "route_kind": "cheap_pool",
+        "stores_content": false,
+        "supports_chat": true,
+        "synthetic_monitor": false,
+        "zero_data_retention_available": false
+      }
+    },
+    {
+      "id": "trustedrouter/free",
+      "name": "TrustedRouter Free",
+      "context_length": 128000,
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      },
+      "top_provider": {
+        "context_length": 128000,
+        "max_completion_tokens": null,
+        "is_moderated": false
+      },
+      "supported_parameters": [
+        "max_tokens"
+      ],
+      "trustedrouter": {
+        "aliases": [
+          "nyte/free"
+        ],
+        "attested_gateway": true,
+        "configuration_hidden": false,
+        "internal_only": false,
+        "privacy_tier": 0,
+        "privacy_tier_label": "Standard",
+        "provider": "trustedrouter",
+        "provider_confidential_compute": true,
+        "provider_e2ee": true,
+        "provider_zero_data_retention": true,
+        "route_kind": "free_pool",
+        "stores_content": false,
+        "supports_chat": true,
+        "synthetic_monitor": false,
+        "zero_data_retention_available": false
+      }
+    }
+  ]
+}

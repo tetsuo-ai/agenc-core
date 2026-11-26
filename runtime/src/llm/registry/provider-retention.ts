@@ -103,6 +103,14 @@ export const PROVIDER_RETENTION: Readonly<Record<BuiltInProviderSlug, ProviderRe
     summary: "abliteration.ai processes prompts in memory and never stores them.",
     docs: ["https://abliteration.ai/data-handling"],
   }),
+  trustedrouter: facts({
+    retention: "per-model",
+    summary: "TrustedRouter terminates prompt TLS inside an attested Confidential Space enclave and keeps no prompt logs; upstream retention depends on the selected model or preset (trustedrouter/zdr, trustedrouter/e2e).",
+    docs: [
+      "https://trustedrouter.com/who-can-see-your-data",
+      "https://trustedrouter.com/docs/provider-routing",
+    ],
+  }),
   groq: facts({
     retention: "account-level",
     summary: "Groq keeps no inference data by default but may log it up to 30 days for troubleshooting or abuse. ZDR is a switch in Data Controls.",

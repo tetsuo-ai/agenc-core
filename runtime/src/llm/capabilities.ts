@@ -534,6 +534,25 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     acceptsThinkingHistory: catalogThinks("abliteration"),
     acceptsReasoningEffort: catalogTakesEffort("abliteration"),
   },
+  trustedrouter: {
+    // TrustedRouter publishes each model's modalities, tool support, reasoning
+    // and effort levels with its live /v1/models list; the bundled presets
+    // answer until that list has been read.
+    supportsToolUse: model => catalogRow("trustedrouter", model)?.supportsToolUse !== false,
+    supportsPromptCaching: false,
+    supportsContextEdits: false,
+    supportsImageInput: catalogSeesImages("trustedrouter"),
+    supportsAudioInput: false,
+    supportsAudioOutput: false,
+    supportsStructuredOutput: model => catalogRow("trustedrouter", model)?.supportsStructuredOutput === true,
+    supportsStructuredOutputWithTools: false,
+    supportsProviderNativeWebSearch: false,
+    supportsExtendedThinking: catalogThinks("trustedrouter"),
+    acceptsImageHistory: catalogSeesImages("trustedrouter"),
+    acceptsAudioHistory: false,
+    acceptsThinkingHistory: catalogThinks("trustedrouter"),
+    acceptsReasoningEffort: catalogTakesEffort("trustedrouter"),
+  },
   "ollama-cloud": {
     ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
     supportsToolUse: model => catalogRow("ollama-cloud", model)?.supportsToolUse !== false,

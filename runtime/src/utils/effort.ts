@@ -257,7 +257,7 @@ export function modelOffersEffortOffForContext(
 ): boolean {
   const provider = inferCatalogProvider(model, context)
   if (provider !== 'ollama-cloud' && provider !== 'venice' && provider !== 'abliteration' &&
-      provider !== 'qwen' && provider !== 'qwen-token-plan') return false
+      provider !== 'trustedrouter' && provider !== 'qwen' && provider !== 'qwen-token-plan') return false
   return resolveReasoningEffort({ provider, model }).levels.includes('none')
 }
 

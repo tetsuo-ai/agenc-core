@@ -30,6 +30,7 @@ import {
 } from "./registry/provider-info.js";
 import { PROVIDER_RETENTION } from "./registry/provider-retention.js";
 import { VENICE_MODELS, type VeniceModel } from "./registry/venice-models.js";
+import { TRUSTEDROUTER_MODELS, type TrustedRouterModel } from "./registry/trustedrouter-models.js";
 
 /**
  * OpenRouter requests carry `provider.zdr = true` unless
@@ -115,6 +116,8 @@ export function resolveZeroDataRetentionStatus(params: {
   readonly env?: EnvSnapshot;
   /** Venice's live list when the TUI has read it; the bundled list otherwise. */
   readonly veniceModels?: readonly VeniceModel[];
+  /** TrustedRouter's live list when the TUI has read it; the bundled list otherwise. */
+  readonly trustedRouterModels?: readonly TrustedRouterModel[];
 }): ZeroDataRetentionStatus | undefined {
   const provider = resolveBuiltInProviderSlug(params.provider);
   if (provider === undefined) return undefined;
@@ -150,6 +153,20 @@ export function resolveZeroDataRetentionStatus(params: {
     case "per-model": {
       if (!endpoint.builtIn) {
         return status(provider, "unknown", `Requests go to ${customAddress(endpoint.host)} instead of the provider's own address.`);
+      }
+      if (provider === "trustedrouter") {
+        const model = (params.trustedRouterModels ?? TRUSTEDROUTER_MODELS)
+          .find(entry => entry.model === params.model.trim());
+        if (model?.zeroDataRetention === true) {
+          return status(
+            provider,
+            "zdr",
+            "TrustedRouter routes this model through its attested enclave to a zero-data-retention upstream.",
+          );
+        }
+        return model === undefined
+          ? status(provider, "unknown", "TrustedRouter does not list this model, so its upstream retention is unknown.")
+          : status(provider, "retained", "TrustedRouter keeps no prompt logs, but this model's upstream host may retain data. Use trustedrouter/zdr, trustedrouter/e2e, or provider.min_privacy.");
       }
       const model = (params.veniceModels ?? VENICE_MODELS).find(entry => entry.model === params.model.trim());
       if (model?.zeroDataRetention === true) {

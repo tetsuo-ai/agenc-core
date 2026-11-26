@@ -2224,7 +2224,7 @@ async function bootstrapLocalRuntimeSessionScoped(
         sidecarManager.register(errorLogSidecar);
 
         const costSidecar = new CostSidecar({
-          ...(profileProvider === "venice" ? { registry: modelsManager.modelCostRegistry() } : {}),
+          ...(profileProvider === "venice" || profileProvider === "trustedrouter" ? { registry: modelsManager.modelCostRegistry() } : {}),
           defaultModel: model,
           defaultProvider: resolvedProvider,
           exitSummary:

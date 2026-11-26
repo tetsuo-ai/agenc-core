@@ -64,7 +64,7 @@ function listedGatewayEffort(
 }
 
 function usesListedGatewayEffort(provider: string | undefined): boolean {
-  return provider === "ollama-cloud" || provider === "venice" || provider === "abliteration";
+  return provider === "ollama-cloud" || provider === "venice" || provider === "abliteration" || provider === "trustedrouter";
 }
 
 /**

@@ -335,9 +335,9 @@ export const providerCommand: SlashCommand = {
       const [targetProvider = "", ...modelParts] = trimmed.split(/\s+/);
       let targetModel =
         modelParts.length > 0 ? modelParts.join(" ").trim() : undefined;
-      if (targetProvider === "venice" && targetModel === undefined &&
-          configuredModelForProvider(readCommandConfig(ctx) ?? {}, "venice") === undefined) {
-        targetModel = await ctx.session.services?.modelsManager?.getProviderDefaultModel?.("venice");
+      if ((targetProvider === "venice" || targetProvider === "trustedrouter") && targetModel === undefined &&
+          configuredModelForProvider(readCommandConfig(ctx) ?? {}, targetProvider) === undefined) {
+        targetModel = await ctx.session.services?.modelsManager?.getProviderDefaultModel?.(targetProvider);
       }
       let selection = resolveProviderCommandSelection(
         ctx,

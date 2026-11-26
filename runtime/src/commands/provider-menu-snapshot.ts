@@ -16,6 +16,7 @@ import {
 import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
 import type { SlashCommandContext } from "./types.js";
 import { readVeniceMenuModels } from "./venice-menu-models.js";
+import { readTrustedRouterMenuModels } from "./trustedrouter-menu-models.js";
 import { readOllamaMenuModels } from "./ollama-menu-models.js";
 
 type ProviderRowStatus = "current" | "configured" | "default";
@@ -243,18 +244,27 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
   const currentModel = sessionSelection.model;
   const modelCatalog = buildProviderModelCatalog(config);
   // The TUI has no models manager (the session runs in the daemon), so the
-  // list the menu read from Venice comes first.
+  // lists the menu read from Venice and TrustedRouter come first.
   const veniceModels = readVeniceMenuModels(ctx)
     ?.map(entry => ({ slug: entry.model, isDefault: entry.functionCallingDefault })) ??
     ctx.session.services?.modelsManager?.tryListModels()
       ?.filter(entry => entry.provider === "venice");
+  const trustedRouterModels = readTrustedRouterMenuModels(ctx)
+    ?.map(entry => ({ slug: entry.model, isDefault: entry.isDefault })) ??
+    ctx.session.services?.modelsManager?.tryListModels()
+      ?.filter(entry => entry.provider === "trustedrouter");
 
   const unsortedRows = listBuiltInProviderInfo().map((info): ProviderMenuRow => {
     const provider = info.id;
     const providerConfig = config ? readProviderConfig(config, provider) : undefined;
     const status = rowStatus({ config, provider, currentProvider });
-    const discoveredDefault = provider === "venice" && status === "default"
-      ? veniceModels?.find(entry => entry.isDefault)?.slug : undefined;
+    const discoveredDefault = status === "default"
+      ? provider === "venice"
+        ? veniceModels?.find(entry => entry.isDefault)?.slug
+        : provider === "trustedrouter"
+          ? trustedRouterModels?.find(entry => entry.isDefault)?.slug
+          : undefined
+      : undefined;
     const configuredModel = discoveredDefault ?? providerModel({
       config,
       provider,
@@ -271,9 +281,11 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     const auth = providerMenuAuth(access);
     const discoveredModels = provider === "venice"
       ? veniceModels?.map(entry => entry.slug)
-      : provider === "ollama"
-        ? readOllamaMenuModels(ctx)?.map(entry => entry.model)
-        : undefined;
+      : provider === "trustedrouter"
+        ? trustedRouterModels?.map(entry => entry.slug)
+        : provider === "ollama"
+          ? readOllamaMenuModels(ctx)?.map(entry => entry.model)
+          : undefined;
     const rawModels = discoveredModels ?? modelCatalog[provider] ?? [];
     const models = rawModels;
     const state = runtimeState({
