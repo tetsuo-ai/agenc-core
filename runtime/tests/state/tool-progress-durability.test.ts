@@ -86,6 +86,26 @@ it("keeps orphan backfill and category changes at FULL", () => {
   expect(levels).toEqual([2]);
   expect(row(driver).recovery_category).toBe("interactive");
 });
+it("writes output at FULL when an observational update matches no row", () => {
+  const { driver, home } = setup();
+  start(driver, home);
+  const prepare = driver.prepareState.bind(driver);
+  let observational = 0;
+  vi.spyOn(driver, "prepareState").mockImplementation(((sql: string) => {
+    if (sql.includes("AND (? IS NULL OR recovery_category = ?)")) {
+      observational += 1;
+      return { run: () => ({ changes: 0 }) };
+    }
+    return prepare(sql);
+  }) as typeof driver.prepareState);
+  progress(driver, home);
+  expect(observational).toBe(1);
+  expect(row(driver)).toMatchObject({
+    status: "running",
+    recovery_category: "side-effecting",
+    output_partial: "partial\n",
+  });
+});
 it("restores FULL and rolls back an output update that throws", () => {
   const { driver, home } = setup(); start(driver, home);
   const prepare = driver.prepareState.bind(driver);
